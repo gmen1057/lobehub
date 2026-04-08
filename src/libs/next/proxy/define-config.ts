@@ -170,6 +170,7 @@ export function defineConfig() {
     // backend api
     '/api/v1(.*)', // OpenAPI routes should use OpenAPI auth (API Key/OIDC), not BetterAuth session
     '/api/auth(.*)',
+    '/api/bridge', // arckep.ru SSO bridge — creates Better Auth session from X-User-Id
     '/api/webhooks(.*)',
     '/api/workflows(.*)',
     '/api/agent(.*)',
@@ -225,17 +226,19 @@ export function defineConfig() {
     if (!isLoggedIn) {
       // If request a protected route, redirect to sign-in page
       if (isProtected) {
-        logBetterAuth('Request a protected route, redirecting to sign-in page');
-
-        const callbackUrl = `${appEnv.APP_URL}${req.nextUrl.pathname}${req.nextUrl.search}`;
-        const signInUrl = new URL('/signin', appEnv.APP_URL);
-        signInUrl.searchParams.set('callbackUrl', callbackUrl);
-        const hl = req.nextUrl.searchParams.get('hl');
-        if (hl) {
-          signInUrl.searchParams.set('hl', hl);
-          logBetterAuth('Preserving locale to sign-in: hl=%s', hl);
+        // arckep.ru SSO bridge: check for arckep_token cookie
+        const arckepToken = req.cookies.get('arckep_token')?.value;
+        if (arckepToken) {
+          // User is logged into arckep.ru — redirect to bridge for auto-login
+          logBetterAuth('arckep_token found, redirecting to bridge');
+          const bridgeUrl = new URL('/api/bridge', appEnv.APP_URL);
+          bridgeUrl.searchParams.set('return', req.nextUrl.pathname + req.nextUrl.search);
+          return Response.redirect(bridgeUrl);
         }
-        return Response.redirect(signInUrl);
+
+        // No arckep session — redirect to main site login
+        logBetterAuth('No session, redirecting to arckep.ru login');
+        return Response.redirect(new URL('https://arckep.ru/?login=1'));
       }
       logBetterAuth('Request a free route but not login, allow visit without auth header');
     }
