@@ -362,6 +362,8 @@ export const initModelRuntimeWithUserPayload = (
 ) => {
   const runtimeProvider = payload.runtimeProvider ?? provider;
 
+  // VertexAI uses Google Cloud auth (service account), not API key + PROXY_URL.
+  // No billing proxy needed — we don't use VertexAI.
   if (runtimeProvider === ModelProvider.VertexAI) {
     const vertexOptions = buildVertexOptions(payload, params);
     const runtime = LobeVertexAI.initFromVertexAI(vertexOptions);
@@ -369,14 +371,20 @@ export const initModelRuntimeWithUserPayload = (
     return new ModelRuntime(runtime, hooks);
   }
 
-  return ModelRuntime.initializeWithProvider(
-    runtimeProvider,
-    {
-      ...getParamsFromPayload(runtimeProvider, payload),
-      ...params,
-    },
-    hooks,
-  );
+  const resolvedParams = {
+    ...getParamsFromPayload(runtimeProvider, payload),
+    ...params,
+  };
+
+  // Inject X-User-Id header for arckep billing proxy (only when PROXY_URL is set)
+  if (resolvedParams.baseURL && params.userId) {
+    resolvedParams.defaultHeaders = {
+      ...resolvedParams.defaultHeaders,
+      'X-User-Id': String(params.userId),
+    };
+  }
+
+  return ModelRuntime.initializeWithProvider(runtimeProvider, resolvedParams, hooks);
 };
 
 /**
