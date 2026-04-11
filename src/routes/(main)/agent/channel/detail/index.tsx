@@ -234,52 +234,107 @@ const PlatformDetail = memo<PlatformDetailProps>(({ platformDef, agentId, curren
       await form.validateFields();
       const values = form.getFieldsValue(true) as ChannelFormValues;
 
-      setSaving(true);
-      setSaveResult(undefined);
-      setConnectResult(undefined);
+      const doSave = async () => {
+        setSaving(true);
+        setSaveResult(undefined);
+        setConnectResult(undefined);
 
-      const {
-        applicationId: formAppId,
-        credentials: rawCredentials = {},
-        settings: rawSettings = {},
-      } = values as ChannelFormValues;
+        const {
+          applicationId: formAppId,
+          credentials: rawCredentials = {},
+          settings: rawSettings = {},
+        } = values as ChannelFormValues;
 
-      // Strip undefined values from credentials (optional fields left empty by antd form)
-      const credentials = Object.fromEntries(
-        Object.entries(rawCredentials).filter(([, v]) => v !== undefined && v !== ''),
-      );
-      const settings = omitUndefinedValues(rawSettings);
+        // Strip undefined values from credentials (optional fields left empty by antd form)
+        const credentials = Object.fromEntries(
+          Object.entries(rawCredentials).filter(([, v]) => v !== undefined && v !== ''),
+        );
+        const settings = omitUndefinedValues(rawSettings);
 
-      // Use explicit applicationId from form; fall back to deriving from botToken (Telegram)
-      let applicationId = formAppId || '';
-      if (!applicationId && (credentials as Record<string, string>).botToken) {
-        const colonIdx = (credentials as Record<string, string>).botToken.indexOf(':');
-        if (colonIdx !== -1)
-          applicationId = (credentials as Record<string, string>).botToken.slice(0, colonIdx);
+        // Use explicit applicationId from form; fall back to deriving from botToken (Telegram)
+        let applicationId = formAppId || '';
+        if (!applicationId && (credentials as Record<string, string>).botToken) {
+          const colonIdx = (credentials as Record<string, string>).botToken.indexOf(':');
+          if (colonIdx !== -1)
+            applicationId = (credentials as Record<string, string>).botToken.slice(0, colonIdx);
+        }
+
+        if (currentConfig) {
+          await updateBotProvider(currentConfig.id, agentId, {
+            applicationId,
+            credentials,
+            settings,
+          });
+        } else {
+          await createBotProvider({
+            agentId,
+            applicationId,
+            credentials,
+            platform: platformDef.id,
+            settings,
+          });
+        }
+
+        setSaveResult({ type: 'success' });
+        setTimeout(() => setSaveResult(undefined), 3000);
+        setSaving(false);
+
+        // Auto-connect bot after save
+        await connectCurrentBot(applicationId);
+      };
+
+      // arckep: warn user about billing impact when first enabling Telegram bot.
+      // Each incoming TG message triggers an LLM call charged to *owner's* balance.
+      // A spammed bot can drain hundreds of RUB before the owner notices, so we
+      // require explicit confirmation. Rate limit (60/hour/user) provides hard cap.
+      const isFirstTelegramEnable =
+        platformDef.id === 'telegram' && (!currentConfig || currentConfig.enabled === false);
+
+      if (isFirstTelegramEnable) {
+        modal.confirm({
+          cancelText: 'Отмена',
+          content: (
+            <div style={{ fontSize: 14, lineHeight: 1.6 }}>
+              <p>
+                <strong>Включение Telegram-бота списывает деньги с вашего баланса.</strong>
+              </p>
+              <p>
+                Каждое входящее сообщение боту запускает LLM-вызов, который оплачиваете вы как
+                владелец агента. Ориентировочно <strong>1.5–3 ₽ за сообщение</strong> в зависимости
+                от модели, длины ответа и контекста.
+              </p>
+              <p style={{ marginBottom: 4 }}>
+                <strong>Чтобы контролировать расходы:</strong>
+              </p>
+              <ul style={{ marginBottom: 8, paddingLeft: 20 }}>
+                <li>Сделайте бота приватным (не публикуйте в каналах)</li>
+                <li>Используйте более дешёвые модели (GLM Turbo, Qwen, Kimi)</li>
+                <li>Установлен лимит 60 сообщений/час на пользователя</li>
+                <li>Следите за балансом — пополнение остановит работу бота</li>
+              </ul>
+              <p style={{ marginBottom: 0, opacity: 0.7 }}>
+                Если бот будет отправлять кому-то спам, лимит остановит расход, но не сразу.
+              </p>
+            </div>
+          ),
+          okText: 'Понятно, включаю',
+          onOk: async () => {
+            try {
+              await doSave();
+            } catch (e: any) {
+              if (e?.errorFields) return;
+              console.error(e);
+              setSaveResult({ errorDetail: e?.message || String(e), type: 'error' });
+              setSaving(false);
+            }
+          },
+          title: 'Внимание: бот будет тратить ваш баланс',
+          width: 520,
+        });
+        return;
       }
 
-      if (currentConfig) {
-        await updateBotProvider(currentConfig.id, agentId, {
-          applicationId,
-          credentials,
-          settings,
-        });
-      } else {
-        await createBotProvider({
-          agentId,
-          applicationId,
-          credentials,
-          platform: platformDef.id,
-          settings,
-        });
-      }
-
-      setSaveResult({ type: 'success' });
-      setTimeout(() => setSaveResult(undefined), 3000);
-      setSaving(false);
-
-      // Auto-connect bot after save
-      await connectCurrentBot(applicationId);
+      await doSave();
     } catch (e: any) {
       if (e?.errorFields) return;
       console.error(e);
@@ -294,6 +349,7 @@ const PlatformDetail = memo<PlatformDetailProps>(({ platformDef, agentId, curren
     createBotProvider,
     updateBotProvider,
     connectCurrentBot,
+    modal,
   ]);
 
   const handleExternalAuth = useCallback(

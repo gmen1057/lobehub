@@ -56,7 +56,16 @@ class TelegramWebhookClient implements PlatformClient {
     });
 
     try {
-      const baseUrl = (this.config.credentials.webhookProxyUrl || this.context.appUrl || '')
+      // arckep: chat.arckep.ru is routed via Cloud.ru proxy (85.208.85.209) which
+      // times out Telegram POSTs. helper.arckep.ru resolves direct to 80.74.25.17 and
+      // proxies /api/agent/webhooks/telegram/* to LobeChat on port 3402. Override order:
+      // 1) per-bot webhookProxyUrl, 2) global TELEGRAM_WEBHOOK_BASE_URL env, 3) app URL.
+      const baseUrl = (
+        this.config.credentials.webhookProxyUrl ||
+        process.env.TELEGRAM_WEBHOOK_BASE_URL ||
+        this.context.appUrl ||
+        ''
+      )
         .trim()
         .replace(/\/$/, '');
       const webhookUrl = `${baseUrl}/api/agent/webhooks/telegram/${this.applicationId}`;

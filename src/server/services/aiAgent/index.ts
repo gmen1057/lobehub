@@ -37,6 +37,7 @@ import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
+import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import {
   createServerAgentToolsEngine,
   type EvalContext,
@@ -474,11 +475,16 @@ export class AiAgentService {
         return info?.abilities?.functionCall ?? true;
       };
 
-      // 5c. Fetch LobeHub Skills manifests
-      try {
-        lobehubSkillManifests = await this.marketService.getLobehubSkillManifests();
-      } catch (error) {
-        log('execAgent: failed to fetch lobehub skill manifests: %O', error);
+      // 5c. Fetch LobeHub Skills manifests — gated behind trusted-client / market API key.
+      // Without credentials this would call market.lobehub.com on every message and log
+      // "Missing bearer token" errors. We don't expose LobeHub marketplace at all (arckep
+      // fork strips it from the UI), so skip the fetch entirely when not configured.
+      if (isTrustedClientEnabled() || process.env.MARKET_API_KEY) {
+        try {
+          lobehubSkillManifests = await this.marketService.getLobehubSkillManifests();
+        } catch (error) {
+          log('execAgent: failed to fetch lobehub skill manifests: %O', error);
+        }
       }
       log('execAgent: got %d lobehub skill manifests', lobehubSkillManifests.length);
 
