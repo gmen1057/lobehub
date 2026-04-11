@@ -182,7 +182,13 @@ const getParamsFromPayload = (provider: string, payload: ClientSecretPayload) =>
       }
 
       const apiKey = apiKeyManager.pick(payload?.apiKey || llmConfig[`${upperProvider}_API_KEY`]);
-      const baseURL = payload?.baseURL || process.env[`${upperProvider}_PROXY_URL`];
+      // arckep: PROXY_URL must win over payload.baseURL to prevent billing bypass
+      // via user-saved ai_providers records. If a user edits provider settings in UI
+      // and sets a custom baseURL, their record overrides env — meaning traffic would
+      // skip our billing proxy. PROXY_URL is set for every billed provider, so this
+      // reversal ensures we always see the traffic.
+      const proxyUrl = process.env[`${upperProvider}_PROXY_URL`];
+      const baseURL = proxyUrl || payload?.baseURL;
 
       return baseURL ? { apiKey, baseURL } : { apiKey };
     }
