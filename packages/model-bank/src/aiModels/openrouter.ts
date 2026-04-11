@@ -1,6 +1,13 @@
 import type { AIChatModelCard } from '../types/aiModel';
 
 // https://openrouter.ai/docs/api-reference/list-available-models
+//
+// arckep: 9 models used in our OPENROUTER_MODEL_LIST (openrouter/auto + 4 chinese
+// models + free variants) added / patched with pricing matching our backend
+// FALLBACK_PRICING (`$1/$3 per 1M`) so LobeChat's `/settings/stats` shows the
+// same number we actually charged via billing_proxy. Free variants set to 0.
+// Real per-model rates vary, but this uniform approach mirrors how our backend
+// bills these requests and keeps stats coherent with balance deductions.
 const openrouterChatModels: AIChatModelCard[] = [
   {
     contextWindowTokens: 2_000_000,
@@ -9,6 +16,116 @@ const openrouterChatModels: AIChatModelCard[] = [
     displayName: 'Auto (best for prompt)',
     enabled: true,
     id: 'openrouter/auto',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Moonshot Kimi K2.5 (paid, fallback rate)
+  {
+    contextWindowTokens: 262_144,
+    displayName: 'Kimi K2.5',
+    id: 'moonshotai/kimi-k2.5',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Moonshot Kimi K2 Thinking (paid, fallback rate)
+  {
+    contextWindowTokens: 262_144,
+    displayName: 'Kimi K2 Thinking',
+    id: 'moonshotai/kimi-k2-thinking',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Z.AI GLM 5.1 (paid, fallback rate)
+  {
+    contextWindowTokens: 202_752,
+    displayName: 'GLM 5.1',
+    id: 'z-ai/glm-5.1',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Z.AI GLM 5 Turbo (paid, fallback rate)
+  {
+    contextWindowTokens: 202_752,
+    displayName: 'GLM 5 Turbo',
+    id: 'z-ai/glm-5-turbo',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Z.AI GLM 4.5 Air free variant (pricing 0/0)
+  {
+    contextWindowTokens: 131_072,
+    displayName: 'GLM 4.5 Air (free)',
+    id: 'z-ai/glm-4.5-air:free',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Qwen3 Coder 480B (paid, fallback rate)
+  {
+    contextWindowTokens: 262_144,
+    displayName: 'Qwen3 Coder 480B',
+    id: 'qwen/qwen3-coder',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Qwen3 Coder Plus (paid, fallback rate)
+  {
+    contextWindowTokens: 1_000_000,
+    displayName: 'Qwen3 Coder Plus',
+    id: 'qwen/qwen3-coder-plus',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
+  // arckep: Qwen3 Coder free variant (pricing 0/0)
+  {
+    contextWindowTokens: 262_000,
+    displayName: 'Qwen3 Coder (free)',
+    id: 'qwen/qwen3-coder:free',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
     type: 'chat',
   },
   {
