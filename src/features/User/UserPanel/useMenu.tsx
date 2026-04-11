@@ -2,7 +2,7 @@ import { LOBE_CHAT_CLOUD, UTM_SOURCE } from '@lobechat/business-const';
 import { DOWNLOAD_URL, isDesktop } from '@lobechat/const';
 import { Flexbox, Hotkey, Icon, Tag } from '@lobehub/ui';
 import { type ItemType } from 'antd/es/menu/interface';
-import { BrainCircuit, Cloudy, Download, HardDriveDownload, LogOut, Settings2 } from 'lucide-react';
+import { BrainCircuit, Cloudy, HardDriveDownload, LogOut, Settings2 } from 'lucide-react';
 import { type PropsWithChildren } from 'react';
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -89,17 +89,9 @@ export const useMenu = () => {
       : []),
   ];
 
-  const getDesktopApp: MenuProps['items'] = [
-    {
-      icon: <Icon icon={Download} />,
-      key: 'get-desktop-app',
-      label: (
-        <a href={downloadUrl} rel="noopener noreferrer" target="_blank">
-          {t('getDesktopApp')}
-        </a>
-      ),
-    },
-  ];
+  // arckep: LobeHub desktop app download removed — links to lobehub.com
+  // which isn't our distribution channel. We're a web-only product.
+  const getDesktopApp: MenuProps['items'] = [];
 
   const helps: MenuProps['items'] = [
     showCloudPromotion && {

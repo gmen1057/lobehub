@@ -1,14 +1,6 @@
 import { LOBE_CHAT_CLOUD, UTM_SOURCE } from '@lobechat/business-const';
 import { DOWNLOAD_URL, OFFICIAL_URL } from '@lobechat/const';
-import {
-  Book,
-  CircleUserRound,
-  Cloudy,
-  Download,
-  Feather,
-  FileClockIcon,
-  Settings2,
-} from 'lucide-react';
+import { Book, CircleUserRound, Cloudy, Feather, FileClockIcon, Settings2 } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
@@ -54,17 +46,9 @@ export const useCategory = (onOpenChangelogModal: () => void) => {
     },
   ];
 
-  const getDesktopApp: CellProps[] = [
-    {
-      icon: Download,
-      key: 'get-desktop-app',
-      label: t('getDesktopApp'),
-      onClick: () => window.open(downloadUrl, '__blank'),
-    },
-    {
-      type: 'divider',
-    },
-  ];
+  // arckep: LobeHub app download removed — links to lobehub.com for iOS/Android
+  // native apps which aren't our distribution. Mobile users use the web/PWA.
+  const getDesktopApp: CellProps[] = [];
 
   const helps: CellProps[] = [
     showCloudPromotion && {
