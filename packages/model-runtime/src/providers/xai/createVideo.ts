@@ -126,6 +126,7 @@ export async function createXAIVideo(
     headers: {
       'Authorization': `Bearer ${options.apiKey}`,
       'Content-Type': 'application/json',
+      ...(options.defaultHeaders as Record<string, string>),
     },
     method: 'POST',
   });

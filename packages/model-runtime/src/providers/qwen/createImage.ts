@@ -71,6 +71,7 @@ async function createLegacySynthesisTask(
   apiKey: string,
   endpoint: 'text2image' | 'image2image',
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<string> {
   const { model, params } = payload;
   const url = `${baseUrl}/api/v1/services/aigc/${endpoint}/image-synthesis`;
@@ -114,6 +115,7 @@ async function createLegacySynthesisTask(
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'X-DashScope-Async': 'enable',
+      ...extraHeaders,
     },
     method: 'POST',
   });
@@ -144,6 +146,7 @@ async function createHTTPAsyncGenerationTask(
   payload: CreateImagePayload,
   apiKey: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<string> {
   const { model, params } = payload;
   const endpoint = `${baseUrl}/api/v1/services/aigc/image-generation/generation`;
@@ -197,6 +200,7 @@ async function createHTTPAsyncGenerationTask(
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'X-DashScope-Async': 'enable',
+      ...extraHeaders,
     },
     method: 'POST',
   });
@@ -229,6 +233,7 @@ async function createHTTPSyncGeneration(
   payload: CreateImagePayload,
   apiKey: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<CreateImageResponse> {
   const { model, params } = payload;
   const endpoint = `${baseUrl}/api/v1/services/aigc/multimodal-generation/generation`;
@@ -271,6 +276,7 @@ async function createHTTPSyncGeneration(
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
+      ...extraHeaders,
     },
     method: 'POST',
   });
@@ -393,7 +399,7 @@ export async function createQwenImage(
   payload: CreateImagePayload,
   options: CreateImageOptions,
 ): Promise<CreateImageResponse> {
-  const { apiKey, baseURL, provider } = options;
+  const { apiKey, baseURL, provider, defaultHeaders } = options;
   const { model } = payload;
 
   // Check if URL has /compatible-mode/v1 suffix and remove it
@@ -411,19 +417,22 @@ export async function createQwenImage(
       const endpoint = isImage2Image ? 'image2image' : 'text2image';
       log('Using %s API for model: %s', endpoint, model);
 
-      const taskId = await createLegacySynthesisTask(payload, apiKey, endpoint, dashscopeURL);
+      const hdrs = defaultHeaders as Record<string, string> | undefined;
+      const taskId = await createLegacySynthesisTask(payload, apiKey, endpoint, dashscopeURL, hdrs);
 
       return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model);
     }
 
     if (isSyncGeneration) {
       log('Using multimodal-generation API for model: %s', model);
-      return await createHTTPSyncGeneration(payload, apiKey, dashscopeURL);
+      const hdrs = defaultHeaders as Record<string, string> | undefined;
+      return await createHTTPSyncGeneration(payload, apiKey, dashscopeURL, hdrs);
     }
 
     log('Using image-generation async API for model: %s', model);
 
-    const taskId = await createHTTPAsyncGenerationTask(payload, apiKey, dashscopeURL);
+    const hdrs = defaultHeaders as Record<string, string> | undefined;
+    const taskId = await createHTTPAsyncGenerationTask(payload, apiKey, dashscopeURL, hdrs);
 
     return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model);
   } catch (error) {

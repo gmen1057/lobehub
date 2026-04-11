@@ -37,8 +37,9 @@ const getSearchModeById = (agentId: string) => (s: AgentStoreState) =>
 const isEnableSearchById = (agentId: string) => (s: AgentStoreState) =>
   getSearchModeById(agentId)(s) !== 'off';
 
+// arckep: default to builtin model search (no SEARXNG/Tavily configured)
 const getUseModelBuiltinSearchById = (agentId: string) => (s: AgentStoreState) =>
-  getChatConfigById(agentId)(s).useModelBuiltinSearch;
+  getChatConfigById(agentId)(s).useModelBuiltinSearch ?? true;
 
 const getSearchFCModelById = (agentId: string) => (s: AgentStoreState) =>
   getChatConfigById(agentId)(s).searchFCModel || DEFAULT_AGENT_SEARCH_FC_MODEL;

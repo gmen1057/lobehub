@@ -62,7 +62,7 @@ export async function createXAIImage(
   payload: CreateImagePayload,
   options: CreateImageOptions,
 ): Promise<CreateImageResponse> {
-  const { apiKey, baseURL, provider } = options;
+  const { apiKey, baseURL, provider, defaultHeaders } = options;
   const { model, params } = payload;
 
   try {
@@ -105,6 +105,7 @@ export async function createXAIImage(
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
+        ...(defaultHeaders as Record<string, string>),
       },
       method: 'POST',
     });

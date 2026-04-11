@@ -115,6 +115,7 @@ async function createVideoTask(
   taskType: 'video-generation' | 'image2video',
   provider: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<string> {
   const { model, params } = payload;
   const { prompt, imageUrl, endImageUrl } = params;
@@ -283,6 +284,7 @@ async function createVideoTask(
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
       'X-DashScope-Async': 'enable',
+      ...extraHeaders,
     },
     method: 'POST',
   });
@@ -319,7 +321,7 @@ export async function createQwenVideo(
   payload: CreateVideoPayload,
   options: CreateVideoOptions,
 ): Promise<CreateVideoResponse> {
-  const { apiKey, baseURL, provider } = options;
+  const { apiKey, baseURL, provider, defaultHeaders } = options;
   const { model, params } = payload;
 
   // Check if URL has /compatible-mode/v1 suffix and remove it
@@ -345,7 +347,8 @@ export async function createQwenVideo(
     }
 
     // Create the video task
-    const taskId = await createVideoTask(payload, apiKey, taskType, provider, dashscopeURL);
+    const hdrs = defaultHeaders as Record<string, string> | undefined;
+    const taskId = await createVideoTask(payload, apiKey, taskType, provider, dashscopeURL, hdrs);
 
     log('Video task created with id: %s, returning immediately for frontend polling', taskId);
 
