@@ -20,19 +20,21 @@ const BottomMenu = memo(() => {
         overflow: 'hidden',
       }}
     >
-      {items.map((item) => (
-        <Link
-          key={item.key}
-          to={item.url!}
-          onClick={(e) => {
-            if (isModifierClick(e)) return;
-            e.preventDefault();
-            navigate(item.url!);
-          }}
-        >
-          <NavItem active={tab === item.key} icon={item.icon} title={item.title} />
-        </Link>
-      ))}
+      {items
+        .filter((item) => !item.hidden)
+        .map((item) => (
+          <Link
+            key={item.key}
+            to={item.url!}
+            onClick={(e) => {
+              if (isModifierClick(e)) return;
+              e.preventDefault();
+              navigate(item.url!);
+            }}
+          >
+            <NavItem active={tab === item.key} icon={item.icon} title={item.title} />
+          </Link>
+        ))}
     </Flexbox>
   );
 });
