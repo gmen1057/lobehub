@@ -388,14 +388,16 @@ export const MarketAuthProvider = ({ children, isDesktop }: MarketAuthProviderPr
   };
 
   /**
-   * Sign-in method (shows confirmation dialog first)
+   * Sign-in method — disabled for arckep.
+   *
+   * Original behavior: shows a "Create community profile" confirmation dialog,
+   * then redirects to LobeHub OIDC for cross-service auth. We've blocked all
+   * marketplace/community routes at nginx level (302 → /), so this flow would
+   * only land users on a popup they can't complete. Return null immediately
+   * so callers see "not authenticated" and skip the feature silently.
    */
   const signIn = useCallback(async (): Promise<number | null> => {
-    return new Promise<number | null>((resolve, reject) => {
-      setPendingSignInResolve(() => resolve);
-      setPendingSignInReject(() => reject);
-      setShowConfirmModal(true);
-    });
+    return null;
   }, []);
 
   /**
