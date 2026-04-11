@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
+import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
 
@@ -19,12 +20,12 @@ const computeMonth = (
 } => {
   if (!data || data?.length === 0) return { calls: 0, spend: 0 };
 
-  const spend = data.reduce((acc, log) => acc + (log.totalSpend || 0), 0);
+  const spendUsd = data.reduce((acc, log) => acc + (log.totalSpend || 0), 0);
   const calls = data.reduce((acc, log) => acc + (log.records?.length ?? 0), 0);
 
   return {
     calls: formatNumber(calls),
-    spend: formatNumber(spend),
+    spend: formatNumber(usdToRub(spendUsd)),
   };
 };
 
@@ -40,7 +41,7 @@ const MonthSpend = memo<UsageChartProps>(({ data, isLoading }) => {
       statistic={{
         description: <Statistic title={t('usage.cards.month.modelCalls')} value={calls} />,
         precision: 2,
-        prefix: '$',
+        suffix: ` ${ARCKEP_CURRENCY_SYMBOL}`,
         value: spend,
       }}
     />

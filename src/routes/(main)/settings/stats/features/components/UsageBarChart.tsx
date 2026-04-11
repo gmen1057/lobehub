@@ -3,7 +3,11 @@ import { BarChart, ChartTooltipFrame, ChartTooltipRow } from '@lobehub/charts';
 import { Flexbox, Text } from '@lobehub/ui';
 import { Divider } from 'antd';
 
+import { ARCKEP_CURRENCY_SYMBOL } from '@/const/arckepPricing';
 import { formatNumber, formatTokenNumber } from '@/utils/format';
+
+// arckep: wrap spend formatter to show RUB suffix in chart tooltips/axis
+const formatSpend = (num: number) => `${formatNumber(num, 2)} ${ARCKEP_CURRENCY_SYMBOL}`;
 
 interface UsageBarChartProps extends BarChartProps {
   showType: 'spend' | 'token';
@@ -26,7 +30,7 @@ export const UsageBarChart = ({ ...props }: UsageBarChartProps) => (
               </Text>
               {sum !== 0 && (
                 <span style={{ fontWeight: 'bold' }}>
-                  {props.showType === 'spend' ? formatNumber(sum, 2) : formatTokenNumber(sum)}
+                  {props.showType === 'spend' ? formatSpend(sum) : formatTokenNumber(sum)}
                 </span>
               )}
             </Flexbox>
@@ -46,9 +50,7 @@ export const UsageBarChart = ({ ...props }: UsageBarChartProps) => (
                         key={`id-${idx}`}
                         name={name}
                         value={
-                          props.showType === 'spend'
-                            ? formatNumber(value, 2)
-                            : formatTokenNumber(value)
+                          props.showType === 'spend' ? formatSpend(value) : formatTokenNumber(value)
                         }
                       />
                     ) : null,
@@ -62,7 +64,7 @@ export const UsageBarChart = ({ ...props }: UsageBarChartProps) => (
       return null;
     }}
     valueFormatter={(num) =>
-      props.showType === 'spend' ? formatNumber(num, 2) : formatTokenNumber(num)
+      props.showType === 'spend' ? formatSpend(num) : formatTokenNumber(num)
     }
   />
 );

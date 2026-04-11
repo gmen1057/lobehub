@@ -6,6 +6,7 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import InlineTable from '@/components/InlineTable';
+import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatPrice } from '@/utils/format';
 
@@ -139,7 +140,7 @@ const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy }) => {
                     dataIndex: 'spend',
                     key: 'spend',
                     render: (value) => {
-                      return `$${formatPrice(value)}`;
+                      return `${formatPrice(usdToRub(value))} ${ARCKEP_CURRENCY_SYMBOL}`;
                     },
                     title: t('usage.activeModels.table.spend'),
                   },
