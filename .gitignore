@@ -139,3 +139,5 @@ spaHtmlTemplates.ts
 
 .superpowers/
 docs/superpowers
+# arckep: local backup of format-patches
+/patches/
