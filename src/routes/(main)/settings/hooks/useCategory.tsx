@@ -3,19 +3,15 @@ import { Avatar } from '@lobehub/ui';
 import { SkillsIcon } from '@lobehub/ui/icons';
 import {
   // BellIcon,
-  Brain,
   BrainCircuit,
   ChartColumnBigIcon,
   Coins,
   CreditCard,
-  Database,
-  EllipsisIcon,
   EthernetPort,
   Gift,
   Info,
   KeyboardIcon,
   KeyIcon,
-  KeyRound,
   Map,
   PaletteIcon,
   Sparkles,
@@ -133,12 +129,10 @@ export const useCategory = () => {
     }
 
     // Agent group
+    // arckep: Provider and Creds tabs hidden — they expose AI provider
+    // baseURL / apiKey config which would bypass our billing proxy if user
+    // saved custom values. URLs also 302'd at nginx level.
     const agentItems: CategoryItem[] = [
-      (!enableBusinessFeatures || isDevMode) && {
-        icon: Brain,
-        key: SettingsTabs.Provider,
-        label: t('tab.provider'),
-      },
       {
         icon: Sparkles,
         key: SettingsTabs.ServiceModel,
@@ -154,11 +148,6 @@ export const useCategory = () => {
         key: SettingsTabs.Memory,
         label: t('tab.memory'),
       },
-      {
-        icon: KeyRound,
-        key: SettingsTabs.Creds,
-        label: t('tab.creds'),
-      },
       showApiKeyManage && {
         icon: KeyIcon,
         key: SettingsTabs.APIKey,
@@ -173,6 +162,10 @@ export const useCategory = () => {
     });
 
     // System group
+    // arckep: Storage and Advanced tabs hidden — Storage exposes DB / S3
+    // client internals which are our infra concerns, Advanced has OTLP
+    // telemetry + dev-mode toggles that shouldn't be user-facing. URLs
+    // also 302'd at nginx level.
     const systemItems: CategoryItem[] = [
       isDesktop && {
         icon: EthernetPort,
@@ -184,20 +177,10 @@ export const useCategory = () => {
         key: SettingsTabs.SystemTools,
         label: t('tab.systemTools'),
       },
-      {
-        icon: Database,
-        key: SettingsTabs.Storage,
-        label: t('tab.storage'),
-      },
       isDevMode && {
         icon: KeyIcon,
         key: SettingsTabs.APIKey,
         label: tAuth('tab.apikey'),
-      },
-      {
-        icon: EllipsisIcon,
-        key: SettingsTabs.Advanced,
-        label: t('tab.advanced'),
       },
       !hideDocs && {
         icon: Info,
