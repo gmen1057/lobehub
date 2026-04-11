@@ -1,17 +1,15 @@
 'use client';
 
-import { SiDiscord, SiGithub, SiRss, SiX, SiYoutube } from '@icons-pack/react-simple-icons';
-import { BRANDING_EMAIL, BRANDING_NAME, SOCIAL_URL } from '@lobechat/business-const';
+import { BRANDING_EMAIL, BRANDING_NAME } from '@lobechat/business-const';
 import { Flexbox, Form } from '@lobehub/ui';
 import { Divider } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { BLOG, mailTo,OFFICIAL_SITE, PRIVACY_URL, TERMS_URL } from '@/const/url';
+import { mailTo, OFFICIAL_SITE, PRIVACY_URL, TERMS_URL } from '@/const/url';
 
 import AboutList from './AboutList';
-import ItemCard from './ItemCard';
 import ItemLink from './ItemLink';
 import Version from './Version';
 
@@ -59,45 +57,8 @@ const About = memo<{ mobile?: boolean }>(({ mobile }) => {
             },
           ]}
         />
-        <Divider style={{ marginBlock: 0 }} />
-        <div className={styles.title}>{t('information')}</div>
-        <AboutList
-          grid
-          ItemRender={ItemCard}
-          items={[
-            {
-              href: BLOG,
-              icon: SiRss,
-              label: t('blog'),
-              value: 'blog',
-            },
-            {
-              href: SOCIAL_URL.github,
-              icon: SiGithub,
-              label: 'GitHub',
-              value: 'feedback',
-            },
-            {
-              href: SOCIAL_URL.discord,
-              icon: SiDiscord,
-              label: 'Discord',
-              value: 'discord',
-            },
-            {
-              href: SOCIAL_URL.x,
-              icon: SiX as any,
-              label: 'X / Twitter',
-              value: 'x',
-            },
-
-            {
-              href: SOCIAL_URL.youtube,
-              icon: SiYoutube,
-              label: 'YouTube',
-              value: 'youtube',
-            },
-          ]}
-        />
+        {/* arckep: upstream "information" block (LobeHub blog, GitHub, Discord,
+            X/Twitter, YouTube) removed — those are LobeHub's socials, not ours. */}
         <Divider style={{ marginBlock: 0 }} />
         <div className={styles.title}>{t('legal')}</div>
         <AboutList
