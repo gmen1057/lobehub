@@ -98,6 +98,6 @@ export const execScriptBaseParams = {
 
 export const manifestMeta = {
   avatar: '🛠️',
-  description: 'Activate and use reusable skill packages',
-  title: 'Skills',
+  description: 'Управление пользовательскими наборами инструкций',
+  title: 'Навыки',
 };

@@ -43,8 +43,8 @@ export const LobeActivatorManifest: BuiltinToolManifest = {
   identifier: LobeActivatorIdentifier,
   meta: {
     avatar: '🔧',
-    description: 'Discover and activate tools and skills',
-    title: 'Tools & Skills Activator',
+    description: 'Обнаружение и активация доступных инструментов и навыков для текущей задачи',
+    title: 'Активатор инструментов',
   },
   systemRole: systemPrompt,
   type: 'builtin',

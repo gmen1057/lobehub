@@ -201,8 +201,8 @@ export const TaskManifest: BuiltinToolManifest = {
   identifier: TaskIdentifier,
   meta: {
     avatar: '\uD83D\uDCCB',
-    description: 'Create, list, edit, delete tasks with dependencies and review config',
-    title: 'Task Tools',
+    description: 'Управление иерархическими задачами с зависимостями',
+    title: 'Системные задачи',
   },
   systemRole: systemPrompt,
   type: 'builtin',

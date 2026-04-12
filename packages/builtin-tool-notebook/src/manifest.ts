@@ -95,9 +95,8 @@ export const NotebookManifest: BuiltinToolManifest = {
   identifier: NotebookIdentifier,
   meta: {
     avatar: '📓',
-    description:
-      'Save and organize notes, reports, and drafts within the current topic — for temporary or session-scoped content',
-    title: 'Notebook',
+    description: 'Создание заметок и документов в формате Markdown',
+    title: 'Блокнот',
   },
   systemRole: systemPrompt,
   type: 'builtin',

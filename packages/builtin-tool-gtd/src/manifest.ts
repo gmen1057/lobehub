@@ -236,8 +236,8 @@ export const GTDManifest: BuiltinToolManifest = {
   identifier: GTDIdentifier,
   meta: {
     avatar: '✅',
-    description: 'Create plans, manage todo lists with status tracking, and run background tasks',
-    title: 'GTD Tools',
+    description: 'Создание планов, управление задачами с отслеживанием статуса',
+    title: 'Задачи и планы',
   },
   systemRole: systemPrompt,
   type: 'builtin',

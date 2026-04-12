@@ -200,7 +200,8 @@ export const AgentBuilderManifest: BuiltinToolManifest = {
   identifier: AgentBuilderIdentifier,
   meta: {
     avatar: '🛠️',
-    title: 'Agent Builder',
+    description: 'Создание и настройка AI-агентов с заданными ролями и инструкциями',
+    title: 'Конструктор агентов',
   },
   systemRole: systemPrompt,
   type: 'builtin',

@@ -237,8 +237,8 @@ export const AgentManagementManifest: BuiltinToolManifest = {
   identifier: AgentManagementIdentifier,
   meta: {
     avatar: '🤖',
-    description: 'Create, manage, and orchestrate AI agents',
-    title: 'Agent Management',
+    description: 'Создание, обновление и удаление AI-агентов, вызов агентов',
+    title: 'Управление агентами',
   },
   systemRole: systemPrompt,
   type: 'builtin',

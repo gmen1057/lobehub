@@ -140,8 +140,8 @@ export const UserInteractionManifest: BuiltinToolManifest = {
   identifier: UserInteractionIdentifier,
   meta: {
     avatar: '💬',
-    description: 'Ask users questions through UI interactions and observe their lifecycle outcomes',
-    title: 'User Interaction',
+    description: 'Создание интерактивных форм и вопросов для пользователя',
+    title: 'Диалог с пользователем',
   },
   systemRole: systemPrompt,
   type: 'builtin',

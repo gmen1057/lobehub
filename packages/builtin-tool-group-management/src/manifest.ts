@@ -311,8 +311,8 @@ export const GroupManagementManifest: BuiltinToolManifest = {
   identifier: GroupManagementIdentifier,
   meta: {
     avatar: '👥',
-    description: 'Orchestrate and manage multi-agent group conversations',
-    title: 'Group Management',
+    description: 'Координация работы группы агентов',
+    title: 'Управление группой',
   },
   systemRole: systemPrompt,
   type: 'builtin',

@@ -98,11 +98,9 @@ export const WebBrowsingManifest: BuiltinToolManifest = {
   identifier: 'lobe-web-browsing',
   meta: {
     avatar: '🌐',
-    description:
-      'Search the web for current information and crawl web pages to extract content. Supports multiple search engines, categories, and time ranges.',
-    readme:
-      'Search the web for current information and crawl web pages to extract content. Supports multiple search engines, categories, and time ranges for comprehensive research.',
-    title: 'Web Browsing',
+    description: 'Поиск в интернете и извлечение содержимого веб-страниц',
+    readme: 'Поиск в интернете и извлечение содержимого веб-страниц',
+    title: 'Веб-поиск',
   },
   systemRole: systemPrompt(dayjs(new Date()).format('YYYY-MM-DD')),
   type: 'builtin',

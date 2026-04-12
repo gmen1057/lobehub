@@ -466,7 +466,8 @@ export const GroupAgentBuilderManifest: BuiltinToolManifest = {
   identifier: GroupAgentBuilderIdentifier,
   meta: {
     avatar: '👥',
-    title: 'Group Agent Builder',
+    description: 'Создание команд из нескольких AI-агентов',
+    title: 'Конструктор групп',
   },
   systemRole: systemPrompt,
   type: 'builtin',

@@ -24,8 +24,8 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
   identifier: TopicReferenceIdentifier,
   meta: {
     avatar: '📋',
-    description: 'Retrieve context from referenced topic conversations',
-    title: 'Topic Reference',
+    description: 'Извлечение контекста из связанных чатов',
+    title: 'Контекст темы',
   },
   systemRole: '',
   type: 'builtin',

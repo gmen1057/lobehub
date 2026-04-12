@@ -52,9 +52,8 @@ export const KnowledgeBaseManifest: BuiltinToolManifest = {
   identifier: KnowledgeBaseIdentifier,
   meta: {
     avatar: '📚',
-    description:
-      'Search uploaded documents and domain knowledge via semantic vector search — for persistent, reusable reference',
-    title: 'Knowledge Base',
+    description: 'Поиск по загруженным документам с использованием AI',
+    title: 'База знаний',
   },
   systemRole: systemPrompt,
   type: 'builtin',

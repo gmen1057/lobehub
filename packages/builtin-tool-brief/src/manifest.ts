@@ -75,8 +75,8 @@ export const BriefManifest: BuiltinToolManifest = {
   identifier: BriefIdentifier,
   meta: {
     avatar: '📋',
-    description: 'Report progress, deliver results, and request user decisions',
-    title: 'Brief Tools',
+    description: 'Отправка отчётов о прогрессе и запрос подтверждений от пользователя',
+    title: 'Отчёты',
   },
   systemRole: systemPrompt,
   type: 'builtin',

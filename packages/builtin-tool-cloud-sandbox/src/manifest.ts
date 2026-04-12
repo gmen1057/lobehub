@@ -326,10 +326,9 @@ export const CloudSandboxManifest: BuiltinToolManifest = {
   identifier: CloudSandboxIdentifier,
   meta: {
     avatar: '💻',
-    description: 'Execute code, run commands, and manage files in a secure cloud environment',
-    readme:
-      'Execute Python, JavaScript, and TypeScript code in an isolated cloud environment. Run shell commands, manage files, search content with regex, and export results securely.',
-    title: 'Cloud Sandbox',
+    description: 'Выполнение кода (Python, JavaScript, TypeScript) в безопасной облачной среде',
+    readme: 'Выполнение кода (Python, JavaScript, TypeScript) в безопасной облачной среде',
+    title: 'Облачная песочница',
   },
   systemRole: systemPrompt,
   type: 'builtin',

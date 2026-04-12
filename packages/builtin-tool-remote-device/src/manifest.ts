@@ -34,10 +34,9 @@ export const RemoteDeviceManifest: BuiltinToolManifest = {
   identifier: RemoteDeviceIdentifier,
   meta: {
     avatar: '🖥️',
-    description: 'Discover and manage remote desktop device connections',
-    readme:
-      'Manage connections to your desktop devices. List online devices, activate a device for remote operations, and check connection status.',
-    title: 'Remote Device',
+    description: 'Подключение и управление удалёнными устройствами',
+    readme: 'Подключение и управление удалёнными устройствами',
+    title: 'Удалённое устройство',
   },
   systemRole: systemPrompt,
   type: 'builtin',

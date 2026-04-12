@@ -662,11 +662,9 @@ export const MessageManifest: BuiltinToolManifest = {
   identifier: MessageToolIdentifier,
   meta: {
     avatar: '💬',
-    description:
-      'Send, read, edit, and manage messages across multiple messaging platforms with a unified interface',
-    readme:
-      'Cross-platform messaging tool supporting Discord, Telegram, Slack, Google Chat, and IRC. Provides unified APIs for message operations, reactions, pins, threads, channel management, and platform-specific features like polls.',
-    title: 'Message',
+    description: 'Отправка сообщений в Telegram, Discord, Slack и другие платформы',
+    readme: 'Отправка сообщений в Telegram, Discord, Slack и другие платформы',
+    title: 'Сообщения',
   },
   systemRole: systemPrompt,
   type: 'builtin',

@@ -214,9 +214,8 @@ export const CronManifest: BuiltinToolManifest = {
   identifier: CronIdentifier,
   meta: {
     avatar: '⏰',
-    description:
-      'Manage scheduled tasks that run automatically at specified times. Create, update, enable/disable, and monitor recurring tasks for your agents.',
-    title: 'Scheduled Tasks',
+    description: 'Создание повторяющихся задач по расписанию',
+    title: 'Автоматизации',
   },
   systemRole: systemPrompt,
   type: 'builtin',

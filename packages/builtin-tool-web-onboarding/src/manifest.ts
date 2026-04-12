@@ -95,8 +95,8 @@ export const WebOnboardingManifest: BuiltinToolManifest = {
   identifier: WebOnboardingIdentifier,
   meta: {
     avatar: '🧭',
-    description: 'Drive the web onboarding flow with a controlled agent runtime',
-    title: 'Web Onboarding',
+    description: 'Процесс первоначальной настройки агента и профиля пользователя',
+    title: 'Первая настройка',
   },
   systemRole: toolSystemPrompt,
   type: 'builtin',

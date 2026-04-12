@@ -188,9 +188,8 @@ export const AgentDocumentsManifest: BuiltinToolManifest = {
   identifier: AgentDocumentsIdentifier,
   meta: {
     avatar: '🗂️',
-    description:
-      'Manage agent-scoped documents (list/create/read/edit/remove/rename/copy/upsert) and load rules',
-    title: 'Documents',
+    description: 'Управление документами агента: создание, редактирование, шаблоны',
+    title: 'Документы агента',
   },
   systemRole: systemPrompt,
   type: 'builtin',

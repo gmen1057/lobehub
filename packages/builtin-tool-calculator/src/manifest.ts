@@ -261,11 +261,9 @@ export const CalculatorManifest: BuiltinToolManifest = {
   identifier: CalculatorIdentifier,
   meta: {
     avatar: '🧮',
-    description:
-      'Perform mathematical calculations, solve equations, and work with symbolic expressions',
-    readme:
-      'Advanced mathematical calculator supporting basic arithmetic, algebraic equations, calculus operations, and symbolic math. Includes base conversion, equation solving, differentiation, integration, and more.',
-    title: 'Calculator',
+    description: 'Вычисление математических выражений',
+    readme: 'Вычисление математических выражений',
+    title: 'Калькулятор',
   },
   systemRole: systemPrompt,
   type: 'builtin',
