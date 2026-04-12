@@ -7,6 +7,7 @@ import isEqual from 'fast-deep-equal';
 import {
   BookTextIcon,
   BrainIcon,
+  LibraryBig,
   MessageSquareHeartIcon,
   MessagesSquareIcon,
   UserIcon,
@@ -64,6 +65,11 @@ const Content = memo(() => {
           icon: <Icon icon={BookTextIcon} />,
           key: ChatSettingsTabs.Documents,
           label: t('agentTab.documents'),
+        },
+        {
+          icon: <Icon icon={LibraryBig} />,
+          key: ChatSettingsTabs.Knowledge,
+          label: t('agentTab.knowledge'),
         },
         {
           icon: <Icon icon={MessagesSquareIcon} />,

@@ -179,6 +179,7 @@ export default {
   'agentSkillTag': 'Agent Skill',
   'agentTab.chat': 'Chat Preferences',
   'agentTab.documents': 'Documents',
+  'agentTab.knowledge': 'Knowledge Base',
   'agentTab.meta': 'Agent info',
   'agentTab.modal': 'Model Settings',
   'agentTab.opening': 'Opening Settings',
@@ -203,6 +204,9 @@ export default {
   'agentDocuments.overwriteConfirm.warning':
     'Existing documents with the same filename will be replaced.',
   'agentDocuments.title': 'Agent Documents',
+  'agentKnowledge.desc':
+    'Attach knowledge bases to this agent. The agent will search uploaded documents for answers.',
+  'agentKnowledge.title': 'Knowledge Base',
   'analytics.telemetry.desc': 'Help us improve {{appName}} with anonymous usage data',
   'analytics.telemetry.title': 'Send Anonymous Usage Data',
   'analytics.title': 'Analytics',
