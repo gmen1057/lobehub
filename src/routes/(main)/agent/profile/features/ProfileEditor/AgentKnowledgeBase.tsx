@@ -1,6 +1,7 @@
 'use client';
 
-import { Button, Flexbox, Icon, Tag, Typography } from '@lobehub/ui';
+import { Button, Flexbox, Icon, Text } from '@lobehub/ui';
+import { Tag } from 'antd';
 import { cssVar } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import { LibraryBig, PlusIcon, X } from 'lucide-react';
@@ -36,10 +37,10 @@ const AgentKnowledgeBase = memo(() => {
   return (
     <>
       <Flexbox gap={8}>
-        <Typography.Text style={{ fontSize: 12 }} type={'secondary'}>
+        <Text size={12} type={'secondary'}>
           <Icon icon={LibraryBig} size={14} style={{ marginRight: 4 }} />
           {t('agentKnowledge.title')}
-        </Typography.Text>
+        </Text>
         <Flexbox horizontal align="center" gap={8} wrap={'wrap'}>
           <Button
             icon={PlusIcon}

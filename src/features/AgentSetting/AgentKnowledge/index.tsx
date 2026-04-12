@@ -1,6 +1,7 @@
 'use client';
 
-import { Flexbox, Typography } from '@lobehub/ui';
+import { Flexbox, Text } from '@lobehub/ui';
+import { Typography } from 'antd';
 import { memo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,7 +16,7 @@ const AgentKnowledge = memo(() => {
         <Typography.Title level={4} style={{ marginBottom: 4, marginTop: 0 }}>
           {t('agentKnowledge.title')}
         </Typography.Title>
-        <Typography.Text type={'secondary'}>{t('agentKnowledge.desc')}</Typography.Text>
+        <Text type={'secondary'}>{t('agentKnowledge.desc')}</Text>
       </div>
       <div style={{ minHeight: 400 }}>
         <List />
