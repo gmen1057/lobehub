@@ -14,6 +14,7 @@ import AgentCronJobs from '../AgentCronJobs';
 import AgentSettings from '../AgentSettings';
 import EditorCanvas from '../EditorCanvas';
 import AgentHeader from './AgentHeader';
+import AgentKnowledgeBase from './AgentKnowledgeBase';
 import AgentTool from './AgentTool';
 
 const ProfileEditor = memo(() => {
@@ -50,6 +51,7 @@ const ProfileEditor = memo(() => {
           />
         </Flexbox>
         <AgentTool />
+        <AgentKnowledgeBase />
       </Flexbox>
       <Divider />
       {/* Main Content: Prompt Editor */}
