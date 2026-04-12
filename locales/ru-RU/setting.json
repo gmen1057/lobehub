@@ -144,6 +144,7 @@
   "agentInfoDescription.role.title": "Профиль агента",
   "agentInfoDescription.value.unset": "Не задано",
   "agentInfoDescription.value.untitled": "Агент без названия",
+  "agentKnowledge.addButton": "Добавить в знания",
   "agentKnowledge.desc": "Подключите базы знаний к этому агенту. Агент будет искать ответы в загруженных документах.",
   "agentKnowledge.title": "База знаний",
   "agentSkillDetail.addedAt": "Добавлено",

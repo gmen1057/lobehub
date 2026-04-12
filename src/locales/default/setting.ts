@@ -204,6 +204,7 @@ export default {
   'agentDocuments.overwriteConfirm.warning':
     'Existing documents with the same filename will be replaced.',
   'agentDocuments.title': 'Agent Documents',
+  'agentKnowledge.addButton': 'Add to knowledge',
   'agentKnowledge.desc':
     'Attach knowledge bases to this agent. The agent will search uploaded documents for answers.',
   'agentKnowledge.title': 'Knowledge Base',

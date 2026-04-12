@@ -14,8 +14,16 @@ import { agentSelectors } from '@/store/agent/selectors';
 
 const styles = createStaticStyles(({ css, cssVar }) => ({
   tag: css`
+    max-width: 100%;
     height: 28px !important;
     border-radius: ${cssVar.borderRadiusSM} !important;
+
+    .ant-tag-content,
+    .lobehub-tag-content {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
   `,
 }));
 
@@ -49,15 +57,21 @@ const AgentKnowledgeBase = memo(() => {
   // This keeps the profile clean when KB is not used
   return (
     <>
-      <Flexbox horizontal align="center" gap={8} style={{ marginTop: 8 }} wrap={'wrap'}>
+      <Flexbox
+        horizontal
+        align="center"
+        gap={8}
+        style={{ marginTop: 8, minWidth: 0 }}
+        wrap={'wrap'}
+      >
         <Button
           icon={LibraryBig}
           size={'small'}
-          style={{ color: cssVar.colorTextSecondary }}
+          style={{ color: cssVar.colorTextSecondary, flexShrink: 0 }}
           type={'text'}
           onClick={() => setModalOpen(true)}
         >
-          {t('agentKnowledge.title')}
+          {t('agentKnowledge.addButton')}
         </Button>
         {enabledKBs.map((kb) => (
           <Tag
