@@ -51,8 +51,8 @@ const ProfileEditor = memo(() => {
           />
         </Flexbox>
         <AgentTool />
-        <AgentKnowledgeBase />
       </Flexbox>
+      <AgentKnowledgeBase />
       <Divider />
       {/* Main Content: Prompt Editor */}
       <EditorCanvas />
