@@ -5,6 +5,7 @@ import { memo } from 'react';
 
 import Agent from './Agent';
 import BottomMenu from './BottomMenu';
+import Project from './Project';
 
 export enum GroupKey {
   Agent = 'agent',
@@ -16,6 +17,7 @@ const Body = memo(() => {
     <Flexbox flex={1} justify={'space-between'} paddingInline={4}>
       <Accordion defaultExpandedKeys={[GroupKey.Project, GroupKey.Agent]} gap={8}>
         <Agent itemKey={GroupKey.Agent} />
+        <Project itemKey={GroupKey.Project} />
       </Accordion>
       <BottomMenu />
     </Flexbox>
