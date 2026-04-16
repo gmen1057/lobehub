@@ -80,6 +80,8 @@ export function defineConfig(config: CustomNextConfig) {
       // so we need to disable it
       // refs: https://github.com/lobehub/lobe-chat/pull/7430
       serverMinification: false,
+      // Chat messages with images/files can exceed 10MB default
+      proxyClientMaxBodySize: 50 * 1024 * 1024, // 50MB
       webVitalsAttribution: ['CLS', 'LCP'],
       ...config.experimental,
     },

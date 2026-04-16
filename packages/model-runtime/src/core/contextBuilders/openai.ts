@@ -162,7 +162,8 @@ export const convertOpenAIResponseInputs = async (
         toolCalls.forEach((tool) => {
           items.push({
             arguments: strictToolPairing ? tool.function.arguments : tool.function.name,
-            call_id: tool.id,
+            // OpenAI Responses API enforces max 64 chars for call_id
+            call_id: tool.id?.slice(0, 64),
             name: tool.function.name,
             type: 'function_call',
           });
@@ -179,7 +180,8 @@ export const convertOpenAIResponseInputs = async (
           return items;
 
         items.push({
-          call_id: message.tool_call_id,
+          // OpenAI Responses API enforces max 64 chars for call_id
+          call_id: message.tool_call_id?.slice(0, 64),
           output: message.content,
           type: 'function_call_output',
         } as OpenAI.Responses.ResponseFunctionToolCallOutputItem);
