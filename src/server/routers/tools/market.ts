@@ -1,11 +1,8 @@
-import { type CodeInterpreterToolName } from '@lobehub/market-sdk';
 import { TRPCError } from '@trpc/server';
 import debug from 'debug';
 import { sha256 } from 'js-sha256';
 import { z } from 'zod';
 
-import { AgentSkillModel } from '@/database/models/agentSkill';
-import { FileModel } from '@/database/models/file';
 import { type ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
@@ -135,147 +132,89 @@ export interface ExportAndUploadFileResult {
   url?: string;
 }
 
-// ============================== Sandbox Handler ==============================
+// ============================== Sandbox Handler (E2B proxy) ==============================
+
+const E2B_GATEWAY_URL = process.env.E2B_GATEWAY_URL || 'http://127.0.0.1:8410/mcp/e2b-sandbox';
+
+/**
+ * Proxy sandbox calls to our self-hosted E2B gateway instead of LobeHub cloud.
+ * Handles execCode, execScript, runCommand by forwarding Python code to E2B.
+ */
 const execInSandboxHandler = async ({
   input,
-  ctx,
 }: {
   ctx: { fileService: FileService; marketService: MarketService; serverDB: any; userId: string };
   input: ExecInSandboxInput;
 }): Promise<CallToolResult> => {
-  const { toolName, params, topicId } = input;
-  const userId = input?.userId || ctx.userId;
+  const { toolName, params } = input;
 
-  log('execInSandbox: tool=%s, topicId=%s', toolName, topicId);
+  log('execInSandbox (E2B proxy): tool=%s', toolName);
 
   try {
-    let enhancedParams = params;
-
-    // Preprocess lh commands: rewrite to npx @lobehub/cli + inject auth env vars
-    if ((toolName === 'execScript' || toolName === 'runCommand') && params.command) {
-      const { preprocessLhCommand } =
-        await import('@/server/services/toolExecution/preprocessLhCommand');
-      const lhResult = await preprocessLhCommand(params.command, userId);
-
-      if (lhResult.error) {
-        return {
-          error: { message: lhResult.error, name: 'AuthError' },
-          result: null,
-          sessionExpiredAndRecreated: false,
-          success: false,
-        };
-      }
-
-      if (lhResult.skipSkillLookup) {
-        enhancedParams = { ...params, command: lhResult.command };
-      }
+    // Extract code from various tool param formats
+    let code = '';
+    if (toolName === 'execCode' || toolName === 'executeCode') {
+      code = params.code || params.script || '';
+    } else if (toolName === 'execScript') {
+      code = params.code || params.script || params.command || '';
+    } else if (toolName === 'runCommand') {
+      // Shell commands — wrap in subprocess
+      const cmd = params.command || '';
+      code = `import subprocess; r = subprocess.run(${JSON.stringify(cmd)}, shell=True, capture_output=True, text=True); print(r.stdout); print(r.stderr) if r.stderr else None`;
+    } else {
+      // For any other sandbox tool, try to extract code
+      code = params.code || params.script || params.command || JSON.stringify(params);
     }
 
-    // For execScript tool, look up skill zipUrls from activatedSkills
-    if (toolName === 'execScript' && enhancedParams.activatedSkills?.length) {
-      const agentSkillModel = new AgentSkillModel(ctx.serverDB, userId);
-      const fileModel = new FileModel(ctx.serverDB, userId);
-
-      // Resolve zipUrls for all activated skills
-      const skillZipUrls: Record<string, string> = {};
-
-      for (const activatedSkill of enhancedParams.activatedSkills) {
-        if (!activatedSkill.name) continue;
-
-        const skill = await agentSkillModel.findByName(activatedSkill.name);
-        if (!skill?.zipFileHash) continue;
-
-        const fileInfo = await fileModel.checkHash(skill.zipFileHash);
-        if (!fileInfo.isExist || !fileInfo.url) continue;
-
-        const fullUrl = await ctx.fileService.getFullFileUrl(fileInfo.url);
-        if (fullUrl) {
-          skillZipUrls[activatedSkill.name] = fullUrl;
-          log('Resolved zipUrl for skill %s: %s', activatedSkill.name, fullUrl);
-        }
-      }
-
-      // Add skillZipUrls to params if any were resolved
-      if (Object.keys(skillZipUrls).length > 0) {
-        enhancedParams = {
-          ...enhancedParams,
-          skillZipUrls,
-        };
-        log('Added skillZipUrls to execScript params: %O', Object.keys(skillZipUrls));
-      }
-    }
-
-    const market = ctx.marketService.market;
-
-    const response = await market.plugins.runBuildInTool(
-      toolName as CodeInterpreterToolName,
-      enhancedParams as any,
-      { topicId, userId },
-    );
-
-    log('execInSandbox response for %s: %O', toolName, response);
-
-    if (!response.success) {
-      const errorCode = response.error?.code;
-      const errorMessage = response.error?.message || 'Unknown error';
-
-      // Check for authentication errors and throw UNAUTHORIZED to trigger market auth flow
-      if (
-        errorCode === 'invalid_token' ||
-        errorCode === 'token_expired' ||
-        errorCode === 'unauthorized' ||
-        errorMessage.toLowerCase().includes('invalid_token') ||
-        errorMessage.toLowerCase().includes('token expired')
-      ) {
-        throw new TRPCError({
-          code: 'UNAUTHORIZED',
-          message:
-            'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
-        });
-      }
-
+    if (!code) {
       return {
-        error: {
-          message: errorMessage,
-          name: errorCode,
-        },
+        error: { message: 'No code provided', name: 'ValidationError' },
         result: null,
         sessionExpiredAndRecreated: false,
         success: false,
       };
     }
 
+    // Call our E2B MCP gateway
+    const response = await fetch(E2B_GATEWAY_URL, {
+      body: JSON.stringify({
+        id: Date.now(),
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: {
+          arguments: { code, install_packages: params.packages || params.install_packages },
+          name: 'execute_code',
+        },
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    const data = (await response.json()) as any;
+
+    if (data.error) {
+      return {
+        error: { message: data.error.message, name: 'E2BError' },
+        result: null,
+        sessionExpiredAndRecreated: false,
+        success: false,
+      };
+    }
+
+    const text = data.result?.content?.[0]?.text || '';
+
     return {
-      result: response.data?.result,
-      sessionExpiredAndRecreated: response.data?.sessionExpiredAndRecreated || false,
+      result: { output: text, success: true },
+      sessionExpiredAndRecreated: false,
       success: true,
     };
   } catch (error) {
-    log('execInSandbox error for %s: %O', toolName, error);
-
-    // Re-throw TRPCError as-is (e.g., UNAUTHORIZED from above)
-    if (error instanceof TRPCError) {
-      throw error;
-    }
-
-    const errorMessage = (error as Error).message;
-
-    // Check for authentication errors thrown as exceptions
-    if (
-      errorMessage.toLowerCase().includes('invalid_token') ||
-      errorMessage.toLowerCase().includes('token expired') ||
-      errorMessage.toLowerCase().includes('unauthorized')
-    ) {
-      throw new TRPCError({
-        code: 'UNAUTHORIZED',
-        message:
-          'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
-      });
-    }
+    log('execInSandbox E2B error: %O', error);
 
     return {
       error: {
-        message: errorMessage,
+        message: (error as Error).message,
         name: (error as Error).name,
       },
       result: null,
