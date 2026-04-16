@@ -146,9 +146,9 @@ const execInSandboxHandler = async ({
   ctx: { fileService: FileService; marketService: MarketService; serverDB: any; userId: string };
   input: ExecInSandboxInput;
 }): Promise<CallToolResult> => {
-  const { toolName, params } = input;
+  const { toolName, params, topicId } = input;
 
-  log('execInSandbox (E2B proxy): tool=%s', toolName);
+  log('execInSandbox (E2B proxy): tool=%s, topicId=%s', toolName, topicId);
 
   try {
     // Extract code from various tool param formats
@@ -158,11 +158,9 @@ const execInSandboxHandler = async ({
     } else if (toolName === 'execScript') {
       code = params.code || params.script || params.command || '';
     } else if (toolName === 'runCommand') {
-      // Shell commands — wrap in subprocess
       const cmd = params.command || '';
       code = `import subprocess; r = subprocess.run(${JSON.stringify(cmd)}, shell=True, capture_output=True, text=True); print(r.stdout); print(r.stderr) if r.stderr else None`;
     } else {
-      // For any other sandbox tool, try to extract code
       code = params.code || params.script || params.command || JSON.stringify(params);
     }
 
@@ -175,14 +173,18 @@ const execInSandboxHandler = async ({
       };
     }
 
-    // Call our E2B MCP gateway
+    // Use topicId as session_id so sandbox persists for file export
     const response = await fetch(E2B_GATEWAY_URL, {
       body: JSON.stringify({
         id: Date.now(),
         jsonrpc: '2.0',
         method: 'tools/call',
         params: {
-          arguments: { code, install_packages: params.packages || params.install_packages },
+          arguments: {
+            code,
+            install_packages: params.packages || params.install_packages,
+            session_id: topicId,
+          },
           name: 'execute_code',
         },
       }),
@@ -580,12 +582,17 @@ export const marketRouter = router({
   exportAndUploadFile: marketToolProcedure
     .input(exportAndUploadFileSchema)
     .mutation(async ({ input, ctx }) => {
-      const { path, filename } = input;
+      const { path, filename, topicId } = input;
 
-      log('exportAndUploadFile (E2B proxy): file=%s from path=%s', filename, path);
+      log(
+        'exportAndUploadFile (E2B proxy): file=%s from path=%s, topicId=%s',
+        filename,
+        path,
+        topicId,
+      );
 
       try {
-        // Step 1: Read file from E2B sandbox via our gateway
+        // Step 1: Read file from the SAME sandbox session (topicId) via read_file tool
         const e2bResponse = await fetch(E2B_GATEWAY_URL, {
           body: JSON.stringify({
             id: Date.now(),
@@ -593,10 +600,10 @@ export const marketRouter = router({
             method: 'tools/call',
             params: {
               arguments: {
-                code: `import base64\nwith open("${path}", "rb") as f:\n    data = f.read()\nprint(base64.b64encode(data).decode())`,
-                output_file: path,
+                path,
+                session_id: topicId,
               },
-              name: 'execute_and_get_file',
+              name: 'read_file',
             },
           }),
           headers: { 'Content-Type': 'application/json' },
