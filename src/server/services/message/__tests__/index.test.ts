@@ -1,4 +1,5 @@
-import { type LobeChatDatabase } from '@lobechat/database';
+import type { LobeChatDatabase } from '@lobechat/database';
+import type { TRPCError } from '@trpc/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageModel } from '@/database/models/message';
@@ -19,9 +20,11 @@ describe('MessageService', () => {
   beforeEach(() => {
     mockDB = {} as LobeChatDatabase;
     mockMessageModel = {
+      addFiles: vi.fn(),
       create: vi.fn(),
       deleteMessage: vi.fn(),
       deleteMessages: vi.fn(),
+      findById: vi.fn(),
       query: vi.fn(),
       update: vi.fn(),
       updateMessagePlugin: vi.fn(),
@@ -32,6 +35,7 @@ describe('MessageService', () => {
 
     mockFileService = {
       getFullFileUrl: vi.fn().mockImplementation((path) => Promise.resolve(`/files${path}`)),
+      uploadFromBuffer: vi.fn(),
     } as any;
 
     // Mock constructors
@@ -372,6 +376,69 @@ describe('MessageService', () => {
       );
       expect(result.id).toBe('msg-1');
       expect(result.messages).toEqual(mockMessages);
+    });
+  });
+
+  describe('createSpreadsheetFile', () => {
+    it('should build, upload and attach an xlsx file to the message', async () => {
+      const mockMessages = [{ id: 'msg-1', fileList: [{ id: 'file-1' }] }];
+
+      vi.mocked(mockMessageModel.findById).mockResolvedValue({
+        content: '```csv\nName,Score\nLeo,42\n```',
+        id: 'msg-1',
+      } as any);
+      vi.mocked(mockFileService.uploadFromBuffer).mockResolvedValue({
+        fileId: 'file-1',
+        key: 'files/test-user-id/abc/Table export.xlsx',
+        url: '/f/file-1',
+      });
+      vi.mocked(mockMessageModel.addFiles).mockResolvedValue({ success: true } as any);
+      vi.mocked(mockMessageModel.query).mockResolvedValue(mockMessages as any);
+
+      const result = await messageService.createSpreadsheetFile('msg-1', {
+        agentId: 'agent-1',
+        filename: 'Table export',
+        topicId: 'topic-1',
+      });
+
+      expect(mockMessageModel.findById).toHaveBeenCalledWith('msg-1');
+      expect(mockFileService.uploadFromBuffer).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        expect.stringMatching(/^files\/test-user-id\/.+\/Table export\.xlsx$/),
+      );
+      expect(mockMessageModel.addFiles).toHaveBeenCalledWith('msg-1', ['file-1']);
+      expect(mockMessageModel.query).toHaveBeenCalledWith(
+        {
+          agentId: 'agent-1',
+          groupId: undefined,
+          sessionId: undefined,
+          threadId: undefined,
+          topicId: 'topic-1',
+        },
+        expect.objectContaining({
+          groupAssistantMessages: false,
+        }),
+      );
+      expect(result).toEqual({
+        fileId: 'file-1',
+        messages: mockMessages,
+        success: true,
+        url: '/f/file-1',
+      });
+    });
+
+    it('should reject messages without spreadsheet content', async () => {
+      vi.mocked(mockMessageModel.findById).mockResolvedValue({
+        content: 'Просто текст без таблицы',
+        id: 'msg-1',
+      } as any);
+
+      await expect(messageService.createSpreadsheetFile('msg-1')).rejects.toMatchObject<TRPCError>({
+        code: 'BAD_REQUEST',
+      });
+      expect(mockFileService.uploadFromBuffer).not.toHaveBeenCalled();
+      expect(mockMessageModel.addFiles).not.toHaveBeenCalled();
     });
   });
 

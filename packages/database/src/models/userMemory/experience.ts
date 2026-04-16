@@ -80,7 +80,7 @@ export class UserMemoryExperienceModel {
     const conditions: Array<SQL | undefined> = [
       eq(userMemoriesExperiences.userId, this.userId),
       // Full-text search across title, situation, keyLearning, action
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemoriesExperiences.situation} @@@ ${bm25Query} OR ${userMemoriesExperiences.keyLearning} @@@ ${bm25Query} OR ${userMemoriesExperiences.action} @@@ ${bm25Query})`
         : undefined,
       types && types.length > 0 ? inArray(userMemoriesExperiences.type, types) : undefined,

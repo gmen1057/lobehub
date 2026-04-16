@@ -39,7 +39,6 @@ export const defaultToolIds = [
   KnowledgeBaseManifest.identifier,
   MemoryManifest.identifier,
   LocalSystemManifest.identifier,
-  CloudSandboxManifest.identifier,
   TopicReferenceManifest.identifier,
   AgentDocumentsManifest.identifier,
   GTDManifest.identifier,

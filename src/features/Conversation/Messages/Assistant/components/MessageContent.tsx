@@ -1,7 +1,7 @@
 import { LOADING_FLAT } from '@lobechat/const';
 import { type UIChatMessage } from '@lobechat/types';
 import { Flexbox } from '@lobehub/ui';
-import { memo, useCallback } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 
 import { useUserStore } from '@/store/user';
 import { userProfileSelectors } from '@/store/user/selectors';
@@ -14,10 +14,11 @@ import FileChunks from '../../components/FileChunks';
 import ImageFileListViewer from '../../components/ImageFileListViewer';
 import Reasoning from '../../components/Reasoning';
 import SearchGrounding from '../../components/SearchGrounding';
+import FileListViewer from '../../User/components/FileListViewer';
 import { useMarkdown } from '../useMarkdown';
 
 const MessageContent = memo<UIChatMessage>(
-  ({ id, tools, content, chunksList, search, imageList, metadata, ...props }) => {
+  ({ id, tools, content, chunksList, search, imageList, fileList, metadata, ...props }) => {
     const markdownProps = useMarkdown(id);
     // Use ConversationStore instead of ChatStore
     const generating = useConversationStore(messageStateSelectors.isMessageGenerating(id));
@@ -31,6 +32,7 @@ const MessageContent = memo<UIChatMessage>(
 
     const showSearch = !!search && (!!search.citations?.length || !!search.imageResults?.length);
     const showImageItems = !!imageList && imageList.length > 0;
+    const showFileItems = !!fileList && fileList.length > 0;
 
     // remove \n to avoid empty content
     // refs: https://github.com/lobehub/lobe-chat/pull/6153
@@ -40,7 +42,7 @@ const MessageContent = memo<UIChatMessage>(
 
     const showFileChunks = !!chunksList && chunksList.length > 0;
 
-    const reactions = metadata?.reactions || [];
+    const reactions = useMemo(() => metadata?.reactions || [], [metadata?.reactions]);
 
     const handleReactionClick = useCallback(
       (emoji: string) => {
@@ -51,7 +53,7 @@ const MessageContent = memo<UIChatMessage>(
           addReaction(id, emoji);
         }
       },
-      [id, reactions, addReaction, removeReaction],
+      [id, reactions, addReaction, removeReaction, userId],
     );
 
     const isActive = useCallback(
@@ -59,7 +61,7 @@ const MessageContent = memo<UIChatMessage>(
         const reaction = reactions.find((r) => r.emoji === emoji);
         return !!reaction && reaction.users.includes(userId);
       },
-      [reactions],
+      [reactions, userId],
     );
 
     if (isCollapsed) return <CollapsedMessage content={content} id={id} />;
@@ -87,6 +89,7 @@ const MessageContent = memo<UIChatMessage>(
           tempDisplayContent={metadata?.tempDisplayContent}
         />
         {showImageItems && <ImageFileListViewer items={imageList} />}
+        {showFileItems && <FileListViewer items={fileList} />}
         {reactions.length > 0 && (
           <ReactionDisplay
             isActive={isActive}

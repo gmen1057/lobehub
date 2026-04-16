@@ -31,6 +31,11 @@ export interface MessageQueryContext {
   topicShareId?: string;
 }
 
+export interface CreateSpreadsheetFileResult extends UpdateMessageResult {
+  fileId: string;
+  url: string;
+}
+
 export class MessageService {
   createMessage = async (params: CreateMessageParams): Promise<CreateMessageResult> => {
     return lambdaClient.message.createMessage.mutate(params as any);
@@ -214,6 +219,13 @@ export class MessageService {
     ctx?: MessageQueryContext,
   ): Promise<UpdateMessageResult> => {
     return lambdaClient.message.addFilesToMessage.mutate({ ...ctx, fileIds, id });
+  };
+
+  createSpreadsheetFile = async (
+    id: string,
+    params?: MessageQueryContext & { filename?: string },
+  ): Promise<CreateSpreadsheetFileResult> => {
+    return lambdaClient.message.createSpreadsheetFile.mutate({ ...params, id });
   };
 
   // =============== Compression ===============

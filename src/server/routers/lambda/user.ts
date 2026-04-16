@@ -191,9 +191,16 @@ export const userRouter = router({
     return ctx.userModel.updateGuide(input);
   }),
 
-  updateInterests: userProcedure.input(z.array(z.string())).mutation(async ({ ctx, input }) => {
-    return ctx.userModel.updateUser({ interests: input });
-  }),
+  updateInterests: userProcedure
+    .input(
+      z
+        .array(z.string().trim().min(1).max(500))
+        .max(100)
+        .transform((arr) => arr.map((s) => s.slice(0, 500))),
+    )
+    .mutation(async ({ ctx, input }) => {
+      return ctx.userModel.updateUser({ interests: input });
+    }),
 
   getOrCreateOnboardingState: userProcedure.query(async ({ ctx }) => {
     const onboardingService = new OnboardingService(ctx.serverDB, ctx.userId);

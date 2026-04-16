@@ -81,7 +81,7 @@ export class UserMemoryIdentityModel {
     const conditions: Array<SQL | undefined> = [
       eq(userMemoriesIdentities.userId, this.userId),
       // Full-text search across title, description, role
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemoriesIdentities.description} @@@ ${bm25Query} OR ${userMemoriesIdentities.role} @@@ ${bm25Query})`
         : undefined,
       types && types.length > 0 ? inArray(userMemoriesIdentities.type, types) : undefined,

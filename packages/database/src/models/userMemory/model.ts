@@ -967,7 +967,7 @@ export class UserMemoryModel {
 
         const contextFilters: Array<SQL | undefined> = [
           whereClause,
-          normalizedQuery
+          bm25Query
             ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesContexts.title} @@@ ${bm25Query} OR ${userMemoriesContexts.description} @@@ ${bm25Query} OR ${userMemoriesContexts.currentStatus} @@@ ${bm25Query})`
             : undefined,
           types && types.length > 0 ? inArray(userMemoriesContexts.type, types) : undefined,
@@ -1056,7 +1056,7 @@ export class UserMemoryModel {
 
         const activityFilters: Array<SQL | undefined> = [
           whereClause,
-          normalizedQuery
+          bm25Query
             ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesActivities.narrative} @@@ ${bm25Query} OR ${userMemoriesActivities.notes} @@@ ${bm25Query} OR ${userMemoriesActivities.feedback} @@@ ${bm25Query})`
             : undefined,
           types && types.length > 0 ? inArray(userMemoriesActivities.type, types) : undefined,
@@ -1153,7 +1153,7 @@ export class UserMemoryModel {
 
         const experienceFilters: Array<SQL | undefined> = [
           whereClause,
-          normalizedQuery
+          bm25Query
             ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesExperiences.situation} @@@ ${bm25Query} OR ${userMemoriesExperiences.keyLearning} @@@ ${bm25Query} OR ${userMemoriesExperiences.action} @@@ ${bm25Query})`
             : undefined,
           types && types.length > 0 ? inArray(userMemoriesExperiences.type, types) : undefined,
@@ -1230,7 +1230,7 @@ export class UserMemoryModel {
 
         const identityFilters: Array<SQL | undefined> = [
           whereClause,
-          normalizedQuery
+          bm25Query
             ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesIdentities.description} @@@ ${bm25Query} OR ${userMemoriesIdentities.role} @@@ ${bm25Query})`
             : undefined,
           types && types.length > 0 ? inArray(userMemoriesIdentities.type, types) : undefined,
@@ -1314,7 +1314,7 @@ export class UserMemoryModel {
 
         const preferenceFilters: Array<SQL | undefined> = [
           whereClause,
-          normalizedQuery
+          bm25Query
             ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesPreferences.conclusionDirectives} @@@ ${bm25Query} OR ${userMemoriesPreferences.suggestions} @@@ ${bm25Query})`
             : undefined,
           types && types.length > 0 ? inArray(userMemoriesPreferences.type, types) : undefined,

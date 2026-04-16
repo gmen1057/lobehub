@@ -59,6 +59,8 @@ interface ContextEngineeringContext {
   agentDocuments?: AgentContextDocument[];
   /** The agent ID that will respond (for group context injection) */
   agentId?: string;
+  /** Agent's enabled plugin/tool/skill identifiers (from agentConfig.plugins) */
+  availableToolsForDiscovery?: ToolDiscoveryConfig['availableTools'];
   enableHistoryCount?: boolean;
   enableUserMemories?: boolean;
   /** Group ID for multi-agent scenarios */
@@ -111,6 +113,7 @@ export const contextEngineering = async ({
   groupId,
   initialContext,
   plugins,
+  availableToolsForDiscovery,
   stepContext,
   topicId,
   memoryContext,
@@ -389,10 +392,11 @@ export const contextEngineering = async ({
 
   let toolDiscoveryConfig: ToolDiscoveryConfig | undefined;
   if (isLobeToolsEnabled) {
-    const toolState = getToolStoreState();
-    const availableTools = toolSelectors
-      .availableToolsForDiscovery(toolState)
-      .filter((tool) => !enabledToolSet.has(tool.identifier));
+    const availableTools =
+      availableToolsForDiscovery?.filter((tool) => !enabledToolSet.has(tool.identifier)) ??
+      toolSelectors
+        .availableToolsForDiscovery(getToolStoreState())
+        .filter((tool) => !enabledToolSet.has(tool.identifier));
 
     if (availableTools.length > 0) {
       toolDiscoveryConfig = { availableTools };

@@ -48,6 +48,22 @@ export const messageRouter = router({
       return ctx.messageService.addFilesToMessage(id, fileIds, resolved);
     }),
 
+  createSpreadsheetFile: messageProcedure
+    .input(
+      z
+        .object({
+          filename: z.string().optional(),
+          id: z.string(),
+        })
+        .extend(basicContextSchema.shape),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { id, filename, agentId, ...options } = input;
+      const resolved = await resolveContext({ agentId, ...options }, ctx.serverDB, ctx.userId);
+
+      return ctx.messageService.createSpreadsheetFile(id, { ...resolved, filename });
+    }),
+
   /**
    * Cancel compression by deleting the compression group and restoring original messages
    */

@@ -1,0 +1,21 @@
+import * as Sentry from '@sentry/nextjs';
+
+const dsn = process.env.NEXT_PUBLIC_SENTRY_DSN;
+
+if (dsn) {
+  Sentry.init({
+    dsn,
+    tracesSampleRate: 0.1,
+    replaysSessionSampleRate: 0,
+    replaysOnErrorSampleRate: 0.1,
+    environment: process.env.NODE_ENV || 'production',
+
+    beforeSend(event) {
+      // Skip noise from SSE reconnects
+      if (event.exception?.values?.some((e) => e.value?.includes('balance-stream'))) {
+        return null;
+      }
+      return event;
+    },
+  });
+}

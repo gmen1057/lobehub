@@ -7,6 +7,8 @@ import { type HumanInterventionRequest } from '@/services/agentRuntime/type';
 import { contextEngineering } from '@/services/chat/mecha';
 import { getAgentStoreState } from '@/store/agent';
 import { agentChatConfigSelectors, agentSelectors } from '@/store/agent/selectors';
+import { getToolStoreState } from '@/store/tool';
+import { toolSelectors } from '@/store/tool/selectors';
 
 export { agentRuntimeClient } from './client';
 export * from './type';
@@ -47,20 +49,37 @@ class AgentRuntimeService {
       provider: agentConfig.provider!,
     });
 
-    const { tools, enabledToolIds } = toolsEngine.generateToolsDetailed({
+    const { tools, enabledManifests, enabledToolIds } = toolsEngine.generateToolsDetailed({
       model: agentConfig.model,
       provider: agentConfig.provider!,
       toolIds: agentConfig.plugins,
     });
 
+    const discoverableTools = toolSelectors.availableToolsForDiscovery(getToolStoreState());
+    const discoverableToolIds = discoverableTools.map((tool) => tool.identifier);
+    const allowedDiscoverableToolIds = new Set(
+      toolsEngine.generateToolsDetailed({
+        model: agentConfig.model,
+        provider: agentConfig.provider!,
+        toolIds: discoverableToolIds,
+      }).enabledToolIds,
+    );
+    const availableToolsForDiscovery = discoverableTools.filter(
+      (tool) =>
+        allowedDiscoverableToolIds.has(tool.identifier) &&
+        !enabledToolIds.includes(tool.identifier),
+    );
+
     // Apply context engineering with preprocessing configuration
     const llmMessages = await contextEngineering({
       agentDocuments,
       agentId: agentStoreState.activeAgentId,
+      availableToolsForDiscovery,
       enableHistoryCount: agentChatConfigSelectors.enableHistoryCount(agentStoreState),
       // historyCount is number of history messages; add 1 for current user message
       historyCount: agentChatConfigSelectors.historyCount(agentStoreState) + 1,
       inputTemplate: chatConfig.inputTemplate,
+      manifests: enabledManifests,
       messages: data.messages as any,
       ...modelRuntimeConfig,
       plugins: agentConfig.plugins,
@@ -69,7 +88,7 @@ class AgentRuntimeService {
     });
 
     const toolManifestMap = Object.fromEntries(
-      toolsEngine.getEnabledPluginManifests(enabledToolIds).entries(),
+      enabledManifests.map((manifest) => [manifest.identifier, manifest]),
     );
 
     return await lambdaClient.aiAgent.createOperation.mutate({

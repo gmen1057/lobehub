@@ -33,6 +33,8 @@ import DesktopLayoutContainer from './DesktopLayoutContainer';
 import RegisterHotkeys from './RegisterHotkeys';
 import { styles } from './style';
 
+const PWAInstall = dynamic(() => import('@/features/PWAInstall'), { ssr: false });
+
 const FeedbackModal = lazy(() => import('@/components/FeedbackModal'));
 
 const CloudBanner = dynamic(() => import('@/features/AlertBanner/CloudBanner'));
@@ -84,6 +86,7 @@ const Layout: FC = () => {
         </Flexbox>
       </DndContextWrapper>
       <Suspense fallback={null}>
+        <PWAInstall />
         <HotkeyHelperPanel />
         <RegisterHotkeys />
         <CmdkLazy />

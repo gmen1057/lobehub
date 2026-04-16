@@ -2078,7 +2078,7 @@ export class UserMemoryQueryModel {
         },
         params.timeRange,
       ),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesActivities.narrative} @@@ ${bm25Query} OR ${userMemoriesActivities.notes} @@@ ${bm25Query} OR ${userMemoriesActivities.feedback} @@@ ${bm25Query})`
         : undefined,
       this.buildExactTagFilterCondition(userMemoriesActivities.tags, userMemories.tags, params),
@@ -2138,7 +2138,7 @@ export class UserMemoryQueryModel {
         },
         params.timeRange,
       ),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesContexts.title} @@@ ${bm25Query} OR ${userMemoriesContexts.description} @@@ ${bm25Query} OR ${userMemoriesContexts.currentStatus} @@@ ${bm25Query})`
         : undefined,
       this.buildExactTagFilterCondition(userMemoriesContexts.tags, userMemories.tags, params),
@@ -2237,7 +2237,7 @@ export class UserMemoryQueryModel {
         },
         params.timeRange,
       ),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesExperiences.situation} @@@ ${bm25Query} OR ${userMemoriesExperiences.keyLearning} @@@ ${bm25Query} OR ${userMemoriesExperiences.action} @@@ ${bm25Query} OR ${userMemoriesExperiences.reasoning} @@@ ${bm25Query} OR ${userMemoriesExperiences.possibleOutcome} @@@ ${bm25Query})`
         : undefined,
       this.buildExactTagFilterCondition(userMemoriesExperiences.tags, userMemories.tags, params),
@@ -2293,7 +2293,7 @@ export class UserMemoryQueryModel {
         },
         params.timeRange,
       ),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesPreferences.conclusionDirectives} @@@ ${bm25Query} OR ${userMemoriesPreferences.suggestions} @@@ ${bm25Query})`
         : undefined,
       this.buildExactTagFilterCondition(userMemoriesPreferences.tags, userMemories.tags, params),
@@ -2350,7 +2350,7 @@ export class UserMemoryQueryModel {
         },
         params.timeRange,
       ),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemories.summary} @@@ ${bm25Query} OR ${userMemories.details} @@@ ${bm25Query} OR ${userMemoriesIdentities.description} @@@ ${bm25Query} OR ${userMemoriesIdentities.role} @@@ ${bm25Query})`
         : undefined,
       this.buildExactTagFilterCondition(userMemoriesIdentities.tags, userMemories.tags, params),

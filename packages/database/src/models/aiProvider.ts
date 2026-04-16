@@ -221,6 +221,11 @@ export class AiProviderModel {
     if (!result) {
       // if the provider is builtin but not init, we will insert it to the db
       if (this.isBuiltInProvider(id)) {
+        // Defensive guard: never attempt to insert with an empty userId —
+        // it always triggers the ai_providers_user_id_users_id_fk violation
+        // and masks the real auth bug upstream.
+        if (!this.userId) return;
+
         await this.db
           .insert(aiProviders)
           .values({ id, source: 'builtin', userId: this.userId })

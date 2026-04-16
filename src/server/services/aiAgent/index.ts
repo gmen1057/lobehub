@@ -598,9 +598,9 @@ export class AiAgentService {
 
       log('execAgent: enabled tool ids: %O', toolsResult.enabledToolIds);
 
-      const manifestMap = toolsEngine.getEnabledPluginManifests(pluginIds);
-      manifestMap.forEach((manifest, id) => {
-        toolManifestMap[id] = manifest;
+      const enabledManifests = toolsResult.enabledManifests ?? [];
+      enabledManifests.forEach((manifest) => {
+        toolManifestMap[manifest.identifier] = manifest;
       });
 
       for (const manifest of lobehubSkillManifests) {

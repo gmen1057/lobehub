@@ -6,7 +6,7 @@ import type {
   UserOnboarding,
 } from '@lobechat/types';
 import { sql } from 'drizzle-orm';
-import { boolean, index, jsonb, pgTable, primaryKey, text, varchar } from 'drizzle-orm/pg-core';
+import { boolean, index, jsonb, pgTable, primaryKey, text } from 'drizzle-orm/pg-core';
 
 import { timestamps, timestamptz, varchar255 } from './_helpers';
 
@@ -23,7 +23,7 @@ export const users = pgTable(
     firstName: text('first_name'),
     lastName: text('last_name'),
     fullName: text('full_name'),
-    interests: varchar('interests', { length: 64 }).array(),
+    interests: text('interests').array(),
 
     isOnboarded: boolean('is_onboarded').default(false),
     agentOnboarding: jsonb('agent_onboarding').$type<UserAgentOnboarding>(),

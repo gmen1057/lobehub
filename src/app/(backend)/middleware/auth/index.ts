@@ -110,7 +110,25 @@ export const checkAuth =
       return createErrorResponse(errorType, { error, ...res, provider: params?.provider });
     }
 
-    const userId = jwtPayload.userId || '';
+    // Fallback to BetterAuth session userId when JWT payload only carries an
+    // API key (happens when the frontend forwards a key-auth header without
+    // a userId). Without this fallback, downstream models try to insert rows
+    // with user_id='' and hit FK violations.
+    let userId = jwtPayload.userId || '';
+    if (!userId) {
+      try {
+        const session = await auth.api.getSession({ headers: req.headers });
+        userId = session?.user?.id || '';
+      } catch {
+        /* empty */
+      }
+    }
+    if (!userId) {
+      return createErrorResponse(ChatErrorType.Unauthorized, {
+        error: 'Missing userId — session required',
+        provider: (await options.params)?.provider,
+      });
+    }
 
     const extractedContext = extractTraceContext(req.headers);
 

@@ -73,7 +73,7 @@ export class UserMemoryActivityModel {
 
     const conditions: Array<SQL | undefined> = [
       eq(userMemoriesActivities.userId, this.userId),
-      normalizedQuery
+      bm25Query
         ? sql`(${userMemories.title} @@@ ${bm25Query} OR ${userMemoriesActivities.narrative} @@@ ${bm25Query} OR ${userMemoriesActivities.notes} @@@ ${bm25Query} OR ${userMemoriesActivities.feedback} @@@ ${bm25Query})`
         : undefined,
       types && types.length > 0 ? inArray(userMemoriesActivities.type, types) : undefined,

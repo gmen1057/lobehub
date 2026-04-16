@@ -635,6 +635,7 @@ export class SessionModel {
 
     try {
       const bm25Query = sanitizeBm25Query(keyword);
+      if (!bm25Query) return [];
 
       const results = await this.db.query.agents.findMany({
         limit: pageSize,

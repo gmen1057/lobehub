@@ -27,7 +27,10 @@ export async function GET(req: NextRequest) {
   // Read arckep_token from cookie
   const arckepToken = req.cookies.get('arckep_token')?.value;
   if (!arckepToken) {
-    return Response.redirect('https://arckep.ru/?login=1', 302);
+    return Response.redirect(
+      'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+      302,
+    );
   }
 
   // Validate JWT via our backend
@@ -37,15 +40,24 @@ export async function GET(req: NextRequest) {
       headers: { Cookie: `arckep_token=${arckepToken}` },
     });
     if (!validateRes.ok) {
-      return Response.redirect('https://arckep.ru/?login=1', 302);
+      return Response.redirect(
+        'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+        302,
+      );
     }
     userId = validateRes.headers.get('X-User-Id') || '';
     if (!userId) {
-      return Response.redirect('https://arckep.ru/?login=1', 302);
+      return Response.redirect(
+        'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+        302,
+      );
     }
   } catch {
     console.error('Bridge: failed to validate arckep token');
-    return Response.redirect('https://arckep.ru/?login=1', 302);
+    return Response.redirect(
+      'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+      302,
+    );
   }
 
   const email = `user${userId}@arckep.ru`;

@@ -1,3 +1,4 @@
+import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -94,7 +95,11 @@ vi.mock('@/server/services/file', () => ({
 
 vi.mock('@/server/modules/Mecha', () => {
   // Return the hoisted mocks so each test can configure them
-  mockGenerateToolsDetailed.mockReturnValue({ enabledToolIds: [], tools: [] });
+  mockGenerateToolsDetailed.mockReturnValue({
+    enabledManifests: [],
+    enabledToolIds: [],
+    tools: [],
+  });
   mockGetEnabledPluginManifests.mockReturnValue(new Map());
 
   mockCreateServerAgentToolsEngine.mockReturnValue({
@@ -159,7 +164,11 @@ describe('AiAgentService.execAgent - device tool pipeline (LOBE-5636)', () => {
       success: true,
     });
     mockQueryDeviceList.mockResolvedValue([]);
-    mockGenerateToolsDetailed.mockReturnValue({ enabledToolIds: [], tools: [] });
+    mockGenerateToolsDetailed.mockReturnValue({
+      enabledManifests: [],
+      enabledToolIds: [],
+      tools: [],
+    });
     mockGetEnabledPluginManifests.mockReturnValue(new Map());
     service = new AiAgentService(mockDb, userId);
   });
@@ -176,14 +185,12 @@ describe('AiAgentService.execAgent - device tool pipeline (LOBE-5636)', () => {
       expect(toolIds).toContain(RemoteDeviceManifest.identifier);
     });
 
-    it('should pass RemoteDevice identifier in pluginIds to getEnabledPluginManifests', async () => {
+    it('should not build manifestMap from raw plugin manifest lookup', async () => {
       mockGetAgentConfig.mockResolvedValue(createBaseAgentConfig());
 
       await service.execAgent({ agentId: 'agent-1', prompt: 'Hello' });
 
-      expect(mockGetEnabledPluginManifests).toHaveBeenCalledTimes(1);
-      const pluginIds = mockGetEnabledPluginManifests.mock.calls[0][0];
-      expect(pluginIds).toContain(RemoteDeviceManifest.identifier);
+      expect(mockGetEnabledPluginManifests).not.toHaveBeenCalled();
     });
   });
 
@@ -236,8 +243,13 @@ describe('AiAgentService.execAgent - device tool pipeline (LOBE-5636)', () => {
         ...RemoteDeviceManifest,
         systemRole: 'original static systemRole',
       };
+      mockGenerateToolsDetailed.mockReturnValue({
+        enabledManifests: [remoteDeviceManifestFromEngine],
+        enabledToolIds: [RemoteDeviceManifest.identifier],
+        tools: [],
+      });
       mockGetEnabledPluginManifests.mockReturnValue(
-        new Map([[RemoteDeviceManifest.identifier, remoteDeviceManifestFromEngine]]),
+        new Map([[CloudSandboxManifest.identifier, CloudSandboxManifest]]),
       );
 
       mockGetAgentConfig.mockResolvedValue(createBaseAgentConfig());
@@ -278,12 +290,17 @@ describe('AiAgentService.execAgent - device tool pipeline (LOBE-5636)', () => {
   });
 
   describe('toolManifestMap fully derived from ToolsEngine', () => {
-    it('should derive manifestMap entirely from getEnabledPluginManifests', async () => {
+    it('should derive manifestMap entirely from enabledManifests', async () => {
       const mockManifest = {
         api: [{ description: 'test', name: 'action', parameters: {} }],
         identifier: 'test-tool',
         meta: { title: 'Test' },
       };
+      mockGenerateToolsDetailed.mockReturnValue({
+        enabledManifests: [mockManifest],
+        enabledToolIds: ['test-tool'],
+        tools: [],
+      });
       mockGetEnabledPluginManifests.mockReturnValue(new Map([['test-tool', mockManifest]]));
 
       mockGetAgentConfig.mockResolvedValue(createBaseAgentConfig({ plugins: ['test-tool'] }));
@@ -296,6 +313,30 @@ describe('AiAgentService.execAgent - device tool pipeline (LOBE-5636)', () => {
       expect(manifestMap['test-tool']).toBe(mockManifest);
       // No extra manifests added manually
       expect(Object.keys(manifestMap)).toEqual(['test-tool']);
+      expect(mockGetEnabledPluginManifests).not.toHaveBeenCalled();
+    });
+
+    it('should not leak disabled manifests into discovery via raw lookup state', async () => {
+      mockGenerateToolsDetailed.mockReturnValue({
+        enabledManifests: [],
+        enabledToolIds: [],
+        tools: [],
+      });
+      mockGetEnabledPluginManifests.mockReturnValue(
+        new Map([[CloudSandboxManifest.identifier, CloudSandboxManifest]]),
+      );
+
+      mockGetAgentConfig.mockResolvedValue(
+        createBaseAgentConfig({ plugins: [CloudSandboxManifest.identifier] }),
+      );
+
+      await service.execAgent({ agentId: 'agent-1', prompt: 'Hello' });
+
+      const callArgs = mockCreateOperation.mock.calls[0][0];
+      const manifestMap = callArgs.toolSet.manifestMap;
+
+      expect(manifestMap[CloudSandboxManifest.identifier]).toBeUndefined();
+      expect(mockGetEnabledPluginManifests).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
@@ -269,6 +270,26 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).toContain('test-plugin');
     expect(result.enabledToolIds).toContain(WebBrowsingManifest.identifier);
     expect(result.enabledToolIds).toContain(KnowledgeBaseManifest.identifier);
+  });
+
+  it('should not include CloudSandbox as a default tool on web chat', () => {
+    const context = createMockContext();
+    const engine = createServerAgentToolsEngine(context, {
+      agentConfig: {
+        plugins: ['test-plugin'],
+        chatConfig: { searchMode: 'on' },
+      },
+      model: 'gpt-4',
+      provider: 'openai',
+    });
+
+    const result = engine.generateToolsDetailed({
+      toolIds: ['test-plugin'],
+      model: 'gpt-4',
+      provider: 'openai',
+    });
+
+    expect(result.enabledToolIds).not.toContain(CloudSandboxManifest.identifier);
   });
 
   it('should return undefined tools when model does not support function calling', () => {

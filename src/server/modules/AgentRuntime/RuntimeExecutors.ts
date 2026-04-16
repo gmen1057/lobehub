@@ -43,6 +43,7 @@ import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
 } from '@/server/services/toolExecution';
+import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { type IStreamEventManager } from './types';
@@ -801,6 +802,23 @@ export const createRuntimeExecutors = (
             });
           } catch (error) {
             console.error('[call_llm] Failed to update message:', error);
+          }
+
+          if (
+            ctx.serverDB &&
+            ctx.userId &&
+            toolsCalling.length === 0 &&
+            shouldAutoAttachSpreadsheet(
+              finalContent,
+              llmPayload.messages as Array<{ content?: unknown; role?: string }>,
+            )
+          ) {
+            try {
+              const messageService = new MessageService(ctx.serverDB, ctx.userId);
+              await messageService.createSpreadsheetFile(assistantMessageItem.id);
+            } catch (error) {
+              log('[%s] Failed to auto-attach spreadsheet: %O', operationLogId, error);
+            }
           }
 
           // ===== 2. Then accumulate to AgentState =====

@@ -1085,6 +1085,8 @@ export class MessageModel {
     if (!keyword.trim()) return [];
 
     const bm25Query = sanitizeBm25Query(keyword);
+    if (!bm25Query) return [];
+
     const result = await this.db
       .select()
       .from(messages)

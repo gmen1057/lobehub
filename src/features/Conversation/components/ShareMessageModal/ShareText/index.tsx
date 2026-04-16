@@ -3,16 +3,19 @@ import { Button, copyToClipboard, Flexbox } from '@lobehub/ui';
 import { App } from 'antd';
 import isEqual from 'fast-deep-equal';
 import { CopyIcon } from 'lucide-react';
-import { memo } from 'react';
+import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useIsMobile } from '@/hooks/useIsMobile';
+import { messageService } from '@/services/message';
 import { useChatStore } from '@/store/chat';
 import { topicSelectors } from '@/store/chat/selectors';
 import { exportFile } from '@/utils/client';
 
+import { useConversationStore } from '../../../store';
 import { styles } from '../style';
 import Preview from './Preview';
+import { downloadXlsxFile, extractSpreadsheetRows } from './spreadsheet';
 import { generateMarkdown } from './template';
 
 interface ShareTextProps {
@@ -22,14 +25,35 @@ interface ShareTextProps {
 const ShareText = memo<ShareTextProps>(({ item }) => {
   const { t } = useTranslation(['chat', 'common']);
   const { message } = App.useApp();
+  const [attachingSpreadsheet, setAttachingSpreadsheet] = useState(false);
 
   const messages = [item];
   const topic = useChatStore(topicSelectors.currentActiveTopic, isEqual);
+  const context = useConversationStore((s) => s.context);
+  const replaceMessages = useConversationStore((s) => s.replaceMessages);
 
   const title = topic?.title || t('shareModal.exportTitle');
   const content = generateMarkdown({
     messages,
   }).replaceAll('\n\n\n', '\n');
+  const spreadsheetTarget = useMemo(() => {
+    if (item.role !== 'assistantGroup') {
+      return {
+        content: item.content,
+        id: item.id,
+      };
+    }
+
+    const lastContentBlock = [...(item.children || [])]
+      .reverse()
+      .find((child) => !!child.content?.trim() && (!child.tools || child.tools.length === 0));
+
+    return {
+      content: lastContentBlock?.content ?? item.content,
+      id: lastContentBlock?.id ?? item.id,
+    };
+  }, [item]);
+  const spreadsheetRows = extractSpreadsheetRows(spreadsheetTarget.content ?? '');
 
   const isMobile = useIsMobile();
 
@@ -56,6 +80,47 @@ const ShareText = memo<ShareTextProps>(({ item }) => {
       >
         {t('shareModal.downloadFile')}
       </Button>
+      {spreadsheetRows && (
+        <Button
+          block
+          size={isMobile ? undefined : 'large'}
+          onClick={() => {
+            downloadXlsxFile(spreadsheetRows, `${title}.xlsx`, title);
+            message.success(t('shareModal.downloadSuccess'));
+          }}
+        >
+          XLSX
+        </Button>
+      )}
+      {spreadsheetRows && (
+        <Button
+          block
+          loading={attachingSpreadsheet}
+          size={isMobile ? undefined : 'large'}
+          onClick={async () => {
+            setAttachingSpreadsheet(true);
+
+            try {
+              const result = await messageService.createSpreadsheetFile(spreadsheetTarget.id, {
+                ...context,
+                filename: title,
+              });
+
+              if (result.messages) {
+                replaceMessages(result.messages, { context });
+              }
+
+              message.success(t('shareModal.attachSpreadsheetSuccess'));
+            } catch {
+              message.error(t('shareModal.attachSpreadsheetError'));
+            } finally {
+              setAttachingSpreadsheet(false);
+            }
+          }}
+        >
+          {t('shareModal.attachSpreadsheet')}
+        </Button>
+      )}
     </>
   );
 

@@ -100,6 +100,35 @@ describe('contextEngineering', () => {
     });
   });
 
+  it('should prefer provided available tools for discovery over global tool store', async () => {
+    const messages = [{ content: 'Hello', role: 'user' }] as UIChatMessage[];
+
+    const output = await contextEngineering({
+      availableToolsForDiscovery: [
+        {
+          description: 'Safe spreadsheet export',
+          identifier: 'safe-spreadsheet-export',
+          name: 'Safe Spreadsheet Export',
+        },
+      ],
+      messages,
+      model: 'gpt-4',
+      provider: 'openai',
+      tools: ['lobe-activator'],
+    });
+
+    const discoveryMessage = output.find(
+      (message) =>
+        message.role === 'user' &&
+        typeof message.content === 'string' &&
+        message.content.includes('<available_tools'),
+    );
+
+    expect(discoveryMessage).toBeDefined();
+    expect(discoveryMessage?.content).toContain('safe-spreadsheet-export');
+    expect(discoveryMessage?.content).not.toContain('lobe-cloud-sandbox');
+  });
+
   describe('handle with files content in server mode', () => {
     it('should includes files', async () => {
       isServerMode = true;

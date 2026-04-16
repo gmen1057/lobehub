@@ -1,12 +1,15 @@
-import { type LobeChatDatabase } from '@lobechat/database';
-import { CompressionRepository } from '@lobechat/database';
+import { CompressionRepository, type LobeChatDatabase } from '@lobechat/database';
 import {
   type CreateMessageParams,
   type UIChatMessage,
   type UpdateMessageParams,
 } from '@lobechat/types';
+import { nanoid } from '@lobechat/utils';
+import { TRPCError } from '@trpc/server';
 
 import { MessageModel } from '@/database/models/message';
+import { sanitizeFileName } from '@/utils/sanitizeFileName';
+import { buildXlsxFile, EXCEL_MIME_TYPE, extractSpreadsheetRows } from '@/utils/spreadsheet';
 
 import { FileService } from '../file';
 
@@ -33,11 +36,13 @@ export class MessageService {
   private messageModel: MessageModel;
   private fileService: FileService;
   private compressionRepository: CompressionRepository;
+  private userId: string;
 
   constructor(db: LobeChatDatabase, userId: string) {
     this.messageModel = new MessageModel(db, userId);
     this.fileService = new FileService(db, userId);
     this.compressionRepository = new CompressionRepository(db, userId);
+    this.userId = userId;
   }
 
   /**
@@ -237,6 +242,59 @@ export class MessageService {
       return { success: false };
     }
     return this.queryWithSuccess(options);
+  }
+
+  /**
+   * Build an XLSX file from spreadsheet-like assistant content, upload it to storage,
+   * and attach it to the target message.
+   */
+  async createSpreadsheetFile(
+    messageId: string,
+    params?: {
+      filename?: string;
+    } & QueryOptions,
+  ): Promise<{
+    fileId: string;
+    messages?: UIChatMessage[];
+    success: boolean;
+    url: string;
+  }> {
+    const message = await this.messageModel.findById(messageId);
+
+    if (!message) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Message not found' });
+    }
+
+    const rows = extractSpreadsheetRows(message.content ?? '');
+
+    if (!rows) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: 'No spreadsheet content found in message',
+      });
+    }
+
+    const filenameBase = sanitizeFileName(
+      params?.filename?.replace(/\.xlsx$/i, '') || 'spreadsheet',
+      'spreadsheet',
+    );
+    const filename = `${filenameBase}.xlsx`;
+    const pathname = `files/${this.userId}/${nanoid()}/${filename}`;
+    const buffer = Buffer.from(buildXlsxFile(rows, { sheetName: filenameBase }));
+    const { fileId, url } = await this.fileService.uploadFromBuffer(
+      buffer,
+      EXCEL_MIME_TYPE,
+      pathname,
+    );
+
+    const { filename: _filename, ...queryOptions } = params ?? {};
+    const result = await this.addFilesToMessage(messageId, [fileId], queryOptions);
+
+    return {
+      ...result,
+      fileId,
+      url,
+    };
   }
 
   /**

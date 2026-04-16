@@ -1,5 +1,5 @@
 import { Button, Flexbox, Icon, Input, Text } from '@lobehub/ui';
-import { App,Form as AForm } from 'antd';
+import { App, Form as AForm } from 'antd';
 import { createStaticStyles } from 'antd-style';
 import { EditIcon, LinkIcon, Settings2Icon, TerminalIcon } from 'lucide-react';
 import { useImperativeHandle, useState } from 'react';
@@ -158,7 +158,11 @@ interface SettingsProps {
   identifier: string;
 }
 
-const Settings = ({ ref, identifier, hideFooter }: SettingsProps & { ref?: React.RefObject<SettingsRef | null> }) => {
+const Settings = ({
+  ref,
+  identifier,
+  hideFooter,
+}: SettingsProps & { ref?: React.RefObject<SettingsRef | null> }) => {
   const { t } = useTranslation(['plugin', 'common']);
   const [connectionForm] = AForm.useForm();
   const [envForm] = AForm.useForm();
@@ -374,17 +378,98 @@ const Settings = ({ ref, identifier, hideFooter }: SettingsProps & { ref?: React
           </Flexbox>
         )}
 
-        {/* HTTP type notice */}
+        {/* HTTP type: headers configuration (used as MCP request headers) */}
         {!isStdioType && (
-          <div>
+          <Flexbox gap={12}>
             <div className={styles.sectionTitle}>
               <Settings2Icon size={16} />
               {t('settings.configuration.title')}
             </div>
-            <div className={styles.emptyState}>
-              <Text type="secondary">{t('settings.httpTypeNotice')}</Text>
-            </div>
-          </div>
+            {(() => {
+              const schema = customParams?.settingsSchema as
+                | Record<
+                    string,
+                    { label?: string; placeholder?: string; type?: string; required?: boolean }
+                  >
+                | undefined;
+
+              if (schema && Object.keys(schema).length > 0) {
+                // Typed form from settingsSchema
+                return (
+                  <AForm
+                    className={styles.compactForm}
+                    form={envForm}
+                    initialValues={pluginSettings}
+                    layout="vertical"
+                    onFinish={async (values: Record<string, string>) => {
+                      setLoading(true);
+                      try {
+                        await updatePluginSettings(identifier!, values, { override: true });
+                        message.success(t('settings.messages.envUpdateSuccess'));
+                      } catch {
+                        message.error(t('settings.messages.envUpdateFailed'));
+                      } finally {
+                        setLoading(false);
+                      }
+                    }}
+                  >
+                    {Object.entries(schema).map(([key, field]) => (
+                      <AForm.Item
+                        key={key}
+                        label={field.label || key}
+                        name={key}
+                        rules={
+                          field.required
+                            ? [{ message: `${field.label || key} обязательно`, required: true }]
+                            : undefined
+                        }
+                      >
+                        <Input
+                          placeholder={field.placeholder || ''}
+                          size="small"
+                          type={field.type === 'password' ? 'password' : 'text'}
+                        />
+                      </AForm.Item>
+                    ))}
+                    {!hideFooter && (
+                      <Flexbox horizontal className={styles.footer} gap={8}>
+                        <Button htmlType="submit" loading={loading} type="primary">
+                          {t('common:save')}
+                        </Button>
+                        <Button onClick={() => envForm.resetFields()}>{t('common:reset')}</Button>
+                      </Flexbox>
+                    )}
+                  </AForm>
+                );
+              }
+
+              // Fallback: generic key-value editor
+              return (
+                <AForm
+                  form={envForm}
+                  initialValues={{ env: pluginSettings }}
+                  layout="vertical"
+                  onFinish={handleEnvSubmit}
+                >
+                  <AForm.Item name="env" style={{ marginBottom: 0 }}>
+                    <KeyValueEditor
+                      addButtonText={t('dev.mcp.env.add')}
+                      keyPlaceholder="Header-Name"
+                      valuePlaceholder="value"
+                    />
+                  </AForm.Item>
+                  {!hideFooter && (
+                    <Flexbox horizontal className={styles.footer} gap={8}>
+                      <Button htmlType="submit" loading={loading} type="primary">
+                        {t('common:save')}
+                      </Button>
+                      <Button onClick={() => envForm.resetFields()}>{t('common:reset')}</Button>
+                    </Flexbox>
+                  )}
+                </AForm>
+              );
+            })()}
+          </Flexbox>
         )}
       </Flexbox>
     </Flexbox>
