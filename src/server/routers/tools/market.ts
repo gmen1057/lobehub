@@ -580,124 +580,106 @@ export const marketRouter = router({
   exportAndUploadFile: marketToolProcedure
     .input(exportAndUploadFileSchema)
     .mutation(async ({ input, ctx }) => {
-      const { path, filename, topicId } = input;
+      const { path, filename } = input;
 
-      log('Exporting and uploading file: %s from path: %s in topic: %s', filename, path, topicId);
+      log('exportAndUploadFile (E2B proxy): file=%s from path=%s', filename, path);
 
       try {
-        const s3 = new FileS3();
+        // Step 1: Read file from E2B sandbox via our gateway
+        const e2bResponse = await fetch(E2B_GATEWAY_URL, {
+          body: JSON.stringify({
+            id: Date.now(),
+            jsonrpc: '2.0',
+            method: 'tools/call',
+            params: {
+              arguments: {
+                code: `import base64\nwith open("${path}", "rb") as f:\n    data = f.read()\nprint(base64.b64encode(data).decode())`,
+                output_file: path,
+              },
+              name: 'execute_and_get_file',
+            },
+          }),
+          headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          signal: AbortSignal.timeout(60_000),
+        });
 
-        // Use date-based sharding for privacy compliance (GDPR, CCPA)
-        const today = new Date().toISOString().split('T')[0];
+        const e2bData = (await e2bResponse.json()) as any;
+        const resultText = e2bData.result?.content?.[0]?.text || '';
 
-        // Generate a unique key for the exported file
-        const key = `code-interpreter-exports/${today}/${topicId}/${filename}`;
-
-        // Step 1: Generate pre-signed upload URL
-        const uploadUrl = await s3.createPreSignedUrl(key);
-        log('Generated upload URL for key: %s', key);
-
-        // Step 2: Use MarketService from ctx
-        const market = ctx.marketService.market;
-
-        // Step 3: Call sandbox's exportFile tool with the upload URL
-        const response = await market.plugins.runBuildInTool(
-          'exportFile',
-          { path, uploadUrl },
-          { topicId, userId: ctx.userId },
-        );
-
-        log('Sandbox exportFile response: %O', response);
-
-        if (!response.success) {
-          const errorCode = response.error?.code;
-          const errorMessage = response.error?.message || 'Failed to export file from sandbox';
-
-          // Check for authentication errors and throw UNAUTHORIZED
-          if (
-            errorCode === 'invalid_token' ||
-            errorCode === 'token_expired' ||
-            errorCode === 'unauthorized' ||
-            errorMessage.toLowerCase().includes('invalid_token') ||
-            errorMessage.toLowerCase().includes('token expired')
-          ) {
-            throw new TRPCError({
-              code: 'UNAUTHORIZED',
-              message:
-                'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
-            });
+        // Parse JSON response from execute_and_get_file
+        let fileBuffer: Buffer;
+        try {
+          const parsed = JSON.parse(resultText);
+          if (!parsed.success || !parsed.content_base64) {
+            return {
+              error: { message: 'File not found in sandbox' },
+              filename,
+              success: false,
+            } as ExportAndUploadFileResult;
           }
-
+          fileBuffer = Buffer.from(parsed.content_base64, 'base64');
+        } catch {
           return {
-            error: { message: errorMessage },
+            error: { message: 'Failed to read file from sandbox' },
             filename,
             success: false,
           } as ExportAndUploadFileResult;
         }
 
-        const result = response.data?.result;
-        const uploadSuccess = result?.success !== false;
+        // Step 2: Upload to S3
+        const s3 = new FileS3();
+        const today = new Date().toISOString().split('T')[0];
+        const key = `code-interpreter-exports/${today}/${ctx.userId}/${filename}`;
+        const uploadUrl = await s3.createPreSignedUrl(key);
 
-        if (!uploadSuccess) {
-          return {
-            error: { message: result?.error || 'Failed to upload file from sandbox' },
-            filename,
-            success: false,
-          } as ExportAndUploadFileResult;
-        }
+        await fetch(uploadUrl, {
+          body: fileBuffer,
+          headers: { 'Content-Type': 'application/octet-stream' },
+          method: 'PUT',
+          signal: AbortSignal.timeout(30_000),
+        });
 
-        // Step 4: Get file metadata from S3 to verify upload and get actual size
-        const metadata = await s3.getFileMetadata(key);
-        const fileSize = metadata.contentLength;
-        const mimeType = metadata.contentType || result?.mimeType || 'application/octet-stream';
-
-        // Step 5: Create persistent file record using FileService
-        // Generate a simple hash from the key (since we don't have the actual file content)
+        // Step 3: Create persistent file record
         const fileHash = sha256(key + Date.now().toString());
+        const mimeType = filename.endsWith('.xlsx')
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : filename.endsWith('.csv')
+            ? 'text/csv'
+            : filename.endsWith('.pdf')
+              ? 'application/pdf'
+              : filename.endsWith('.png')
+                ? 'image/png'
+                : filename.endsWith('.jpg') || filename.endsWith('.jpeg')
+                  ? 'image/jpeg'
+                  : 'application/octet-stream';
 
         const { fileId, url } = await ctx.fileService.createFileRecord({
           fileHash,
           fileType: mimeType,
           name: filename,
-          size: fileSize,
-          url: key, // Store S3 key
+          size: fileBuffer.length,
+          url: key,
         });
 
-        log('Created file record: fileId=%s, url=%s', fileId, url);
+        log(
+          'exportAndUploadFile: created file record fileId=%s, size=%d',
+          fileId,
+          fileBuffer.length,
+        );
 
         return {
           fileId,
           filename,
           mimeType,
-          size: fileSize,
+          size: fileBuffer.length,
           success: true,
-          url, // This is the permanent /f/:id URL
+          url,
         } as ExportAndUploadFileResult;
       } catch (error) {
-        log('Error in exportAndUploadFile: %O', error);
-
-        // Re-throw TRPCError as-is
-        if (error instanceof TRPCError) {
-          throw error;
-        }
-
-        const errorMessage = (error as Error).message;
-
-        // Check for authentication errors
-        if (
-          errorMessage.toLowerCase().includes('invalid_token') ||
-          errorMessage.toLowerCase().includes('token expired') ||
-          errorMessage.toLowerCase().includes('unauthorized')
-        ) {
-          throw new TRPCError({
-            code: 'UNAUTHORIZED',
-            message:
-              'Market authorization expired. An authorization dialog has been shown to the user. Please wait for the user to complete authorization and then retry the current task.',
-          });
-        }
-
+        log('exportAndUploadFile E2B error: %O', error);
         return {
-          error: { message: errorMessage },
+          error: { message: (error as Error).message },
           filename,
           success: false,
         } as ExportAndUploadFileResult;
