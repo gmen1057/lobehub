@@ -21,6 +21,10 @@ export const gptImage1ParamsSchema: ModelParamsSchema = {
 export const gptImage2ParamsSchema: ModelParamsSchema = {
   imageUrls: { default: [] },
   prompt: { default: '' },
+  quality: {
+    default: 'medium',
+    enum: ['low', 'medium', 'high'],
+  },
   size: {
     default: '1024x1024',
     enum: ['1024x1024', '1792x1024', '1024x1792'],
