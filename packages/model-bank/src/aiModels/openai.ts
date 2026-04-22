@@ -18,7 +18,39 @@ export const gptImage1ParamsSchema: ModelParamsSchema = {
   },
 };
 
+export const gptImage2ParamsSchema: ModelParamsSchema = {
+  imageUrls: { default: [] },
+  prompt: { default: '' },
+  size: {
+    default: '1024x1024',
+    enum: ['1024x1024', '1792x1024', '1024x1792'],
+  },
+};
+
 export const openaiChatModels: AIChatModelCard[] = [
+  {
+    abilities: {
+      imageOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 32_000,
+    description:
+      'ChatGPT Images 2.0 — флагманская модель OpenAI для генерации и редактирования изображений с встроенным reasoning, мультиязычным текстом и web search.',
+    displayName: 'ChatGPT Images 2',
+    enabled: true,
+    id: 'gpt-image-2',
+    maxOutput: 32_000,
+    pricing: {
+      approximatePricePerImage: 0.053,
+      units: [
+        { name: 'imageOutput', rate: 211, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 40, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-04-21',
+    type: 'chat',
+  },
   {
     abilities: {
       functionCall: true,
@@ -1447,6 +1479,24 @@ export const openaiSTTModels: AISTTModelCard[] = [
 
 // Image generation models
 export const openaiImageModels: AIImageModelCard[] = [
+  {
+    description:
+      'ChatGPT Images 2.0 — фотореалистичная генерация и редактирование, мультиязычный текст на изображении, размеры до 1792×1024, встроенный reasoning и web search в thinking mode.',
+    displayName: 'ChatGPT Images 2',
+    enabled: true,
+    id: 'gpt-image-2:image',
+    parameters: gptImage2ParamsSchema,
+    pricing: {
+      approximatePricePerImage: 0.053,
+      units: [
+        { name: 'imageOutput', rate: 211, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 40, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-04-21',
+    type: 'image',
+  },
   {
     description:
       'An enhanced GPT Image 1 model with 4× faster generation, more precise editing, and improved text rendering.',
