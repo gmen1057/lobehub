@@ -337,8 +337,15 @@ describe('LobeOpenAI', () => {
 
       const createCall = (instance['client'].chat.completions.create as Mock).mock.calls[0][0];
       expect(createCall.model).toBe('gpt-image-2');
-      expect(createCall.quality).toBe('high');
-      expect(createCall.size).toBe('1536x1024');
+      expect(createCall.quality).toBeUndefined();
+      expect(createCall.size).toBeUndefined();
+      expect(createCall.tools).toEqual([
+        {
+          quality: 'high',
+          size: '1536x1024',
+          type: 'image_generation',
+        },
+      ]);
     });
 
     it('should omit OpenAI image size and quality when set to auto', async () => {
@@ -352,8 +359,29 @@ describe('LobeOpenAI', () => {
       await instance.chat(payload);
 
       const createCall = (instance['client'].chat.completions.create as Mock).mock.calls[0][0];
-      expect(createCall.quality).toBeUndefined();
-      expect(createCall.size).toBeUndefined();
+      expect(createCall.tools).toBeUndefined();
+    });
+
+    it('should merge OpenAI image params into an existing image_generation tool', async () => {
+      const payload = {
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'medium' as const,
+        openaiImageSize: '1024x1536' as const,
+        tools: [{ output_format: 'png', type: 'image_generation' } as any],
+      };
+
+      await instance.chat(payload);
+
+      const createCall = (instance['client'].chat.completions.create as Mock).mock.calls[0][0];
+      expect(createCall.tools).toEqual([
+        {
+          output_format: 'png',
+          quality: 'medium',
+          size: '1024x1536',
+          type: 'image_generation',
+        },
+      ]);
     });
   });
 
@@ -505,8 +533,15 @@ describe('LobeOpenAI', () => {
 
       expect(handledPayload.openaiImageQuality).toBeUndefined();
       expect(handledPayload.openaiImageSize).toBeUndefined();
-      expect(handledPayload.quality).toBe('medium');
-      expect(handledPayload.size).toBe('1024x1536');
+      expect(handledPayload.quality).toBeUndefined();
+      expect(handledPayload.size).toBeUndefined();
+      expect(handledPayload.tools).toEqual([
+        {
+          quality: 'medium',
+          size: '1024x1536',
+          type: 'image_generation',
+        },
+      ]);
     });
 
     it('should omit auto OpenAI image params from responses payload', () => {
@@ -517,8 +552,31 @@ describe('LobeOpenAI', () => {
         openaiImageSize: 'auto',
       } as any) as any;
 
-      expect(handledPayload.quality).toBeUndefined();
-      expect(handledPayload.size).toBeUndefined();
+      expect(handledPayload.tools).toBeUndefined();
+    });
+
+    it('should pass image_generation tool through responses conversion with custom options', async () => {
+      const payload = {
+        enabledSearch: true,
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'low' as const,
+        openaiImageSize: '1024x1024' as const,
+      };
+
+      await instance.chat(payload);
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.tools).toEqual(
+        expect.arrayContaining([
+          {
+            quality: 'low',
+            size: '1024x1024',
+            type: 'image_generation',
+          },
+          { type: 'web_search' },
+        ]),
+      );
     });
   });
 

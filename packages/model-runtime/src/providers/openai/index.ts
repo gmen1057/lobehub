@@ -19,17 +19,56 @@ const flexSupportedModels = ['gpt-5', 'o3', 'o4-mini']; // Flex tier is only ava
 const isOpenAIImageChatModel = (model: string) =>
   model === 'gpt-image-2' || model.startsWith('gpt-image-2-');
 
-const getOpenAIImageGenerationParams = ({
+const getOpenAIImageGenerationTool = ({
   model,
   openaiImageQuality,
   openaiImageSize,
 }: Pick<ChatStreamPayload, 'model' | 'openaiImageQuality' | 'openaiImageSize'>) => {
-  if (!isOpenAIImageChatModel(model)) return {};
+  if (!isOpenAIImageChatModel(model)) return;
 
   return {
-    ...(openaiImageSize && openaiImageSize !== 'auto' ? { size: openaiImageSize } : {}),
+    type: 'image_generation',
     ...(openaiImageQuality && openaiImageQuality !== 'auto' ? { quality: openaiImageQuality } : {}),
+    ...(openaiImageSize && openaiImageSize !== 'auto' ? { size: openaiImageSize } : {}),
   };
+};
+
+const hasCustomOpenAIImageGenerationParam = (value?: string) => Boolean(value && value !== 'auto');
+
+const mergeOpenAIImageGenerationTool = ({
+  model,
+  openaiImageQuality,
+  openaiImageSize,
+  tools,
+}: Pick<ChatStreamPayload, 'model' | 'openaiImageQuality' | 'openaiImageSize' | 'tools'>) => {
+  const imageGenerationTool = getOpenAIImageGenerationTool({
+    model,
+    openaiImageQuality,
+    openaiImageSize,
+  });
+
+  if (!imageGenerationTool) return tools;
+
+  const nextTools = [...(tools || [])] as any[];
+  const imageToolIndex = nextTools.findIndex((tool) => tool?.type === 'image_generation');
+
+  if (imageToolIndex >= 0) {
+    nextTools[imageToolIndex] = {
+      ...nextTools[imageToolIndex],
+      ...imageGenerationTool,
+    };
+
+    return nextTools as any;
+  }
+
+  if (
+    hasCustomOpenAIImageGenerationParam(openaiImageQuality) ||
+    hasCustomOpenAIImageGenerationParam(openaiImageSize)
+  ) {
+    nextTools.push(imageGenerationTool as any);
+  }
+
+  return nextTools.length > 0 ? (nextTools as any) : undefined;
 };
 
 const supportsFlexTier = (model: string) => {
@@ -44,20 +83,21 @@ export const params = {
   baseURL: 'https://api.openai.com/v1',
   chatCompletion: {
     handlePayload: (payload) => {
-      const { enabledSearch, model, openaiImageQuality, openaiImageSize, ...rest } = payload;
-      const openAIImageParams = getOpenAIImageGenerationParams({
+      const { enabledSearch, model, openaiImageQuality, openaiImageSize, tools, ...rest } = payload;
+      const openAIImageTools = mergeOpenAIImageGenerationTool({
         model,
         openaiImageQuality,
         openaiImageSize,
+        tools,
       });
 
       if (responsesAPIModels.has(model) || enabledSearch) {
         return {
           ...rest,
-          ...openAIImageParams,
           apiMode: 'responses',
           enabledSearch,
           model,
+          tools: openAIImageTools,
         } as ChatStreamPayload;
       }
 
@@ -85,10 +125,10 @@ export const params = {
 
       return {
         ...rest,
-        ...openAIImageParams,
         model,
         ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
         stream: payload.stream ?? true,
+        tools: openAIImageTools,
       };
     },
   },
@@ -115,15 +155,16 @@ export const params = {
         openaiImageSize,
         ...rest
       } = payload;
-      const openAIImageParams = getOpenAIImageGenerationParams({
+      const openAIImageTools = mergeOpenAIImageGenerationTool({
         model,
         openaiImageQuality,
         openaiImageSize,
+        tools,
       });
 
       const openaiTools = enabledSearch
         ? [
-            ...(tools || []),
+            ...(openAIImageTools || []),
             {
               type: 'web_search',
               ...(oaiSearchContextSize && {
@@ -131,7 +172,7 @@ export const params = {
               }),
             },
           ]
-        : tools;
+        : openAIImageTools;
 
       if (prunePrefixes.some((prefix) => model.startsWith(prefix))) {
         const reasoning = payload.reasoning
@@ -142,7 +183,6 @@ export const params = {
         }
         return pruneReasoningPayload({
           ...rest,
-          ...openAIImageParams,
           model,
           reasoning,
           ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
@@ -156,7 +196,6 @@ export const params = {
 
       return {
         ...rest,
-        ...openAIImageParams,
         model,
         ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
         stream: payload.stream ?? true,

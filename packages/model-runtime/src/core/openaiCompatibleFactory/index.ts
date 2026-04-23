@@ -1162,8 +1162,12 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
     }
 
     private convertChatCompletionToolToResponseTool = (
-      tool: ChatCompletionTool,
+      tool: ChatCompletionTool | OpenAI.Responses.Tool,
     ): OpenAI.Responses.Tool => {
+      if (tool.type !== 'function' || !('function' in tool)) {
+        return tool;
+      }
+
       return { type: tool.type, ...tool.function } as any;
     };
 

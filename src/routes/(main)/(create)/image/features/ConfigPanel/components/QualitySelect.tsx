@@ -4,16 +4,24 @@ import { useTranslation } from 'react-i18next';
 
 import { useGenerationConfigParam } from '@/store/image/slices/generationConfig/hooks';
 
+const qualityOptionLabelKeys = {
+  auto: 'config.quality.options.auto',
+  hd: 'config.quality.options.hd',
+  high: 'config.quality.options.high',
+  low: 'config.quality.options.low',
+  medium: 'config.quality.options.medium',
+  standard: 'config.quality.options.standard',
+} as const;
+
 const QualitySelect = memo(() => {
   const { t } = useTranslation('image');
   const { value, setValue, enumValues } = useGenerationConfigParam('quality');
 
   const options =
     enumValues?.map((quality) => ({
-      label:
-        quality === 'standard'
-          ? t('config.quality.options.standard')
-          : t('config.quality.options.hd'),
+      label: qualityOptionLabelKeys[quality as keyof typeof qualityOptionLabelKeys]
+        ? t(qualityOptionLabelKeys[quality as keyof typeof qualityOptionLabelKeys])
+        : quality,
       value: quality,
     })) ?? [];
 
