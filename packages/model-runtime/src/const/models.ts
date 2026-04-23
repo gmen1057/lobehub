@@ -113,3 +113,22 @@ export const temperatureTopPConflictModelPatterns: RegExp[] = [
 export const hasTemperatureTopPConflict = (model: string): boolean => {
   return temperatureTopPConflictModelPatterns.some((pattern) => pattern.test(model));
 };
+
+/**
+ * Regex patterns for Claude models where `temperature` parameter is deprecated.
+ * Opus 4.7 replaced temperature/top_p with adaptive thinking — sending temperature
+ * returns 400 "temperature is deprecated for this model".
+ */
+export const temperatureDeprecatedModelPatterns: RegExp[] = [
+  // Claude Opus 4.7+ — Anthropic API
+  /^claude-opus-4-7/,
+  // OpenRouter format
+  /^anthropic\/claude-opus-4\.7/,
+  /^anthropic\/claude-4\.7-opus/,
+  // AWS Bedrock format
+  /anthropic\.claude-opus-4-7/,
+];
+
+export const isTemperatureDeprecated = (model: string): boolean => {
+  return temperatureDeprecatedModelPatterns.some((pattern) => pattern.test(model));
+};

@@ -1,4 +1,4 @@
-import { hasTemperatureTopPConflict } from '../const/models';
+import { hasTemperatureTopPConflict, isTemperatureDeprecated } from '../const/models';
 
 /**
  * Chat completion parameter configuration
@@ -263,6 +263,12 @@ export const resolveModelSamplingParameters = (
 ): { temperature?: number; top_p?: number } => {
   const temperature = config.temperature ?? undefined;
   const top_p = config.top_p ?? undefined;
+
+  // Some models (Opus 4.7+) deprecated temperature entirely — skip sampling
+  // parameters to avoid 400 "temperature is deprecated for this model".
+  if (!!model && isTemperatureDeprecated(model)) {
+    return {};
+  }
 
   const resolved = resolveParameters(
     { temperature, top_p },
