@@ -19,6 +19,8 @@ export interface ModelExtendParams {
   enabledContextCaching?: boolean;
   imageAspectRatio?: string;
   imageResolution?: string;
+  openaiImageQuality?: 'auto' | 'low' | 'medium' | 'high';
+  openaiImageSize?: 'auto' | '1024x1024' | '1024x1536' | '1536x1024';
   reasoning_effort?: string;
   thinking?: {
     budget_tokens?: number;
@@ -208,6 +210,14 @@ export const resolveModelExtendParams = (ctx: ModelParamsContext): ModelExtendPa
 
   if (modelExtendParams.includes('imageResolution2') && chatConfig.imageResolution2) {
     extendParams.imageResolution = chatConfig.imageResolution2;
+  }
+
+  if (modelExtendParams.includes('openaiImageSize') && chatConfig.openaiImageSize) {
+    extendParams.openaiImageSize = chatConfig.openaiImageSize;
+  }
+
+  if (modelExtendParams.includes('openaiImageQuality') && chatConfig.openaiImageQuality) {
+    extendParams.openaiImageQuality = chatConfig.openaiImageQuality;
   }
 
   return extendParams;

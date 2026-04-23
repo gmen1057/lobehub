@@ -685,6 +685,72 @@ describe('resolveModelExtendParams', () => {
         expect(result.imageResolution).toBeUndefined();
       });
     });
+
+    describe('openaiImageSize param', () => {
+      beforeEach(() => {
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(
+          () => true,
+        );
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+          'openaiImageSize',
+        ]);
+      });
+
+      it('should set openaiImageSize when supported and configured', () => {
+        const result = resolveModelExtendParams({
+          chatConfig: {
+            openaiImageSize: '1024x1536',
+          } as any,
+          model: 'gpt-image-2',
+          provider: 'openai',
+        });
+
+        expect(result.openaiImageSize).toBe('1024x1536');
+      });
+
+      it('should not set openaiImageSize when not configured', () => {
+        const result = resolveModelExtendParams({
+          chatConfig: {} as any,
+          model: 'gpt-image-2',
+          provider: 'openai',
+        });
+
+        expect(result.openaiImageSize).toBeUndefined();
+      });
+    });
+
+    describe('openaiImageQuality param', () => {
+      beforeEach(() => {
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(
+          () => true,
+        );
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+          'openaiImageQuality',
+        ]);
+      });
+
+      it('should set openaiImageQuality when supported and configured', () => {
+        const result = resolveModelExtendParams({
+          chatConfig: {
+            openaiImageQuality: 'high',
+          } as any,
+          model: 'gpt-image-2',
+          provider: 'openai',
+        });
+
+        expect(result.openaiImageQuality).toBe('high');
+      });
+
+      it('should not set openaiImageQuality when not configured', () => {
+        const result = resolveModelExtendParams({
+          chatConfig: {} as any,
+          model: 'gpt-image-2',
+          provider: 'openai',
+        });
+
+        expect(result.openaiImageQuality).toBeUndefined();
+      });
+    });
   });
 
   describe('multiple params combination', () => {
@@ -775,6 +841,27 @@ describe('resolveModelExtendParams', () => {
       expect(result).toEqual({
         imageAspectRatio: '4:3',
         imageResolution: '2048x2048',
+      });
+    });
+
+    it('should handle OpenAI image generation params together', () => {
+      vi.spyOn(aiModelSelectors.aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+        'openaiImageSize',
+        'openaiImageQuality',
+      ]);
+
+      const result = resolveModelExtendParams({
+        chatConfig: {
+          openaiImageQuality: 'auto',
+          openaiImageSize: '1536x1024',
+        } as any,
+        model: 'gpt-image-2',
+        provider: 'openai',
+      });
+
+      expect(result).toEqual({
+        openaiImageQuality: 'auto',
+        openaiImageSize: '1536x1024',
       });
     });
 

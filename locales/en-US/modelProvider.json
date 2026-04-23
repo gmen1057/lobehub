@@ -230,6 +230,8 @@
   "providerModels.item.modelConfig.extendParams.options.imageAspectRatio2.hint": "For Nano Banana 2; controls aspect ratio of generated images (supports extra-wide 1:4, 4:1, 1:8, 8:1).",
   "providerModels.item.modelConfig.extendParams.options.imageResolution.hint": "For Gemini 3 image generation models; controls resolution of generated images.",
   "providerModels.item.modelConfig.extendParams.options.imageResolution2.hint": "For Gemini 3.1 Flash Image models; controls resolution of generated images (supports 512px).",
+  "providerModels.item.modelConfig.extendParams.options.openaiImageQuality.hint": "For OpenAI gpt-image-2 chat models; controls generated image quality (auto/low/medium/high).",
+  "providerModels.item.modelConfig.extendParams.options.openaiImageSize.hint": "For OpenAI gpt-image-2 chat models; controls generated image size (auto/1024x1024/1024x1536/1536x1024).",
   "providerModels.item.modelConfig.extendParams.options.reasoningBudgetToken.hint": "For Claude, Qwen3 and similar; controls token budget for reasoning.",
   "providerModels.item.modelConfig.extendParams.options.reasoningBudgetToken32k.hint": "For GLM-5 and GLM-4.7; controls token budget for reasoning (max 32k).",
   "providerModels.item.modelConfig.extendParams.options.reasoningBudgetToken80k.hint": "For Qwen3 series; controls token budget for reasoning (max 80k).",

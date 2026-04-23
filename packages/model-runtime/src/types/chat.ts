@@ -7,13 +7,13 @@ export type LLMRoleType = 'user' | 'system' | 'assistant' | 'function' | 'tool';
 export type ChatResponseFormat =
   | { type: 'json_object' }
   | {
-    json_schema: {
-      name: string;
-      schema: Record<string, any>;
-      strict?: boolean;
+      json_schema: {
+        name: string;
+        schema: Record<string, any>;
+        strict?: boolean;
+      };
+      type: 'json_schema';
     };
-    type: 'json_schema';
-  };
 
 interface UserMessageContentPartThinking {
   signature: string;
@@ -114,6 +114,14 @@ export interface ChatStreamPayload {
    * @title Number of text responses to return
    */
   n?: number;
+  /**
+   * @title OpenAI image generation quality for chat image models
+   */
+  openaiImageQuality?: 'auto' | 'low' | 'medium' | 'high';
+  /**
+   * @title OpenAI image generation size for chat image models
+   */
+  openaiImageSize?: 'auto' | '1024x1024' | '1024x1536' | '1536x1024';
   /**
    * @title Penalty coefficient for reducing topic variation in generated text
    * @default 0

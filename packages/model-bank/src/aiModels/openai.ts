@@ -53,6 +53,9 @@ export const openaiChatModels: AIChatModelCard[] = [
       ],
     },
     releasedAt: '2026-04-21',
+    settings: {
+      extendParams: ['openaiImageSize', 'openaiImageQuality'],
+    },
     type: 'chat',
   },
   {

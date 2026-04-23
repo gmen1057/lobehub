@@ -86,6 +86,8 @@ export default {
   'extendParams.enableReasoning.title': 'Enable Deep Thinking',
   'extendParams.imageAspectRatio.title': 'Image Aspect Ratio',
   'extendParams.imageResolution.title': 'Image Resolution',
+  'extendParams.openaiImageQuality.title': 'OpenAI Image Quality',
+  'extendParams.openaiImageSize.title': 'OpenAI Image Size',
   'extendParams.reasoningBudgetToken.title': 'Thinking Consumption Token',
   'extendParams.reasoningEffort.title': 'Reasoning Intensity',
   'extendParams.textVerbosity.title': 'Output Text Detail Level',

@@ -68,6 +68,8 @@
   "extendParams.enableReasoning.title": "Включить глубокое мышление",
   "extendParams.imageAspectRatio.title": "Соотношение сторон изображения",
   "extendParams.imageResolution.title": "Разрешение изображения",
+  "extendParams.openaiImageQuality.title": "Качество изображения OpenAI",
+  "extendParams.openaiImageSize.title": "Размер изображения OpenAI",
   "extendParams.reasoningBudgetToken.title": "Токены на мышление",
   "extendParams.reasoningEffort.title": "Интенсивность мышления",
   "extendParams.textVerbosity.title": "Уровень детализации текста",

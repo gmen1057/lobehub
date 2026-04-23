@@ -324,6 +324,37 @@ describe('LobeOpenAI', () => {
       expect(createCall.presence_penalty).toBe(0.3);
       expect(createCall.stream).toBe(true);
     });
+
+    it('should add OpenAI image size and quality for gpt-image-2 chat requests', async () => {
+      const payload = {
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'high' as const,
+        openaiImageSize: '1536x1024' as const,
+      };
+
+      await instance.chat(payload);
+
+      const createCall = (instance['client'].chat.completions.create as Mock).mock.calls[0][0];
+      expect(createCall.model).toBe('gpt-image-2');
+      expect(createCall.quality).toBe('high');
+      expect(createCall.size).toBe('1536x1024');
+    });
+
+    it('should omit OpenAI image size and quality when set to auto', async () => {
+      const payload = {
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'auto' as const,
+        openaiImageSize: 'auto' as const,
+      };
+
+      await instance.chat(payload);
+
+      const createCall = (instance['client'].chat.completions.create as Mock).mock.calls[0][0];
+      expect(createCall.quality).toBeUndefined();
+      expect(createCall.size).toBeUndefined();
+    });
   });
 
   describe('responses.handlePayload', () => {
@@ -462,6 +493,32 @@ describe('LobeOpenAI', () => {
       const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
       expect(createCall.max_output_tokens).toBe(4096);
       expect(createCall.max_tokens).toBeUndefined();
+    });
+
+    it('should map OpenAI image params onto responses payload for gpt-image-2', () => {
+      const handledPayload = params.responses.handlePayload({
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'medium',
+        openaiImageSize: '1024x1536',
+      } as any) as any;
+
+      expect(handledPayload.openaiImageQuality).toBeUndefined();
+      expect(handledPayload.openaiImageSize).toBeUndefined();
+      expect(handledPayload.quality).toBe('medium');
+      expect(handledPayload.size).toBe('1024x1536');
+    });
+
+    it('should omit auto OpenAI image params from responses payload', () => {
+      const handledPayload = params.responses.handlePayload({
+        messages: [{ content: 'Generate a poster', role: 'user' as const }],
+        model: 'gpt-image-2',
+        openaiImageQuality: 'auto',
+        openaiImageSize: 'auto',
+      } as any) as any;
+
+      expect(handledPayload.quality).toBeUndefined();
+      expect(handledPayload.size).toBeUndefined();
     });
   });
 

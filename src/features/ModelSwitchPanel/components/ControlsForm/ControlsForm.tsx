@@ -23,6 +23,8 @@ import ImageAspectRatio2Select from './ImageAspectRatio2Select';
 import ImageAspectRatioSelect from './ImageAspectRatioSelect';
 import ImageResolution2Slider from './ImageResolution2Slider';
 import ImageResolutionSlider from './ImageResolutionSlider';
+import OpenAIImageQualitySlider from './OpenAIImageQualitySlider';
+import OpenAIImageSizeSelect from './OpenAIImageSizeSelect';
 import ReasoningEffortSlider from './ReasoningEffortSlider';
 import ReasoningTokenSlider from './ReasoningTokenSlider';
 import ReasoningTokenSlider32k from './ReasoningTokenSlider32k';
@@ -396,6 +398,28 @@ const ControlsForm = memo<ControlsFormProps>(({ model: modelProp, provider: prov
         paddingBottom: 0,
       },
       desc: 'imageSize',
+    },
+    {
+      children: <OpenAIImageSizeSelect />,
+      label: t('extendParams.openaiImageSize.title'),
+      layout: 'horizontal',
+      minWidth: undefined,
+      name: 'openaiImageSize',
+      style: {
+        paddingBottom: 0,
+      },
+      desc: 'size',
+    },
+    {
+      children: <OpenAIImageQualitySlider />,
+      label: t('extendParams.openaiImageQuality.title'),
+      layout: 'horizontal',
+      minWidth: undefined,
+      name: 'openaiImageQuality',
+      style: {
+        paddingBottom: 0,
+      },
+      desc: 'quality',
     },
   ].filter(Boolean) as FormItemProps[];
 

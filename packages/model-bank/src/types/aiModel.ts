@@ -267,6 +267,8 @@ export type ExtendParamsType =
   | 'imageAspectRatio2'
   | 'imageResolution'
   | 'imageResolution2'
+  | 'openaiImageQuality'
+  | 'openaiImageSize'
   | 'urlContext';
 
 export interface AiModelSettings {
@@ -305,6 +307,8 @@ export const ExtendParamsTypeSchema = z.enum([
   'imageAspectRatio2',
   'imageResolution',
   'imageResolution2',
+  'openaiImageQuality',
+  'openaiImageSize',
   'urlContext',
 ]);
 

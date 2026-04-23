@@ -17,6 +17,12 @@ export interface AgentMemoryChatConfig {
   };
 }
 
+export const OpenAIImageSizeSchema = z.enum(['1024x1024', '1024x1536', '1536x1024', 'auto']);
+export type OpenAIImageSize = z.infer<typeof OpenAIImageSizeSchema>;
+
+export const OpenAIImageQualitySchema = z.enum(['low', 'medium', 'high', 'auto']);
+export type OpenAIImageQuality = z.infer<typeof OpenAIImageQualitySchema>;
+
 export interface LobeAgentChatConfig extends AgentMemoryChatConfig {
   autoCreateTopicThreshold: number;
   codexMaxReasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh';
@@ -95,6 +101,14 @@ export interface LobeAgentChatConfig extends AgentMemoryChatConfig {
    */
   imageResolution2?: '512px' | '1K' | '2K' | '4K';
   inputTemplate?: string;
+  /**
+   * OpenAI image generation quality for chat image models
+   */
+  openaiImageQuality?: OpenAIImageQuality;
+  /**
+   * OpenAI image generation size for chat image models
+   */
+  openaiImageSize?: OpenAIImageSize;
   reasoningBudgetToken?: number;
   /**
    * Reasoning budget token for models with 32k max (GLM-5/GLM-4.7)
@@ -192,6 +206,8 @@ export const AgentChatConfigSchema = z
     imageAspectRatio2: z.string().optional(),
     imageResolution: z.enum(['1K', '2K', '4K']).optional(),
     imageResolution2: z.enum(['512px', '1K', '2K', '4K']).optional(),
+    openaiImageQuality: OpenAIImageQualitySchema.optional(),
+    openaiImageSize: OpenAIImageSizeSchema.optional(),
     runtimeEnv: RuntimeEnvConfigSchema.optional(),
     reasoningBudgetToken: z.number().optional(),
     reasoningBudgetToken32k: z.number().optional(),

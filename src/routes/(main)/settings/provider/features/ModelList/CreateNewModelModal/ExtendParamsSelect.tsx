@@ -16,6 +16,8 @@ import ImageAspectRatio2Select from '@/features/ModelSwitchPanel/components/Cont
 import ImageAspectRatioSelect from '@/features/ModelSwitchPanel/components/ControlsForm/ImageAspectRatioSelect';
 import ImageResolution2Slider from '@/features/ModelSwitchPanel/components/ControlsForm/ImageResolution2Slider';
 import ImageResolutionSlider from '@/features/ModelSwitchPanel/components/ControlsForm/ImageResolutionSlider';
+import OpenAIImageQualitySlider from '@/features/ModelSwitchPanel/components/ControlsForm/OpenAIImageQualitySlider';
+import OpenAIImageSizeSelect from '@/features/ModelSwitchPanel/components/ControlsForm/OpenAIImageSizeSelect';
 import ReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/ReasoningEffortSlider';
 import ReasoningTokenSlider from '@/features/ModelSwitchPanel/components/ControlsForm/ReasoningTokenSlider';
 import ReasoningTokenSlider32k from '@/features/ModelSwitchPanel/components/ControlsForm/ReasoningTokenSlider32k';
@@ -143,6 +145,14 @@ const EXTEND_PARAMS_OPTIONS: ExtendParamsOption[] = [
     hintKey: 'providerModels.item.modelConfig.extendParams.options.imageResolution2.hint',
     key: 'imageResolution2',
   },
+  {
+    hintKey: 'providerModels.item.modelConfig.extendParams.options.openaiImageSize.hint',
+    key: 'openaiImageSize',
+  },
+  {
+    hintKey: 'providerModels.item.modelConfig.extendParams.options.openaiImageQuality.hint',
+    key: 'openaiImageQuality',
+  },
 ];
 
 // Map variant keys to their base i18n title key (synced with ControlsForm.tsx)
@@ -201,6 +211,8 @@ const PREVIEW_META: Partial<Record<ExtendParamsType, PreviewMeta>> = {
   imageAspectRatio2: { labelSuffix: ' (Nano Banana 2)', previewWidth: 350, tag: 'aspect_ratio' },
   imageResolution: { labelSuffix: '', previewWidth: 250, tag: 'resolution' },
   imageResolution2: { labelSuffix: ' (512px+)', previewWidth: 280, tag: 'resolution' },
+  openaiImageQuality: { labelSuffix: '', previewWidth: 280, tag: 'quality' },
+  openaiImageSize: { labelSuffix: '', previewWidth: 260, tag: 'size' },
   reasoningBudgetToken: { previewWidth: 350, tag: 'thinking.budget_tokens' },
   reasoningBudgetToken32k: {
     labelSuffix: ' (32k)',
@@ -329,6 +341,8 @@ const ExtendParamsSelect = memo<ExtendParamsSelectProps>(({ value, onChange }) =
       imageAspectRatio2: <ImageAspectRatio2Select value="1:1" />,
       imageResolution: <ImageResolutionSlider value="1K" />,
       imageResolution2: <ImageResolution2Slider value="1K" />,
+      openaiImageQuality: <OpenAIImageQualitySlider value="auto" />,
+      openaiImageSize: <OpenAIImageSizeSelect value="auto" />,
       reasoningBudgetToken: <ReasoningTokenSlider defaultValue={1 * 1024} />,
       reasoningBudgetToken32k: <ReasoningTokenSlider32k defaultValue={1 * 1024} />,
       reasoningBudgetToken80k: <ReasoningTokenSlider80k defaultValue={1 * 1024} />,

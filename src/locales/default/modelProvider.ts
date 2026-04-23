@@ -274,6 +274,10 @@ export default {
     'For Gemini 3 image generation models; controls resolution of generated images.',
   'providerModels.item.modelConfig.extendParams.options.imageResolution2.hint':
     'For Gemini 3.1 Flash Image models; controls resolution of generated images (supports 512px).',
+  'providerModels.item.modelConfig.extendParams.options.openaiImageQuality.hint':
+    'For OpenAI gpt-image-2 chat models; controls generated image quality (auto/low/medium/high).',
+  'providerModels.item.modelConfig.extendParams.options.openaiImageSize.hint':
+    'For OpenAI gpt-image-2 chat models; controls generated image size (auto/1024x1024/1024x1536/1536x1024).',
   'providerModels.item.modelConfig.extendParams.options.reasoningBudgetToken.hint':
     'For Claude, Qwen3 and similar; controls token budget for reasoning.',
   'providerModels.item.modelConfig.extendParams.options.reasoningBudgetToken32k.hint':
