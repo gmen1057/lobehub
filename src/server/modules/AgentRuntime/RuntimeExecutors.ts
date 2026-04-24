@@ -34,16 +34,19 @@ import debug from 'debug';
 import { type MessageModel, MessageModel as MessageModelClass } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
 import { type LobeChatDatabase } from '@/database/type';
+import { fileEnv } from '@/envs/file';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
 } from '@/server/services/toolExecution';
 import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
+import { nanoid } from '@/utils/uuid';
 
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { type IStreamEventManager } from './types';
@@ -575,10 +578,56 @@ export const createRuntimeExecutors = (
         let streamError: any = undefined;
         const contentParts: ContentPart[] = [];
         const reasoningParts: ContentPart[] = [];
-        const hasContentImages = false;
-        const hasReasoningImages = false;
+        let hasContentImages = false;
+        let hasReasoningImages = false;
         textBuffer = '';
         reasoningBuffer = '';
+
+        // Upload a base64 image from a Gemini-3 / image-preview multimodal stream to S3
+        // and return the proxy URL + fileId. Falls back to the data URI on error so that
+        // the user still sees something and the rest of the message is preserved.
+        const uploadStreamImage = async (
+          base64Content: string,
+          mimeType: string | undefined,
+        ): Promise<{ fileId?: string; url: string }> => {
+          const dataUri = `data:${mimeType || 'image/png'};base64,${base64Content}`;
+          if (!ctx.serverDB || !ctx.userId) {
+            return { url: dataUri };
+          }
+
+          try {
+            const extension = (mimeType || 'image/png').split('/')[1] || 'png';
+            const today = new Date().toISOString().split('T')[0];
+            const pathname = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/agent-runtime/images/${today}/${nanoid()}.${extension}`;
+            const fileService = new FileService(ctx.serverDB, ctx.userId);
+            const { fileId, url } = await fileService.uploadBase64(base64Content, pathname);
+            return { fileId, url };
+          } catch (uploadError) {
+            console.error(
+              `[${operationLogId}][content_part] Image upload failed, keeping data URI:`,
+              uploadError,
+            );
+            return { url: dataUri };
+          }
+        };
+
+        const appendTextToContentParts = (text: string) => {
+          const last = contentParts.at(-1);
+          if (last && last.type === 'text') {
+            last.text += text;
+          } else {
+            contentParts.push({ text, type: 'text' });
+          }
+        };
+
+        const appendTextToReasoningParts = (text: string) => {
+          const last = reasoningParts.at(-1);
+          if (last && last.type === 'text') {
+            last.text += text;
+          } else {
+            reasoningParts.push({ text, type: 'text' });
+          }
+        };
 
         const clearAttemptBuffers = () => {
           if (textBufferTimer) {
@@ -686,6 +735,91 @@ export const createRuntimeExecutors = (
               onError: async (errorData) => {
                 streamError = errorData;
                 console.error(`[${operationLogId}][stream_error]`, errorData);
+              },
+              // Multimodal output from Gemini 3 / image-preview models emits
+              // `content_part` / `reasoning_part` events instead of `text` /
+              // `reasoning`. Without these callbacks image parts are silently
+              // dropped: the assistant message is persisted with empty content
+              // and the user is still billed. See packages/model-runtime/src/
+              // core/streams/google/index.ts (shouldUseMultimodalProcessing).
+              onContentPart: async (data) => {
+                if (data.partType === 'text') {
+                  const text = data.content;
+                  if (!text) return;
+
+                  content += text;
+                  appendTextToContentParts(text);
+
+                  textBuffer += text;
+                  if (!textBufferTimer) {
+                    textBufferTimer = setTimeout(async () => {
+                      await flushTextBuffer();
+                      textBufferTimer = null;
+                    }, BUFFER_INTERVAL);
+                  }
+                  return;
+                }
+
+                if (data.partType === 'image') {
+                  hasContentImages = true;
+
+                  if (textBuffer) {
+                    await flushTextBuffer();
+                  }
+
+                  const { fileId, url } = await uploadStreamImage(data.content, data.mimeType);
+                  contentParts.push({ image: url, type: 'image' });
+                  // Only link a file in `messages_files` when we actually
+                  // uploaded to S3 (non-null fileId). If upload fell back to a
+                  // data URI, no DB file row exists — inserting the nanoid
+                  // would violate the FK to globalFiles.
+                  if (fileId) {
+                    imageList.push({
+                      alt: 'generated-image',
+                      id: fileId,
+                      url,
+                    });
+                  }
+
+                  await streamManager.publishStreamChunk(operationId, stepIndex, {
+                    chunkType: 'content_part',
+                    contentParts: [{ image: url, type: 'image' }],
+                  });
+                }
+              },
+              onReasoningPart: async (data) => {
+                if (data.partType === 'text') {
+                  const text = data.content;
+                  if (!text) return;
+
+                  thinkingContent += text;
+                  appendTextToReasoningParts(text);
+
+                  reasoningBuffer += text;
+                  if (!reasoningBufferTimer) {
+                    reasoningBufferTimer = setTimeout(async () => {
+                      await flushReasoningBuffer();
+                      reasoningBufferTimer = null;
+                    }, BUFFER_INTERVAL);
+                  }
+                  return;
+                }
+
+                if (data.partType === 'image') {
+                  hasReasoningImages = true;
+
+                  if (reasoningBuffer) {
+                    await flushReasoningBuffer();
+                  }
+
+                  const { url } = await uploadStreamImage(data.content, data.mimeType);
+                  reasoningParts.push({ image: url, type: 'image' });
+
+                  await streamManager.publishStreamChunk(operationId, stepIndex, {
+                    chunkType: 'reasoning_part',
+                    reasoningParts: [{ image: url, type: 'image' }],
+                  });
+                }
               },
             },
             metadata: {

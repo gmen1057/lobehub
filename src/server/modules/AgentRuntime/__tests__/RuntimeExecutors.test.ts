@@ -24,6 +24,20 @@ vi.mock('@/server/services/message', () => ({
   })),
 }));
 
+const mockUploadBase64 = vi.fn();
+
+vi.mock('@/server/services/file', () => ({
+  FileService: vi.fn().mockImplementation(() => ({
+    uploadBase64: mockUploadBase64,
+  })),
+}));
+
+vi.mock('@/envs/file', () => ({
+  fileEnv: {
+    NEXT_PUBLIC_S3_FILE_PATH: 'files',
+  },
+}));
+
 // @lobechat/model-runtime resolves to @cloud/business-model-runtime which has
 // cloud-specific dependencies that are unavailable in the test environment
 vi.mock('@lobechat/model-runtime', () => ({
@@ -1155,6 +1169,143 @@ describe('RuntimeExecutors', () => {
         // resolveTopicReferences ran but found no <refer_topic> tags → topicReferences is undefined
         const callArgs = engineSpy.mock.calls[0][0];
         expect(callArgs).not.toHaveProperty('topicReferences');
+      });
+    });
+
+    // Regression test for 2026-04-24 incident: Gemini 3 / image-preview models
+    // emit content_part events (not plain text) when shouldUseMultimodalProcessing
+    // triggers in packages/model-runtime/src/core/streams/google/index.ts.
+    // Before this fix, RuntimeExecutors registered no onContentPart callback,
+    // so image base64 payloads were dropped — assistant messages saved with
+    // empty content, no files linked, users billed for tokens they never saw.
+    describe('content_part / reasoning_part multimodal handling', () => {
+      it('uploads image parts, fills imageList, and serializes multimodal content', async () => {
+        mockUploadBase64.mockResolvedValueOnce({
+          fileId: 'file-gen-1',
+          key: 'files/agent-runtime/images/2026-04-24/abc.png',
+          url: '/api/files/file-gen-1',
+        });
+
+        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+          const cb = options?.callback;
+          await cb?.onContentPart?.({ content: 'Here is the image:', partType: 'text' });
+          await cb?.onContentPart?.({
+            content: 'BASE64_DATA',
+            mimeType: 'image/png',
+            partType: 'image',
+          });
+          await cb?.onCompletion?.({
+            usage: { completionTokens: 1120, promptTokens: 100, totalTokens: 1220 },
+          });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        const executors = createRuntimeExecutors(ctx);
+        const state = createMockState();
+        const instruction = {
+          payload: {
+            messages: [{ content: 'Draw me something', role: 'user' }],
+            model: 'gemini-3.1-flash-image-preview',
+            provider: 'google',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        };
+
+        await executors.call_llm!(instruction, state);
+
+        expect(mockUploadBase64).toHaveBeenCalledWith(
+          'BASE64_DATA',
+          expect.stringMatching(/files\/agent-runtime\/images\/\d{4}-\d{2}-\d{2}\/.+\.png/),
+        );
+
+        expect(mockMessageModel.update).toHaveBeenCalledTimes(1);
+        const [msgId, updatePatch] = mockMessageModel.update.mock.calls[0];
+        expect(msgId).toBe('msg-123');
+        expect(updatePatch.content).toContain('Here is the image:');
+        expect(updatePatch.content).toContain('/api/files/file-gen-1');
+        expect(updatePatch.content).toContain('"type":"image"');
+        expect(updatePatch.imageList).toEqual([
+          { alt: 'generated-image', id: 'file-gen-1', url: '/api/files/file-gen-1' },
+        ]);
+        expect(updatePatch.metadata?.isMultimodal).toBe(true);
+      });
+
+      it('falls back to plain string content when content_part only emits text', async () => {
+        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+          const cb = options?.callback;
+          await cb?.onContentPart?.({ content: 'pure text reply', partType: 'text' });
+          await cb?.onCompletion?.({
+            usage: { completionTokens: 3, promptTokens: 5, totalTokens: 8 },
+          });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        const executors = createRuntimeExecutors(ctx);
+        const state = createMockState();
+        const instruction = {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'gemini-3-pro',
+            provider: 'google',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        };
+
+        await executors.call_llm!(instruction, state);
+
+        expect(mockUploadBase64).not.toHaveBeenCalled();
+
+        expect(mockMessageModel.update).toHaveBeenCalledTimes(1);
+        const [msgId, updatePatch] = mockMessageModel.update.mock.calls[0];
+        expect(msgId).toBe('msg-123');
+        expect(updatePatch.content).toBe('pure text reply');
+        expect(updatePatch.imageList).toBeUndefined();
+        expect(updatePatch.metadata?.isMultimodal).toBeUndefined();
+      });
+
+      it('skips imageList when upload falls back to data URI (no fileId)', async () => {
+        // Simulate S3 upload failure → FileService.uploadBase64 throws
+        mockUploadBase64.mockRejectedValueOnce(new Error('S3 down'));
+
+        const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+          const cb = options?.callback;
+          await cb?.onContentPart?.({
+            content: 'BASE64_DATA',
+            mimeType: 'image/png',
+            partType: 'image',
+          });
+          await cb?.onCompletion?.({
+            usage: { completionTokens: 1120, promptTokens: 100, totalTokens: 1220 },
+          });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        const executors = createRuntimeExecutors(ctx);
+        const state = createMockState();
+        const instruction = {
+          payload: {
+            messages: [{ content: 'Draw me something', role: 'user' }],
+            model: 'gemini-3.1-flash-image-preview',
+            provider: 'google',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        };
+
+        await executors.call_llm!(instruction, state);
+
+        const [, updatePatch] = mockMessageModel.update.mock.calls[0];
+        // Content still serializes the part with data URI fallback — user
+        // still sees the image inline even if S3 was unreachable.
+        expect(updatePatch.content).toContain('data:image/png;base64,BASE64_DATA');
+        // imageList stays empty because no DB file row exists for FK.
+        expect(updatePatch.imageList).toBeUndefined();
+        expect(updatePatch.metadata?.isMultimodal).toBe(true);
       });
     });
   });
