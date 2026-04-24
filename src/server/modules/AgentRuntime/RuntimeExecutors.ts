@@ -876,15 +876,29 @@ export const createRuntimeExecutors = (
           }
 
           // Add a complete llm_stream event (including all streaming chunks)
+          // Compute final content NOW (before emitting llm_result) so the
+          // state machine downstream sees a non-empty content string when
+          // the model returned image-only multimodal output. Otherwise
+          // GeneralChatAgent sees content='' + no tool_calls, assumes the
+          // step produced nothing and schedules another call_llm — which
+          // silently re-runs image generation, billing the user twice
+          // and leaving the operation stuck in "processing".
+          const finalContent = hasContentImages ? serializePartsForStorage(contentParts) : content;
+
           events.push({
-            result: { content, reasoning: thinkingContent, tool_calls, usage: currentStepUsage },
+            result: {
+              content: finalContent,
+              reasoning: thinkingContent,
+              tool_calls,
+              usage: currentStepUsage,
+            },
             type: 'llm_result',
           });
 
           // Publish stream end event
           await streamManager.publishStreamEvent(operationId, {
             data: {
-              finalContent: content,
+              finalContent,
               grounding,
               imageList: imageList.length > 0 ? imageList : undefined,
               reasoning: thinkingContent || undefined,
@@ -896,10 +910,6 @@ export const createRuntimeExecutors = (
           });
 
           log('[%s:%d] call_llm completed', operationId, stepIndex);
-
-          // ===== 1. First save original usage to message.metadata =====
-          // Determine final content - use serialized parts if has images, otherwise plain text
-          const finalContent = hasContentImages ? serializePartsForStorage(contentParts) : content;
 
           // Determine final reasoning - handle multimodal reasoning
           let finalReasoning: any = undefined;
