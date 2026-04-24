@@ -2,6 +2,7 @@ import { imageUrlToBase64 } from '@lobechat/utils';
 import { cleanObject } from '@lobechat/utils/object';
 import createDebug from 'debug';
 import type { RuntimeImageGenParamsValue } from 'model-bank';
+import { ModelProvider } from 'model-bank';
 import type OpenAI from 'openai';
 
 import type { CreateImagePayload, CreateImageResponse } from '../../types/image';
@@ -11,6 +12,16 @@ import { convertImageUrlToFile } from '../contextBuilders/openai';
 import { convertOpenAIImageUsage } from '../usageConverters/openai';
 
 const log = createDebug('lobe-image:openai-compatible');
+
+const OPENAI_IMAGES_API_MODEL_ALIASES = {
+  'gpt-image-2:image': 'gpt-image-2',
+} as const satisfies Record<string, string>;
+
+const getOpenAIImagesApiModel = (model: string, provider: string) => {
+  if (provider !== ModelProvider.OpenAI) return;
+
+  return OPENAI_IMAGES_API_MODEL_ALIASES[model as keyof typeof OPENAI_IMAGES_API_MODEL_ALIASES];
+};
 
 /**
  * Generate images using traditional OpenAI images API (DALL-E, etc.)
@@ -54,7 +65,9 @@ async function generateByImageMode(
       // According to official docs, if there are multiple images, pass an array; if only one, pass a single File
       userInput.image = imageFiles.length === 1 ? imageFiles[0] : imageFiles;
     } catch (error) {
-      throw new Error(`Failed to convert image URLs to File objects: ${error}`);
+      throw new Error(`Failed to convert image URLs to File objects: ${error}`, {
+        cause: error,
+      });
     }
   } else {
     delete userInput.image;
@@ -180,7 +193,9 @@ async function generateByChatModel(
       });
       log('Successfully processed image URL for chat input');
     } catch (error) {
-      throw new Error(`Failed to process image URL: ${error}`);
+      throw new Error(`Failed to process image URL: ${error}`, {
+        cause: error,
+      });
     }
   }
 
@@ -229,6 +244,11 @@ export async function createOpenAICompatibleImage(
   provider: string,
 ): Promise<CreateImageResponse> {
   const { model } = payload;
+  const openAIImagesApiModel = getOpenAIImagesApiModel(model, provider);
+
+  if (openAIImagesApiModel) {
+    return await generateByImageMode(client, { ...payload, model: openAIImagesApiModel }, provider);
+  }
 
   // Check if it's a chat model for image generation (via :image suffix)
   if (model.endsWith(':image')) {

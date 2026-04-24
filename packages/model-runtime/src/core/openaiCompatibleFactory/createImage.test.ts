@@ -554,6 +554,40 @@ describe('createOpenAICompatibleImage', () => {
       expect(mockClient.images.generate).toHaveBeenCalled();
       expect(mockClient.chat.completions.create).not.toHaveBeenCalled();
     });
+
+    it('should route OpenAI gpt-image-2:image alias to images API', async () => {
+      const mockImageResponse = {
+        data: [
+          {
+            b64_json: 'gptImage2Result',
+          },
+        ],
+      };
+
+      vi.mocked(mockClient.images.generate).mockResolvedValue(mockImageResponse as any);
+
+      const payload: CreateImagePayload = {
+        model: 'gpt-image-2:image',
+        params: {
+          prompt: 'Test OpenAI image model alias',
+          quality: 'high',
+          size: '1024x1024',
+        },
+      };
+
+      const result = await createOpenAICompatibleImage(mockClient, payload, 'openai');
+
+      expect(result.imageUrl).toBe('data:image/png;base64,gptImage2Result');
+      expect(mockClient.images.generate).toHaveBeenCalledWith({
+        model: 'gpt-image-2',
+        n: 1,
+        prompt: 'Test OpenAI image model alias',
+        quality: 'high',
+        size: '1024x1024',
+      });
+      expect(mockClient.chat.completions.create).not.toHaveBeenCalled();
+      expect(mockClient.images.edit).not.toHaveBeenCalled();
+    });
   });
 
   describe('image mode - parameter mapping', () => {
@@ -567,7 +601,7 @@ describe('createOpenAICompatibleImage', () => {
       };
 
       // Mock fetch for image download
-      const mockArrayBuffer = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]).buffer;
+      const mockArrayBuffer = new Uint8Array([0xff, 0xd8, 0xff, 0xe0]).buffer;
       global.fetch = vi.fn().mockResolvedValue({
         ok: true,
         arrayBuffer: async () => mockArrayBuffer,
