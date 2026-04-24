@@ -11,7 +11,11 @@ import {
   type SupervisorInstructionExecClientAsyncTask,
   type SupervisorInstructionParallelCallAgents,
 } from '@lobechat/agent-runtime';
-import { type ConversationContext, type UIChatMessage } from '@lobechat/types';
+import {
+  type ConversationContext,
+  type MessageMetadata,
+  type UIChatMessage,
+} from '@lobechat/types';
 import debug from 'debug';
 
 import { aiAgentService } from '@/services/aiAgent';
@@ -494,11 +498,21 @@ export const createGroupOrchestrationExecutors = (
 
           if (status.status === 'completed') {
             log(`[${sessionLogId}] Task completed successfully`);
-            // 4. Update task message with summary
+            // 4. Update task message with summary.
+            // Forward resultMetadata (primarily isMultimodal) so the task
+            // message is rendered by RichContentRenderer when the subagent
+            // returned a serialized multimodal payload (Gemini-3 image gen).
+            // Without this, DisplayContent routes to MarkdownMessage and
+            // the user sees raw JSON/links instead of images.
             if (status.result) {
-              await get().optimisticUpdateMessageContent(taskMessageId, status.result, undefined, {
-                operationId: state.operationId,
-              });
+              await get().optimisticUpdateMessageContent(
+                taskMessageId,
+                status.result,
+                status.resultMetadata
+                  ? { metadata: status.resultMetadata as MessageMetadata }
+                  : undefined,
+                { operationId: state.operationId },
+              );
             }
             return {
               events: [] as GroupOrchestrationEvent[],
@@ -1022,7 +1036,9 @@ export const createGroupOrchestrationExecutors = (
                     await get().optimisticUpdateMessageContent(
                       tracker.taskMessageId,
                       status.result,
-                      undefined,
+                      status.resultMetadata
+                        ? { metadata: status.resultMetadata as MessageMetadata }
+                        : undefined,
                       { operationId: state.operationId },
                     );
                   }
