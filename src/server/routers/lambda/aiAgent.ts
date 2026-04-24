@@ -941,10 +941,20 @@ export const aiAgentRouter = router({
       const { flatList: parsedMessages } = parse(threadMessages);
 
       // 7. Get result content when task is completed or failed
+      // Also forward the assistant's metadata (at minimum isMultimodal) so the
+      // polling callback on the supervisor side can set it on the task-role UI
+      // message. Without this, a multimodal-JSON content like
+      // [{"image": "...", "type": "image"}, ...] renders as plain Markdown —
+      // the user sees a serialized payload instead of the image.
       let resultContent: string | undefined;
+      let resultMetadata: Record<string, unknown> | undefined;
       if (updatedTaskStatus === 'completed' || updatedTaskStatus === 'failed') {
         const lastAssistantMessage = sortedMessages.find((m) => m.role === 'assistant');
         resultContent = lastAssistantMessage?.content;
+        const rawMetadata = lastAssistantMessage?.metadata;
+        if (rawMetadata && typeof rawMetadata === 'object') {
+          resultMetadata = rawMetadata as Record<string, unknown>;
+        }
       }
 
       // 8. Build currentActivity when task is processing
@@ -1009,6 +1019,7 @@ export const aiAgentRouter = router({
         error: updatedMetadata?.error ?? realtimeStatus?.currentState?.error,
         messages: parsedMessages,
         result: resultContent,
+        resultMetadata,
         status: updatedTaskStatus,
         stepCount: realtimeStatus?.currentState?.stepCount,
         taskDetail,

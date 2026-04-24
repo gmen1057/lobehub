@@ -391,15 +391,26 @@ export class GroupOrchestrationActionImpl {
               },
             });
 
-            // Update content when task is completed or failed
+            // Update content when task is completed or failed.
+            // Forward resultMetadata (notably `isMultimodal`) so DisplayContent
+            // can deserialize multimodal JSON into <RichContentRenderer /> —
+            // otherwise a task whose last assistant reply is a serialized
+            // multimodal payload shows up as raw Markdown JSON.
             if (
               (data.status === 'completed' || data.status === 'failed') &&
               data.result !== undefined
             ) {
+              const nextValue: {
+                content: string;
+                metadata?: Record<string, unknown>;
+              } = { content: data.result };
+              if (data.resultMetadata) {
+                nextValue.metadata = data.resultMetadata;
+              }
               this.#get().internal_dispatchMessage({
                 id: messageId,
                 type: 'updateMessage',
-                value: { content: data.result },
+                value: nextValue,
               });
             }
           }

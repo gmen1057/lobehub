@@ -239,6 +239,13 @@ export interface TaskStatusResult {
   messages?: UIChatMessage[];
   /** Task result content (last assistant message) */
   result?: string;
+  /**
+   * Metadata of the last assistant message forwarded to the task UI message.
+   * Carries fields that must travel together with `result` — most importantly
+   * `isMultimodal`, without which DisplayContent renders a serialized
+   * multimodal JSON payload as a plain Markdown string (broken image link).
+   */
+  resultMetadata?: Record<string, unknown>;
   /** Current task status */
   status: 'processing' | 'completed' | 'failed' | 'cancel';
   /** Number of steps executed */
