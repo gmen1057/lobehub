@@ -34,32 +34,6 @@ export const gptImage2ParamsSchema: ModelParamsSchema = {
 export const openaiChatModels: AIChatModelCard[] = [
   {
     abilities: {
-      imageOutput: true,
-      vision: true,
-    },
-    contextWindowTokens: 32_000,
-    description:
-      'ChatGPT Images 2.0 — флагманская модель OpenAI для генерации и редактирования изображений с встроенным reasoning, мультиязычным текстом и web search.',
-    displayName: 'ChatGPT Images 2',
-    enabled: true,
-    id: 'gpt-image-2',
-    maxOutput: 32_000,
-    pricing: {
-      approximatePricePerImage: 0.053,
-      units: [
-        { name: 'imageOutput', rate: 211, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textOutput', rate: 40, strategy: 'fixed', unit: 'millionTokens' },
-      ],
-    },
-    releasedAt: '2026-04-21',
-    settings: {
-      extendParams: ['openaiImageSize', 'openaiImageQuality'],
-    },
-    type: 'chat',
-  },
-  {
-    abilities: {
       functionCall: true,
       reasoning: true,
       search: true,
