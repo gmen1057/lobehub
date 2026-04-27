@@ -382,12 +382,17 @@ export const initModelRuntimeWithUserPayload = (
     ...params,
   };
 
-  // Inject X-User-Id header for arckep billing proxy (only when PROXY_URL is set)
+  // Inject X-User-Id + arckep internal token for billing proxy (only when PROXY_URL is set)
   if (resolvedParams.baseURL && params.userId) {
-    resolvedParams.defaultHeaders = {
+    const headers: Record<string, string> = {
       ...resolvedParams.defaultHeaders,
       'X-User-Id': String(params.userId),
     };
+    const internalKey = process.env.LOBECHAT_BACKEND_KEY;
+    if (internalKey) {
+      headers['X-Arckep-Token'] = internalKey;
+    }
+    resolvedParams.defaultHeaders = headers;
   }
 
   return ModelRuntime.initializeWithProvider(runtimeProvider, resolvedParams, hooks);
