@@ -14,9 +14,12 @@ local window = tonumber(ARGV[2])
 local limit = tonumber(ARGV[3])
 local member = ARGV[4]
 redis.call('ZREMRANGEBYSCORE', key, 0, now - window)
-redis.call('ZADD', key, now, member)
-redis.call('EXPIRE', key, math.ceil(window / 1000))
 local count = redis.call('ZCOUNT', key, now - window, now)
+if count < limit then
+  redis.call('ZADD', key, now, member)
+  redis.call('EXPIRE', key, math.ceil(window / 1000))
+  return count + 1
+end
 return count
 `;
 

@@ -13,8 +13,28 @@ interface DocumentAuditPayload {
   userId: string;
 }
 
-const getAuditUrl = () =>
-  `${process.env.IMAGE_STUDIO_API_URL || 'http://127.0.0.1:8202'}/api/chat/tool-audits`;
+// Allowlist for the audit endpoint host. Only loopback (this host) is permitted —
+// guards against env-var compromise that would otherwise leak the internal token to
+// an arbitrary external service.
+const AUDIT_HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
+
+const getAuditUrl = (): string | null => {
+  const base = process.env.IMAGE_STUDIO_API_URL || 'http://127.0.0.1:8202';
+  try {
+    const url = new URL(base);
+    if (!AUDIT_HOST_ALLOWLIST.has(url.hostname)) {
+      console.error(
+        '[documents:audit] IMAGE_STUDIO_API_URL host not in allowlist; refusing to send token:',
+        url.hostname,
+      );
+      return null;
+    }
+    return `${base.replace(/\/$/, '')}/api/chat/tool-audits`;
+  } catch (error) {
+    console.error('[documents:audit] Invalid IMAGE_STUDIO_API_URL:', error);
+    return null;
+  }
+};
 
 const getInternalToken = () =>
   process.env.ARCKEP_INTERNAL_TOKEN || process.env.LOBECHAT_BACKEND_KEY;
@@ -24,6 +44,9 @@ const getInternalToken = () =>
 export const auditDocumentToolCall = (payload: DocumentAuditPayload) => {
   const token = getInternalToken();
   if (!token) return;
+
+  const url = getAuditUrl();
+  if (!url) return;
 
   const body = {
     api_name: 'generateDocument',
@@ -44,7 +67,7 @@ export const auditDocumentToolCall = (payload: DocumentAuditPayload) => {
     user_id: Number(payload.userId),
   };
 
-  void fetch(getAuditUrl(), {
+  void fetch(url, {
     body: JSON.stringify(body),
     headers: {
       'Content-Type': 'application/json',

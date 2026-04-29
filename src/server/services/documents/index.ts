@@ -131,14 +131,31 @@ export class DocumentsService {
     const buffer = await renderDocument(parsed.format, contentMarkdown, parsed.title, sheets);
     const mimeType = mimeByFormat[parsed.format];
     const pathname = `documents/${this.userId}/${topicId}/${filename}`;
-    const { fileId, url } = await this.fileService.uploadFromBuffer(buffer, mimeType, pathname);
+    const { fileId, key, url } = await this.fileService.uploadFromBuffer(
+      buffer,
+      mimeType,
+      pathname,
+    );
 
     if (parsed.messageId) {
-      const attachResult = await this.messageService.addFilesToMessage(parsed.messageId, [fileId], {
-        topicId: parsed.topicId,
-      });
-      if (!attachResult.success) {
-        throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to attach file' });
+      try {
+        const attachResult = await this.messageService.addFilesToMessage(
+          parsed.messageId,
+          [fileId],
+          { topicId: parsed.topicId },
+        );
+        if (!attachResult.success) {
+          throw new TRPCError({ code: 'INTERNAL_SERVER_ERROR', message: 'Failed to attach file' });
+        }
+      } catch (error) {
+        // Cleanup S3 orphan + DB row when attach fails after a successful upload.
+        await Promise.allSettled([
+          this.fileService.deleteFile(key),
+          this.fileService.deleteUserFileRecord(fileId),
+        ]).catch((cleanupError) => {
+          console.error('[documents] Orphan cleanup failed after attach error:', cleanupError);
+        });
+        throw error;
       }
     }
 

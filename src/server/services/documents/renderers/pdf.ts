@@ -5,10 +5,10 @@ const REGULAR_FONT_URL =
   'https://cdn.jsdelivr.net/gh/adobe-fonts/source-han-sans@2.004R/OTF/SimplifiedChinese/SourceHanSansSC-Regular.otf';
 
 let regularFontCache: Buffer | null = null;
+// Promise mutex: prevents N concurrent cold-start requests from each fetching the font.
+let fontLoadPromise: Promise<Buffer | null> | null = null;
 
-const loadRegularFont = async (): Promise<Buffer | null> => {
-  if (regularFontCache) return regularFontCache;
-
+const fetchRegularFont = async (): Promise<Buffer | null> => {
   try {
     const response = await fetch(REGULAR_FONT_URL, { signal: AbortSignal.timeout(5000) });
     if (!response.ok) return null;
@@ -20,6 +20,14 @@ const loadRegularFont = async (): Promise<Buffer | null> => {
     console.error('[documents:pdf] Failed to load CJK font, using PDFKit fallback:', error);
     return null;
   }
+};
+
+const loadRegularFont = async (): Promise<Buffer | null> => {
+  if (regularFontCache) return regularFontCache;
+  fontLoadPromise ??= fetchRegularFont().finally(() => {
+    fontLoadPromise = null;
+  });
+  return fontLoadPromise;
 };
 
 export const generatePdfFromMarkdown = async (
