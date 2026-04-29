@@ -69,7 +69,11 @@ export class BuiltinToolsExecutor implements IToolExecutor {
     }
 
     try {
-      return await runtime[apiName](args, context);
+      return await runtime[apiName](args, {
+        ...context,
+        messageId: payload.result_msg_id,
+        toolCallId: payload.id,
+      });
     } catch (e) {
       const error = e as Error;
       console.error('Error executing builtin tool %s:%s: %O', identifier, apiName, error);

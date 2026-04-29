@@ -65,6 +65,8 @@
   "builtins.lobe-cloud-sandbox.apiName.searchLocalFiles": "Поиск файлов",
   "builtins.lobe-cloud-sandbox.apiName.writeLocalFile": "Записать файл",
   "builtins.lobe-cloud-sandbox.title": "Облачная песочница",
+  "builtins.lobe-documents.apiName.generateDocument": "Создать документ",
+  "builtins.lobe-documents.title": "Документы",
   "builtins.lobe-group-agent-builder.apiName.batchCreateAgents": "Массовое создание агентов",
   "builtins.lobe-group-agent-builder.apiName.createAgent": "Создать агента",
   "builtins.lobe-group-agent-builder.apiName.createGroup": "Создать группу",

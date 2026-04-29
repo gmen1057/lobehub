@@ -7,6 +7,7 @@ import { CalculatorManifest } from '@lobechat/builtin-tool-calculator';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { CredsManifest } from '@lobechat/builtin-tool-creds';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
+import { DocumentsIdentifier, DocumentsManifest } from '@lobechat/builtin-tool-documents';
 import { GroupAgentBuilderManifest } from '@lobechat/builtin-tool-group-agent-builder';
 import { GroupManagementManifest } from '@lobechat/builtin-tool-group-management';
 import { GTDManifest } from '@lobechat/builtin-tool-gtd';
@@ -27,10 +28,6 @@ import { WebOnboardingManifest } from '@lobechat/builtin-tool-web-onboarding';
 import { isDesktop, RECOMMENDED_SKILLS, RecommendedSkillType } from '@lobechat/const';
 import { type LobeBuiltinTool } from '@lobechat/types';
 
-/**
- * Default tool IDs that will always be added to the tools list.
- * Shared between frontend (createAgentToolsEngine) and server (createServerAgentToolsEngine).
- */
 export const defaultToolIds = [
   LobeActivatorManifest.identifier,
   SkillsManifest.identifier,
@@ -42,6 +39,7 @@ export const defaultToolIds = [
   TopicReferenceManifest.identifier,
   AgentDocumentsManifest.identifier,
   GTDManifest.identifier,
+  DocumentsIdentifier,
 ];
 
 /**
@@ -108,6 +106,13 @@ export const builtinTools: LobeBuiltinTool[] = [
     hidden: true,
     identifier: CloudSandboxManifest.identifier,
     manifest: CloudSandboxManifest,
+    type: 'builtin',
+  },
+  {
+    discoverable: true,
+    hidden: false,
+    identifier: DocumentsIdentifier,
+    manifest: DocumentsManifest,
     type: 'builtin',
   },
   {
@@ -229,14 +234,14 @@ export const builtinTools: LobeBuiltinTool[] = [
   },
 ];
 
-/**
- * Non-hidden builtin tools that are NOT in RECOMMENDED_SKILLS.
- * These tools default to uninstalled and must be explicitly installed by the user from the Skill Store.
- */
 const recommendedBuiltinIds = new Set(
   RECOMMENDED_SKILLS.filter((s) => s.type === RecommendedSkillType.Builtin).map((s) => s.id),
 );
+const defaultBuiltinIds = new Set(defaultToolIds);
 
 export const defaultUninstalledBuiltinTools = builtinTools
-  .filter((t) => !t.hidden && !recommendedBuiltinIds.has(t.identifier))
+  .filter(
+    (t) =>
+      !t.hidden && !recommendedBuiltinIds.has(t.identifier) && !defaultBuiltinIds.has(t.identifier),
+  )
   .map((t) => t.identifier);

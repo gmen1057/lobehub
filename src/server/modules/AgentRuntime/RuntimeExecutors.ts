@@ -74,6 +74,18 @@ const TOOL_PRICING: Record<string, number> = {
 };
 
 const TOOL_MAX_RETRIES = 2;
+const DOCUMENTS_TOOL_IDENTIFIER = 'lobe-documents';
+
+const getDocumentFileId = (result: ToolExecutionResultResponse) => {
+  const state = result.state;
+  if (!state || typeof state !== 'object') return;
+
+  const record = state as Record<string, unknown>;
+  if (record.toolIdentifier !== DOCUMENTS_TOOL_IDENTIFIER) return;
+
+  return typeof record.fileId === 'string' ? record.fileId : undefined;
+};
+
 const LLM_MAX_RETRIES = 5;
 const LLM_RETRY_BASE_DELAY_MS = 1000;
 const LLM_RETRY_MAX_DELAY_MS = 30_000;
@@ -1455,6 +1467,8 @@ export const createRuntimeExecutors = (
           topicId: state.metadata?.topicId,
         });
         toolMessageId = toolMessage.id;
+        const documentFileId = getDocumentFileId(executionResult);
+        if (documentFileId) await ctx.messageModel.addFiles(toolMessage.id, [documentFileId]);
       } catch (error) {
         console.error('[StreamingToolExecutor] Failed to create tool message: %O', error);
       }
@@ -1731,6 +1745,8 @@ export const createRuntimeExecutors = (
               topicId: state.metadata?.topicId,
             });
             toolMessageIds.push(toolMessage.id);
+            const documentFileId = getDocumentFileId(executionResult);
+            if (documentFileId) await ctx.messageModel.addFiles(toolMessage.id, [documentFileId]);
             log(`[${operationLogId}] Created tool message ${toolMessage.id} for ${toolName}`);
           } catch (error) {
             console.error(
