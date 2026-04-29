@@ -67,12 +67,15 @@ else
     warn "Could not determine PID for memory check"
 fi
 
-# 5. Check no OOM kills in last hour
-OOM_COUNT=$(journalctl -k --since "1 hour ago" 2>/dev/null | grep -ci "oom\|out of memory\|killed process" || true)
+# 5. Check no OOM kills of THIS service in last 5 minutes.
+# Match by cgroup (task_memcg=/system.slice/image-studio-lobechat.service) — global
+# OOM events from unrelated processes must not trigger a restart.
+OOM_COUNT=$(journalctl -k --since "${ERROR_WINDOW_MIN} minutes ago" 2>/dev/null | \
+    grep -ic "task_memcg=/system\.slice/${SERVICE}\.service" || true)
 if [ "$OOM_COUNT" -eq 0 ]; then
-    ok "No OOM kills in the last hour"
+    ok "No OOM kills of ${SERVICE} in the last ${ERROR_WINDOW_MIN}min"
 else
-    fail "Found ${OOM_COUNT} OOM kill event(s) in the last hour"
+    fail "Found ${OOM_COUNT} OOM kill event(s) of ${SERVICE} in the last ${ERROR_WINDOW_MIN}min"
 fi
 
 # 6. Check error count in service logs < 10 in last 5 minutes
