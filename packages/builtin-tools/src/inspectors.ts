@@ -14,6 +14,7 @@ import {
   CloudSandboxIdentifier,
   CloudSandboxInspectors,
 } from '@lobechat/builtin-tool-cloud-sandbox/client';
+import { DocumentsIdentifier, DocumentsInspectors } from '@lobechat/builtin-tool-documents/client';
 import {
   GroupAgentBuilderInspectors,
   GroupAgentBuilderManifest,
@@ -60,6 +61,7 @@ const BuiltinToolInspectors: Record<string, Record<string, BuiltinInspector>> = 
     BuiltinInspector
   >,
   [CloudSandboxIdentifier]: CloudSandboxInspectors as Record<string, BuiltinInspector>,
+  [DocumentsIdentifier]: DocumentsInspectors as Record<string, BuiltinInspector>,
   [GroupAgentBuilderManifest.identifier]: GroupAgentBuilderInspectors as Record<
     string,
     BuiltinInspector

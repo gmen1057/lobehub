@@ -9,10 +9,13 @@ export interface ToolExecutionContext {
   agentId?: string;
   /** Memory tool permission from agent chat config */
   memoryToolPermission?: 'read-only' | 'read-write';
+  /** Tool result message ID when known */
+  messageId?: string;
   /** Server database for LobeHub Skills execution */
   serverDB?: LobeChatDatabase;
   /** Task ID when executing within the Task system */
   taskId?: string;
+  toolCallId?: string;
   toolManifestMap: Record<string, LobeToolManifest>;
   /**
    * Maximum length for tool execution result content (in characters)

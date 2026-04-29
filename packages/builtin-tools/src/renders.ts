@@ -8,6 +8,8 @@ import { AgentManagementManifest } from '@lobechat/builtin-tool-agent-management
 import { AgentManagementRenders } from '@lobechat/builtin-tool-agent-management/client';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { CloudSandboxRenders } from '@lobechat/builtin-tool-cloud-sandbox/client';
+import { DocumentsManifest } from '@lobechat/builtin-tool-documents';
+import { DocumentsRenders } from '@lobechat/builtin-tool-documents/client';
 import { GroupAgentBuilderManifest } from '@lobechat/builtin-tool-group-agent-builder';
 import { GroupAgentBuilderRenders } from '@lobechat/builtin-tool-group-agent-builder/client';
 import { GroupManagementManifest } from '@lobechat/builtin-tool-group-management';
@@ -40,6 +42,7 @@ const BuiltinToolsRenders: Record<string, Record<string, BuiltinRender>> = {
   [AgentBuilderManifest.identifier]: AgentBuilderRenders as Record<string, BuiltinRender>,
   [AgentManagementManifest.identifier]: AgentManagementRenders as Record<string, BuiltinRender>,
   [CloudSandboxManifest.identifier]: CloudSandboxRenders as Record<string, BuiltinRender>,
+  [DocumentsManifest.identifier]: DocumentsRenders as Record<string, BuiltinRender>,
   [GroupAgentBuilderManifest.identifier]: GroupAgentBuilderRenders as Record<string, BuiltinRender>,
   [GroupManagementManifest.identifier]: GroupManagementRenders as Record<string, BuiltinRender>,
   [GTDManifest.identifier]: GTDRenders as Record<string, BuiltinRender>,

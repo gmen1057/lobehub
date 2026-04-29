@@ -65,6 +65,8 @@
   "builtins.lobe-cloud-sandbox.apiName.searchLocalFiles": "Search files",
   "builtins.lobe-cloud-sandbox.apiName.writeLocalFile": "Write file",
   "builtins.lobe-cloud-sandbox.title": "Cloud Sandbox",
+  "builtins.lobe-documents.apiName.generateDocument": "Generate document",
+  "builtins.lobe-documents.title": "Documents",
   "builtins.lobe-group-agent-builder.apiName.batchCreateAgents": "Batch create agents",
   "builtins.lobe-group-agent-builder.apiName.createAgent": "Create agent",
   "builtins.lobe-group-agent-builder.apiName.createGroup": "Create group",
