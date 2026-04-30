@@ -69,8 +69,32 @@ const providerConfigById =
 const isProviderConfigUpdating = (id: string) => (s: AIProviderStoreState) =>
   s.aiProviderConfigUpdatingIds.includes(id);
 
+// arckep: server-side billing requires every request to traverse our backend
+// (OPENAI_PROXY_URL / ANTHROPIC_PROXY_URL etc.). Browser-side fetchOnClient ships
+// requests directly to the provider with the API key from keyVaults, bypassing
+// the server-side ModelRuntime patch (index.ts:190-191) that injects PROXY_URL.
+// Result: revenue leak — we pay the provider, user pays nothing.
+// Incident 2026-04-30: 260+ gpt-5.4 messages charged to our OpenAI key with 0
+// chat_token_charges entries. Hard-disable client fetch for billed providers
+// regardless of user settings, baseURL/apiKey state, or DB ai_providers config.
+const ARCKEP_SERVER_BILLED_PROVIDERS = new Set([
+  'openai',
+  'anthropic',
+  'google',
+  'xai',
+  'openrouter',
+  'qwen',
+  'deepseek',
+  'mistral',
+  'groq',
+  'cohere',
+  'minimax',
+  'novita',
+]);
+
 /**
  * @description The conditions to enable client fetch
+ * 0. arckep: billed providers always go through server (revenue protection).
  * 1. If no baseUrl and apikey input, force on Server.
  * 2. If only contains baseUrl, force on Client
  * 3. Follow the user settings.
@@ -78,6 +102,9 @@ const isProviderConfigUpdating = (id: string) => (s: AIProviderStoreState) =>
  */
 const isProviderFetchOnClient =
   (provider: GlobalLLMProviderKey | string) => (s: AIProviderStoreState) => {
+    // arckep: hard-disable browser fetch for any billed provider — must hit our backend.
+    if (ARCKEP_SERVER_BILLED_PROVIDERS.has(provider)) return false;
+
     const config = providerConfigById(provider)(s);
 
     // If the provider already disable browser request in model config, force on Server.
