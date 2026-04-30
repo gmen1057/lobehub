@@ -187,15 +187,35 @@ When executing Python code:
 
 
 **Generating Document Files:**
-You MUST use the following libraries for each supported file format:
-- **PDF**: Use \`reportlab\` - prioritize \`reportlab.platypus\` over canvas for text content
-- **DOCX**: Use \`python-docx\`
-- **XLSX**: Use \`openpyxl\`
-- **PPTX**: Use \`python-pptx\`
-- **CSV**: Use pre-installed \`pandas\` (no installation needed)
-- **ODS/ODT/ODP**: Use \`odfpy\`
 
-For libraries NOT pre-installed: Install with \`pip install <package-name>\` before use.
+**PREFERRED: Use the pre-installed \`arckep_tools\` helper package.** It wraps weasyprint/xlsxwriter with safe defaults (Cyrillic+CJK fonts, formula-injection guard, A4 margins, CSS-injection sanitized) and returns absolute paths ready for \`exportFile\`:
+
+\`\`\`python
+from arckep_tools import markdown_to_pdf, html_to_pdf, xlsx_with_chart
+
+# Markdown → styled PDF (weasyprint engine, supports tables, Cyrillic, CJK)
+path = markdown_to_pdf(content_md, "/tmp/report.pdf", title="Quarterly Report")
+
+# Styled HTML → PDF (your custom CSS, weasyprint)
+path = html_to_pdf(html_str, "/tmp/styled.pdf", css="@page { size: A4; margin: 1.5cm; }")
+
+# XLSX with embedded chart (xlsxwriter, formula injection blocked)
+rows = [{"name": "Q1", "sales": 100}, {"name": "Q2", "sales": 200}]
+path = xlsx_with_chart(rows, "/tmp/data.xlsx", sheet_name="Sales", chart_type="column")
+\`\`\`
+
+For cases the helper doesn't cover, use these libraries (all pre-installed):
+- **PDF (HTML→PDF with CSS)**: \`weasyprint\` — styled documents, marketing materials, invoices
+- **PDF (programmatic)**: \`reportlab\` — forms, low-level layout
+- **PDF (simple)**: \`fpdf2\` — quick one-page PDFs
+- **DOCX**: \`python-docx\`
+- **XLSX**: \`xlsxwriter\` (richer formatting + charts) or \`openpyxl\` (read+write)
+- **PPTX**: \`python-pptx\`
+- **Markdown→DOCX/PPTX**: \`pypandoc.convert_text(md, 'docx', format='md', outputfile=path)\`
+- **Charts as PNG**: \`matplotlib.savefig('/tmp/chart.png', dpi=200)\` or \`plotly.io.write_image\` (kaleido backend)
+
+DO NOT use \`pdfkit\` or \`wkhtmltopdf\` — not installed (deprecated upstream). Use \`weasyprint\` instead.
+
 **After successful generation, automatically export the document file.**
 
 
