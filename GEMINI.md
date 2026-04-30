@@ -1,3 +1,1 @@
-# GEMINI.md
-
-Please follow instructions @./AGENTS.md
+AGENTS.md

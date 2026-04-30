@@ -1,0 +1,45 @@
+{
+  "api_clients": ["src/services/api.ts"],
+  "exclude_paths": [
+    "node_modules",
+    ".next",
+    "dist",
+    "build",
+    "apps",
+    "packages",
+    "plugins",
+    "locales",
+    "e2e",
+    "tests",
+    "__mocks__",
+    "docker-compose",
+    "public",
+    "changelog",
+    "docs",
+    "patches",
+    "scripts/cli",
+    "src/locales"
+  ],
+  "external_hosts": {
+    "http://127.0.0.1:8202": "image-studio"
+  },
+  "framework": "next-app-router",
+  "language": "ts",
+  "quirks": {
+    "monorepo_layout": "pnpm/bun monorepo с workspaces в apps/ + packages/ + plugins/. Codegraph индексирует только src/ (web_indexer) и . (ast_indexer с exclude). apps/, packages/, plugins/ — upstream LobeHub и повторятся при следующем merge. Не трогай их без явной необходимости.",
+    "fork_and_custom_commits": "Fork от upstream LobeHub (https://github.com/lobehub/lobe-chat). Наши кастомизации помечены тегом 'arckep:' в commit message — 41 коммит. При upstream merge нужен ручной rebase + пересборка. Ключевые кастомные файлы: src/app/(backend)/api/bridge/route.ts, src/libs/next/proxy/define-config.ts, src/const/arckepPricing.ts, src/server/services/bot/*.",
+    "better_auth_bridge": "src/app/(backend)/api/bridge/route.ts — endpoint аутентификации между image-studio (arckep.ru) и LobeChat. Принимает arckep_token cookie, создаёт Better-Auth сессию, редиректит в LobeChat UI. Двусторонняя auth-связка — критический путь для SSO.",
+    "cross_project_billing": "LobeChat зовёт image-studio backend через ${process.env.IMAGE_STUDIO_API_URL}/api/billing-proxy/* для биллинга токенов. Cross-project edges (LobeChat → image-studio) строятся в Phase 15b.",
+    "stable_id": "Stable IDs — project-root-relative пути. web_indexer ходит по src/, эмитирует пути с префиксом src/ (аналогично frontend/ в image-studio). ast_indexer ходит от project root, но exclude_paths отсекает apps/packages/plugins.",
+    "joern_skipped": "joern: null — CPG build пропущен намеренно (Phase 15a). Joern для LobeChat не нужен сейчас: dataflow-анализ не требуется, 5 ГБ исходника делают build дорогим. Добавить позже если понадобится вызов-граф.",
+    "ast_walker_risk": "AST-indexer ходит от project root. Если walker проваливается в apps/ или packages/ несмотря на exclude_paths — увеличь exclude список. Цель: symbol-index.sqlite ≤ 50 МБ. При image-studio (545 файлов) — 7.8 МБ; LobeChat src/ ~3K файлов, ожидаем 30-50 МБ.",
+    "phase_15_cross_project": "Phase 15b: cross-project edges через external_hosts. D2 — route.ts source files сканируются на исходящие calls. endpoint_impact возвращает external_callers[]. Работает на literal URL-литералах; SDK init через env-var (new OpenAI({ baseURL: process.env.X })) не резолвится — ограничение задокументировано в CONTRACT.md."
+  },
+  "slug": "lobechat",
+  "subroots": {
+    "web_indexer": "src",
+    "ast_indexer": ".",
+    "joern": null
+  },
+  "test_globs": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**/*.ts"]
+}

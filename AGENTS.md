@@ -93,6 +93,43 @@ cd packages/[package-name] && bunx vitest run --silent='passed-only' '[file-path
 - **Desktop router parity:** When changing the main SPA route tree, update **both** `src/spa/router/desktopRouter.config.tsx` (dynamic imports) and `src/spa/router/desktopRouter.config.desktop.tsx` (sync imports) so paths and nesting match. Changing only one can leave routes unregistered and cause **blank screens**.
 - See the **spa-routes** skill (`.agents/skills/spa-routes/SKILL.md`) for the full convention and file-division rules.
 
+## Code intelligence
+
+This project is indexed by codegraph (`/root/codegraph-mcp-server`). Cached artifacts:
+
+- `/var/cache/codegraph/lobechat/api-map.json` — HTTP routes + callers + external_callers
+- `/var/cache/codegraph/lobechat/symbol-index.sqlite` — TS AST
+- `/var/cache/codegraph/lobechat/schema.cache.json` — DB schema
+
+### Reading artifacts (Codex / Grok / Gemini)
+
+- `jq '.routes[] | select(.path == "/api/X")' /var/cache/codegraph/lobechat/api-map.json`
+- `sqlite3 /var/cache/codegraph/lobechat/symbol-index.sqlite "SELECT * FROM symbols WHERE name='Foo' LIMIT 10"`
+
+### Querying via Claude (mcp\_\_codegraph\_\_\*)
+
+- `find_routes`, `find_symbol`, `endpoint_impact`, `find_doc_drift`, `impact_map`, etc.
+- 12 safe tools — see /root/codegraph-mcp-server/CONTRACT.md
+
+### Cross-project edges (external_hosts)
+
+LobeChat вызывает image-studio backend по `http://127.0.0.1:8202` (loopback). Это прописано в `.agents/codegraph.json` как `external_hosts`. Работающая cross-project связка:
+
+- `src/app/(backend)/api/bridge/route.ts:39` → image-studio `/api/auth/validate` GET
+
+Billing-proxy (`${process.env.IMAGE_STUDIO_API_URL}/api/billing-proxy/*`) пока не резолвится через codegraph: URL строится через env-var, не literal. Ожидаем появления literal fetch для полноценного cross-project графа.
+
+### When to use
+
+- Cross-cutting feature (route + service + DB + UI)
+- Refactor of shared util
+- Doc-only fixes after a feature
+
+### When NOT to use
+
+- Trivial 1-2 line fixes
+- Work-in-progress (artifacts may be stale)
+
 ## Skills (Auto-loaded)
 
 All AI development skills are available in `.agents/skills/` directory and auto-loaded by Claude Code when relevant.
