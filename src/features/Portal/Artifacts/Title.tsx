@@ -65,11 +65,15 @@ const Title = () => {
   // show switch only when artifact is closed and the type is not code
   const showSwitch = isArtifactTagClosed && artifactType !== ArtifactType.Code;
 
-  // Export only renderable artifacts (HTML/SVG/React) and only after generation finished.
+  // Export only fully-renderable artifacts (HTML/SVG) after generation finished.
+  // React artifacts use UMD <script src=...> wrappers that the render-v1
+  // sandbox strips for safety, so PDF/PNG come out blank — hide buttons until
+  // a local React compile path lands. Code-mode is also non-visual.
   const exportable =
     isArtifactTagClosed &&
     !isMessageGenerating &&
     artifactType !== ArtifactType.Code &&
+    artifactType !== ArtifactType.React &&
     !!artifactCode &&
     artifactCode.length > 0 &&
     artifactCode.length <= 500_000;

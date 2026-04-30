@@ -100,16 +100,17 @@ This project is indexed by codegraph (`/root/codegraph-mcp-server`). Cached arti
 - `/var/cache/codegraph/lobechat/api-map.json` — HTTP routes + callers + external_callers
 - `/var/cache/codegraph/lobechat/symbol-index.sqlite` — TS AST
 - `/var/cache/codegraph/lobechat/schema.cache.json` — DB schema
+- `/var/cache/codegraph/lobechat/embeddings.sqlite` — semantic_search vectors
 
-### Reading artifacts (Codex / Grok / Gemini)
+### Reading artifacts (Grok / bash fallback)
 
 - `jq '.routes[] | select(.path == "/api/X")' /var/cache/codegraph/lobechat/api-map.json`
 - `sqlite3 /var/cache/codegraph/lobechat/symbol-index.sqlite "SELECT * FROM symbols WHERE name='Foo' LIMIT 10"`
 
 ### Querying via Claude (mcp\_\_codegraph\_\_\*)
 
-- `find_routes`, `find_symbol`, `endpoint_impact`, `find_doc_drift`, `impact_map`, etc.
-- 12 safe tools — see /root/codegraph-mcp-server/CONTRACT.md
+- `plan_change`, `validate_diff_against_graph`, `find_routes`, `find_symbol`, `semantic_search`, `endpoint_impact`, `find_doc_drift`, `impact_map`, etc.
+- 15 safe tools — see /root/codegraph-mcp-server/CONTRACT.md
 
 ### Cross-project edges (external_hosts)
 
@@ -121,6 +122,7 @@ Billing-proxy (`${process.env.IMAGE_STUDIO_API_URL}/api/billing-proxy/*`) пок
 
 ### When to use
 
+- Non-trivial `/api/bridge`, model/provider, auth/billing integration changes: `plan_change` before coding; `validate_diff_against_graph(mode="fast")` before final/commit; `mode="deep"` for high-risk auth/billing/API/shared-util changes
 - Cross-cutting feature (route + service + DB + UI)
 - Refactor of shared util
 - Doc-only fixes after a feature
