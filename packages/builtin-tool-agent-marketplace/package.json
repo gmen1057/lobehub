@@ -13,10 +13,10 @@
     "@lobechat/types": "workspace:*"
   },
   "peerDependencies": {
-    "@lobehub/ui": "^5",
-    "antd": "^6",
+    "@lobehub/ui": "^5.10.0",
+    "antd": "^6.3.7",
     "lucide-react": "*",
-    "react": "^19",
-    "swr": "^2"
+    "react": "^19.2.5",
+    "swr": "^2.4.1"
   }
 }
