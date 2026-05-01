@@ -52,10 +52,14 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
     temperature: 1,
     top_p: 1,
   },
-  // arckep: enable lobe-memory plugin by default so new agents have
-  // cross-topic memory out of the box (matches user expectation that
-  // "my assistant should remember things across chats")
-  plugins: ['lobe-user-memory'],
+  // arckep: enable lobe-memory + lobe-artifacts by default. Memory gives
+  // cross-topic recall; artifacts give the 205-line system prompt that
+  // teaches every model (gpt-5.5, Claude, Gemini, Grok) to wrap SVG/HTML/
+  // React output in <lobeArtifact> tags so the artifacts portal renders them
+  // safely. Without artifacts skill, models fall back to raw <img data:...>
+  // which markdown blocks for XSS reasons. Cost: ~1.5K extra prompt tokens
+  // per request (~0.83 RUB on gpt-5.5).
+  plugins: ['lobe-user-memory', 'lobe-artifacts'],
   provider: DEFAULT_PROVIDER,
   systemRole: ARCKEP_DEFAULT_SYSTEM_ROLE,
   tts: DEFAUTT_AGENT_TTS_CONFIG,
