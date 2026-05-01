@@ -105,6 +105,33 @@ export async function GET(req: NextRequest) {
     // Add locale cookie
     headers.append('Set-Cookie', 'LOBE_LOCALE=ru-RU; Path=/; Max-Age=31536000; SameSite=Lax');
 
+    // arckep: refresh arckep_token cookie so its TTL keeps pace with the
+    // BetterAuth session we just (re-)created. Without this, the cookie can
+    // expire while the chat session is still alive — breaking the balance
+    // widget and any other arckep-cookie-gated endpoint until the next
+    // arckep.ru visit.
+    try {
+      const refreshRes = await fetch('http://127.0.0.1:8202/api/auth/refresh-token', {
+        method: 'POST',
+        headers: { Cookie: `arckep_token=${arckepToken}` },
+      });
+      if (refreshRes.ok) {
+        const refreshed = (await refreshRes.json()) as {
+          access_token: string;
+          expires_in_minutes: number;
+        };
+        const maxAgeSec = Math.max(60, refreshed.expires_in_minutes * 60);
+        headers.append(
+          'Set-Cookie',
+          `arckep_token=${refreshed.access_token}; Domain=.arckep.ru; Path=/; ` +
+            `Max-Age=${maxAgeSec}; SameSite=Lax; Secure; HttpOnly`,
+        );
+      }
+    } catch (refreshErr) {
+      // Non-fatal — user can keep using chat with the old cookie until next visit
+      console.warn('Bridge: arckep_token refresh failed', refreshErr);
+    }
+
     return new Response(null, { status: 302, headers });
   } catch (error) {
     console.error('Bridge auth error:', error);

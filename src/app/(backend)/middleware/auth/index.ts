@@ -9,6 +9,7 @@ import { auth } from '@/auth';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { type LobeChatDatabase } from '@/database/type';
 import { LOBE_CHAT_AUTH_HEADER, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
+import { validateArckepToken } from '@/libs/arckep/validateToken';
 import { extractTraceContext, injectActiveTraceHeaders } from '@/libs/observability/traceparent';
 import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
 import { createErrorResponse } from '@/utils/errorResponse';
@@ -45,6 +46,24 @@ export const checkAuth =
         jwtPayload: { userId: 'DEV_USER' },
         serverDB,
         userId: 'DEV_USER',
+      });
+    }
+
+    // arckep: tie BetterAuth session lifetime to arckep_token cookie freshness.
+    // When the cookie is missing or expired, kill the session so the user is
+    // pushed back through the bridge — keeps balance widget and JWT-gated
+    // endpoints in sync with chat. Fail open on backend unreachable so a
+    // transient image-studio outage doesn't lock everyone out of chat.
+    const arckepStatus = await validateArckepToken(req);
+    if (arckepStatus === 'expired' || arckepStatus === 'missing') {
+      try {
+        await auth.api.signOut({ headers: req.headers });
+      } catch {
+        /* signOut is best-effort — request still rejected below */
+      }
+      return createErrorResponse(ChatErrorType.Unauthorized, {
+        error: 'arckep session expired — please sign in again',
+        provider: (await options.params)?.provider,
       });
     }
 
