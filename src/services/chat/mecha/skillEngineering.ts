@@ -17,7 +17,15 @@ import { getToolStoreState } from '@/store/tool';
 export const resolveClientSkills = (pluginIds?: string[]): OperationSkillSet => {
   const toolState = getToolStoreState();
 
+  // arckep: copy `content` from builtin skill — without it, SkillResolver
+  // marks the skill as activated but SkillContextProvider injects an
+  // undefined string into the system prompt (push(skill.content!) at
+  // packages/context-engine/src/providers/SkillContextProvider.ts:80).
+  // Server path at src/server/services/aiAgent/index.ts:956 already does
+  // this correctly. Without this fix, lobe-artifacts skill never delivers
+  // its 205-line prompt and models output raw <svg>/<img data:...> tags.
   const builtinMetas = (toolState.builtinSkills || []).map((s) => ({
+    content: s.content,
     description: s.description,
     identifier: s.identifier,
     name: s.name,
