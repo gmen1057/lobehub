@@ -1,5 +1,5 @@
-import type { OperationSkillSet } from '@lobechat/context-engine';
-import { SkillEngine } from '@lobechat/context-engine';
+import type { OperationSkillSet, SkillMeta } from '@lobechat/context-engine';
+import { buildStepSkillDelta, SkillEngine, SkillResolver } from '@lobechat/context-engine';
 
 import { isBuiltinSkillAvailableInCurrentEnv } from '@/helpers/toolAvailability';
 import { getToolStoreState } from '@/store/tool';
@@ -43,4 +43,22 @@ export const resolveClientSkills = (pluginIds?: string[]): OperationSkillSet => 
   });
 
   return skillEngine.generate(pluginIds ?? []);
+};
+
+/**
+ * arckep: client-side equivalent of the server's RuntimeExecutors skill flow.
+ * Builds the OperationSkillSet AND runs SkillResolver, so skills whose
+ * identifier appears in `pluginIds` are returned with `activated: true`.
+ *
+ * Without this, contextEngineering would pass un-activated skills into
+ * SkillContextProvider — which only injects content for activated ones —
+ * so plugins like `lobe-artifacts` never delivered their system prompt
+ * even when enabled on the agent. Server path at
+ * src/server/modules/AgentRuntime/RuntimeExecutors.ts:299 was correct;
+ * mecha (single-agent client flow) used by chat.arckep.ru wasn't.
+ */
+export const resolveActivatedClientSkills = (pluginIds?: string[]): SkillMeta[] => {
+  const operationSkillSet = resolveClientSkills(pluginIds);
+  const resolved = new SkillResolver().resolve(operationSkillSet, buildStepSkillDelta(), []);
+  return resolved.enabledSkills;
 };
