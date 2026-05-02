@@ -1,11 +1,11 @@
 import { TRPCError } from '@trpc/server';
-import { count, inArray } from 'drizzle-orm';
 import debug from 'debug';
+import { count, inArray } from 'drizzle-orm';
 import { sha256 } from 'js-sha256';
 import { z } from 'zod';
 
-import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import { sandboxJobs } from '@/database/schemas';
+import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { LobeChatDatabase } from '@/database/type';
 import type { ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
@@ -116,6 +116,10 @@ const listActiveSandboxJobsSchema = z.object({
   topicId: z.string(),
 });
 
+const findSandboxJobByToolCallIdSchema = z.object({
+  toolCallId: z.string(),
+});
+
 // Schema for export and upload file (combined operation)
 const exportAndUploadFileSchema = z.object({
   filename: z.string(),
@@ -135,6 +139,7 @@ const callCloudMcpEndpointSchema = z.object({
 export type CancelSandboxJobInput = z.infer<typeof cancelSandboxJobSchema>;
 export type EnqueueExecInSandboxInput = z.infer<typeof enqueueExecInSandboxSchema>;
 export type ExecInSandboxInput = z.infer<typeof execInSandboxSchema>;
+export type FindSandboxJobByToolCallIdInput = z.infer<typeof findSandboxJobByToolCallIdSchema>;
 /** @deprecated Use ExecInSandboxInput */
 export type CallCodeInterpreterToolInput = ExecInSandboxInput;
 export type ExportAndUploadFileInput = z.infer<typeof exportAndUploadFileSchema>;
@@ -475,6 +480,32 @@ export const marketRouter = router({
         state: job.state,
         toolCallId: job.toolCallId,
       }));
+    }),
+
+  /**
+   * Look up a sandbox job by its LLM-issued tool_call_id, regardless of state.
+   * Used by the client poller (Block D) to find a job that was server-side
+   * enqueued in MessageService.updateMessage (Block C). Returns null when not
+   * found — caller can fallback or surface "execution lost" to the user.
+   */
+  findSandboxJobByToolCallId: marketToolProcedure
+    .input(findSandboxJobByToolCallIdSchema)
+    .query(async ({ input, ctx }) => {
+      const job = await ctx.sandboxJobModel.findByToolCallId(input.toolCallId);
+      if (!job) return null;
+
+      return {
+        completedAt: job.completedAt,
+        durationMs: getDurationMs(job.startedAt, job.completedAt),
+        errorPayload: job.errorPayload,
+        identifier: job.identifier,
+        jobId: job.id,
+        resultPayload: job.resultPayload,
+        startedAt: job.startedAt,
+        state: job.state,
+        toolCallId: job.toolCallId,
+        topicId: job.topicId,
+      };
     }),
 
   // ============================== LobeHub Skill ==============================
