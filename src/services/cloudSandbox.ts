@@ -8,15 +8,18 @@ import {
 
 class CloudSandboxService {
   /**
-   * Call a cloud sandbox tool
+   * Call a cloud sandbox tool.
+   * NOTE: this is the legacy sync path. Block D Phase 2 will replace it with
+   * enqueue + listActive + poll once Block B lands (sandbox_jobs tRPC procedures).
+   *
    * @param toolName - The name of the tool to call (e.g., 'runCommand', 'writeLocalFile')
    * @param params - The parameters for the tool
-   * @param context - Session context containing topicId and optional userId for isolation
+   * @param context - Session context (topicId, optional userId, toolCallId for durable async lookup)
    */
   async callTool(
     toolName: string,
     params: Record<string, any>,
-    context: { topicId: string; userId?: string },
+    context: { toolCallId?: string; topicId: string; userId?: string },
   ): Promise<CallToolResult> {
     const input: ExecInSandboxInput = {
       params,

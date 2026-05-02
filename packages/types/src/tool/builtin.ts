@@ -445,6 +445,13 @@ export interface BuiltinToolContext {
   stepContext?: RuntimeStepContext;
 
   /**
+   * The LLM-issued tool_call_id (e.g. "call_xyz123") that triggered this execution.
+   * Used by tools backed by durable async runners (e.g. cloud-sandbox) for idempotent job lookup.
+   * Optional because most builtin tools don't need it; cloud-sandbox executor requires it.
+   */
+  toolCallId?: string;
+
+  /**
    * The current topic ID (only available when operating within a topic)
    * Used by tools that need to create messages or operations within a topic
    */
