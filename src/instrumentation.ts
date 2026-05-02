@@ -18,6 +18,19 @@ export async function register() {
     });
   }
 
+  // Auto-start SandboxJobWorker separately so gateway startup failures do not block
+  // durable sandbox job execution in the standalone Node.js server.
+  if (
+    process.env.NEXT_RUNTIME === 'nodejs' &&
+    !process.env.VERCEL_ENV &&
+    process.env.DATABASE_URL
+  ) {
+    const { ensureRunning: ensureSandboxWorker } = await import('./server/services/sandboxJobs');
+    ensureSandboxWorker().catch((err) => {
+      console.error('[Instrumentation] sandbox worker:', err);
+    });
+  }
+
   if (process.env.NODE_ENV !== 'production' && !process.env.ENABLE_TELEMETRY_IN_DEV) {
     return;
   }
