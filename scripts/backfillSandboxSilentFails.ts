@@ -66,7 +66,9 @@ const main = async () => {
   // committed but no child tool message and empty content. Cutoff at 1 hour
   // ago so we don't accidentally backfill in-flight new jobs from the durable
   // runner that's currently rolling out.
-  const candidates = (await serverDB.execute(sql`
+  // serverDB.execute returns either an array (postgres-js driver) or { rows: [...] }
+  // (node-postgres driver) depending on DATABASE_DRIVER. Normalize.
+  const raw = await serverDB.execute(sql`
     SELECT id, topic_id, user_id, tools
     FROM messages m
     WHERE role = 'assistant'
@@ -74,7 +76,10 @@ const main = async () => {
       AND tools::text LIKE '%lobe-cloud-sandbox%'
       AND LENGTH(content) = 0
       AND NOT EXISTS (SELECT 1 FROM message_plugins mp WHERE mp.id = m.id)
-  `)) as unknown as SilentFailRow[];
+  `);
+  const candidates = (
+    Array.isArray(raw) ? raw : ((raw as unknown as { rows?: SilentFailRow[] }).rows ?? [])
+  ) as SilentFailRow[];
 
   console.log(`candidates=${candidates.length}`);
 
