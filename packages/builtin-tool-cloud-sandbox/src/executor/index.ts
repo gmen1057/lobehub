@@ -30,14 +30,18 @@ import { CloudSandboxApiName } from '../types';
 
 /**
  * Client-side Sandbox Service
- * Wraps codeInterpreterService with bound context (topicId, userId)
+ * Wraps cloudSandboxService with bound context (topicId, userId, toolCallId).
+ * toolCallId is required so the durable async runner (sandbox_jobs row) can be
+ * looked up idempotently across browser reloads.
  */
 class ClientSandboxService implements ISandboxService {
   private topicId: string;
   private userId: string;
+  private toolCallId: string;
 
-  constructor(topicId: string) {
+  constructor(topicId: string, toolCallId: string) {
     this.topicId = topicId;
+    this.toolCallId = toolCallId;
     // Get userId from user store - client-side auth
     const userId = userProfileSelectors.userId(useUserStore.getState());
     if (!userId) {
@@ -48,6 +52,7 @@ class ClientSandboxService implements ISandboxService {
 
   async callTool(toolName: string, params: Record<string, any>): Promise<SandboxCallToolResult> {
     return cloudSandboxService.callTool(toolName, params, {
+      toolCallId: this.toolCallId,
       topicId: this.topicId,
       userId: this.userId,
     });
@@ -70,7 +75,8 @@ class CloudSandboxExecutor extends BaseExecutor<typeof CloudSandboxApiName> {
   protected readonly apiEnum = CloudSandboxApiName;
 
   /**
-   * Get or create a runtime for the given context
+   * Get or create a runtime for the given context.
+   * toolCallId is required — without it, the async runner can't find its sandbox_jobs row.
    */
   private getRuntime(ctx: BuiltinToolContext): CloudSandboxExecutionRuntime {
     const topicId = ctx.topicId;
@@ -79,7 +85,13 @@ class CloudSandboxExecutor extends BaseExecutor<typeof CloudSandboxApiName> {
       throw new Error('Can not init runtime with empty topicId');
     }
 
-    const service = new ClientSandboxService(topicId);
+    if (!ctx.toolCallId) {
+      throw new Error(
+        'Can not init cloud-sandbox runtime without toolCallId — caller must pass payload.id',
+      );
+    }
+
+    const service = new ClientSandboxService(topicId, ctx.toolCallId);
     return new CloudSandboxExecutionRuntime(service);
   }
 

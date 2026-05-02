@@ -28,6 +28,7 @@ const prefixes = {
   messageGroups: 'mg',
   messages: 'msg',
   plugins: 'plg',
+  sandboxJobs: 'sbj',
   sessionGroups: 'sg',
   sessions: 'ssn',
   threads: 'thd',

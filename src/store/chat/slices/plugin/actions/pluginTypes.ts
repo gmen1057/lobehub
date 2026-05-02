@@ -136,6 +136,7 @@ export class PluginTypesActionImpl {
           registerAfterCompletion,
           signal: operation?.abortController?.signal,
           stepContext,
+          toolCallId: payload.id,
           topicId,
         });
 

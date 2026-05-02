@@ -686,6 +686,20 @@
       "when": 1774548140282,
       "tag": "0097_add_agent_onboarding",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "7",
+      "when": 1777748766356,
+      "tag": "0098_users_interests_text_array",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "7",
+      "when": 1777749300072,
+      "tag": "0099_add_sandbox_jobs",
+      "breakpoints": true
     }
   ],
   "version": "6"

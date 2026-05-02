@@ -1,17 +1,30 @@
 import { CompressionRepository, type LobeChatDatabase } from '@lobechat/database';
 import {
+  type ChatToolPayload,
   type CreateMessageParams,
   type UIChatMessage,
   type UpdateMessageParams,
 } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 import { TRPCError } from '@trpc/server';
+import debug from 'debug';
 
 import { MessageModel } from '@/database/models/message';
+import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import { sanitizeFileName } from '@/utils/sanitizeFileName';
 import { buildXlsxFile, EXCEL_MIME_TYPE, extractSpreadsheetRows } from '@/utils/spreadsheet';
 
 import { FileService } from '../file';
+
+const log = debug('lobe-server:message-service');
+
+/**
+ * Builtin tool identifier for cloud sandbox. When the LLM returns a tool_call
+ * with this identifier, MessageService.updateMessage atomically enqueues a
+ * sandbox_jobs row so the durable worker can pick it up regardless of whether
+ * the client browser stays open. See docs/specs/sandbox-async-runner-plan-2026-05-02.md
+ */
+const CLOUD_SANDBOX_IDENTIFIER = 'lobe-cloud-sandbox';
 
 interface QueryOptions {
   agentId?: string | null;
@@ -36,12 +49,14 @@ export class MessageService {
   private messageModel: MessageModel;
   private fileService: FileService;
   private compressionRepository: CompressionRepository;
+  private sandboxJobModel: SandboxJobModel;
   private userId: string;
 
   constructor(db: LobeChatDatabase, userId: string) {
     this.messageModel = new MessageModel(db, userId);
     this.fileService = new FileService(db, userId);
     this.compressionRepository = new CompressionRepository(db, userId);
+    this.sandboxJobModel = new SandboxJobModel(db, userId);
     this.userId = userId;
   }
 
@@ -187,6 +202,10 @@ export class MessageService {
   /**
    * Update message and return message list
    * Pattern: update + conditional query
+   *
+   * Side-effect: when value.tools contains cloud-sandbox tool_calls, atomically
+   * enqueues sandbox_jobs rows so the durable worker picks them up. Idempotent
+   * via UNIQUE(tool_call_id). See docs/specs/sandbox-async-runner-plan-2026-05-02.md.
    */
   async updateMessage(
     id: string,
@@ -194,7 +213,77 @@ export class MessageService {
     options: QueryOptions,
   ): Promise<{ messages?: UIChatMessage[]; success: boolean }> {
     await this.messageModel.update(id, value as any);
+    await this.enqueueSandboxJobsFromUpdate(id, value, options);
     return this.queryWithSuccess(options);
+  }
+
+  /**
+   * Extract cloud-sandbox tool_calls from a message update and enqueue them as
+   * durable sandbox_jobs rows. Called from updateMessage after the row commit.
+   *
+   * Failures here MUST NOT propagate — they would block legitimate message
+   * updates. We log and continue; the worker resume logic will detect missing
+   * jobs on topic remount and synthesize an error.
+   */
+  private async enqueueSandboxJobsFromUpdate(
+    parentMessageId: string,
+    value: UpdateMessageParams,
+    options: QueryOptions,
+  ): Promise<void> {
+    const tools = (value as { tools?: ChatToolPayload[] | null }).tools;
+    if (!tools || tools.length === 0) return;
+
+    const sandboxTools = tools.filter((t) => t?.identifier === CLOUD_SANDBOX_IDENTIFIER);
+    if (sandboxTools.length === 0) return;
+
+    const topicId = options.topicId;
+    if (!topicId) {
+      log(
+        'enqueueSandboxJobs: topicId missing for parent=%s, skipping enqueue (resume will surface)',
+        parentMessageId,
+      );
+      return;
+    }
+
+    for (const tool of sandboxTools) {
+      let parsedArgs: Record<string, unknown>;
+      try {
+        parsedArgs = tool.arguments ? JSON.parse(tool.arguments) : {};
+      } catch (err) {
+        log(
+          'enqueueSandboxJobs: failed to parse args for tool_call_id=%s parent=%s err=%O',
+          tool.id,
+          parentMessageId,
+          err,
+        );
+        parsedArgs = { _rawArguments: tool.arguments ?? '' };
+      }
+
+      try {
+        const job = await this.sandboxJobModel.create({
+          apiName: tool.apiName,
+          args: parsedArgs,
+          identifier: tool.identifier,
+          parentMessageId,
+          toolCallId: tool.id,
+          topicId,
+        });
+        log(
+          'enqueueSandboxJobs: enqueued job_id=%s tool_call_id=%s parent=%s state=%s',
+          job.id,
+          tool.id,
+          parentMessageId,
+          job.state,
+        );
+      } catch (err) {
+        log(
+          'enqueueSandboxJobs: failed to enqueue tool_call_id=%s parent=%s err=%O',
+          tool.id,
+          parentMessageId,
+          err,
+        );
+      }
+    }
   }
 
   /**
