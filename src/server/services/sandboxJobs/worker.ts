@@ -1,12 +1,14 @@
 import debug from 'debug';
 
-import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type {
   SandboxJobErrorPayload,
   SandboxJobResultPayload,
   SandboxJobSelectItem,
 } from '@/database/schemas';
+import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { LobeChatDatabase } from '@/database/type';
+
+import { writeChildToolMessage } from './continuation';
 
 const log = debug('lobe-server:service:sandbox-jobs');
 
@@ -22,27 +24,27 @@ const E2B_GATEWAY_URL = process.env.E2B_GATEWAY_URL || 'http://127.0.0.1:8410/mc
 type AbortReason = 'claim_lost' | 'timeout' | 'worker_stopped';
 
 interface GatewayError {
-  message?: string;
   [key: string]: unknown;
+  message?: string;
 }
 
 interface GatewayContentBlock {
-  text?: string;
   [key: string]: unknown;
+  text?: string;
 }
 
 interface GatewayResult {
+  [key: string]: unknown;
   content?: GatewayContentBlock[];
   sandboxSessionId?: string;
   session_id?: string;
   sessionId?: string;
-  [key: string]: unknown;
 }
 
 interface GatewayResponsePayload {
+  [key: string]: unknown;
   error?: GatewayError;
   result?: GatewayResult;
-  [key: string]: unknown;
 }
 
 interface SandboxJobWorkerGlobal {
@@ -83,7 +85,9 @@ export const buildSandboxGatewayCode = (apiName: string, args: Record<string, un
   }
 
   if (apiName === 'execScript') {
-    return getStringArg(args, 'code') || getStringArg(args, 'script') || getStringArg(args, 'command');
+    return (
+      getStringArg(args, 'code') || getStringArg(args, 'script') || getStringArg(args, 'command')
+    );
   }
 
   if (apiName === 'runCommand') {
@@ -112,7 +116,8 @@ const parseGatewayResponse = async (response: Response): Promise<GatewayResponse
   }
 };
 
-const extractGatewayText = (payload: GatewayResponsePayload) => payload.result?.content?.[0]?.text || '';
+const extractGatewayText = (payload: GatewayResponsePayload) =>
+  payload.result?.content?.[0]?.text || '';
 
 const extractSandboxSessionId = (job: SandboxJobSelectItem, payload: GatewayResponsePayload) => {
   const result = payload.result;
@@ -192,7 +197,11 @@ export class SandboxJobWorker {
   async stop(): Promise<void> {
     if (!this.running && !this.tickLoopPromise) return;
 
-    log('SandboxJobWorker stopping workerId=%s inFlight=%d', this.workerId, this.inFlightExecutions.size);
+    log(
+      'SandboxJobWorker stopping workerId=%s inFlight=%d',
+      this.workerId,
+      this.inFlightExecutions.size,
+    );
 
     this.stopping = true;
     this.stopController.abort();
@@ -203,7 +212,7 @@ export class SandboxJobWorker {
     }
 
     await this.tickLoopPromise;
-    await Promise.allSettled([...this.inFlightExecutions]);
+    await Promise.allSettled(this.inFlightExecutions);
 
     this.running = false;
     this.stopping = false;
@@ -250,6 +259,31 @@ export class SandboxJobWorker {
     return job;
   }
 
+  /**
+   * Wraps a terminal mark (markSuccess/markError/markTimeout) and writes the
+   * child tool message so the user sees the result on return — even if the
+   * browser was closed during execution.
+   *
+   * If the mark returns null (job already terminal — race with another worker
+   * or stop+restart), we skip the child message write to avoid duplicating it.
+   */
+  private async finalizeJob(
+    job: SandboxJobSelectItem,
+    finalize: (model: SandboxJobModel) => Promise<SandboxJobSelectItem | null>,
+  ): Promise<void> {
+    const updated = await finalize(this.getUserModel(job.userId));
+    if (!updated) {
+      log('finalizeJob: job already terminal, skipping child message write jobId=%s', job.id);
+      return;
+    }
+
+    try {
+      await writeChildToolMessage(this.db, updated);
+    } catch (error) {
+      console.error('[SandboxJobWorker] writeChildToolMessage failed:', error);
+    }
+  }
+
   async executeJob(job: SandboxJobSelectItem): Promise<void> {
     const controller = new AbortController();
     const timeout = setTimeout(() => {
@@ -266,14 +300,22 @@ export class SandboxJobWorker {
       const code = buildSandboxGatewayCode(job.apiName, args);
 
       if (!code) {
-        await this.getUserModel(job.userId).markError(job.id, {
-          message: 'No code provided',
-          type: 'validation_error',
-        });
+        await this.finalizeJob(job, (model) =>
+          model.markError(job.id, {
+            message: 'No code provided',
+            type: 'validation_error',
+          }),
+        );
         return;
       }
 
-      log('executeJob start jobId=%s userId=%s api=%s topicId=%s', job.id, job.userId, job.apiName, job.topicId);
+      log(
+        'executeJob start jobId=%s userId=%s api=%s topicId=%s',
+        job.id,
+        job.userId,
+        job.apiName,
+        job.topicId,
+      );
 
       const response = await fetch(E2B_GATEWAY_URL, {
         body: JSON.stringify({
@@ -297,21 +339,25 @@ export class SandboxJobWorker {
       const payload = await parseGatewayResponse(response);
 
       if (!response.ok) {
-        await this.getUserModel(job.userId).markError(job.id, {
-          body: payload,
-          message: `E2B gateway returned ${response.status}`,
-          type: 'gateway_http_error',
-        });
+        await this.finalizeJob(job, (model) =>
+          model.markError(job.id, {
+            body: payload,
+            message: `E2B gateway returned ${response.status}`,
+            type: 'gateway_http_error',
+          }),
+        );
         log('executeJob gateway http error jobId=%s status=%d', job.id, response.status);
         return;
       }
 
       if (payload.error) {
-        await this.getUserModel(job.userId).markError(job.id, {
-          body: payload.error,
-          message: payload.error.message || 'E2B gateway error',
-          type: 'gateway_error',
-        });
+        await this.finalizeJob(job, (model) =>
+          model.markError(job.id, {
+            body: payload.error,
+            message: payload.error.message || 'E2B gateway error',
+            type: 'gateway_error',
+          }),
+        );
         log('executeJob gateway error jobId=%s message=%s', job.id, payload.error.message);
         return;
       }
@@ -323,10 +369,8 @@ export class SandboxJobWorker {
         state: payload.result || {},
       };
 
-      await this.getUserModel(job.userId).markSuccess(
-        job.id,
-        resultPayload,
-        extractSandboxSessionId(job, payload),
+      await this.finalizeJob(job, (model) =>
+        model.markSuccess(job.id, resultPayload, extractSandboxSessionId(job, payload)),
       );
 
       log('executeJob success jobId=%s', job.id);
@@ -339,19 +383,20 @@ export class SandboxJobWorker {
       }
 
       if (abortReason === 'timeout') {
-        await this.getUserModel(job.userId).markError(
-          job.id,
-          createTimeoutErrorPayload(DEFAULT_GATEWAY_TIMEOUT_MS),
+        await this.finalizeJob(job, (model) =>
+          model.markError(job.id, createTimeoutErrorPayload(DEFAULT_GATEWAY_TIMEOUT_MS)),
         );
         log('executeJob timeout jobId=%s', job.id);
         return;
       }
 
       const err = error as Error;
-      await this.getUserModel(job.userId).markError(job.id, {
-        message: err.message,
-        type: err.name || 'gateway_exception',
-      });
+      await this.finalizeJob(job, (model) =>
+        model.markError(job.id, {
+          message: err.message,
+          type: err.name || 'gateway_exception',
+        }),
+      );
       log('executeJob exception jobId=%s error=%O', job.id, error);
     } finally {
       clearTimeout(timeout);
@@ -372,7 +417,11 @@ export class SandboxJobWorker {
       await delay(DEFAULT_HEARTBEAT_INTERVAL_MS, controller.signal);
       if (controller.signal.aborted) return;
 
-      const alive = await this.getUserModel(userId).heartbeat(jobId, workerId, DEFAULT_LOCK_TTL_SEC);
+      const alive = await this.getUserModel(userId).heartbeat(
+        jobId,
+        workerId,
+        DEFAULT_LOCK_TTL_SEC,
+      );
       if (alive) {
         log('heartbeat ok jobId=%s workerId=%s', jobId, workerId);
         continue;
@@ -389,7 +438,11 @@ export class SandboxJobWorker {
     const recovered = await this.getSystemModel().recoverStaleJobs(DEFAULT_LOCK_TTL_SEC);
 
     if (recovered.length > 0) {
-      log('recoverStaleJobs recovered=%d ids=%o', recovered.length, recovered.map((job) => job.id));
+      log(
+        'recoverStaleJobs recovered=%d ids=%o',
+        recovered.length,
+        recovered.map((job) => job.id),
+      );
     }
 
     return recovered.length;
