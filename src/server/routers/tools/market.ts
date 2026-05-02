@@ -1,9 +1,13 @@
 import { TRPCError } from '@trpc/server';
+import { count, inArray } from 'drizzle-orm';
 import debug from 'debug';
 import { sha256 } from 'js-sha256';
 import { z } from 'zod';
 
-import { type ToolCallContent } from '@/libs/mcp';
+import { SandboxJobModel } from '@/database/server/models/sandboxJob';
+import { sandboxJobs } from '@/database/schemas';
+import type { LobeChatDatabase } from '@/database/type';
+import type { ToolCallContent } from '@/libs/mcp';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { marketUserInfo, serverDatabase, telemetry } from '@/libs/trpc/lambda/middleware';
 import { marketSDK, requireMarketAuth } from '@/libs/trpc/lambda/middleware/marketSDK';
@@ -28,6 +32,7 @@ const marketToolProcedure = authedProcedure
   .use(marketUserInfo)
   .use(async ({ ctx, next }) => {
     const { UserModel } = await import('@/database/models/user');
+    const sandboxJobModel = new SandboxJobModel(ctx.serverDB, ctx.userId);
     const userModel = new UserModel(ctx.serverDB, ctx.userId);
 
     return next({
@@ -41,6 +46,7 @@ const marketToolProcedure = authedProcedure
           accessToken: ctx.marketAccessToken,
           userInfo: ctx.marketUserInfo,
         }),
+        sandboxJobModel,
         userModel,
       },
     });
@@ -89,6 +95,27 @@ const execInSandboxSchema = z.object({
   userId: z.string().optional(), // Optional: fallback to ctx.userId if not provided
 });
 
+const enqueueExecInSandboxSchema = z.object({
+  apiName: z.string(),
+  args: z.record(z.any()),
+  identifier: z.string(),
+  parentMessageId: z.string(),
+  toolCallId: z.string(),
+  topicId: z.string(),
+});
+
+const getSandboxJobStatusSchema = z.object({
+  jobId: z.string(),
+});
+
+const cancelSandboxJobSchema = z.object({
+  jobId: z.string(),
+});
+
+const listActiveSandboxJobsSchema = z.object({
+  topicId: z.string(),
+});
+
 // Schema for export and upload file (combined operation)
 const exportAndUploadFileSchema = z.object({
   filename: z.string(),
@@ -105,10 +132,14 @@ const callCloudMcpEndpointSchema = z.object({
 });
 
 // ============================== Type Exports ==============================
+export type CancelSandboxJobInput = z.infer<typeof cancelSandboxJobSchema>;
+export type EnqueueExecInSandboxInput = z.infer<typeof enqueueExecInSandboxSchema>;
 export type ExecInSandboxInput = z.infer<typeof execInSandboxSchema>;
 /** @deprecated Use ExecInSandboxInput */
 export type CallCodeInterpreterToolInput = ExecInSandboxInput;
 export type ExportAndUploadFileInput = z.infer<typeof exportAndUploadFileSchema>;
+export type GetSandboxJobStatusInput = z.infer<typeof getSandboxJobStatusSchema>;
+export type ListActiveSandboxJobsInput = z.infer<typeof listActiveSandboxJobsSchema>;
 
 export interface CallToolResult {
   error?: {
@@ -136,6 +167,29 @@ export interface ExportAndUploadFileResult {
 
 const E2B_GATEWAY_URL = process.env.E2B_GATEWAY_URL || 'http://127.0.0.1:8410/mcp/e2b-sandbox';
 
+const ACTIVE_SANDBOX_JOB_STATES = ['queued', 'running'] as const;
+const PER_USER_SANDBOX_CONCURRENCY_LIMIT = 2;
+const GLOBAL_SANDBOX_CONCURRENCY_LIMIT = 50;
+
+const isActiveSandboxJobState = (state: string) =>
+  (ACTIVE_SANDBOX_JOB_STATES as readonly string[]).includes(state);
+
+const countActiveSandboxJobsGlobally = async (db: LobeChatDatabase): Promise<number> => {
+  const [result] = await db
+    .select({ value: count() })
+    .from(sandboxJobs)
+    .where(inArray(sandboxJobs.state, ACTIVE_SANDBOX_JOB_STATES));
+
+  return Number(result?.value ?? 0);
+};
+
+const getDurationMs = (startedAt: Date | null, completedAt: Date | null) => {
+  if (!startedAt) return undefined;
+
+  const end = completedAt ?? new Date();
+  return end.getTime() - startedAt.getTime();
+};
+
 /**
  * Proxy sandbox calls to our self-hosted E2B gateway instead of LobeHub cloud.
  * Handles execCode, execScript, runCommand by forwarding Python code to E2B.
@@ -143,7 +197,12 @@ const E2B_GATEWAY_URL = process.env.E2B_GATEWAY_URL || 'http://127.0.0.1:8410/mc
 const execInSandboxHandler = async ({
   input,
 }: {
-  ctx: { fileService: FileService; marketService: MarketService; serverDB: any; userId: string };
+  ctx: {
+    fileService: FileService;
+    marketService: MarketService;
+    serverDB: LobeChatDatabase;
+    userId: string;
+  };
   input: ExecInSandboxInput;
 }): Promise<CallToolResult> => {
   const { toolName, params, topicId } = input;
@@ -325,9 +384,98 @@ export const marketRouter = router({
     .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
 
   // ============================== Sandbox Execution ==============================
+  cancelSandboxJob: marketToolProcedure
+    .input(cancelSandboxJobSchema)
+    .mutation(async ({ input, ctx }) => {
+      const job = await ctx.sandboxJobModel.findById(input.jobId);
+
+      if (!job) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Sandbox job not found' });
+      }
+
+      const cancelled = await ctx.sandboxJobModel.markCancelled(input.jobId);
+
+      if (cancelled) {
+        return { alreadyTerminal: false, success: true };
+      }
+
+      const refreshed = await ctx.sandboxJobModel.findById(input.jobId);
+      const alreadyTerminal = refreshed ? !isActiveSandboxJobState(refreshed.state) : true;
+
+      return { alreadyTerminal, success: false };
+    }),
+
+  enqueueExecInSandbox: marketToolProcedure
+    .input(enqueueExecInSandboxSchema)
+    .mutation(async ({ input, ctx }) => {
+      const existing = await ctx.sandboxJobModel.findByToolCallId(input.toolCallId);
+      if (existing) {
+        return { jobId: existing.id, state: existing.state };
+      }
+
+      const activeByUser = await ctx.sandboxJobModel.countActiveByUser();
+      if (activeByUser >= PER_USER_SANDBOX_CONCURRENCY_LIMIT) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Per-user sandbox concurrency limit reached (2 active jobs)',
+        });
+      }
+
+      const activeGlobally = await countActiveSandboxJobsGlobally(ctx.serverDB);
+      if (activeGlobally >= GLOBAL_SANDBOX_CONCURRENCY_LIMIT) {
+        throw new TRPCError({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Global sandbox concurrency limit reached (50 active jobs)',
+        });
+      }
+
+      const job = await ctx.sandboxJobModel.create(input);
+
+      return { jobId: job.id, state: job.state };
+    }),
+
+  /**
+   * @deprecated Use enqueueExecInSandbox + getSandboxJobStatus instead.
+   * Kept for one release cycle until the async client poller lands.
+   */
   execInSandbox: marketToolProcedure
     .input(execInSandboxSchema)
     .mutation(({ input, ctx }) => execInSandboxHandler({ ctx, input })),
+
+  getSandboxJobStatus: marketToolProcedure
+    .input(getSandboxJobStatusSchema)
+    .query(async ({ input, ctx }) => {
+      const job = await ctx.sandboxJobModel.findById(input.jobId);
+
+      if (!job) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Sandbox job not found' });
+      }
+
+      return {
+        completedAt: job.completedAt,
+        durationMs: getDurationMs(job.startedAt, job.completedAt),
+        errorPayload: job.errorPayload,
+        resultPayload: job.resultPayload,
+        startedAt: job.startedAt,
+        state: job.state,
+      };
+    }),
+
+  listActiveSandboxJobs: marketToolProcedure
+    .input(listActiveSandboxJobsSchema)
+    .query(async ({ input, ctx }) => {
+      const jobs = await ctx.sandboxJobModel.listActiveByTopic(input.topicId);
+
+      return jobs.map((job) => ({
+        apiName: job.apiName,
+        identifier: job.identifier,
+        jobId: job.id,
+        parentMessageId: job.parentMessageId,
+        startedAt: job.startedAt,
+        state: job.state,
+        toolCallId: job.toolCallId,
+      }));
+    }),
 
   // ============================== LobeHub Skill ==============================
   /**
