@@ -7,12 +7,18 @@
  * out. This helper hits our backend `/api/auth/validate` and caches the
  * result so we don't hammer it on every request.
  *
+ * The backend `/api/auth/validate` decodes the JWT AND checks
+ * banned_identifiers, so 'valid' here also implies the user isn't banned
+ * — that's how a banned user gets kicked out within CACHE_TTL_MS even
+ * though their JWT is still cryptographically valid.
+ *
  * Returned status:
- *   "valid"        — JWT decoded fine
- *   "expired"      — cookie present but JWT rejected (caller should kill BA session)
- *   "missing"      — no cookie at all (caller decides whether to allow)
- *   "unreachable"  — backend unreachable (fail open — don't lock the user out
- *                    on a transient outage)
+ *   "valid"        — JWT decoded fine and user is not banned
+ *   "expired"      — cookie present but JWT rejected OR user banned
+ *                    (caller should kill BA session and force re-bridge)
+ *   "missing"      — no cookie at all
+ *   "unreachable"  — backend unreachable (caller MUST reject — failing open
+ *                    here turns a backend blip into a billing-bypass window)
  */
 
 const BACKEND_URL = process.env.LOBECHAT_BACKEND_INTERNAL_URL || 'http://127.0.0.1:8202';

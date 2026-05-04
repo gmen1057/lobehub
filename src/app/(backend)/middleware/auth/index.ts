@@ -49,21 +49,49 @@ export const checkAuth =
       });
     }
 
-    // arckep: tie BetterAuth session lifetime to arckep_token cookie freshness.
-    // When the cookie is missing or expired, kill the session so the user is
-    // pushed back through the bridge — keeps balance widget and JWT-gated
-    // endpoints in sync with chat. Fail open on backend unreachable so a
-    // transient image-studio outage doesn't lock everyone out of chat.
+    // arckep: tie BetterAuth session lifetime to arckep_token cookie freshness
+    // AND to ban state. The backend validate also rejects banned users, so
+    // 'expired' here covers both "JWT past exp" and "user banned mid-session".
+    //
+    // - expired/missing → seamless 302 to /api/bridge?return=<original>. Bridge
+    //   will refresh the token if it can (live BetterAuth session + non-banned
+    //   user) and bounce back here, otherwise it kicks to arckep.ru/login. The
+    //   user never sees the raw "Unauthorized — please sign in again" toast.
+    //
+    // - unreachable → 503. The previous fail-open turned any backend hiccup
+    //   into a window where banned users keep working and the cache mask
+    //   silently extends. Reliability of /api/auth/validate is solved
+    //   separately, not by widening the auth gap.
     const arckepStatus = await validateArckepToken(req);
+    if (arckepStatus === 'unreachable') {
+      return new Response(JSON.stringify({ error: 'auth backend temporarily unavailable' }), {
+        headers: { 'Content-Type': 'application/json', 'Retry-After': '5' },
+        status: 503,
+      });
+    }
     if (arckepStatus === 'expired' || arckepStatus === 'missing') {
       try {
         await auth.api.signOut({ headers: req.headers });
       } catch {
-        /* signOut is best-effort — request still rejected below */
+        /* signOut is best-effort */
       }
-      return createErrorResponse(ChatErrorType.Unauthorized, {
-        error: 'arckep session expired — please sign in again',
-        provider: (await options.params)?.provider,
+      const referer = req.headers.get('referer');
+      let returnPath = '/';
+      if (referer) {
+        try {
+          const refUrl = new URL(referer);
+          if (refUrl.host === req.headers.get('host') && refUrl.pathname.startsWith('/')) {
+            returnPath = refUrl.pathname + refUrl.search;
+          }
+        } catch {
+          /* keep default */
+        }
+      }
+      const host = req.headers.get('host') || 'chat.arckep.ru';
+      const bridgeUrl = `https://${host}/api/bridge?return=${encodeURIComponent(returnPath)}`;
+      return new Response(null, {
+        headers: { Location: bridgeUrl },
+        status: 302,
       });
     }
 
