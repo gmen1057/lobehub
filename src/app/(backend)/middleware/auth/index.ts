@@ -75,6 +75,10 @@ export const checkAuth =
       } catch {
         /* signOut is best-effort */
       }
+
+      // Build a same-origin return URL from the Referer (only honored when
+      // it points at chat.arckep.ru itself — protects against an open
+      // redirect via header injection).
       const referer = req.headers.get('referer');
       let returnPath = '/';
       if (referer) {
@@ -87,12 +91,40 @@ export const checkAuth =
           /* keep default */
         }
       }
-      const host = req.headers.get('host') || 'chat.arckep.ru';
-      const bridgeUrl = `https://${host}/api/bridge?return=${encodeURIComponent(returnPath)}`;
-      return new Response(null, {
-        headers: { Location: bridgeUrl },
-        status: 302,
-      });
+
+      // Hardcode the canonical chat origin instead of trusting the Host
+      // header — a `Host: chat.arckep.ru@evil` would otherwise let an
+      // attacker steer the Location to evil.com.
+      const bridgeUrl = `https://chat.arckep.ru/api/bridge?return=${encodeURIComponent(returnPath)}`;
+
+      // checkAuth wraps SSE/JSON API endpoints (/webapi/chat/*, etc.). A
+      // 302 there is harmful: browser fetch follows it, the bridge HTML
+      // ends up parsed as an SSE stream and the chat fails opaquely. So
+      // we return a 401 with X-Bridge-Location, which the LobeChat client
+      // can act on (e.g. window.location.assign). 302 is only safe for
+      // actual document navigation, where the browser does the redirect
+      // itself — detected via Accept including text/html.
+      const accept = req.headers.get('accept') || '';
+      const isDocumentNav = accept.includes('text/html');
+      if (isDocumentNav) {
+        return new Response(null, {
+          headers: { Location: bridgeUrl },
+          status: 302,
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          bridge_url: bridgeUrl,
+          error: 'arckep session expired',
+        }),
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Bridge-Location': bridgeUrl,
+          },
+          status: 401,
+        },
+      );
     }
 
     let jwtPayload: ClientSecretPayload;
