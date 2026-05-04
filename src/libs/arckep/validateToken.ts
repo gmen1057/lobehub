@@ -59,9 +59,19 @@ export async function validateArckepToken(
       headers: { Cookie: `arckep_token=${token}` },
       signal: controller.signal,
     });
-    const status: 'valid' | 'expired' = res.ok ? 'valid' : 'expired';
-    cache.set(token, { expiresAt: now + CACHE_TTL_MS, status });
-    return status;
+    // Auth verdicts (200 / 401 / 403) are cached. Anything else — server
+    // errors, rate limits, gateway timeouts — is "unreachable" and NOT
+    // cached. Without this split, a single 500 from the backend would be
+    // remembered as "expired" for 60s and silently log everyone out.
+    if (res.status === 200) {
+      cache.set(token, { expiresAt: now + CACHE_TTL_MS, status: 'valid' });
+      return 'valid';
+    }
+    if (res.status === 401 || res.status === 403) {
+      cache.set(token, { expiresAt: now + CACHE_TTL_MS, status: 'expired' });
+      return 'expired';
+    }
+    return 'unreachable';
   } catch {
     return 'unreachable';
   } finally {
