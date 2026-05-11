@@ -15,15 +15,27 @@
 ### Билд + деплой
 
 ```bash
-cd /opt/lobechat-src && NEXT_BUILD_STANDALONE=1 bun run build
-systemctl stop image-studio-lobechat
-rsync -a --delete /opt/lobechat-src/.next/standalone/ /opt/lobechat/ --exclude=.env
-rsync -a /opt/lobechat-src/.next/static/ /opt/lobechat/.next/static/
-rsync -a /opt/lobechat-src/public/ /opt/lobechat/public/
-systemctl start image-studio-lobechat
+cd /opt/lobechat-src
+bun run build                    # vite SPA + next Turbopack, ~6–9 min
+
+# Оба rsync критичны. Забыть любой = 404 на чанках или SSR с stale-ссылками
+rsync -a --delete /opt/lobechat-src/.next/       /opt/lobechat/.next/
+rsync -a --delete /opt/lobechat-src/public/_spa/ /opt/lobechat/public/_spa/
+
+systemctl restart image-studio-lobechat
 ```
 
-`--exclude=.env` критичен: prod-конфиг (`/opt/lobechat/.env`) не должен затираться сборочной копией.
+**Почему именно так:**
+- `.next/` целиком — не только `standalone/`. Next.js standalone в новых версиях кладёт SSR-шаблоны в `.next/server/app/spa/...body`, которые runtime-генерируют HTML со ссылками на JS-чанки. Старые `*.body` → браузер получает 404 на `_spa/assets/index-XXX.js`.
+- `public/_spa/` — Vite SPA assets (`assets/index-*.js`, `index.html`). Старые чанки здесь → браузер грузит stale bundle без фиксов.
+- `.env` в `/opt/lobechat/` не трогаем (он не входит в `.next/` и `public/_spa/`).
+
+**Проверка после деплоя:**
+```bash
+cat /opt/lobechat/.next/BUILD_ID          # должен совпадать с src
+curl -sS -o /dev/null -w "%{http_code}" https://chat.arckep.ru/_spa/assets/$(ls /opt/lobechat/public/_spa/assets/index-*.js | head -1 | xargs basename)
+# должен быть 200, не 404
+```
 
 ## Arckep-специфичные модификации (за пределами upstream)
 
@@ -35,9 +47,17 @@ systemctl start image-studio-lobechat
 - **Models**: chat через Inworld Router (15 моделей + 4 Gemini image)
 - **Безопасность**: hard-disable browser `fetchOnClient` для billed providers (revenue leak protection)
 
+## Известные ошибки и нюансы (инциденты)
+
+| Дата | Что случилось | Причина | Фикс |
+|---|---|---|---|
+| 2026-05-11 | 404 на `_spa/assets/index-*.js`, Render Error `URL@[native code]` | Забыт `rsync public/_spa/` + rsync `.next/` не обновил `.next/server/` (SSR body ссылки на старые чанки) | Двойной rsync: `.next/` целиком + `public/_spa/` |
+| 2026-05-11 | systemd SIGKILL при restart | Next.js standalone не умирает за 90s на SIGTERM | Норма; restart ждёт timeout, потом KILL |
+| 2026-05-11 | `--no-verify` в коммите | Pre-commit hooks (eslint+prettier) таймаутились на 5 файлах | Не обходить hooks; если таймаут — увеличить patience или фиксить конфиг |
+
 ## Известные особенности
 
 - **Kling video** доступен через Qwen-провайдер (см. `packages/model-runtime/src/providers/qwen/createVideo.ts`). Отдельный custom runtime не нужен.
-- **Codegraph**: проект ингещён, web+AST без Joern (см. `/opt/lobechat-src/.agents/codegraph.json`).
+- **Codegraph**: slug = `lobechat` (не `lobechat-src`). Проект индексируется web+AST без Joern (см. `/opt/lobechat-src/.agents/codegraph.json`).
 
 Подробности по AI-tooling, codegraph и общей карте проектов — в `/root/CLAUDE.md`.
