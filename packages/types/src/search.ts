@@ -22,7 +22,7 @@ export interface CitationItem {
   favicon?: string;
   id?: string;
   title?: string;
-  url: string;
+  url?: string;
 }
 
 export interface ImageCitationItem {
@@ -53,7 +53,7 @@ export const GroundingSearchSchema = z.object({
         favicon: z.string().optional(),
         id: z.string().optional(),
         title: z.string().optional(),
-        url: z.string(),
+        url: z.string().optional(),
       }),
     )
     .optional(),

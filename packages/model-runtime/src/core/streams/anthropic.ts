@@ -171,7 +171,7 @@ export const transformAnthropicStream = (
           if (context.returnedCitationArray) {
             context.returnedCitationArray.push({
               title: citations.title,
-              url: citations.url,
+              url: citations.url || '',
             } as ChatCitationItem);
           }
 

@@ -137,7 +137,7 @@ const transformOpenAIStream = (
         if (streamContext.returnedCitationArray) {
           streamContext.returnedCitationArray.push({
             title: citations.title,
-            url: citations.url,
+            url: citations.url || '',
           } as ChatCitationItem);
         }
 
