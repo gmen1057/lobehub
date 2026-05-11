@@ -149,10 +149,10 @@ const SearchGrounding = memo<GroundingSearch>(
                 {citations?.slice(0, 8).map((item, index) => (
                   <Image
                     unoptimized
-                    alt={item.title || item.url}
+                    alt={item.title || item.url || ''}
                     height={16}
-                    key={`${item.url}-${index}`}
-                    src={`https://icons.duckduckgo.com/ip3/${item.favicon || new URL(item.url).host}.ico`}
+                    key={`${item.url || index}-${index}`}
+                    src={`https://icons.duckduckgo.com/ip3/${item.favicon || (item.url ? new URL(item.url).host : '')}.ico`}
                     width={16}
                     style={{
                       background: cssVar.colorBgContainer,

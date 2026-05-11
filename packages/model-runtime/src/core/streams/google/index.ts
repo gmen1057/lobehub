@@ -303,7 +303,7 @@ const transformGoogleGenerativeAIStream = (
                       // Need to use title (or derived hostname) as a replacement
                       favicon: displayTitle,
                       title: displayTitle,
-                      url: chunk.web?.uri,
+                      url: chunk.web?.uri || '',
                     };
                   })
                 : undefined,
