@@ -55,6 +55,13 @@ import { type FetchOptions } from './types';
 
 interface GetChatCompletionPayload extends Partial<Omit<ChatStreamPayload, 'messages'>> {
   agentId?: string;
+  /**
+   * Assistant message id (placeholder created by aiChat.sendMessageInServer).
+   * Forwarded to /webapi/chat/[provider] as `x-assistant-message-id` so the
+   * billing proxy can persist the final content to DB even if the client
+   * aborts mid-stream. See plan: chat-streaming-resilience phase 2.
+   */
+  assistantMessageId?: string;
   groupId?: string;
   messages: UIChatMessage[];
   /**
@@ -111,6 +118,7 @@ class ChatService {
     {
       messages,
       agentId,
+      assistantMessageId,
       groupId,
       topicId,
       resolvedAgentConfig,
@@ -307,7 +315,7 @@ class ChatService {
         stream: chatConfig.enableStreaming !== false,
         tools,
       },
-      { ...options, agentId: targetAgentId, topicId },
+      { ...options, agentId: targetAgentId, assistantMessageId, topicId },
     );
   };
 
@@ -337,7 +345,7 @@ class ChatService {
   };
 
   getChatCompletion = async (params: Partial<ChatStreamPayload>, options?: FetchOptions) => {
-    const { agentId, signal, responseAnimation, topicId } = options ?? {};
+    const { agentId, assistantMessageId, signal, responseAnimation, topicId } = options ?? {};
 
     const { provider = ModelProvider.OpenAI, ...res } = params;
 
@@ -430,6 +438,7 @@ class ChatService {
         'Content-Type': 'application/json',
         ...traceHeader,
         ...(agentId && { 'x-agent-id': agentId }),
+        ...(assistantMessageId && { 'x-assistant-message-id': assistantMessageId }),
         ...(topicId && { 'x-topic-id': topicId }),
       },
       provider,

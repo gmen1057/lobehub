@@ -460,6 +460,11 @@ export const createAgentExecutors = (context: {
         abortController,
         params: {
           agentId: agentId || undefined,
+          // Forward the assistant placeholder id so the upstream billing
+          // proxy can persist final content directly to the LobeChat DB
+          // even if the client disconnects mid-stream (iOS background
+          // tab suspend). See plan: chat-streaming-resilience phase 2.
+          assistantMessageId,
           groupId,
           messages,
           model: llmPayload.model,
