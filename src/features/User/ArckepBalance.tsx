@@ -74,7 +74,7 @@ interface ArckepBalanceProps {
 
 const ArckepBalance = memo<ArckepBalanceProps>(({ mobile }) => {
   const { styles } = useStyles();
-  const { data, error } = useSWR('/api/arckep/balance', fetcher, {
+  const { data, error } = useSWR('/chat/api/arckep/balance/', fetcher, {
     refreshInterval: 15000,
     revalidateOnFocus: true,
     shouldRetryOnError: false,
