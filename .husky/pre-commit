@@ -3,3 +3,12 @@ if [ "$BRANCH" = "dev" ] || [ "$BRANCH" = "main" ]; then
   npm run type-check
 fi
 npx --no-install lint-staged
+
+
+# ── codegraph validate-diff (warn-only) ──────────────────────────────────
+# Reads staged diff against HEAD, runs graph-gate to surface route/DB/
+# shared-util impact. Exit 0 always — never blocks commit. Bypass with
+# SKIP_CODEGRAPH=1 git commit ...
+if [ "${SKIP_CODEGRAPH:-}" != "1" ] && [ -x "/usr/local/bin/codegraph" ]; then
+  git diff --cached --no-color | "/usr/local/bin/codegraph" validate-diff lobechat --diff=- --mode=fast --warn-only --format=text --max-files=10 2>&1 | sed 's/^/[codegraph] /' || true
+fi

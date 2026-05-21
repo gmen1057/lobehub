@@ -23,6 +23,7 @@
   "autoGenerateTooltip": "Autocomplete the description from the Agent Profile",
   "autoGenerateTooltipDisabled": "Add an Agent Profile first to use Autocomplete",
   "back": "Back",
+  "backToStudio": "Back to Studio",
   "batchDelete": "Batch Delete",
   "blog": "Product Blog",
   "branching": "Create Subtopic",

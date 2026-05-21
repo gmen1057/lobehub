@@ -94,16 +94,10 @@ export function defineConfig(config: CustomNextConfig) {
       ];
 
       if (shouldUseCSP) {
-        securityHeaders.push(
-          {
-            key: 'X-Frame-Options',
-            value: 'DENY',
-          },
-          {
-            key: 'Content-Security-Policy',
-            value: "frame-ancestors 'none';",
-          },
-        );
+        securityHeaders.push({
+          key: 'Content-Security-Policy',
+          value: "frame-ancestors 'self' https://arckep.ru https://*.arckep.ru;",
+        });
       }
 
       return [
@@ -337,11 +331,6 @@ export function defineConfig(config: CustomNextConfig) {
         destination: '/files',
         permanent: false,
         source: '/repos',
-      },
-      {
-        destination: '/',
-        permanent: true,
-        source: '/chat',
       },
       // Redirect old Clerk login route to Better Auth signin
       {

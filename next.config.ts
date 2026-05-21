@@ -22,5 +22,6 @@ const vercelConfig = {
 const nextConfig = defineConfig({
   ...(isVercel ? vercelConfig : {}),
 });
+nextConfig.basePath = '/chat';
 
 export default nextConfig;
