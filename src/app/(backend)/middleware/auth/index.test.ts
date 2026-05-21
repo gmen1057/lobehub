@@ -174,7 +174,7 @@ describe('checkAuth', () => {
 
       expect((res as Response).status).toBe(302);
       expect((res as Response).headers.get('Location')).toBe(
-        'https://arckep.ru/chat/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2Fchat%2F',
       );
     });
 
@@ -189,7 +189,7 @@ describe('checkAuth', () => {
 
       expect((res as Response).status).toBe(401);
       expect((res as Response).headers.get('X-Bridge-Location')).toBe(
-        'https://arckep.ru/chat/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2Fchat%2F',
       );
     });
 
@@ -204,7 +204,7 @@ describe('checkAuth', () => {
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       expect((res as Response).headers.get('X-Bridge-Location')).toBe(
-        'https://arckep.ru/chat/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2Fchat%2F',
       );
     });
 

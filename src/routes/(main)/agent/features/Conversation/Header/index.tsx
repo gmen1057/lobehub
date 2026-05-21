@@ -5,6 +5,7 @@ import { cssVar } from 'antd-style';
 import { memo } from 'react';
 
 import NavHeader from '@/features/NavHeader';
+import ArckepBalance from '@/features/User/ArckepBalance';
 
 import HeaderActions from './HeaderActions';
 import ShareButton from './ShareButton';
@@ -19,7 +20,13 @@ const Header = memo(() => {
         </Flexbox>
       }
       right={
-        <Flexbox horizontal align={'center'} style={{ backgroundColor: cssVar.colorBgContainer }}>
+        <Flexbox
+          horizontal
+          align={'center'}
+          gap={8}
+          style={{ backgroundColor: cssVar.colorBgContainer }}
+        >
+          <ArckepBalance />
           <ShareButton />
           <HeaderActions />
         </Flexbox>

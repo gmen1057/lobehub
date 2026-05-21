@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { ProductLogo } from '@/components/Branding';
 import { MOBILE_HEADER_ICON_SIZE } from '@/const/layoutTokens';
+import ArckepBalance from '@/features/User/ArckepBalance';
 import UserAvatar from '@/features/User/UserAvatar';
 import { useSessionStore } from '@/store/session';
 import { mobileHeaderSticky } from '@/styles/mobileHeader';
@@ -28,11 +29,14 @@ const Header = memo(() => {
         </Flexbox>
       }
       right={
-        <ActionIcon
-          icon={MessageSquarePlus}
-          size={MOBILE_HEADER_ICON_SIZE}
-          onClick={() => createSession()}
-        />
+        <Flexbox horizontal align="center" gap={8}>
+          <ArckepBalance mobile />
+          <ActionIcon
+            icon={MessageSquarePlus}
+            size={MOBILE_HEADER_ICON_SIZE}
+            onClick={() => createSession()}
+          />
+        </Flexbox>
       }
     />
   );

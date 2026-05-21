@@ -234,14 +234,16 @@ export function defineConfig() {
           // arckep: bridge endpoint lives under basePath /chat — relative path
           // without prefix produces arckep.ru/api/bridge which 404s at nginx.
           const bridgeUrl = new URL('/chat/api/bridge', appEnv.APP_URL);
-          bridgeUrl.searchParams.set('return', req.nextUrl.pathname + req.nextUrl.search);
+          const fullPath = (req.nextUrl.basePath || '') + req.nextUrl.pathname + req.nextUrl.search;
+          bridgeUrl.searchParams.set('return', fullPath);
           return Response.redirect(bridgeUrl);
         }
 
         // No arckep session — redirect to main site login
         logBetterAuth('No session, redirecting to arckep.ru login');
         const loginUrl = new URL('https://arckep.ru/login');
-        const currentPath = req.nextUrl.pathname + req.nextUrl.search;
+        const currentPath =
+          (req.nextUrl.basePath || '') + req.nextUrl.pathname + req.nextUrl.search;
         loginUrl.searchParams.set(
           'redirect',
           `https://arckep.ru/chat/api/bridge?return=${encodeURIComponent(currentPath)}`,

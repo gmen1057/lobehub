@@ -80,11 +80,11 @@ export const checkAuth =
       // it points at chat.arckep.ru itself — protects against an open
       // redirect via header injection).
       const referer = req.headers.get('referer');
-      let returnPath = '/';
+      let returnPath = '/chat/';
       if (referer) {
         try {
           const refUrl = new URL(referer);
-          if (refUrl.host === req.headers.get('host') && refUrl.pathname.startsWith('/')) {
+          if (refUrl.host === req.headers.get('host') && refUrl.pathname.startsWith('/chat')) {
             returnPath = refUrl.pathname + refUrl.search;
           }
         } catch {
