@@ -62,7 +62,7 @@ export const toolsClient = createTRPCClient<ToolsRouter>({
       },
       maxURLLength: 2083,
       transformer: superjson,
-      url: withElectronProtocolIfElectron('/trpc/tools'),
+      url: withElectronProtocolIfElectron('/chat/trpc/tools'),
     }),
   ],
 });

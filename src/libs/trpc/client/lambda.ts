@@ -134,7 +134,7 @@ const linkOptions = {
     return headers;
   },
   transformer: superjson,
-  url: withElectronProtocolIfElectron('/trpc/lambda'),
+  url: withElectronProtocolIfElectron('/chat/trpc/lambda'),
 };
 
 // Procedures that should skip batching for faster initial load

@@ -83,7 +83,7 @@ const Title = () => {
     setExporting(format);
     try {
       const html = wrapAsHtml(artifactCode, artifactType);
-      const res = await fetch('/api/artifact-export', {
+      const res = await fetch('/chat/api/artifact-export', {
         body: JSON.stringify({ format, html, message_id: messageId, topic_id: topicId }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',

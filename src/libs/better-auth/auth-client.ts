@@ -23,6 +23,7 @@ export const {
   unlinkAccount,
   useSession,
 } = createAuthClient({
+  baseURL: '/chat',
   plugins: [
     adminClient(),
     inferAdditionalFields<typeof auth>(),

@@ -9,7 +9,7 @@ export const asyncClient = createTRPCClient<AsyncRouter>({
     httpBatchLink({
       maxURLLength: 2083,
       transformer: superjson,
-      url: withElectronProtocolIfElectron('/trpc/async'),
+      url: withElectronProtocolIfElectron('/chat/trpc/async'),
     }),
   ],
 });

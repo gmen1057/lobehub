@@ -105,7 +105,7 @@ export const useSignIn = () => {
     }
 
     try {
-      const response = await fetch('/api/auth/resolve-username', {
+      const response = await fetch('/chat/api/auth/resolve-username', {
         body: JSON.stringify({ username: trimmedIdentifier }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
@@ -130,7 +130,7 @@ export const useSignIn = () => {
       if (!resolvedEmail) return;
 
       const { email: targetEmail, identifierType } = resolvedEmail;
-      const response = await fetch('/api/auth/check-user', {
+      const response = await fetch('/chat/api/auth/check-user', {
         body: JSON.stringify({ email: targetEmail }),
         headers: { 'Content-Type': 'application/json' },
         method: 'POST',
