@@ -170,7 +170,7 @@ export function defineConfig() {
     // backend api
     '/api/v1(.*)', // OpenAPI routes should use OpenAPI auth (API Key/OIDC), not BetterAuth session
     '/api/auth(.*)',
-    '/api/bridge', // arckep.ru SSO bridge — creates Better Auth session from X-User-Id
+    '/api/bridge(.*)', // arckep.ru SSO bridge — creates Better Auth session from X-User-Id
     '/api/webhooks(.*)',
     '/api/workflows(.*)',
     '/api/agent(.*)',
@@ -231,14 +231,22 @@ export function defineConfig() {
         if (arckepToken) {
           // User is logged into arckep.ru — redirect to bridge for auto-login
           logBetterAuth('arckep_token found, redirecting to bridge');
-          const bridgeUrl = new URL('/api/bridge', appEnv.APP_URL);
+          // arckep: bridge endpoint lives under basePath /chat — relative path
+          // without prefix produces arckep.ru/api/bridge which 404s at nginx.
+          const bridgeUrl = new URL('/chat/api/bridge', appEnv.APP_URL);
           bridgeUrl.searchParams.set('return', req.nextUrl.pathname + req.nextUrl.search);
           return Response.redirect(bridgeUrl);
         }
 
         // No arckep session — redirect to main site login
         logBetterAuth('No session, redirecting to arckep.ru login');
-        return Response.redirect(new URL('https://arckep.ru/?login=1'));
+        const loginUrl = new URL('https://arckep.ru/login');
+        const currentPath = req.nextUrl.pathname + req.nextUrl.search;
+        loginUrl.searchParams.set(
+          'redirect',
+          `https://arckep.ru/chat/api/bridge?return=${encodeURIComponent(currentPath)}`,
+        );
+        return Response.redirect(loginUrl);
       }
       logBetterAuth('Request a free route but not login, allow visit without auth header');
     }

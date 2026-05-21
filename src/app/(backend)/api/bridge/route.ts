@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   const arckepToken = req.cookies.get('arckep_token')?.value;
   if (!arckepToken) {
     return Response.redirect(
-      'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+      'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
       302,
     );
   }
@@ -41,21 +41,21 @@ export async function GET(req: NextRequest) {
     });
     if (!validateRes.ok) {
       return Response.redirect(
-        'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+        'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
         302,
       );
     }
     userId = validateRes.headers.get('X-User-Id') || '';
     if (!userId) {
       return Response.redirect(
-        'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+        'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
         302,
       );
     }
   } catch {
     console.error('Bridge: failed to validate arckep token');
     return Response.redirect(
-      'https://arckep.ru/?login=1&redirect=https://chat.arckep.ru/api/bridge',
+      'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
       302,
     );
   }

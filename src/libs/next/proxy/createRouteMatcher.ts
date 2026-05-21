@@ -14,5 +14,13 @@ export function createRouteMatcher(patterns: string[]) {
     return new RegExp(`^${regexStr}$`);
   });
 
-  return (req: NextRequest) => regexPatterns.some((regex) => regex.test(req.nextUrl.pathname));
+  return (req: NextRequest) => {
+    // arckep: Next.js middleware includes basePath (/chat) in nextUrl.pathname.
+    // Patterns are written without basePath, so strip it before matching —
+    // otherwise every free route (signin, signup, /api/bridge, …) is treated
+    // as protected and the middleware redirects to bridge in a loop.
+    const raw = req.nextUrl.pathname;
+    const pathname = raw === '/chat' ? '/' : raw.startsWith('/chat/') ? raw.slice(5) : raw;
+    return regexPatterns.some((regex) => regex.test(pathname));
+  };
 }

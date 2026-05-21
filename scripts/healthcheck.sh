@@ -37,15 +37,15 @@ else
 fi
 
 # 2. Check HTTP responds with 200 or 302 on localhost:PORT
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${PORT}/")
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${PORT}/chat/")
 if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "302" ] || [ "$HTTP_CODE" = "307" ]; then
-    ok "HTTP responds on localhost:${PORT} (HTTP ${HTTP_CODE})"
+    ok "HTTP responds on localhost:${PORT}/chat/ (HTTP ${HTTP_CODE})"
 else
-    fail "HTTP on localhost:${PORT} returned HTTP ${HTTP_CODE} (expected 200/302)"
+    fail "HTTP on localhost:${PORT}/chat/ returned HTTP ${HTTP_CODE} (expected 200/302)"
 fi
 
 # 3. Check bridge endpoint rejects unauthenticated requests (401 or redirect to login)
-BRIDGE_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${PORT}/api/bridge")
+BRIDGE_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "http://127.0.0.1:${PORT}/chat/api/bridge/")
 if [ "$BRIDGE_CODE" = "401" ] || [ "$BRIDGE_CODE" = "302" ] || [ "$BRIDGE_CODE" = "307" ]; then
     ok "Bridge endpoint rejects unauthenticated requests (HTTP ${BRIDGE_CODE})"
 else

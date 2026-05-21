@@ -93,9 +93,9 @@ export const checkAuth =
       }
 
       // Hardcode the canonical chat origin instead of trusting the Host
-      // header — a `Host: chat.arckep.ru@evil` would otherwise let an
+      // header — a `Host: arckep.ru@evil` would otherwise let an
       // attacker steer the Location to evil.com.
-      const bridgeUrl = `https://chat.arckep.ru/api/bridge?return=${encodeURIComponent(returnPath)}`;
+      const bridgeUrl = `https://arckep.ru/chat/api/bridge?return=${encodeURIComponent(returnPath)}`;
 
       // checkAuth wraps SSE/JSON API endpoints (/webapi/chat/*, etc.). A
       // 302 there is harmful: browser fetch follows it, the bridge HTML

@@ -150,15 +150,15 @@ describe('checkAuth', () => {
       vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
       const req = buildReq({
         accept: 'application/json, text/event-stream',
-        host: 'chat.arckep.ru',
-        referer: 'https://chat.arckep.ru/agent/agt_abc?topic=tpc_xyz',
+        host: 'arckep.ru',
+        referer: 'https://arckep.ru/chat/agent/agt_abc?topic=tpc_xyz',
       });
 
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       expect((res as Response).status).toBe(401);
       const bridge = (res as Response).headers.get('X-Bridge-Location') ?? '';
-      expect(bridge.startsWith('https://chat.arckep.ru/api/bridge?return=')).toBe(true);
+      expect(bridge.startsWith('https://arckep.ru/chat/api/bridge?return=')).toBe(true);
       expect(decodeURIComponent(bridge)).toContain('/agent/agt_abc?topic=tpc_xyz');
       expect(mockHandler).not.toHaveBeenCalled();
     });
@@ -167,14 +167,14 @@ describe('checkAuth', () => {
       vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
       const req = buildReq({
         accept: 'text/html,application/xhtml+xml',
-        host: 'chat.arckep.ru',
+        host: 'arckep.ru',
       });
 
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       expect((res as Response).status).toBe(302);
       expect((res as Response).headers.get('Location')).toBe(
-        'https://chat.arckep.ru/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2F',
       );
     });
 
@@ -182,14 +182,14 @@ describe('checkAuth', () => {
       vi.mocked(validateArckepToken).mockResolvedValueOnce('missing');
       const req = buildReq({
         accept: 'application/json',
-        host: 'chat.arckep.ru',
+        host: 'arckep.ru',
       });
 
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       expect((res as Response).status).toBe(401);
       expect((res as Response).headers.get('X-Bridge-Location')).toBe(
-        'https://chat.arckep.ru/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2F',
       );
     });
 
@@ -197,28 +197,28 @@ describe('checkAuth', () => {
       vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
       const req = buildReq({
         accept: 'application/json',
-        host: 'chat.arckep.ru',
+        host: 'arckep.ru',
         referer: 'https://evil.example.com/phish?path=/',
       });
 
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       expect((res as Response).headers.get('X-Bridge-Location')).toBe(
-        'https://chat.arckep.ru/api/bridge?return=%2F',
+        'https://arckep.ru/chat/api/bridge?return=%2F',
       );
     });
 
-    it('hardcodes canonical chat.arckep.ru origin even when Host header is poisoned', async () => {
+    it('hardcodes canonical arckep.ru/chat origin even when Host header is poisoned', async () => {
       vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
       const req = buildReq({
         accept: 'application/json',
-        host: 'chat.arckep.ru@evil.com',
+        host: 'arckep.ru@evil.com',
       });
 
       const res = await checkAuth(mockHandler)(req, mockOptions);
 
       const bridge = (res as Response).headers.get('X-Bridge-Location') ?? '';
-      expect(bridge.startsWith('https://chat.arckep.ru/')).toBe(true);
+      expect(bridge.startsWith('https://arckep.ru/chat/')).toBe(true);
       expect(bridge.includes('evil.com')).toBe(false);
     });
   });
