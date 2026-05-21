@@ -8,6 +8,13 @@ import { createAuthClient } from 'better-auth/react';
 
 import { type auth } from '@/auth';
 
+const getBaseURL = () => {
+  if (typeof window !== 'undefined') {
+    return `${window.location.origin}/chat/api/auth`;
+  }
+  return process.env.BETTER_AUTH_URL || process.env.APP_URL || 'https://arckep.ru/chat/api/auth';
+};
+
 export const {
   changeEmail,
   linkSocial,
@@ -23,7 +30,7 @@ export const {
   unlinkAccount,
   useSession,
 } = createAuthClient({
-  baseURL: '/chat',
+  baseURL: getBaseURL(),
   plugins: [
     adminClient(),
     inferAdditionalFields<typeof auth>(),

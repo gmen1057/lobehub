@@ -1,13 +1,19 @@
 import { LOBE_CHAT_CLOUD, UTM_SOURCE } from '@lobechat/business-const';
-import { DOWNLOAD_URL, OFFICIAL_URL } from '@lobechat/const';
-import { Book, CircleUserRound, Cloudy, Feather, FileClockIcon, Settings2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { OFFICIAL_URL } from '@lobechat/const';
+import {
+  Book,
+  CircleUserRound,
+  Cloudy,
+  Feather,
+  FileClockIcon,
+  Settings2,
+  Sparkles,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 
 import { type CellProps } from '@/components/Cell';
 import { DOCUMENTS, FEEDBACK } from '@/const/index';
-import { usePlatform } from '@/hooks/usePlatform';
 import { featureFlagsSelectors, useServerConfigStore } from '@/store/serverConfig';
 import { useUserStore } from '@/store/user';
 import { authSelectors } from '@/store/user/selectors';
@@ -17,13 +23,20 @@ export const useCategory = (onOpenChangelogModal: () => void) => {
   const { t } = useTranslation(['common', 'setting', 'auth']);
   const { showCloudPromotion, hideDocs } = useServerConfigStore(featureFlagsSelectors);
   const [isLoginWithAuth] = useUserStore((s) => [authSelectors.isLoginWithAuth(s)]);
-  const { isIOS, isAndroid } = usePlatform();
 
-  const downloadUrl = useMemo(() => {
-    if (isIOS) return DOWNLOAD_URL.ios;
-    if (isAndroid) return DOWNLOAD_URL.android;
-    return DOWNLOAD_URL.default;
-  }, [isIOS, isAndroid]);
+  const backToStudio: CellProps[] = [
+    {
+      icon: Sparkles,
+      key: 'back-to-studio',
+      label: 'В Студию',
+      onClick: () => {
+        window.location.href = 'https://arckep.ru/studio';
+      },
+    },
+    {
+      type: 'divider',
+    },
+  ];
 
   const profile: CellProps[] = [
     {
@@ -81,6 +94,7 @@ export const useCategory = (onOpenChangelogModal: () => void) => {
     {
       type: 'divider',
     },
+    ...backToStudio,
     ...(isLoginWithAuth ? profile : []),
     ...(isLoginWithAuth ? settings : []),
     ...getDesktopApp,

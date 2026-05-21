@@ -26,7 +26,7 @@ export function defineConfig() {
   const backendApiEndpoints = ['/api', '/trpc', '/webapi', '/oidc'];
 
   const defaultMiddleware = (request: NextRequest) => {
-    const url = new URL(request.url);
+    const url = request.nextUrl.clone();
     logDefault('Processing request: %s %s', request.method, request.url);
 
     // skip all api requests

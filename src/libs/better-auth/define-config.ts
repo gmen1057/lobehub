@@ -102,7 +102,11 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
       },
     },
 
-    baseURL: appEnv.APP_URL,
+    baseURL: appEnv.APP_URL
+      ? appEnv.APP_URL.endsWith('/api/auth')
+        ? appEnv.APP_URL
+        : appEnv.APP_URL.replace(/\/+$/, '') + '/api/auth'
+      : undefined,
     secret: authEnv.AUTH_SECRET,
     trustedOrigins: getTrustedOrigins(enabledSSOProviders),
 

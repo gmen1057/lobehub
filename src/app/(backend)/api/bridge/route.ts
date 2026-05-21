@@ -65,14 +65,14 @@ export async function GET(req: NextRequest) {
 
   try {
     // Sign-up via HTTP (idempotent)
-    await fetch(`${INTERNAL_URL}/api/auth/sign-up/email`, {
+    await fetch(`${INTERNAL_URL}/chat/api/auth/sign-up/email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, name: `User ${userId}`, password }),
     }).catch(() => {});
 
     // Sign-in via HTTP — returns proper Set-Cookie headers
-    const signInRes = await fetch(`${INTERNAL_URL}/api/auth/sign-in/email`, {
+    const signInRes = await fetch(`${INTERNAL_URL}/chat/api/auth/sign-in/email`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email, password }),
