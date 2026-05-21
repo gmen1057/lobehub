@@ -23,5 +23,6 @@ const nextConfig = defineConfig({
   ...(isVercel ? vercelConfig : {}),
 });
 nextConfig.basePath = '/chat';
+nextConfig.trailingSlash = true;
 
 export default nextConfig;
