@@ -13,7 +13,9 @@ interface StreamerCallbacks {
   }) => void;
 }
 
-export interface DesktopIpcServicesMap {}
+export interface DesktopIpcServicesMap {
+  [key: string]: any;
+}
 export type DesktopIpcServices = DesktopIpcServicesMap;
 export type ElectronDesktopIpc = DesktopIpcServices | null;
 

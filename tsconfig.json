@@ -17,6 +17,12 @@
     "incremental": true,
     "types": ["vitest/globals"],
     "paths": {
+      "@lobechat/desktop-bridge": ["./packages/desktop-bridge/src/index.ts"],
+      "@lobechat/electron-client-ipc": ["./packages/electron-client-ipc/src/index.ts"],
+      "@lobechat/builtin-tool-remote-device": [
+        "./packages/builtin-tool-remote-device/src/index.ts"
+      ],
+      "@lobechat/builtin-tool-local-system": ["./packages/builtin-tool-local-system/src/index.ts"],
       "@/database/*": ["./packages/database/src/*", "./src/database/*"],
       "@/const/*": ["./packages/const/src/*", "./src/const/*"],
       "@/utils/*": ["./packages/utils/src/*", "./src/utils/*"],
@@ -61,9 +67,5 @@
     "next-env.d.ts",
     ".next/dev/types/**/*.ts"
   ],
-  "references": [
-    {
-      "path": "./apps/desktop"
-    }
-  ]
+  "references": []
 }

@@ -127,7 +127,7 @@ export const useChatListActionsBar = ({
       translate: {
         children: localeOptions.map((i) => ({
           key: i.value,
-          label: t(`lang.${i.value}`),
+          label: t(`lang.${i.value}` as any),
         })),
         icon: LanguagesIcon,
         key: 'translate',

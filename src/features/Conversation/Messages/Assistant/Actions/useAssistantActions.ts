@@ -154,7 +154,7 @@ export const useAssistantActions = ({
       translate: {
         children: localeOptions.map((i) => ({
           key: i.value,
-          label: t(`lang.${i.value}`),
+          label: t(`lang.${i.value}` as any),
           onClick: () => translateMessage(id, i.value),
         })),
         icon: LanguagesIcon,

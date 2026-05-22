@@ -23,13 +23,15 @@ const Header = memo(() => {
           <Flexbox horizontal align="center" gap={8}>
             <ActionIcon
               icon={ArrowLeftIcon}
-              title={t('backToStudio')}
+              title="Вернуться в студию"
               style={{
                 borderRadius: '8px',
                 border: '1px solid var(--color-border)',
               }}
               onClick={() => {
-                window.top.location.href = 'https://arckep.ru/studio';
+                if (typeof window !== 'undefined') {
+                  window.open('https://arckep.ru/studio', '_top');
+                }
               }}
             />
             <User />

@@ -44,7 +44,7 @@ export const useMarkdown = (id: string): Partial<MarkdownProps> => {
     () =>
       ({
         animated,
-        citations: search?.citations,
+        citations: search?.citations as any,
         componentProps: {
           highlight: {
             actionsRender: ({ content, actionIconSize, language, originalNode }: any) => {

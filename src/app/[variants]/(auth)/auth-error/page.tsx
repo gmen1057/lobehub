@@ -37,7 +37,7 @@ const AuthErrorPage = memo(() => {
               {t('actions.home')}
             </Button>
           </Link>
-          <Link href={SOCIAL_URL.discord} rel="noopener noreferrer" target="_blank">
+          <Link href={SOCIAL_URL.discord || '#'} rel="noopener noreferrer" target="_blank">
             <Button block icon={<Icon fill={cssVar.colorText} icon={SiDiscord} />} type="text">
               {t('actions.discord')}
             </Button>

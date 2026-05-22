@@ -354,11 +354,15 @@ export class SandboxJobWorker {
         await this.finalizeJob(job, (model) =>
           model.markError(job.id, {
             body: payload.error,
-            message: payload.error.message || 'E2B gateway error',
+            message: (payload.error as any)?.message || 'E2B gateway error',
             type: 'gateway_error',
           }),
         );
-        log('executeJob gateway error jobId=%s message=%s', job.id, payload.error.message);
+        log(
+          'executeJob gateway error jobId=%s message=%s',
+          job.id,
+          (payload.error as any)?.message,
+        );
         return;
       }
 

@@ -1,5 +1,4 @@
 import type { LobeChatDatabase } from '@lobechat/database';
-import type { TRPCError } from '@trpc/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { MessageModel } from '@/database/models/message';
@@ -434,7 +433,7 @@ describe('MessageService', () => {
         id: 'msg-1',
       } as any);
 
-      await expect(messageService.createSpreadsheetFile('msg-1')).rejects.toMatchObject<TRPCError>({
+      await expect(messageService.createSpreadsheetFile('msg-1')).rejects.toMatchObject({
         code: 'BAD_REQUEST',
       });
       expect(mockFileService.uploadFromBuffer).not.toHaveBeenCalled();

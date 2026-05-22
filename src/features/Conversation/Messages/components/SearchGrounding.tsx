@@ -222,13 +222,15 @@ const SearchGrounding = memo<GroundingSearch>(
                 )}
                 {citations && (
                   <SearchResultCards
-                    dataSource={citations.map((c) => ({
-                      ...c,
-                      // Pass the original redirect URL as href to preserve the actual link
-                      href: c.url,
-                      // Override url with favicon domain so SearchResultCard derives the correct favicon host
-                      url: c.favicon ? `https://${c.favicon}` : c.url,
-                    }))}
+                    dataSource={
+                      citations.map((c) => ({
+                        ...c,
+                        // Pass the original redirect URL as href to preserve the actual link
+                        href: c.url,
+                        // Override url with favicon domain so SearchResultCard derives the correct favicon host
+                        url: c.favicon ? `https://${c.favicon}` : c.url,
+                      })) as any
+                    }
                   />
                 )}
                 {imageSearchQueries && imageSearchQueries.length > 0 && (

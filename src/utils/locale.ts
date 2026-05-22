@@ -38,7 +38,7 @@ export const parseBrowserLanguage = (headers: Headers, defaultLang: string = DEF
   let browserLang: string = resolveAcceptLanguage(
     headers.get('accept-language') || '',
     //  Invalid locale identifier 'ar'. A valid locale should follow the BCP 47 'language-country' format.
-    locales.map((locale) => (locale === 'ar' ? 'ar-EG' : locale)),
+    locales.map((locale) => ((locale as string) === 'ar' ? 'ar-EG' : locale)),
     defaultLang,
   );
 

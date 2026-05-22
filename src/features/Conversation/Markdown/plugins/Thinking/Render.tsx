@@ -30,7 +30,7 @@ const Render = memo<MarkdownElementProps>(({ children, id }) => {
 
   return (
     <Thinking
-      citations={citations}
+      citations={citations as any}
       content={children as string}
       thinking={isGenerating}
       thinkingAnimated={transitionMode === 'fadeIn' && isGenerating}

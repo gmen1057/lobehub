@@ -66,7 +66,7 @@ export function defineConfig() {
     // 2. Create normalized preference values
     const route = RouteVariants.serializeVariants({
       isMobile: device.type === 'mobile',
-      locale,
+      locale: locale as any,
     });
 
     logDefault('Serialized route variant: %s', route);

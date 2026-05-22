@@ -15,7 +15,7 @@ export const safeSetDocument = (
 
   try {
     const lexicalEditor = editor.getLexicalEditor?.();
-    if (lexicalEditor?.isUpdating?.()) {
+    if ((lexicalEditor as any)?.isUpdating?.()) {
       setTimeout(() => {
         try {
           editor.setDocument(type, content, options);
