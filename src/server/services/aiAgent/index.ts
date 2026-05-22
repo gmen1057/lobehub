@@ -442,9 +442,14 @@ export class AiAgentService {
 
     // 5. Tool discovery — short-circuit when disableTools is set
     let tools: any[] | undefined;
-    let toolsResult: { enabledToolIds: string[]; tools?: any[] | undefined } = {
+    let toolsResult: {
+      enabledToolIds: string[];
+      tools?: any[] | undefined;
+      enabledManifests?: any[] | undefined;
+    } = {
       enabledToolIds: [],
       tools: undefined,
+      enabledManifests: undefined,
     };
     const toolManifestMap: Record<string, any> = {};
     const toolSourceMap: Record<string, ToolSource> = {};

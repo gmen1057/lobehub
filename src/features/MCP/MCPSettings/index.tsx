@@ -386,7 +386,7 @@ const Settings = ({
               {t('settings.configuration.title')}
             </div>
             {(() => {
-              const schema = customParams?.settingsSchema as
+              const schema = (customParams as any)?.settingsSchema as
                 | Record<
                     string,
                     { label?: string; placeholder?: string; type?: string; required?: boolean }

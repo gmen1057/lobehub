@@ -28,7 +28,7 @@ export function generateStaticParams() {
   for (const locale of staticLocales) {
     for (const isMobile of mobileOptions) {
       variants.push({
-        variants: RouteVariants.serializeVariants({ isMobile, locale }),
+        variants: RouteVariants.serializeVariants({ isMobile, locale: locale as any }),
       });
     }
   }

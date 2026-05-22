@@ -820,7 +820,7 @@ export const marketRouter = router({
         const uploadUrl = await s3.createPreSignedUrl(key);
 
         await fetch(uploadUrl, {
-          body: fileBuffer,
+          body: fileBuffer as any,
           headers: { 'Content-Type': 'application/octet-stream' },
           method: 'PUT',
           signal: AbortSignal.timeout(30_000),

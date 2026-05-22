@@ -445,7 +445,7 @@ export const buildXlsxFile = (
 };
 
 export const downloadXlsxFile = (rows: string[][], filename: string, sheetName?: string) => {
-  const blob = new Blob([buildXlsxFile(rows, { sheetName })], {
+  const blob = new Blob([buildXlsxFile(rows, { sheetName }) as any], {
     type: EXCEL_MIME_TYPE,
   });
   const url = URL.createObjectURL(blob);

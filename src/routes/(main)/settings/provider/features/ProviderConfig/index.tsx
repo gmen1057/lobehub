@@ -4,16 +4,7 @@ import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 import { AES_GCM_URL, BASE_PROVIDER_DOC_URL, FORM_STYLE } from '@lobechat/const';
 import { ProviderCombine } from '@lobehub/icons';
 import { type FormGroupItemType, type FormItemProps } from '@lobehub/ui';
-import {
-  Avatar,
-  Center,
-  Flexbox,
-  Form,
-  Icon,
-  Skeleton,
-  stopPropagation,
-  Tooltip,
-} from '@lobehub/ui';
+import { Avatar, Center, Flexbox, Form, Icon, stopPropagation, Tooltip } from '@lobehub/ui';
 import { useDebounceFn } from 'ahooks';
 import { Form as AntdForm, Switch } from 'antd';
 import { createStaticStyles, cssVar, cx, responsive } from 'antd-style';
@@ -33,7 +24,6 @@ import { AiProviderSourceEnum } from '@/types/aiProvider';
 
 import { KeyVaultsConfigKey, LLMProviderApiTokenKey, LLMProviderBaseUrlKey } from '../../const';
 import { type CheckErrorRender } from './Checker';
-import Checker from './Checker';
 import EnableSwitch from './EnableSwitch';
 import OAuthDeviceFlowAuth from './OAuthDeviceFlowAuth';
 import UpdateProviderInfo from './UpdateProviderInfo';
@@ -378,46 +368,7 @@ const ProviderConfig = memo<ProviderConfigProps>(
         }
       : undefined;
 
-    const configItems = [
-      ...apiKeyItem,
-      endpointItem,
-      supportResponsesApi
-        ? {
-            children: isLoading ? <Skeleton.Button active /> : <Switch loading={configUpdating} />,
-            desc: t('providerModels.config.responsesApi.desc'),
-            label: t('providerModels.config.responsesApi.title'),
-            minWidth: undefined,
-            name: ['config', 'enableResponseApi'],
-          }
-        : undefined,
-      clientFetchItem,
-      showChecker
-        ? {
-            children: isLoading ? (
-              <Skeleton.Button active />
-            ) : (
-              <Checker
-                checkErrorRender={checkErrorRender}
-                model={data?.checkModel || checkModel!}
-                provider={id}
-                onAfterCheck={async () => {
-                  // Reset connection test state to allow subsequent onValuesChange updates
-                  isCheckingConnection.current = false;
-                }}
-                onBeforeCheck={async () => {
-                  // Set connection test state to prevent duplicate requests from onValuesChange
-                  isCheckingConnection.current = true;
-                  // Proactively save the latest form values to ensure fetchAiProviderRuntimeState retrieves up-to-date data
-                  await updateAiProviderConfig(id, form.getFieldsValue());
-                }}
-              />
-            ),
-            desc: t('providerModels.config.checker.desc'),
-            label: t('providerModels.config.checker.title'),
-          }
-        : undefined,
-      showAceGcm && aceGcmItem,
-    ].filter(Boolean) as FormItemProps[];
+    const configItems: FormItemProps[] = [];
 
     const logoUrl = data?.logo ?? logo;
 

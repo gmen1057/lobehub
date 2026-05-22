@@ -107,7 +107,7 @@ const ShareText = memo<ShareTextProps>(({ item }) => {
               });
 
               if (result.messages) {
-                replaceMessages(result.messages, { context });
+                (replaceMessages as any)(result.messages, { context });
               }
 
               message.success(t('shareModal.attachSpreadsheetSuccess'));

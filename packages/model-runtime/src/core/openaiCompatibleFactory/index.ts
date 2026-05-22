@@ -352,6 +352,12 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         log('chat called with model: %s, stream: %s', payload.model, payload.stream ?? true);
 
         let processedPayload: any = payload;
+        if (processedPayload.tools?.length) {
+          processedPayload = {
+            ...processedPayload,
+            tools: this.deduplicateTools(processedPayload.tools),
+          };
+        }
         const userApiMode = (payload as any).apiMode as string | undefined;
         const modelId = (payload as any).model as string | undefined;
 
@@ -1050,10 +1056,19 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
       const inputStartAt = Date.now();
 
-      const { messages, reasoning_effort, tools, reasoning, responseMode, max_tokens, ...res } =
-        responses?.handlePayload
-          ? (responses?.handlePayload(payload, this._options) as ChatStreamPayload)
-          : payload;
+      const {
+        messages,
+        reasoning_effort,
+        tools: rawTools,
+        reasoning,
+        responseMode,
+        max_tokens,
+        ...res
+      } = responses?.handlePayload
+        ? (responses?.handlePayload(payload, this._options) as ChatStreamPayload)
+        : payload;
+
+      const tools = this.deduplicateTools(rawTools);
 
       // remove penalty params and chat completion specific params
       delete res.apiMode;
@@ -1161,6 +1176,18 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       );
     }
 
+    private deduplicateTools = <T>(tools: T[] | undefined): T[] | undefined => {
+      if (!tools?.length) return tools;
+      const seenToolNames = new Set<string>();
+      return tools.filter((tool: any) => {
+        const name = tool.function?.name || tool.name;
+        if (!name) return true;
+        if (seenToolNames.has(name)) return false;
+        seenToolNames.add(name);
+        return true;
+      });
+    };
+
     private convertChatCompletionToolToResponseTool = (
       tool: ChatCompletionTool | OpenAI.Responses.Tool,
     ): OpenAI.Responses.Tool => {
@@ -1176,7 +1203,8 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
       options?: GenerateObjectOptions,
       usagePayload?: ChatPayloadForTransformStream,
     ) {
-      const { messages, model, tools, responseApi } = payload;
+      const { messages, model, tools: rawTools, responseApi } = payload;
+      const tools = this.deduplicateTools(rawTools);
       const log = debug(`${this.logPrefix}:generateObject`);
 
       log(

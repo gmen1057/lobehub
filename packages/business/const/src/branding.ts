@@ -4,7 +4,7 @@
 export const LOBE_CHAT_CLOUD = 'ArcKep AI';
 
 export const BRANDING_NAME = 'ArcKep AI';
-export const BRANDING_LOGO_URL = '';
+export const BRANDING_LOGO_URL = '/favicon.svg';
 
 export const ORG_NAME = 'ArcKep';
 

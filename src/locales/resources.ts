@@ -6,7 +6,7 @@ export const locales = ['en-US', 'ru-RU'] as const;
 
 export type DefaultResources = typeof resources;
 export type NS = keyof DefaultResources;
-export type Locales = (typeof locales)[number];
+export type Locales = (typeof locales)[number] | (string & {});
 
 export const normalizeLocale = (locale?: string): Locales => {
   if (!locale) return DEFAULT_LANG;

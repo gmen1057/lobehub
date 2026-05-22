@@ -2,6 +2,10 @@
 
 # Changelog
 
+## \[Unreleased]
+
+- chore(cleanup): remove Electron, unused bot platforms and E2E tests
+
 ### [Version 2.1.45](https://github.com/lobehub/lobe-chat/compare/v2.1.44...v2.1.45)
 
 <sup>Released on **2026-03-26**</sup>

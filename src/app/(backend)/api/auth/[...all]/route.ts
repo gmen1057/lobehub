@@ -52,7 +52,7 @@ const cleanRequest = (req: NextRequest): NextRequest => {
       init.duplex = 'half';
     }
 
-    const cleaned = new NextRequest(targetUrl.toString(), init);
+    const cleaned = new NextRequest(targetUrl.toString(), init as any);
     console.log('cleanRequest cleaned:', {
       url: cleaned.url,
       nextUrl: cleaned.nextUrl.toString(),
