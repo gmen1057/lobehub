@@ -4,6 +4,7 @@ import { type StateCreator } from 'zustand';
 import { EDITOR_DEBOUNCE_TIME, EDITOR_MAX_WAIT } from '@/const/index';
 import { type StoreSetter } from '@/store/types';
 import { flattenActions } from '@/store/utils/flattenActions';
+import { safeSetDocument } from '@/utils/safeSetDocument';
 
 import { type SaveState, type SaveStatus, type State } from './initialState';
 import { initialState } from './initialState';
@@ -76,11 +77,7 @@ export class ActionImpl {
 
     const { editor } = this.#get();
     if (editor) {
-      try {
-        editor.setDocument('markdown', newContent);
-      } catch {
-        // Ignore errors during streaming updates
-      }
+      safeSetDocument(editor, 'markdown', newContent);
     }
   };
 

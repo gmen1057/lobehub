@@ -173,19 +173,22 @@ export const buildDefaultAnthropicPayload = async (
   }
 
   if (!!thinking && (thinking.type === 'enabled' || thinking.type === 'adaptive')) {
+    const isOpus4 = model.includes('claude-opus-4');
     const resolvedThinking: Anthropic.MessageCreateParams['thinking'] =
-      thinking.type === 'enabled'
+      thinking.type === 'enabled' && !isOpus4
         ? {
             budget_tokens: Math.min(thinking?.budget_tokens || 1024, resolvedMaxTokens - 1),
             type: 'enabled',
           }
         : { type: 'adaptive' };
 
+    const resolvedEffort = isOpus4 ? effort || 'medium' : effort;
+
     return {
       max_tokens: resolvedMaxTokens,
       messages: postMessages,
       model,
-      ...(effort ? { output_config: { effort } } : {}),
+      ...(resolvedEffort ? { output_config: { effort: resolvedEffort } } : {}),
       system: systemPrompts,
       thinking: resolvedThinking,
       tools: postTools as Anthropic.MessageCreateParams['tools'],

@@ -18,6 +18,12 @@ import { type NextRequest } from 'next/server';
 const INTERNAL_URL = 'http://127.0.0.1:' + (process.env.PORT || '3402');
 
 export async function GET(req: NextRequest) {
+  const returnParam = req.nextUrl.searchParams.get('return') || '';
+  const redirectTarget = returnParam
+    ? `https://arckep.ru/chat/api/bridge?return=${encodeURIComponent(returnParam)}`
+    : 'https://arckep.ru/chat/api/bridge';
+  const loginRedirectUrl = `https://arckep.ru/?login=1&redirect=${encodeURIComponent(redirectTarget)}`;
+
   const authSecret = process.env.AUTH_SECRET;
   if (!authSecret) {
     console.error('Bridge: AUTH_SECRET is not set');
@@ -27,10 +33,7 @@ export async function GET(req: NextRequest) {
   // Read arckep_token from cookie
   const arckepToken = req.cookies.get('arckep_token')?.value;
   if (!arckepToken) {
-    return Response.redirect(
-      'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
-      302,
-    );
+    return Response.redirect(loginRedirectUrl, 302);
   }
 
   // Validate JWT via our backend
@@ -40,24 +43,15 @@ export async function GET(req: NextRequest) {
       headers: { Cookie: `arckep_token=${arckepToken}` },
     });
     if (!validateRes.ok) {
-      return Response.redirect(
-        'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
-        302,
-      );
+      return Response.redirect(loginRedirectUrl, 302);
     }
     userId = validateRes.headers.get('X-User-Id') || '';
     if (!userId) {
-      return Response.redirect(
-        'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
-        302,
-      );
+      return Response.redirect(loginRedirectUrl, 302);
     }
   } catch {
     console.error('Bridge: failed to validate arckep token');
-    return Response.redirect(
-      'https://arckep.ru/?login=1&redirect=https://arckep.ru/chat/api/bridge',
-      302,
-    );
+    return Response.redirect(loginRedirectUrl, 302);
   }
 
   const email = `user${userId}@arckep.ru`;

@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { EMPTY_EDITOR_STATE } from '@/libs/editor/constants';
+import { safeSetDocument } from '@/utils/safeSetDocument';
 
 import { type EditorCanvasProps } from './EditorCanvas';
 import InternalEditor from './InternalEditor';
@@ -26,13 +27,13 @@ const loadEditorContent = (
 
   try {
     if (hasValidEditorData) {
-      editorInstance.setDocument('json', JSON.stringify(editorData.editorData));
+      safeSetDocument(editorInstance, 'json', JSON.stringify(editorData.editorData));
       return true;
     } else if (editorData.content?.trim()) {
-      editorInstance.setDocument('markdown', editorData.content, { keepId: true });
+      safeSetDocument(editorInstance, 'markdown', editorData.content, { keepId: true });
       return true;
     } else {
-      editorInstance.setDocument('json', JSON.stringify(EMPTY_EDITOR_STATE));
+      safeSetDocument(editorInstance, 'json', JSON.stringify(EMPTY_EDITOR_STATE));
       return true;
     }
   } catch (err) {

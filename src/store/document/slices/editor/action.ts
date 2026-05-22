@@ -7,6 +7,7 @@ import isEqual from 'fast-deep-equal';
 import { EMPTY_EDITOR_STATE } from '@/libs/editor/constants';
 import { documentService } from '@/services/document';
 import type { StoreSetter } from '@/store/types';
+import { safeSetDocument } from '@/utils/safeSetDocument';
 import { setNamespace } from '@/utils/storeDebug';
 
 import type { DocumentStore } from '../../store';
@@ -122,7 +123,7 @@ export class EditorActionImpl {
     // Set content from document state
     if (hasValidEditorData) {
       try {
-        editor.setDocument('json', JSON.stringify(doc.editorData));
+        safeSetDocument(editor, 'json', JSON.stringify(doc.editorData));
         return;
       } catch {
         // Fallback to markdown if JSON fails
@@ -132,9 +133,9 @@ export class EditorActionImpl {
 
     try {
       if (doc.content?.trim()) {
-        editor.setDocument('markdown', doc.content);
+        safeSetDocument(editor, 'markdown', doc.content);
       } else {
-        editor.setDocument('json', JSON.stringify(EMPTY_EDITOR_STATE));
+        safeSetDocument(editor, 'json', JSON.stringify(EMPTY_EDITOR_STATE));
       }
     } catch (err) {
       console.error('[DocumentStore] Failed to load markdown content:', err);
