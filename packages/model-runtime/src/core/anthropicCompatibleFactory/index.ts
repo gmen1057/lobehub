@@ -172,6 +172,17 @@ export const buildDefaultAnthropicPayload = async (
     postTools = postTools?.length ? [...postTools, webSearchTool] : [webSearchTool];
   }
 
+  if (postTools?.length) {
+    const seenToolNames = new Set<string>();
+    postTools = postTools.filter((tool) => {
+      const name = (tool as { name?: string }).name;
+      if (!name) return true;
+      if (seenToolNames.has(name)) return false;
+      seenToolNames.add(name);
+      return true;
+    });
+  }
+
   if (!!thinking && (thinking.type === 'enabled' || thinking.type === 'adaptive')) {
     const isOpus4 = model.includes('claude-opus-4');
     const resolvedThinking: Anthropic.MessageCreateParams['thinking'] =
