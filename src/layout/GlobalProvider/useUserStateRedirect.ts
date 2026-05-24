@@ -3,14 +3,7 @@
 import { useCallback } from 'react';
 
 import { isDesktop } from '@/const/version';
-import { onboardingSelectors } from '@/store/user/selectors';
 import { type UserInitializationState } from '@/types/user';
-
-const redirectIfNotOn = (currentPath: string, path: string) => {
-  if (!currentPath.startsWith(path)) {
-    window.location.href = path;
-  }
-};
 
 export const useDesktopUserStateRedirect = () => {
   // Desktop onboarding redirect is now handled by main process (BrowserManager)
@@ -19,12 +12,12 @@ export const useDesktopUserStateRedirect = () => {
 };
 
 export const useWebUserStateRedirect = () =>
-  useCallback((state: UserInitializationState) => {
-    const { pathname } = window.location;
-
-    if (!onboardingSelectors.needsOnboarding(state)) return;
-
-    redirectIfNotOn(pathname, '/onboarding');
+  useCallback((_state: UserInitializationState) => {
+    // arckep fork: onboarding flow disabled — bridge auth covers user setup.
+    // Upstream would redirect to '/onboarding' here (absolute path, without
+    // basePath '/chat'), which 404s on the arckep.ru host and traps users
+    // in a loop. See KNOWN_ISSUES.md (image-studio) 2026-05-24.
+    return;
   }, []);
 
 export const useUserStateRedirect = () => {
