@@ -65,7 +65,7 @@ describe('checkAuth', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: arckep token is valid — lets the original auth flow run
-    vi.mocked(validateArckepToken).mockResolvedValue('valid');
+    vi.mocked(validateArckepToken).mockResolvedValue({ status: 'valid', userId: '123' });
   });
 
   afterEach(() => {
@@ -118,7 +118,7 @@ describe('checkAuth', () => {
 
   describe('arckep gate', () => {
     it('returns 503 with Retry-After when validate is unreachable (no fail-open)', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('unreachable');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'unreachable' });
       const req = new Request('https://chat.arckep.ru/webapi/chat/openai', {
         method: 'POST',
       });
@@ -147,7 +147,7 @@ describe('checkAuth', () => {
     }
 
     it('returns 401 with X-Bridge-Location for XHR/SSE on expired token (no 302 follow-trap)', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'expired' });
       const req = buildReq({
         accept: 'application/json, text/event-stream',
         host: 'arckep.ru',
@@ -164,7 +164,7 @@ describe('checkAuth', () => {
     });
 
     it('returns 302 redirect for top-level navigation (Accept: text/html)', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'expired' });
       const req = buildReq({
         accept: 'text/html,application/xhtml+xml',
         host: 'arckep.ru',
@@ -179,7 +179,7 @@ describe('checkAuth', () => {
     });
 
     it('returns 401 with default bridge_url when token is missing', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('missing');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'missing' });
       const req = buildReq({
         accept: 'application/json',
         host: 'arckep.ru',
@@ -194,7 +194,7 @@ describe('checkAuth', () => {
     });
 
     it('does not honor cross-origin referers (open-redirect guard)', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'expired' });
       const req = buildReq({
         accept: 'application/json',
         host: 'arckep.ru',
@@ -209,7 +209,7 @@ describe('checkAuth', () => {
     });
 
     it('hardcodes canonical arckep.ru/chat origin even when Host header is poisoned', async () => {
-      vi.mocked(validateArckepToken).mockResolvedValueOnce('expired');
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'expired' });
       const req = buildReq({
         accept: 'application/json',
         host: 'arckep.ru@evil.com',
@@ -220,6 +220,30 @@ describe('checkAuth', () => {
       const bridge = (res as Response).headers.get('X-Bridge-Location') ?? '';
       expect(bridge.startsWith('https://arckep.ru/chat/')).toBe(true);
       expect(bridge.includes('evil.com')).toBe(false);
+    });
+
+    it('forces signOut and redirects to bridge on account switch (email mismatch)', async () => {
+      const { auth } = await import('@/auth');
+      vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+        user: { id: 'usr_abc', email: 'user456@arckep.ru' },
+      } as any);
+      vi.mocked(auth.api.signOut).mockResolvedValueOnce(undefined as any);
+
+      vi.mocked(validateArckepToken).mockResolvedValueOnce({ status: 'valid', userId: '123' });
+
+      const req = buildReq({
+        accept: 'application/json',
+        host: 'arckep.ru',
+      });
+
+      const res = await checkAuth(mockHandler)(req, mockOptions);
+
+      expect(auth.api.signOut).toHaveBeenCalled();
+      expect((res as Response).status).toBe(401);
+      expect((res as Response).headers.get('X-Bridge-Location')).toBe(
+        'https://arckep.ru/chat/api/bridge?return=%2Fchat%2F',
+      );
+      expect(mockHandler).not.toHaveBeenCalled();
     });
   });
 });

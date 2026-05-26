@@ -13,6 +13,7 @@ import { parseBrowserLanguage } from '@/utils/locale';
 import { RouteVariants } from '@/utils/server/routeVariants';
 
 import { nextjsOnlyRoutes } from '../nextjsOnlyRoutes';
+import { validateArckepToken } from '@/libs/arckep/validateToken';
 import { createRouteMatcher } from './createRouteMatcher';
 
 // Create debug logger instances
@@ -223,6 +224,40 @@ export function defineConfig() {
       userId: session?.user?.id,
     });
 
+    const redirectToBridge = async () => {
+      try {
+        await auth.api.signOut({ headers: req.headers });
+      } catch (err) {
+        logBetterAuth('signOut failed', err);
+      }
+      const bridgeUrl = new URL('/chat/api/bridge', appEnv.APP_URL);
+      const fullPath = (req.nextUrl.basePath || '') + req.nextUrl.pathname + req.nextUrl.search;
+      bridgeUrl.searchParams.set('return', fullPath);
+      return Response.redirect(bridgeUrl);
+    };
+
+    if (isLoggedIn && session?.user?.email) {
+      // arckep: Check for account switch when user is already logged into BetterAuth
+      const arckepToken = req.cookies.get('arckep_token')?.value;
+      if (arckepToken) {
+        const arckepResult = await validateArckepToken(req);
+        if (arckepResult.status === 'valid') {
+          const expectedEmail = `user${arckepResult.userId}@arckep.ru`;
+          if (session.user.email !== expectedEmail) {
+            logBetterAuth('Account switch detected in middleware! Expected %s, got %s', expectedEmail, session.user.email);
+            return redirectToBridge();
+          }
+        } else if (arckepResult.status === 'expired' || arckepResult.status === 'missing') {
+          logBetterAuth('arckep_token expired or missing for active session, forcing re-bridge');
+          return redirectToBridge();
+        }
+      } else {
+        // Active LobeChat session but arckep_token is completely gone — clear session and force login
+        logBetterAuth('Active BetterAuth session but arckep_token cookie is missing, signing out');
+        return redirectToBridge();
+      }
+    }
+
     if (!isLoggedIn) {
       // If request a protected route, redirect to sign-in page
       if (isProtected) {
@@ -231,12 +266,7 @@ export function defineConfig() {
         if (arckepToken) {
           // User is logged into arckep.ru — redirect to bridge for auto-login
           logBetterAuth('arckep_token found, redirecting to bridge');
-          // arckep: bridge endpoint lives under basePath /chat — relative path
-          // without prefix produces arckep.ru/api/bridge which 404s at nginx.
-          const bridgeUrl = new URL('/chat/api/bridge', appEnv.APP_URL);
-          const fullPath = (req.nextUrl.basePath || '') + req.nextUrl.pathname + req.nextUrl.search;
-          bridgeUrl.searchParams.set('return', fullPath);
-          return Response.redirect(bridgeUrl);
+          return redirectToBridge();
         }
 
         // No arckep session — redirect to main site login

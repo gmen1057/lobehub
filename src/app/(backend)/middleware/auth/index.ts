@@ -62,14 +62,15 @@ export const checkAuth =
     //   into a window where banned users keep working and the cache mask
     //   silently extends. Reliability of /api/auth/validate is solved
     //   separately, not by widening the auth gap.
-    const arckepStatus = await validateArckepToken(req);
-    if (arckepStatus === 'unreachable') {
+    const arckepResult = await validateArckepToken(req);
+    if (arckepResult.status === 'unreachable') {
       return new Response(JSON.stringify({ error: 'auth backend temporarily unavailable' }), {
         headers: { 'Content-Type': 'application/json', 'Retry-After': '5' },
         status: 503,
       });
     }
-    if (arckepStatus === 'expired' || arckepStatus === 'missing') {
+
+    const handleExpiredOrMissing = async () => {
       try {
         await auth.api.signOut({ headers: req.headers });
       } catch {
@@ -125,6 +126,10 @@ export const checkAuth =
           status: 401,
         },
       );
+    };
+
+    if (arckepResult.status === 'expired' || arckepResult.status === 'missing') {
+      return handleExpiredOrMissing();
     }
 
     let jwtPayload: ClientSecretPayload;
@@ -139,6 +144,16 @@ export const checkAuth =
       });
 
       const betterAuthAuthorized = !!session?.user?.id;
+
+      // arckep: SSO account switch guard.
+      // If the active arckep.ru user doesn't match the BetterAuth session user,
+      // we must treat this session as expired, signOut, and force re-bridge.
+      if (arckepResult.status === 'valid' && session?.user?.email) {
+        const expectedEmail = `user${arckepResult.userId}@arckep.ru`;
+        if (session.user.email !== expectedEmail) {
+          return handleExpiredOrMissing();
+        }
+      }
 
       if (!authorization) throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
 

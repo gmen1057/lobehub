@@ -28,6 +28,7 @@ const VALIDATE_TIMEOUT_MS = 1500;
 type CacheEntry = {
   expiresAt: number;
   status: 'valid' | 'expired';
+  userId?: string;
 };
 
 const cache = new Map<string, CacheEntry>();
@@ -42,15 +43,24 @@ function readArckepCookie(req: Request): string | null {
   return null;
 }
 
+export type ArckepValidationResult =
+  | { status: 'valid'; userId: string }
+  | { status: 'expired' | 'missing' | 'unreachable'; userId?: never };
+
 export async function validateArckepToken(
   req: Request,
-): Promise<'valid' | 'expired' | 'missing' | 'unreachable'> {
+): Promise<ArckepValidationResult> {
   const token = readArckepCookie(req);
-  if (!token) return 'missing';
+  if (!token) return { status: 'missing' };
 
   const now = Date.now();
   const cached = cache.get(token);
-  if (cached && cached.expiresAt > now) return cached.status;
+  if (cached && cached.expiresAt > now) {
+    if (cached.status === 'valid') {
+      return { status: 'valid', userId: cached.userId || '' };
+    }
+    return { status: cached.status };
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);
@@ -64,16 +74,17 @@ export async function validateArckepToken(
     // cached. Without this split, a single 500 from the backend would be
     // remembered as "expired" for 60s and silently log everyone out.
     if (res.status === 200) {
-      cache.set(token, { expiresAt: now + CACHE_TTL_MS, status: 'valid' });
-      return 'valid';
+      const userId = res.headers.get('X-User-Id') || '';
+      cache.set(token, { expiresAt: now + CACHE_TTL_MS, status: 'valid', userId });
+      return { status: 'valid', userId };
     }
     if (res.status === 401 || res.status === 403) {
       cache.set(token, { expiresAt: now + CACHE_TTL_MS, status: 'expired' });
-      return 'expired';
+      return { status: 'expired' };
     }
-    return 'unreachable';
+    return { status: 'unreachable' };
   } catch {
-    return 'unreachable';
+    return { status: 'unreachable' };
   } finally {
     clearTimeout(timer);
   }
@@ -82,3 +93,4 @@ export async function validateArckepToken(
 export function clearArckepValidationCache(): void {
   cache.clear();
 }
+
