@@ -42,6 +42,7 @@ interface LocalFileProps {
 
 export const LocalFile = ({ name, path, isDirectory = false }: LocalFileProps) => {
   const { t } = useTranslation('components');
+  const isElectron = typeof window !== 'undefined' && !!(window as any).__ELECTRON__;
 
   const handleOpenFile = () => {
     if (!path) return;
@@ -59,8 +60,12 @@ export const LocalFile = ({ name, path, isDirectory = false }: LocalFileProps) =
       align={'center'}
       className={styles.container}
       gap={4}
-      style={{ display: 'inline-flex', verticalAlign: 'middle' }}
-      onClick={isDirectory ? handleOpenFile : undefined}
+      style={{
+        display: 'inline-flex',
+        verticalAlign: 'middle',
+        cursor: isElectron ? 'pointer' : 'default',
+      }}
+      onClick={isDirectory && isElectron ? handleOpenFile : undefined}
     >
       <FileIcon fileName={name} isDirectory={isDirectory} size={22} variant={'raw'} />
       <Flexbox horizontal align={'baseline'} gap={4} style={{ overflow: 'hidden', width: '100%' }}>
@@ -69,8 +74,8 @@ export const LocalFile = ({ name, path, isDirectory = false }: LocalFileProps) =
     </Flexbox>
   );
 
-  // Directory: no popover, just click to open
-  if (isDirectory) {
+  // Directory or Web: no popover
+  if (isDirectory || !isElectron) {
     return fileContent;
   }
 
