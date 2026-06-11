@@ -27,6 +27,7 @@ import {
   useConversationStoreApi,
 } from '../store';
 import QueueTray from './QueueTray';
+import { useSiteDeepLink } from './useSiteDeepLink';
 
 /** Max recent messages to feed into auto-complete context (≈10 conversation turns) */
 const MAX_CONTEXT_MESSAGES = 25;
@@ -131,6 +132,9 @@ const ChatInput = memo<ChatInputProps>(
     skipScrollMarginWithList,
   }) => {
     const { t } = useTranslation('chat');
+
+    // arckep: prefill input when opened via «Править с агентом» deep link
+    useSiteDeepLink();
 
     const getMessages = useGetMessages();
 
