@@ -2,6 +2,7 @@ import { LobeActivatorManifest } from '@lobechat/builtin-tool-activator';
 import { AgentBuilderManifest } from '@lobechat/builtin-tool-agent-builder';
 import { AgentDocumentsManifest } from '@lobechat/builtin-tool-agent-documents';
 import { AgentManagementManifest } from '@lobechat/builtin-tool-agent-management';
+import { ArckepSitesManifest } from '@lobechat/builtin-tool-arckep-sites';
 import { CalculatorManifest } from '@lobechat/builtin-tool-calculator';
 import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { CredsManifest } from '@lobechat/builtin-tool-creds';
@@ -26,6 +27,7 @@ export const builtinToolIdentifiers: string[] = [
   AgentDocumentsManifest.identifier,
   AgentManagementManifest.identifier,
   CalculatorManifest.identifier,
+  ArckepSitesManifest.identifier,
   CloudSandboxManifest.identifier,
   CredsManifest.identifier,
   DocumentsManifest.identifier,

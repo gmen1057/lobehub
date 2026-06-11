@@ -12,6 +12,7 @@ export interface RecommendedSkillItem {
 export const RECOMMENDED_SKILLS: RecommendedSkillItem[] = [
   // Builtin skills
   { id: 'lobe-artifacts', type: RecommendedSkillType.Builtin },
+  { id: 'arckep-sites', type: RecommendedSkillType.Builtin },
   { id: 'lobe-user-memory', type: RecommendedSkillType.Builtin },
   { id: 'lobe-cloud-sandbox', type: RecommendedSkillType.Builtin },
   { id: 'lobe-gtd', type: RecommendedSkillType.Builtin },

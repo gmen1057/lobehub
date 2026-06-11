@@ -59,7 +59,7 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
   // safely. Without artifacts skill, models fall back to raw <img data:...>
   // which markdown blocks for XSS reasons. Cost: ~1.5K extra prompt tokens
   // per request (~0.83 RUB on gpt-5.5).
-  plugins: ['lobe-user-memory', 'lobe-artifacts'],
+  plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
   provider: DEFAULT_PROVIDER,
   systemRole: ARCKEP_DEFAULT_SYSTEM_ROLE,
   tts: DEFAUTT_AGENT_TTS_CONFIG,

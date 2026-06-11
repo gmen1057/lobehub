@@ -9,6 +9,7 @@
 import { type ToolExecutionContext } from '../types';
 import { activatorRuntime } from './activator';
 import { agentDocumentsRuntime } from './agentDocuments';
+import { arckepSitesRuntime } from './arckepSites';
 import { briefRuntime } from './brief';
 import { calculatorRuntime } from './calculator';
 import { cloudSandboxRuntime } from './cloudSandbox';
@@ -45,6 +46,7 @@ const registerRuntimes = (runtimes: ServerRuntimeRegistration[]) => {
 
 // Register all server runtimes
 registerRuntimes([
+  arckepSitesRuntime,
   webBrowsingRuntime,
   cloudSandboxRuntime,
   calculatorRuntime,
