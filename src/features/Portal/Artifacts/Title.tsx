@@ -2,7 +2,7 @@ import { ArtifactType } from '@lobechat/types';
 import { ActionIcon, Flexbox, Icon, Segmented, Text } from '@lobehub/ui';
 import { App, ConfigProvider } from 'antd';
 import { cx } from 'antd-style';
-import { ArrowLeft, CodeIcon, EyeIcon, FileText, ImageIcon } from 'lucide-react';
+import { ArrowLeft, CodeIcon, EyeIcon, FileText, Globe, ImageIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -30,10 +30,22 @@ const wrapAsHtml = (code: string, type: string | undefined): string => {
   return `<!doctype html><html><body><pre>${code.replaceAll('<', '&lt;')}</pre></body></html>`;
 };
 
+// Republish the same artifact → new version of the same site (not a new site).
+// The site_id returned by the first publish is remembered per message id.
+const siteIdKey = (messageId: string) => `arckep-site:${messageId}`;
+
+interface PublishResponse {
+  site_id: number;
+  slug: string;
+  url: string;
+  version: number;
+}
+
 const Title = () => {
   const { t } = useTranslation('portal');
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [exporting, setExporting] = useState<'idle' | 'pdf' | 'png'>('idle');
+  const [publishing, setPublishing] = useState(false);
 
   const [
     displayMode,
@@ -78,6 +90,70 @@ const Title = () => {
     artifactCode.length > 0 &&
     artifactCode.length <= 500_000;
 
+  // Publish makes sense only for full HTML documents (landing pages),
+  // not SVG/React/code artifacts.
+  const publishable = exportable && artifactType === HTML_MIME;
+
+  const requestPublish = async (siteId: number | undefined) =>
+    fetch('/chat/api/site-publish', {
+      body: JSON.stringify({
+        html: artifactCode,
+        site_id: siteId,
+        title: artifactTitle || undefined,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+
+  const handlePublish = async () => {
+    if (publishing || !artifactCode || !messageId) return;
+    setPublishing(true);
+    try {
+      const storedId = Number(localStorage.getItem(siteIdKey(messageId))) || undefined;
+      let res = await requestPublish(storedId);
+      if (res.status === 404 && storedId) {
+        // Site was deleted or belongs to another account — publish as a new one.
+        localStorage.removeItem(siteIdKey(messageId));
+        res = await requestPublish(undefined);
+      }
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(err || `HTTP ${res.status}`);
+      }
+      const data = (await res.json()) as PublishResponse;
+      localStorage.setItem(siteIdKey(messageId), String(data.site_id));
+      modal.success({
+        content: (
+          <div>
+            <a href={data.url} rel="noopener noreferrer" target="_blank">
+              {data.url}
+            </a>
+            {data.version > 1 && (
+              <div style={{ marginTop: 8, opacity: 0.65 }}>
+                Обновлена версия {data.version} существующего сайта.
+              </div>
+            )}
+            <div style={{ marginTop: 8, opacity: 0.65 }}>
+              Сайт открывается через ~30 секунд после первой публикации (выпускается сертификат).
+            </div>
+          </div>
+        ),
+        okText: 'Скопировать ссылку',
+        onOk: () => {
+          navigator.clipboard?.writeText(data.url);
+          message.success('Ссылка скопирована');
+        },
+        title: 'Сайт опубликован',
+      });
+    } catch (error) {
+      message.error(
+        `Не удалось опубликовать: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   const handleExport = async (format: 'pdf' | 'png') => {
     if (exporting !== 'idle' || !artifactCode) return;
     setExporting(format);
@@ -110,6 +186,15 @@ const Title = () => {
         </Text>
       </Flexbox>
       <Flexbox horizontal align={'center'} gap={4}>
+        {publishable && (
+          <ActionIcon
+            icon={Globe}
+            loading={publishing}
+            size={'small'}
+            title={'Опубликовать сайт'}
+            onClick={handlePublish}
+          />
+        )}
         {exportable && (
           <>
             <ActionIcon
