@@ -23,6 +23,7 @@
   "artifact.inThread": "Cannot view in subtopic, please switch to the main conversation area to open",
   "artifact.thinking": "Thinking",
   "artifact.thought": "Thought process",
+  "artifact.truncated": "Response was cut off — the artifact is incomplete. Regenerate the message.",
   "artifact.unknownTitle": "Untitled Work",
   "availableAgents": "Available Agents",
   "backToBottom": "Jump to latest",
