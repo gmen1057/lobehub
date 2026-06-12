@@ -21,6 +21,13 @@ const vercelConfig = {
 };
 const nextConfig = defineConfig({
   ...(isVercel ? vercelConfig : {}),
+  experimental: {
+    // Turbopack filesystem cache for `next build`: warm rebuilds reuse
+    // compiler artifacts from .next/cache instead of recompiling everything.
+    // Experimental for builds (stable for dev) — if a build ever produces
+    // weird artifacts, drop this flag and `rm -rf .next` to force cold build.
+    turbopackFileSystemCacheForBuild: true,
+  },
 });
 nextConfig.basePath = '/chat';
 nextConfig.trailingSlash = true;
