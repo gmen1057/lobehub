@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import DragUploadZone, { useUploadFiles } from '@/components/DragUploadZone';
 import { type ActionKeys } from '@/features/ChatInput';
 import { ChatInputProvider, DesktopChatInput } from '@/features/ChatInput';
+import { useSiteDeepLink } from '@/features/Conversation/ChatInput/useSiteDeepLink';
 import { useAgentStore } from '@/store/agent';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { useChatStore } from '@/store/chat';
@@ -27,6 +28,11 @@ const InputArea = () => {
   const isKlavisEnabled = useServerConfigStore(serverConfigSelectors.enableKlavis);
   const showSkillBanner = isLobehubSkillEnabled || isKlavisEnabled;
   const chatInputRef = useRef<HTMLDivElement>(null);
+
+  // arckep: «Править с агентом» deep link lands on the home screen — prefill
+  // the main input here too (the hook is otherwise mounted only inside an
+  // open conversation's ChatInput).
+  useSiteDeepLink();
 
   // When a starter mode is activated (e.g. Create Agent / Create Group / Write),
   // the SuggestQuestions panel renders below the ChatInput and may push the total
