@@ -11,7 +11,12 @@ import { useChatStore } from '@/store/chat';
  * chat input with an edit request for that site — the agent then pulls the
  * real published HTML through the arckep-sites builtin tool. Prefill only,
  * never auto-send: the user stays in control of spending a message.
+ *
+ * The slug comes from sessionStorage, NOT window.location: the SPA router's
+ * catch-all rewrites /chat/?site=X to / (query dropped) before this hook
+ * runs. src/initialize.ts captures the param at boot, before the router.
  */
+const DEEPLINK_KEY = 'arckep-site-deeplink';
 const CONSUMED_KEY = 'arckep-site-deeplink-consumed';
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -20,7 +25,9 @@ export const useSiteDeepLink = () => {
 
   useEffect(() => {
     if (!mainInputEditor) return;
-    const slug = new URLSearchParams(window.location.search).get('site');
+    const slug =
+      sessionStorage.getItem(DEEPLINK_KEY) ||
+      new URLSearchParams(window.location.search).get('site');
     if (!slug || !SLUG_RE.test(slug)) return;
     // One prefill per tab — remounts and topic switches must not re-trigger it.
     if (sessionStorage.getItem(CONSUMED_KEY) === slug) return;
