@@ -15,6 +15,11 @@ import { useChatStore } from '@/store/chat';
  * The slug comes from sessionStorage, NOT window.location: the SPA router's
  * catch-all rewrites /chat/?site=X to / (query dropped) before this hook
  * runs. src/initialize.ts captures the param at boot, before the router.
+ *
+ * Insertion is retried: mainInputEditor lands in the store before its inner
+ * lexical `instance` is ready, and late editor init can wipe an early
+ * setDocument. CONSUMED is only marked after a write actually happened, and
+ * one re-assert fires if the input is empty again shortly after.
  */
 const DEEPLINK_KEY = 'arckep-site-deeplink';
 const CONSUMED_KEY = 'arckep-site-deeplink-consumed';
@@ -31,12 +36,37 @@ export const useSiteDeepLink = () => {
     if (!slug || !SLUG_RE.test(slug)) return;
     // One prefill per tab — remounts and topic switches must not re-trigger it.
     if (sessionStorage.getItem(CONSUMED_KEY) === slug) return;
-    sessionStorage.setItem(CONSUMED_KEY, slug);
 
-    mainInputEditor.instance?.setDocument(
-      'markdown',
-      `Открой мой сайт ${slug}.jhunterpro.ru (прочитай его текущую версию навыком «Мои сайты») и помоги его отредактировать. Что нужно поменять, я напишу дальше: `,
-    );
-    mainInputEditor.focus();
+    const text = `Открой мой сайт ${slug}.jhunterpro.ru (прочитай его текущую версию навыком «Мои сайты») и помоги его отредактировать. Что нужно поменять, я напишу дальше: `;
+
+    const write = () => {
+      const instance = mainInputEditor.instance;
+      if (!instance) return false;
+      instance.setDocument('markdown', text);
+      mainInputEditor.focus();
+      return true;
+    };
+
+    let attempts = 0;
+    let reassert: ReturnType<typeof setTimeout> | undefined;
+    const timer = setInterval(() => {
+      attempts += 1;
+      if (write()) {
+        sessionStorage.setItem(CONSUMED_KEY, slug);
+        clearInterval(timer);
+        // Late editor init may reset the document — re-assert once if the
+        // input went empty again (inputMessage mirrors editor content).
+        reassert = setTimeout(() => {
+          if (!useChatStore.getState().inputMessage) write();
+        }, 800);
+      } else if (attempts >= 25) {
+        clearInterval(timer);
+      }
+    }, 200);
+
+    return () => {
+      clearInterval(timer);
+      if (reassert) clearTimeout(reassert);
+    };
   }, [mainInputEditor]);
 };
