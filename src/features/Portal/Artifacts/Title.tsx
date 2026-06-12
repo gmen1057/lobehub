@@ -1,6 +1,6 @@
 import { ArtifactType } from '@lobechat/types';
 import { ActionIcon, Flexbox, Icon, Segmented, Text } from '@lobehub/ui';
-import { App, ConfigProvider } from 'antd';
+import { App, Button, ConfigProvider, Input, Modal } from 'antd';
 import { cx } from 'antd-style';
 import { ArrowLeft, CodeIcon, EyeIcon, FileText, Globe, ImageIcon } from 'lucide-react';
 import { useState } from 'react';
@@ -40,6 +40,65 @@ interface PublishResponse {
   url: string;
   version: number;
 }
+
+// Client-side preview of the address the backend would auto-generate from the
+// title. The backend re-normalizes whatever we send — this is UX prefill only.
+const TRANSLIT: Record<string, string> = {
+  а: 'a',
+  б: 'b',
+  в: 'v',
+  г: 'g',
+  д: 'd',
+  е: 'e',
+  ё: 'e',
+  ж: 'zh',
+  з: 'z',
+  и: 'i',
+  й: 'y',
+  к: 'k',
+  л: 'l',
+  м: 'm',
+  н: 'n',
+  о: 'o',
+  п: 'p',
+  р: 'r',
+  с: 's',
+  т: 't',
+  у: 'u',
+  ф: 'f',
+  х: 'h',
+  ц: 'ts',
+  ч: 'ch',
+  ш: 'sh',
+  щ: 'sch',
+  ъ: '',
+  ы: 'y',
+  ь: '',
+  э: 'e',
+  ю: 'yu',
+  я: 'ya',
+};
+
+const slugifyPreview = (title: string): string =>
+  title
+    .toLowerCase()
+    .split('')
+    .map((ch) => TRANSLIT[ch] ?? ch)
+    .join('')
+    .replaceAll(/[^\da-z-]+/g, '-')
+    .replaceAll(/-{2,}/g, '-')
+    .replaceAll(/^-+|-+$/g, '')
+    .slice(0, 40);
+
+// Backend validation messages are English (project standard) — map the known
+// slug errors to user-facing Russian.
+const slugErrorRu = (raw: string): string | null => {
+  if (raw.includes('already taken')) return 'Этот адрес уже занят — выберите другой.';
+  if (raw.includes('reserved')) return 'Этот адрес зарезервирован — выберите другой.';
+  if (raw.includes('at least 3'))
+    return 'Адрес должен содержать минимум 3 символа: латинские буквы, цифры или дефис.';
+  return null;
+};
 
 const Title = () => {
   const { t } = useTranslation('portal');
@@ -94,57 +153,99 @@ const Title = () => {
   // not SVG/React/code artifacts.
   const publishable = exportable && artifactType === HTML_MIME;
 
-  const requestPublish = async (siteId: number | undefined) =>
+  const [addressModalOpen, setAddressModalOpen] = useState(false);
+  const [address, setAddress] = useState('');
+  const [addressError, setAddressError] = useState<string | null>(null);
+
+  const requestPublish = async (siteId: number | undefined, slug: string | undefined) =>
     fetch('/chat/api/site-publish', {
       body: JSON.stringify({
         html: artifactCode,
         site_id: siteId,
+        slug,
         title: artifactTitle || undefined,
       }),
       headers: { 'Content-Type': 'application/json' },
       method: 'POST',
     });
 
-  const handlePublish = async () => {
+  const showPublished = (data: PublishResponse) => {
+    modal.success({
+      content: (
+        <div>
+          <a href={data.url} rel="noopener noreferrer" target="_blank">
+            {data.url}
+          </a>
+          {data.version > 1 && (
+            <div style={{ marginTop: 8, opacity: 0.65 }}>
+              Обновлена версия {data.version} существующего сайта.
+            </div>
+          )}
+          <div style={{ marginTop: 8, opacity: 0.65 }}>
+            Сайт открывается через ~30 секунд после первой публикации (выпускается сертификат).
+          </div>
+          <div style={{ marginTop: 8, opacity: 0.65 }}>
+            Управлять сайтом (версии, откат, правки через агента) можно на странице{' '}
+            <a href="https://arckep.ru/sites" rel="noopener noreferrer" target="_blank">
+              «Мои сайты»
+            </a>
+            .
+          </div>
+        </div>
+      ),
+      okText: 'Скопировать ссылку',
+      onOk: () => {
+        navigator.clipboard?.writeText(data.url);
+        message.success('Ссылка скопирована');
+      },
+      title: 'Сайт опубликован',
+    });
+  };
+
+  // First publish opens the address dialog; republish updates the same site
+  // (the address is fixed at creation) without asking again.
+  const handlePublishClick = () => {
+    if (publishing || !artifactCode || !messageId) return;
+    const storedId = Number(localStorage.getItem(siteIdKey(messageId))) || undefined;
+    if (storedId) {
+      void handlePublish(storedId, undefined);
+      return;
+    }
+    setAddress(slugifyPreview(artifactTitle || ''));
+    setAddressError(null);
+    setAddressModalOpen(true);
+  };
+
+  const handlePublish = async (siteId: number | undefined, slug: string | undefined) => {
     if (publishing || !artifactCode || !messageId) return;
     setPublishing(true);
     try {
-      const storedId = Number(localStorage.getItem(siteIdKey(messageId))) || undefined;
-      let res = await requestPublish(storedId);
-      if (res.status === 404 && storedId) {
+      let res = await requestPublish(siteId, slug);
+      if (res.status === 404 && siteId) {
         // Site was deleted or belongs to another account — publish as a new one.
         localStorage.removeItem(siteIdKey(messageId));
-        res = await requestPublish(undefined);
+        res = await requestPublish(undefined, slug);
       }
       if (!res.ok) {
-        const err = await res.text();
-        throw new Error(err || `HTTP ${res.status}`);
+        const raw = await res.text();
+        let msg = raw || `HTTP ${res.status}`;
+        try {
+          msg = (JSON.parse(raw) as { message?: string }).message || msg;
+        } catch {
+          /* not JSON — keep raw */
+        }
+        const ru = slugErrorRu(msg);
+        if (ru && addressModalOpen) {
+          // Address problem — keep the dialog open so the user can fix it.
+          setAddressError(ru);
+          return;
+        }
+        throw new Error(ru || msg);
       }
       const data = (await res.json()) as PublishResponse;
       localStorage.setItem(siteIdKey(messageId), String(data.site_id));
-      modal.success({
-        content: (
-          <div>
-            <a href={data.url} rel="noopener noreferrer" target="_blank">
-              {data.url}
-            </a>
-            {data.version > 1 && (
-              <div style={{ marginTop: 8, opacity: 0.65 }}>
-                Обновлена версия {data.version} существующего сайта.
-              </div>
-            )}
-            <div style={{ marginTop: 8, opacity: 0.65 }}>
-              Сайт открывается через ~30 секунд после первой публикации (выпускается сертификат).
-            </div>
-          </div>
-        ),
-        okText: 'Скопировать ссылку',
-        onOk: () => {
-          navigator.clipboard?.writeText(data.url);
-          message.success('Ссылка скопирована');
-        },
-        title: 'Сайт опубликован',
-      });
+      setAddressModalOpen(false);
+      showPublished(data);
     } catch (error) {
       message.error(
         `Не удалось опубликовать: ${error instanceof Error ? error.message : 'unknown'}`,
@@ -185,35 +286,72 @@ const Title = () => {
           {artifactTitle}
         </Text>
       </Flexbox>
-      <Flexbox horizontal align={'center'} gap={4}>
+      <Flexbox horizontal align={'center'} gap={6}>
         {publishable && (
-          <ActionIcon
-            icon={Globe}
+          <Button
+            icon={<Icon icon={Globe} />}
             loading={publishing}
             size={'small'}
-            title={'Опубликовать сайт'}
-            onClick={handlePublish}
-          />
+            type={'primary'}
+            onClick={handlePublishClick}
+          >
+            Опубликовать сайт
+          </Button>
         )}
         {exportable && (
           <>
-            <ActionIcon
-              icon={FileText}
+            <Button
+              icon={<Icon icon={FileText} />}
               loading={exporting === 'pdf'}
               size={'small'}
-              title={'Скачать PDF'}
+              title={'Скачать как PDF-документ'}
               onClick={() => handleExport('pdf')}
-            />
-            <ActionIcon
-              icon={ImageIcon}
+            >
+              PDF
+            </Button>
+            <Button
+              icon={<Icon icon={ImageIcon} />}
               loading={exporting === 'png'}
               size={'small'}
-              title={'Скачать PNG'}
+              title={'Скачать как картинку PNG'}
               onClick={() => handleExport('png')}
-            />
+            >
+              PNG
+            </Button>
           </>
         )}
       </Flexbox>
+      <Modal
+        cancelText={'Отмена'}
+        confirmLoading={publishing}
+        okText={'Опубликовать'}
+        open={addressModalOpen}
+        title={'Публикация сайта'}
+        onCancel={() => setAddressModalOpen(false)}
+        onOk={() => void handlePublish(undefined, address.trim() || undefined)}
+      >
+        <div style={{ marginBottom: 8 }}>
+          Адрес, по которому откроется сайт. Можно оставить как есть или вписать свой (латинские
+          буквы, цифры, дефис):
+        </div>
+        <Input
+          autoFocus
+          addonAfter={'.jhunterpro.ru'}
+          placeholder={'адрес-сайта'}
+          status={addressError ? 'error' : undefined}
+          value={address}
+          onPressEnter={() => void handlePublish(undefined, address.trim() || undefined)}
+          onChange={(e) => {
+            setAddress(e.target.value);
+            setAddressError(null);
+          }}
+        />
+        {addressError && <div style={{ color: '#ff4d4f', marginTop: 8 }}>{addressError}</div>}
+        <div style={{ marginTop: 8, opacity: 0.65 }}>
+          Если оставить поле пустым — адрес сгенерируется из названия автоматически. Изменить адрес
+          после публикации нельзя.
+        </div>
+      </Modal>
       <ConfigProvider
         theme={{
           token: {

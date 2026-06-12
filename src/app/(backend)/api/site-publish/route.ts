@@ -20,6 +20,7 @@ const MAX_HTML_BYTES = 600_000; // 500 KB artifact cap + overhead
 interface PublishRequestBody {
   html: string;
   site_id?: number;
+  slug?: string;
   title?: string;
 }
 
@@ -94,6 +95,8 @@ export async function POST(req: NextRequest) {
   const forwardBody = {
     html: body.html,
     site_id: body.site_id,
+    // Desired address: backend normalizes/validates, ignored on republish
+    slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.slice(0, 80) : undefined,
     title: typeof body.title === 'string' ? body.title.slice(0, 200) : '',
     user_id: Number(userId),
   };
