@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { useChatStore } from '@/store/chat';
 import { chatPortalSelectors, messageStateSelectors } from '@/store/chat/selectors';
 import { ArtifactDisplayMode } from '@/store/chat/slices/portal/initialState';
+import { useSessionStore } from '@/store/session';
 import { oneLineEllipsis } from '@/styles';
 
 const SVG_MIME = 'image/svg+xml';
@@ -31,8 +32,17 @@ const wrapAsHtml = (code: string, type: string | undefined): string => {
 };
 
 // Republish the same artifact → new version of the same site (not a new site).
-// The site_id returned by the first publish is remembered per message id.
-const siteIdKey = (messageId: string) => `arckep-site:${messageId}`;
+// The site_id of the first publish is remembered per CONVERSATION (session +
+// topic), so any later edit the agent produces — a new message — still
+// republishes to the same address/domain instead of asking again.
+const siteIdKey = (conversationId: string) => `arckep-site:${conversationId}`;
+// Legacy per-message key (pre-2026-06-13): read as a fallback so sites
+// published mid-conversation before the upgrade stay linked.
+const legacyMessageKey = (messageId: string) => `arckep-site:${messageId}`;
+
+// «Править с агентом» on arckep.ru opens the chat with the site's slug stashed
+// here by src/initialize.ts. Used to bind the publish to the existing site.
+const DEEPLINK_KEY = 'arckep-site-deeplink';
 
 interface PublishResponse {
   site_id: number;
@@ -40,6 +50,24 @@ interface PublishResponse {
   url: string;
   version: number;
 }
+
+// Map a known slug → the user's owned site_id via the «Мои сайты» list tool.
+// Lets the first publish after an agent edit hit the existing site instead of
+// trying to mint a new one on an already-taken address.
+const resolveSiteIdBySlug = async (slug: string): Promise<number | undefined> => {
+  try {
+    const res = await fetch('/chat/api/sites-tool', {
+      body: JSON.stringify({ action: 'list' }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { sites?: Array<{ id: number; slug: string }> };
+    return data.sites?.find((s) => s.slug === slug)?.id;
+  } catch {
+    return undefined;
+  }
+};
 
 // Client-side preview of the address the backend would auto-generate from the
 // title. The backend re-normalizes whatever we send — this is UX prefill only.
@@ -133,6 +161,12 @@ const Title = () => {
     ];
   });
 
+  const sessionId = useSessionStore((s) => s.activeId);
+  // Stable per-conversation id: survives across the many messages an editing
+  // session produces, unlike messageId. Falls back to a sane default for the
+  // inbox/default-topic case.
+  const conversationId = `${sessionId || 'inbox'}:${topicId || 'default'}`;
+
   // show switch only when artifact is closed and the type is not code
   const showSwitch = isArtifactTagClosed && artifactType !== ArtifactType.Code;
 
@@ -202,14 +236,31 @@ const Title = () => {
     });
   };
 
-  // First publish opens the address dialog; republish updates the same site
-  // (the address is fixed at creation) without asking again.
-  const handlePublishClick = () => {
+  // First publish in a conversation opens the address dialog; every later edit
+  // republishes the same site (address fixed at creation) without asking again.
+  const handlePublishClick = async () => {
     if (publishing || !artifactCode || !messageId) return;
-    const storedId = Number(localStorage.getItem(siteIdKey(messageId))) || undefined;
+    const storedId =
+      Number(localStorage.getItem(siteIdKey(conversationId))) ||
+      Number(localStorage.getItem(legacyMessageKey(messageId))) ||
+      undefined;
     if (storedId) {
+      localStorage.setItem(siteIdKey(conversationId), String(storedId));
       void handlePublish(storedId, undefined);
       return;
+    }
+    // Entered via «Править с агентом» — bind to that existing site so the
+    // republish keeps its address and any custom domain, no dialog.
+    const deepLinkSlug = sessionStorage.getItem(DEEPLINK_KEY);
+    if (deepLinkSlug) {
+      setPublishing(true);
+      const siteId = await resolveSiteIdBySlug(deepLinkSlug);
+      setPublishing(false);
+      if (siteId) {
+        localStorage.setItem(siteIdKey(conversationId), String(siteId));
+        void handlePublish(siteId, undefined);
+        return;
+      }
     }
     setAddress(slugifyPreview(artifactTitle || ''));
     setAddressError(null);
@@ -223,7 +274,7 @@ const Title = () => {
       let res = await requestPublish(siteId, slug);
       if (res.status === 404 && siteId) {
         // Site was deleted or belongs to another account — publish as a new one.
-        localStorage.removeItem(siteIdKey(messageId));
+        localStorage.removeItem(siteIdKey(conversationId));
         res = await requestPublish(undefined, slug);
       }
       if (!res.ok) {
@@ -243,7 +294,7 @@ const Title = () => {
         throw new Error(ru || msg);
       }
       const data = (await res.json()) as PublishResponse;
-      localStorage.setItem(siteIdKey(messageId), String(data.site_id));
+      localStorage.setItem(siteIdKey(conversationId), String(data.site_id));
       setAddressModalOpen(false);
       showPublished(data);
     } catch (error) {
@@ -293,7 +344,7 @@ const Title = () => {
             loading={publishing}
             size={'small'}
             type={'primary'}
-            onClick={handlePublishClick}
+            onClick={() => void handlePublishClick()}
           >
             Опубликовать сайт
           </Button>
