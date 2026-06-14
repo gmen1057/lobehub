@@ -11,7 +11,11 @@
  * Result formatting is shared with the server path through
  * ArckepSitesExecutionRuntime, so models see identical tool output.
  */
-import { ArckepSitesApiName, ArckepSitesIdentifier } from '@lobechat/builtin-tool-arckep-sites';
+import {
+  ArckepSitesApiName,
+  ArckepSitesIdentifier,
+  type GenerateImageParams,
+} from '@lobechat/builtin-tool-arckep-sites';
 import { ArckepSitesExecutionRuntime } from '@lobechat/builtin-tool-arckep-sites/executionRuntime';
 import type { BuiltinToolContext, BuiltinToolResult } from '@lobechat/types';
 import { BaseExecutor } from '@lobechat/types';
@@ -30,6 +34,13 @@ const callSitesTool = async (body: Record<string, unknown>) => {
 };
 
 const runtime = new ArckepSitesExecutionRuntime({
+  generateImage: async (params) =>
+    callSitesTool({
+      action: 'generate-image',
+      aspect_ratio: params.aspect_ratio,
+      prompt: params.prompt,
+      quality: params.quality,
+    }),
   listSites: async () => {
     const data = await callSitesTool({ action: 'list' });
     return data.sites;
@@ -50,6 +61,13 @@ class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
     _ctx: BuiltinToolContext,
   ): Promise<BuiltinToolResult> => {
     return runtime.readSite(params);
+  };
+
+  generateImage = async (
+    params: GenerateImageParams,
+    _ctx: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
+    return runtime.generateImage(params);
   };
 }
 

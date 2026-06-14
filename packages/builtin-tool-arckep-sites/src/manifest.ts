@@ -31,6 +31,37 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
         type: 'object',
       },
     },
+    {
+      description:
+        'Generate a real image for use in a landing page and return its permanent URL. Use for every photo slot a landing needs (hero, product shots, team, backgrounds). Insert the returned URL directly into <img src="..."> or CSS background-image. Charges the user in RUB — prefer quality="standard" for supporting images, quality="high" for hero/product where fidelity matters.',
+      name: ArckepSitesApiName.generateImage,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          aspect_ratio: {
+            default: 'landscape',
+            description:
+              'Image aspect ratio. landscape (default, 16:9) for hero/banner; portrait (9:16) for mobile/profile; square (1:1) for avatars/logos/icons.',
+            enum: ['landscape', 'portrait', 'square'],
+            type: 'string',
+          },
+          prompt: {
+            description:
+              'Vivid, detailed image description in English. Include subject, style, lighting, mood. Example: "modern SPA reception desk with soft lighting, minimalist interior, photorealistic".',
+            type: 'string',
+          },
+          quality: {
+            default: 'standard',
+            description:
+              'standard (default) — faster, cheaper (Nano Banana 2); high — premium fidelity (Nano Banana Pro), use only for hero/product images.',
+            enum: ['high', 'standard'],
+            type: 'string',
+          },
+        },
+        required: ['prompt'],
+        type: 'object',
+      },
+    },
   ],
   identifier: ArckepSitesIdentifier,
   meta: {

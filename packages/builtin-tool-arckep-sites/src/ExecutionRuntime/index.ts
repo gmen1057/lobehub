@@ -1,8 +1,14 @@
 import { type BuiltinServerRuntimeOutput } from '@lobechat/types';
 
-import { type ReadSiteParams, type SiteSummary } from '../types';
+import {
+  type GenerateImageParams,
+  type GenerateImageResult,
+  type ReadSiteParams,
+  type SiteSummary,
+} from '../types';
 
 interface ArckepSitesRuntimeDeps {
+  generateImage: (params: GenerateImageParams) => Promise<GenerateImageResult>;
   listSites: () => Promise<SiteSummary[]>;
   readSite: (siteId: number) => Promise<{ html: string; site_id: number; slug: string }>;
 }
@@ -53,6 +59,35 @@ export class ArckepSitesExecutionRuntime {
     } catch (error) {
       return {
         content: `Не удалось прочитать сайт: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async generateImage(args: GenerateImageParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      const result = await this.deps.generateImage(args);
+      return {
+        content:
+          `Изображение сгенерировано. URL: ${result.url}\n` +
+          `Стоимость: ${result.cost} ₽. Баланс: ${result.balance} ₽.\n` +
+          `Вставьте этот URL в атрибут src тега <img> или в CSS background-image.`,
+        state: { balance: result.balance, cost: result.cost, url: result.url },
+        success: true,
+      };
+    } catch (error) {
+      const msg = (error as Error).message;
+      // Surface insufficient-balance as a clear user-facing message
+      if (msg.includes('INSUFFICIENT_BALANCE') || msg.includes('402')) {
+        return {
+          content:
+            `Недостаточно баланса для генерации изображения. Пополните баланс на arckep.ru и повторите. ` +
+            `Пока используйте CSS-решение: градиент или цветной блок вместо фото.`,
+          success: false,
+        };
+      }
+      return {
+        content: `Не удалось сгенерировать изображение: ${msg}`,
         success: false,
       };
     }

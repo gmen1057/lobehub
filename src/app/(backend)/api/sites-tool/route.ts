@@ -10,7 +10,7 @@
  * Flow (same auth channel as site-publish):
  *  1. Read `arckep_token` cookie (JWT from arckep.ru)
  *  2. Validate it via image-studio `/api/auth/validate` → user_id
- *  3. POST to image-studio `/api/chat/sites-tool/{list,read}` with the
+ *  3. POST to image-studio `/api/chat/sites-tool/{list,read,generate-image}` with the
  *     internal token
  *
  * Used by: src/store/tool/slices/builtin/executors/arckep-sites.ts
@@ -21,7 +21,12 @@ const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
 const HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
 
 interface SitesToolRequestBody {
-  action: 'list' | 'read';
+  action: 'generate-image' | 'list' | 'read';
+  // generate-image fields (model-supplied only — user_id injected server-side)
+  aspect_ratio?: 'landscape' | 'portrait' | 'square';
+  prompt?: string;
+  quality?: 'high' | 'standard';
+  // read field
   site_id?: number;
 }
 
@@ -89,12 +94,26 @@ export async function POST(req: NextRequest) {
   } else if (body.action === 'read' && Number.isInteger(body.site_id)) {
     path = '/api/chat/sites-tool/read';
     forwardBody = { site_id: body.site_id, user_id: Number(userId) };
+  } else if (body.action === 'generate-image' && typeof body.prompt === 'string' && body.prompt) {
+    path = '/api/chat/sites-tool/generate-image';
+    // user_id injected here from the authenticated session — never from the model
+    forwardBody = {
+      aspect_ratio: body.aspect_ratio ?? 'landscape',
+      prompt: body.prompt,
+      quality: body.quality ?? 'standard',
+      user_id: Number(userId),
+    };
   } else {
     return Response.json(
-      { error: 'action must be list, or read with integer site_id' },
+      {
+        error: 'action must be list, read (with integer site_id), or generate-image (with prompt)',
+      },
       { status: 400 },
     );
   }
+
+  // Image generation can take up to 90 s for high-quality models; other ops are fast.
+  const timeoutMs = body.action === 'generate-image' ? 120_000 : 30_000;
 
   let upstream: Response;
   try {
@@ -102,7 +121,7 @@ export async function POST(req: NextRequest) {
       body: JSON.stringify(forwardBody),
       headers: { 'Content-Type': 'application/json', 'X-Arckep-Token': token },
       method: 'POST',
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     console.error('[sites-tool] backend call failed:', error);
