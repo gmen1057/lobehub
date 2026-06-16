@@ -62,6 +62,16 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
         type: 'object',
       },
     },
+    {
+      description:
+        "When the site you built includes a contact/lead form, offer the user Telegram notifications for new submissions. Returns a connect link the user taps to receive leads in Telegram. If already connected, tell the user they're all set. No parameters.",
+      name: ArckepSitesApiName.connectTelegram,
+      parameters: {
+        additionalProperties: false,
+        properties: {},
+        type: 'object',
+      },
+    },
   ],
   identifier: ArckepSitesIdentifier,
   meta: {

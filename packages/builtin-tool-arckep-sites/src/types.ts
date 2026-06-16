@@ -1,6 +1,7 @@
 export const ArckepSitesIdentifier = 'arckep-sites';
 
 export enum ArckepSitesApiName {
+  connectTelegram = 'connectTelegram',
   generateImage = 'generateImage',
   listSites = 'listSites',
   readSite = 'readSite',
@@ -31,4 +32,9 @@ export interface SiteSummary {
   title: string;
   url: string;
   version: number;
+}
+
+export interface ConnectTelegramResult {
+  connected: boolean;
+  url: string;
 }

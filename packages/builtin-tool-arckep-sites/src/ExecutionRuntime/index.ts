@@ -1,6 +1,7 @@
 import { type BuiltinServerRuntimeOutput } from '@lobechat/types';
 
 import {
+  type ConnectTelegramResult,
   type GenerateImageParams,
   type GenerateImageResult,
   type ReadSiteParams,
@@ -8,6 +9,7 @@ import {
 } from '../types';
 
 interface ArckepSitesRuntimeDeps {
+  connectTelegram: () => Promise<ConnectTelegramResult>;
   generateImage: (params: GenerateImageParams) => Promise<GenerateImageResult>;
   listSites: () => Promise<SiteSummary[]>;
   readSite: (siteId: number) => Promise<{ html: string; site_id: number; slug: string }>;
@@ -88,6 +90,21 @@ export class ArckepSitesExecutionRuntime {
       }
       return {
         content: `Не удалось сгенерировать изображение: ${msg}`,
+        success: false,
+      };
+    }
+  }
+
+  async connectTelegram(): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      const result = await this.deps.connectTelegram();
+      const content = result.connected
+        ? 'Пользователь уже получает заявки в Telegram.'
+        : `Чтобы получать заявки в Telegram, откройте ссылку и нажмите Старт: ${result.url}`;
+      return { content, state: result, success: true };
+    } catch (error) {
+      return {
+        content: `Не удалось настроить уведомления в Telegram: ${(error as Error).message}`,
         success: false,
       };
     }

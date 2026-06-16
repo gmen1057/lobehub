@@ -46,6 +46,7 @@ const runtime = new ArckepSitesExecutionRuntime({
     return data.sites;
   },
   readSite: async (siteId: number) => callSitesTool({ action: 'read', site_id: siteId }),
+  connectTelegram: async () => callSitesTool({ action: 'telegram-connect-link' }),
 });
 
 class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
@@ -68,6 +69,10 @@ class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
     _ctx: BuiltinToolContext,
   ): Promise<BuiltinToolResult> => {
     return runtime.generateImage(params);
+  };
+
+  connectTelegram = async (_params: any, _ctx: BuiltinToolContext): Promise<BuiltinToolResult> => {
+    return runtime.connectTelegram();
   };
 }
 

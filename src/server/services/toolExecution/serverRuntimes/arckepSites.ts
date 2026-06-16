@@ -77,6 +77,10 @@ export const arckepSitesRuntime: ServerRuntimeRegistration = {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend('/api/chat/sites-tool/read', { site_id: siteId, user_id: arckepId });
       },
+      connectTelegram: async () => {
+        const arckepId = await resolveArckepUserId(serverDB, userId);
+        return callBackend('/api/chat/sites-tool/telegram-connect-link', { user_id: arckepId });
+      },
     });
   },
   identifier: ArckepSitesIdentifier,

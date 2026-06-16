@@ -21,7 +21,7 @@ const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
 const HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
 
 interface SitesToolRequestBody {
-  action: 'generate-image' | 'list' | 'read';
+  action: 'generate-image' | 'list' | 'read' | 'telegram-connect-link';
   // generate-image fields (model-supplied only — user_id injected server-side)
   aspect_ratio?: 'landscape' | 'portrait' | 'square';
   prompt?: string;
@@ -103,10 +103,14 @@ export async function POST(req: NextRequest) {
       quality: body.quality ?? 'standard',
       user_id: Number(userId),
     };
+  } else if (body.action === 'telegram-connect-link') {
+    path = '/api/chat/sites-tool/telegram-connect-link';
+    forwardBody = { user_id: Number(userId) };
   } else {
     return Response.json(
       {
-        error: 'action must be list, read (with integer site_id), or generate-image (with prompt)',
+        error:
+          'action must be list, read (with integer site_id), generate-image (with prompt), or telegram-connect-link',
       },
       { status: 400 },
     );

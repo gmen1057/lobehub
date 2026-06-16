@@ -33,4 +33,5 @@ When a site contains a lead/contact form, Russian personal data law (152-ФЗ) a
 1. A consent checkbox with a name the server can verify: <input type="checkbox" name="consent" required> with label text like «Соглашаюсь на обработку персональных данных» and a link to <a href="/privacy.html">политике конфиденциальности</a> (the privacy page is generated automatically on publish).
 2. The form posts to the ArcKep receiver: <form method="post" action="https://arckep.ru/api/site-submissions/SLUG"> where SLUG is the site's slug from listSites. Submissions reach the owner by email and in their cabinet.
 3. An invisible honeypot field for bots: <input type="text" name="_gotcha" style="display:none" tabindex="-1" autocomplete="off">.
+4. Telegram notifications: If a site has a form, suggest the user to connect Telegram notifications for new submissions by calling the connectTelegram tool, and show the resulting link to the user.
 </forms_152fz>`;
