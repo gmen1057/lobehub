@@ -25,6 +25,7 @@ import {
 } from '@/store/agent/selectors';
 import { aiProviderSelectors, getAiInfraStoreState } from '@/store/aiInfra';
 import { getChatStoreState } from '@/store/chat';
+import { useSessionStore } from '@/store/session';
 import { getToolStoreState } from '@/store/tool';
 import {
   builtinToolSelectors,
@@ -431,6 +432,8 @@ class ChatService {
       };
     }
 
+    const sessionId = useSessionStore.getState().activeId;
+
     const traceHeader = createTraceHeader({ ...options?.trace });
 
     const headers = await createHeaderWithAuth({
@@ -440,6 +443,7 @@ class ChatService {
         ...(agentId && { 'x-agent-id': agentId }),
         ...(assistantMessageId && { 'x-assistant-message-id': assistantMessageId }),
         ...(topicId && { 'x-topic-id': topicId }),
+        ...(sessionId && { 'x-session-id': sessionId }),
       },
       provider,
     });

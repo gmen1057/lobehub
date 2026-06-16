@@ -19,9 +19,11 @@ const MAX_HTML_BYTES = 600_000; // 500 KB artifact cap + overhead
 
 interface PublishRequestBody {
   html: string;
+  session_id?: string;
   site_id?: number;
   slug?: string;
   title?: string;
+  topic_id?: string;
 }
 
 const getInternalToken = () =>
@@ -99,6 +101,8 @@ export async function POST(req: NextRequest) {
     slug: typeof body.slug === 'string' && body.slug.trim() ? body.slug.slice(0, 80) : undefined,
     title: typeof body.title === 'string' ? body.title.slice(0, 200) : '',
     user_id: Number(userId),
+    session_id: typeof body.session_id === 'string' ? body.session_id.slice(0, 64) : undefined,
+    topic_id: typeof body.topic_id === 'string' ? body.topic_id.slice(0, 64) : undefined,
   };
 
   let upstream: Response;

@@ -26,8 +26,10 @@ interface SitesToolRequestBody {
   aspect_ratio?: 'landscape' | 'portrait' | 'square';
   prompt?: string;
   quality?: 'high' | 'standard';
+  session_id?: string;
   // read field
   site_id?: number;
+  topic_id?: string;
 }
 
 const getInternalToken = () =>
@@ -102,6 +104,8 @@ export async function POST(req: NextRequest) {
       prompt: body.prompt,
       quality: body.quality ?? 'standard',
       user_id: Number(userId),
+      session_id: typeof body.session_id === 'string' ? body.session_id.slice(0, 64) : undefined,
+      topic_id: typeof body.topic_id === 'string' ? body.topic_id.slice(0, 64) : undefined,
     };
   } else if (body.action === 'telegram-connect-link') {
     path = '/api/chat/sites-tool/telegram-connect-link';

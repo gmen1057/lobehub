@@ -20,6 +20,9 @@ import { ArckepSitesExecutionRuntime } from '@lobechat/builtin-tool-arckep-sites
 import type { BuiltinToolContext, BuiltinToolResult } from '@lobechat/types';
 import { BaseExecutor } from '@lobechat/types';
 
+import { useChatStore } from '@/store/chat';
+import { useSessionStore } from '@/store/session';
+
 const callSitesTool = async (body: Record<string, unknown>) => {
   const res = await fetch('/chat/api/sites-tool', {
     body: JSON.stringify(body),
@@ -35,11 +38,16 @@ const callSitesTool = async (body: Record<string, unknown>) => {
 
 const runtime = new ArckepSitesExecutionRuntime({
   generateImage: async (params) =>
+    // session_id/topic_id read from the same stores Title.tsx uses for publish,
+    // so the landing-image charge and the published version carry the SAME
+    // conversation pair — otherwise the image cost wouldn't match the site.
     callSitesTool({
       action: 'generate-image',
       aspect_ratio: params.aspect_ratio,
       prompt: params.prompt,
       quality: params.quality,
+      session_id: useSessionStore.getState().activeId || undefined,
+      topic_id: useChatStore.getState().activeTopicId || undefined,
     }),
   listSites: async () => {
     const data = await callSitesTool({ action: 'list' });

@@ -56,15 +56,21 @@ export const arckepSitesRuntime: ServerRuntimeRegistration = {
     if (!context.userId || !context.serverDB) {
       throw new Error('userId and serverDB are required for ArcKep Sites execution');
     }
-    const { serverDB, userId } = context;
+    const { serverDB, userId, topicId } = context;
 
     return new ArckepSitesExecutionRuntime({
       generateImage: async (params: GenerateImageParams) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
+        // Group-chat (server) context exposes topicId but not sessionId, so
+        // cost attribution for landing images generated inside a group chat is
+        // best-effort only and won't fully match a site published from 1-on-1
+        // chat. The actual landing-building flow goes through the client
+        // executor, which carries both ids.
         return callBackend('/api/chat/sites-tool/generate-image', {
           aspect_ratio: params.aspect_ratio ?? 'landscape',
           prompt: params.prompt,
           quality: params.quality ?? 'standard',
+          topic_id: topicId,
           user_id: arckepId,
         });
       },

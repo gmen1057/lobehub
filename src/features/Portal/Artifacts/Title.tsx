@@ -198,6 +198,8 @@ const Title = () => {
         site_id: siteId,
         slug,
         title: artifactTitle || undefined,
+        session_id: sessionId || undefined,
+        topic_id: topicId || undefined,
       }),
       headers: { 'Content-Type': 'application/json' },
       method: 'POST',
