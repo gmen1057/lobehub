@@ -700,6 +700,13 @@
       "when": 1777749300072,
       "tag": "0099_add_sandbox_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "7",
+      "when": 1782239321492,
+      "tag": "0100_add_bot_end_users",
+      "breakpoints": true
     }
   ],
   "version": "6"
