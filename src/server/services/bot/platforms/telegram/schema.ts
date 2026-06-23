@@ -74,35 +74,29 @@ export const schema: FieldSchema[] = [
       },
       displayToolCallsField,
       userIdField,
-      // TODO: DM schema - not implemented yet
-      // {
-      //   key: 'dm',
-      //   label: 'channel.dm',
-      //   properties: [
-      //     {
-      //       key: 'enabled',
-      //       default: true,
-      //       description: 'channel.dmEnabledHint',
-      //       label: 'channel.dmEnabled',
-      //       type: 'boolean',
-      //     },
-      //     {
-      //       key: 'policy',
-      //       default: 'open',
-      //       enum: ['open', 'allowlist', 'disabled'],
-      //       enumLabels: [
-      //         'channel.dmPolicyOpen',
-      //         'channel.dmPolicyAllowlist',
-      //         'channel.dmPolicyDisabled',
-      //       ],
-      //       description: 'channel.dmPolicyHint',
-      //       label: 'channel.dmPolicy',
-      //       type: 'string',
-      //       visibleWhen: { field: 'enabled', value: true },
-      //     },
-      //   ],
-      //   type: 'object',
-      // },
+      // arckep (Phase 5 / G1): access mode the CLIENT controls. Default 'allowlist' = owner-only
+      // (only the owner + explicitly-granted end-users; see bot_end_users + botAccessGate). The
+      // owner widens to 'open' (everyone) or keeps 'allowlist' and grants selected users.
+      {
+        key: 'dm',
+        label: 'channel.dm',
+        properties: [
+          {
+            key: 'policy',
+            default: 'allowlist',
+            description: 'channel.dmPolicyHint',
+            enum: ['open', 'allowlist', 'disabled'],
+            enumLabels: [
+              'channel.dmPolicyOpen',
+              'channel.dmPolicyAllowlist',
+              'channel.dmPolicyDisabled',
+            ],
+            label: 'channel.dmPolicy',
+            type: 'string',
+          },
+        ],
+        type: 'object',
+      },
     ],
     type: 'object',
   },

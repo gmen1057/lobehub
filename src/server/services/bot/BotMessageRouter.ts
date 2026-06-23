@@ -6,12 +6,14 @@ import debug from 'debug';
 import { getServerDB } from '@/database/core/db-adaptor';
 import type { DecryptedBotProvider } from '@/database/models/agentBotProvider';
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
+import { BotEndUserModel } from '@/database/models/botEndUser';
 import type { LobeChatDatabase } from '@/database/type';
 import { getAgentRuntimeRedisClient } from '@/server/modules/AgentRuntime/redis';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { AiAgentService } from '@/server/services/aiAgent';
 
 import { AgentBridgeService } from './AgentBridgeService';
+import { checkBotAccess, type DmPolicy } from './botAccessGate';
 import {
   type BotPlatformRuntimeContext,
   type BotProviderConfig,
@@ -239,6 +241,7 @@ export class BotMessageRouter {
     this.registerHandlers(chatBot, serverDB, client, commands, {
       agentId,
       applicationId,
+      botProviderId: provider.id,
       platform,
       settings,
       userId,
@@ -363,6 +366,7 @@ export class BotMessageRouter {
     commands: BotCommand[],
     info: ResolvedAgentInfo & {
       applicationId: string;
+      botProviderId: string;
       platform: string;
       settings?: Record<string, any>;
     },
@@ -371,6 +375,49 @@ export class BotMessageRouter {
     const bridge = new AgentBridgeService(serverDB, userId);
     const charLimit = (info.settings?.charLimit as number) || undefined;
     const displayToolCalls = info.settings?.displayToolCalls !== false;
+
+    // --- Access gate (G1): decide allow/deny BEFORE any paid agent run ---
+    const { botProviderId } = info;
+    const ownerPlatformUserId = info.settings?.userId ? String(info.settings.userId) : undefined;
+    const dmPolicy = info.settings?.dm?.policy as DmPolicy | undefined;
+    const endUserModel = new BotEndUserModel(serverDB);
+
+    const passesAccessGate = async (
+      thread: { post: (t: string) => Promise<unknown> },
+      message: Message,
+    ): Promise<boolean> => {
+      const decision = await checkBotAccess({
+        botProviderId,
+        db: serverDB,
+        endUserId: String(message.author.userId),
+        endUserUsername: message.author.userName,
+        ownerPlatformUserId,
+        platform,
+        policy: dmPolicy,
+      });
+      if (!decision.allow) {
+        log(
+          'access DENIED bot=%s endUser=%s reason=%s',
+          applicationId,
+          message.author.userId,
+          decision.reason,
+        );
+        if (decision.message) {
+          try {
+            await thread.post(decision.message);
+          } catch (error) {
+            log('failed to post access-deny message: %O', error);
+          }
+        }
+        return false;
+      }
+      if (decision.endUserRowId) {
+        endUserModel.incrementUsage(decision.endUserRowId).catch((error) => {
+          log('incrementUsage failed for %s: %O', decision.endUserRowId, error);
+        });
+      }
+      return true;
+    };
 
     /** Try dispatching a text command. Returns true if handled. */
     const tryDispatch = async (
@@ -405,6 +452,8 @@ export class BotMessageRouter {
         thread.id,
         (context?.skipped?.length ?? 0) + 1,
       );
+      if (!(await passesAccessGate(thread, message))) return;
+
       await bridge.handleMention(thread, merged, {
         agentId,
         botContext: { applicationId, platform, platformThreadId: thread.id },
@@ -428,6 +477,8 @@ export class BotMessageRouter {
         thread.id,
         (context?.skipped?.length ?? 0) + 1,
       );
+
+      if (!(await passesAccessGate(thread, message))) return;
 
       await bridge.handleSubscribedMessage(thread, merged, {
         agentId,
@@ -460,6 +511,8 @@ export class BotMessageRouter {
           thread.id,
           message.text?.slice(0, 80),
         );
+
+        if (!(await passesAccessGate(thread, message))) return;
 
         await bridge.handleMention(thread, merged, {
           agentId,
