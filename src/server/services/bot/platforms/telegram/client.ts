@@ -68,7 +68,10 @@ class TelegramWebhookClient implements PlatformClient {
       )
         .trim()
         .replace(/\/$/, '');
-      const webhookUrl = `${baseUrl}/api/agent/webhooks/telegram/${this.applicationId}`;
+      // arckep: trailing slash is REQUIRED — next.config.ts sets trailingSlash=true globally,
+      // so the slashless form 308-redirects and Telegram (which never follows webhook
+      // redirects) silently drops every update. Register the canonical (slash) URL directly.
+      const webhookUrl = `${baseUrl}/api/agent/webhooks/telegram/${this.applicationId}/`;
       await setTelegramWebhook(
         this.config.credentials.botToken,
         webhookUrl,
