@@ -472,7 +472,16 @@ export class AgentBridgeService {
       }
     }
 
-    const { agentId, botContext, channelContext, charLimit, client, displayToolCalls, topicId, trigger } = opts;
+    const {
+      agentId,
+      botContext,
+      channelContext,
+      charLimit,
+      client,
+      displayToolCalls,
+      topicId,
+      trigger,
+    } = opts;
 
     const queueMode = isQueueAgentRuntimeEnabled();
     const aiAgentService = new AiAgentService(this.db, this.userId);
@@ -832,7 +841,12 @@ export class AgentBridgeService {
                       totalCost: event.cost ?? 0,
                       totalTokens: event.totalTokens ?? 0,
                     };
-                    const formattedBody = client?.formatMarkdown?.(replyBody) ?? replyBody;
+                    // arckep: thread.post routes through the chat-sdk adapter, which renders
+                    // markdown as Telegram MarkdownV2 natively. Do NOT pre-convert to HTML here —
+                    // formatMarkdown (→ HTML <b>…</b>) is only for the TelegramApi/parse_mode=HTML
+                    // path (BotCallbackService); on the adapter path the HTML tags reach the
+                    // MarkdownV2 renderer as literal text. Send raw markdown and let it render.
+                    const formattedBody = replyBody;
                     const finalText =
                       client?.formatReply?.(formattedBody, replyStats) ?? formattedBody;
 
