@@ -12,6 +12,8 @@ import {
   type PlatformDefinition,
 } from '@/server/services/bot/platforms';
 
+import { ensureWebhookSecret } from './webhookSecret';
+
 const log = debug('lobe-server:bot-gateway');
 
 export interface GatewayManagerConfig {
@@ -95,6 +97,10 @@ export class GatewayManager {
       return;
     }
 
+    // G2: ensure a webhook secret exists + is persisted BEFORE start() registers
+    // the webhook, so Telegram is told to send the same secret the adapter verifies.
+    await ensureWebhookSecret(serverDB, gateKeeper, provider);
+
     const client = this.createClient(platform, provider);
     if (!client) {
       log('Unsupported platform: %s', platform);
@@ -157,6 +163,11 @@ export class GatewayManager {
       }
 
       try {
+        // G2 backfill: ensure a webhook secret exists before re-registering this
+        // bot's webhook on boot sync, so previously-registered (secret-less) bots
+        // get a secret persisted + re-registered with Telegram in the same run.
+        await ensureWebhookSecret(serverDB, gateKeeper, provider);
+
         const client = this.createClient(platform, provider);
         if (!client) {
           log('Sync: createClient returned null for %s', key);

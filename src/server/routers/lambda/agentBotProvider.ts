@@ -9,6 +9,7 @@ import { getBotMessageRouter } from '@/server/services/bot/BotMessageRouter';
 import { platformRegistry } from '@/server/services/bot/platforms';
 import { GatewayService } from '@/server/services/gateway';
 import { getBotRuntimeStatus } from '@/server/services/gateway/runtimeStatus';
+import { redactWebhookSecret } from '@/server/services/gateway/webhookSecret';
 
 const agentBotProviderProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
   const { ctx } = opts;
@@ -80,6 +81,7 @@ export const agentBotProviderRouter = router({
 
       return providers.map((p, i) => ({
         ...p,
+        credentials: redactWebhookSecret(p.credentials),
         runtimeStatus: statuses[i].status,
       }));
     }),
@@ -108,6 +110,7 @@ export const agentBotProviderRouter = router({
 
       return providers.map((p, i) => ({
         ...p,
+        credentials: redactWebhookSecret(p.credentials),
         runtimeStatus: statuses[i].status,
       }));
     }),
@@ -192,6 +195,19 @@ export const agentBotProviderRouter = router({
 
       // Load existing record to get platform + applicationId for cache invalidation
       const existing = await ctx.agentBotProviderModel.findById(id);
+
+      // Preserve the server-managed webhook secret (G2): the client never sends it,
+      // so an update carrying a credentials blob must not silently wipe it.
+      if (
+        value.credentials &&
+        existing?.credentials?.secretToken &&
+        !value.credentials.secretToken
+      ) {
+        value.credentials = {
+          ...value.credentials,
+          secretToken: existing.credentials.secretToken,
+        };
+      }
 
       const result = await ctx.agentBotProviderModel.update(id, value);
 

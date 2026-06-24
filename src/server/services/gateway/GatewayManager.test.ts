@@ -72,6 +72,8 @@ describe('GatewayManager', () => {
     mockGateKeeper = {};
     mockAgentBotProviderModel = {
       findEnabledByApplicationId: vi.fn(),
+      // ensureWebhookSecret persists a freshly generated secret via model.update
+      update: vi.fn().mockResolvedValue(undefined),
     };
 
     vi.mocked(getServerDB).mockResolvedValue(mockDb as any);
