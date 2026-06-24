@@ -19,6 +19,7 @@ import { localSystemExecutor } from '@lobechat/builtin-tool-local-system/executo
 import { memoryExecutor } from '@lobechat/builtin-tool-memory/executor';
 
 import type { BuiltinToolContext, BuiltinToolResult, IBuiltinToolExecutor } from '../types';
+import { arckepBotExecutor } from './arckep-bot';
 import { arckepSitesExecutor } from './arckep-sites';
 import { activatorExecutor } from './lobe-activator';
 import { agentDocumentsExecutor } from './lobe-agent-documents';
@@ -137,6 +138,7 @@ registerExecutors([
   agentBuilderExecutor,
   agentDocumentsExecutor,
   arckepSitesExecutor,
+  arckepBotExecutor,
   agentManagementExecutor,
   calculatorExecutor,
   cloudSandboxExecutor,

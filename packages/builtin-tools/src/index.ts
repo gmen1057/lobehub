@@ -2,6 +2,7 @@ import { LobeActivatorManifest } from '@lobechat/builtin-tool-activator';
 import { AgentBuilderManifest } from '@lobechat/builtin-tool-agent-builder';
 import { AgentDocumentsManifest } from '@lobechat/builtin-tool-agent-documents';
 import { AgentManagementManifest } from '@lobechat/builtin-tool-agent-management';
+import { ArckepBotManifest } from '@lobechat/builtin-tool-arckep-bot';
 import { ArckepSitesManifest } from '@lobechat/builtin-tool-arckep-sites';
 import { BriefManifest } from '@lobechat/builtin-tool-brief';
 import { CalculatorManifest } from '@lobechat/builtin-tool-calculator';
@@ -195,6 +196,11 @@ export const builtinTools: LobeBuiltinTool[] = [
   {
     identifier: ArckepSitesManifest.identifier,
     manifest: ArckepSitesManifest,
+    type: 'builtin',
+  },
+  {
+    identifier: ArckepBotManifest.identifier,
+    manifest: ArckepBotManifest,
     type: 'builtin',
   },
   {
