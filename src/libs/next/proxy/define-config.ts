@@ -8,12 +8,12 @@ import { auth } from '@/auth';
 import { LOBE_LOCALE_COOKIE } from '@/const/locale';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
+import { validateArckepToken } from '@/libs/arckep/validateToken';
 import { type Locales } from '@/locales/resources';
 import { parseBrowserLanguage } from '@/utils/locale';
 import { RouteVariants } from '@/utils/server/routeVariants';
 
 import { nextjsOnlyRoutes } from '../nextjsOnlyRoutes';
-import { validateArckepToken } from '@/libs/arckep/validateToken';
 import { createRouteMatcher } from './createRouteMatcher';
 
 // Create debug logger instances
@@ -173,6 +173,7 @@ export function defineConfig() {
     '/api/auth(.*)',
     '/api/bridge(.*)', // arckep.ru SSO bridge — creates Better Auth session from X-User-Id
     '/api/webhooks(.*)',
+    '/api/bot-tool(.*)', // arckep «Мои боты» on/off bridge — server-to-server, self-authed via X-Arckep-Token (no BetterAuth session)
     '/api/workflows(.*)',
     '/api/agent(.*)',
     '/api/dev(.*)',
@@ -244,7 +245,11 @@ export function defineConfig() {
         if (arckepResult.status === 'valid') {
           const expectedEmail = `user${arckepResult.userId}@arckep.ru`;
           if (session.user.email !== expectedEmail) {
-            logBetterAuth('Account switch detected in middleware! Expected %s, got %s', expectedEmail, session.user.email);
+            logBetterAuth(
+              'Account switch detected in middleware! Expected %s, got %s',
+              expectedEmail,
+              session.user.email,
+            );
             return redirectToBridge();
           }
         } else if (arckepResult.status === 'expired' || arckepResult.status === 'missing') {
