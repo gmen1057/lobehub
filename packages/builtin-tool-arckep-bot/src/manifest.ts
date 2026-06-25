@@ -31,6 +31,103 @@ export const ArckepBotManifest: BuiltinToolManifest = {
         type: 'object',
       },
     },
+    {
+      description:
+        "Set the bot's welcome greeting message (shown to new users). The greeting is plain text; the bot sends it as the first message when a new user starts a conversation.",
+      name: ArckepBotApiName.setGreeting,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+          greeting: { description: 'New greeting text (empty to clear)', type: 'string' },
+        },
+        required: ['bot_id', 'greeting'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        "Set custom slash-commands for the bot (name, description, canned response). These appear in the Telegram / menu. Built-in /new and /stop are always present. The model NEVER includes /new or /stop in this list.",
+      name: ArckepBotApiName.setCommands,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+          commands: {
+            description: 'Array of {name, description, response} objects',
+            items: {
+              additionalProperties: false,
+              properties: {
+                description: { description: 'Short description shown in the menu', type: 'string' },
+                name: { description: 'Command name without the slash (e.g. "price")', type: 'string' },
+                response: { description: 'Canned text the bot replies with when the command is used', type: 'string' },
+              },
+              required: ['name', 'description', 'response'],
+              type: 'object',
+            },
+            type: 'array',
+          },
+        },
+        required: ['bot_id', 'commands'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        "Set the bot's access mode (dm.policy) and character limit. dm.policy: 'open' (anyone), 'allowlist' (selected users), 'disabled' (no one). charLimit: max message length the bot accepts (null = no limit).",
+      name: ArckepBotApiName.setAccessRule,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+          dm_policy: { description: "'open', 'allowlist', or 'disabled'", type: 'string' },
+          char_limit: { description: 'Max message length, null for unlimited', type: 'number' },
+        },
+        required: ['bot_id'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        "Change the AI model the bot uses. model is a model name string (e.g. 'claude-sonnet-4-20250514'); provider is the provider id (e.g. 'anthropic', 'openai', 'google'). The bot must have a bound agent — editing model changes that agent's configuration.",
+      name: ArckepBotApiName.setModel,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+          model: { description: 'Model name string', type: 'string' },
+          provider: { description: 'Provider id (anthropic, openai, google, etc.)', type: 'string' },
+        },
+        required: ['bot_id', 'model', 'provider'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        "Enable a disabled bot — it starts accepting messages again. Takes effect within seconds.",
+      name: ArckepBotApiName.enableBot,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+        },
+        required: ['bot_id'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        "Disable an enabled bot — it stops accepting messages. Takes effect within seconds.",
+      name: ArckepBotApiName.disableBot,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          bot_id: { description: 'Bot id from listMyBots', type: 'string' },
+        },
+        required: ['bot_id'],
+        type: 'object',
+      },
+    },
   ],
   identifier: ArckepBotIdentifier,
   meta: {

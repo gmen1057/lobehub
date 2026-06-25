@@ -3,24 +3,56 @@ export const ArckepBotIdentifier = 'arckep-bot';
 export enum ArckepBotApiName {
   getBotConfig = 'getBotConfig',
   listMyBots = 'listMyBots',
+  setGreeting = 'setGreeting',
+  setCommands = 'setCommands',
+  setAccessRule = 'setAccessRule',
+  setModel = 'setModel',
+  enableBot = 'enableBot',
+  disableBot = 'disableBot',
 }
 
 export interface ListMyBotsParams {}
 
 export interface GetBotConfigParams {
-  /** The bot's id from listMyBots — NEVER invented; always taken from the list. */
+  bot_id: string;
+}
+
+export interface SetGreetingParams {
+  bot_id: string;
+  greeting: string;
+}
+
+export interface SetCommandsParams {
+  bot_id: string;
+  commands: Array<{ description: string; name: string; response: string }>;
+}
+
+export interface SetAccessRuleParams {
+  bot_id: string;
+  dm_policy?: string;
+  char_limit?: number;
+}
+
+export interface SetModelParams {
+  bot_id: string;
+  model: string;
+  provider: string;
+}
+
+export interface EnableBotParams {
+  bot_id: string;
+}
+
+export interface DisableBotParams {
   bot_id: string;
 }
 
 /** One row of the user's bot list (safe subset — no token, no owner secrets). */
 export interface BotSummary {
   agent_id: string | null;
-  /** Telegram bot id (the @bot's numeric application id). */
   application_id: string;
-  /** agent_bot_providers.id (uuid) — the handle for getBotConfig and future edits. */
   bot_id: string;
   platform: string;
-  /** Live gateway state (connected/disconnected/…) when known. */
   runtime_status?: string | null;
   status: 'disabled' | 'enabled';
 }
@@ -32,7 +64,6 @@ export interface BotConfigResult {
   bot_id: string;
   char_limit?: number | null;
   custom_commands?: unknown[] | null;
-  /** Access mode: open | allowlist | disabled. */
   dm_policy?: string | null;
   greeting?: string | null;
   status: 'disabled' | 'enabled';

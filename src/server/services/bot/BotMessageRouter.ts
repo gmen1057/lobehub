@@ -228,7 +228,7 @@ export class BotMessageRouter {
     const client = entry.clientFactory.createClient(providerConfig, runtimeContext);
     const adapters = client.createAdapter();
 
-    const commands = this.buildCommands(serverDB, { agentId, platform, userId });
+    const commands = this.buildCommands(serverDB, { agentId, platform, settings: provider.settings as Record<string, unknown> | undefined, userId });
 
     const concurrencyStrategy = (settings.concurrency as string) || 'debounce';
     const debounceMs = (settings.debounceMs as number) || DEFAULT_BOT_DEBOUNCE_MS;
@@ -538,11 +538,12 @@ export class BotMessageRouter {
    */
   private buildCommands(
     serverDB: LobeChatDatabase,
-    info: { agentId: string; platform: string; userId: string },
+    info: { agentId: string; platform: string; settings?: Record<string, unknown>; userId: string },
   ): BotCommand[] {
-    const { agentId, platform, userId } = info;
+    const { agentId, platform, userId, settings } = info;
 
-    return [
+    // Built-in commands — always present, never shadowed.
+    const builtins: BotCommand[] = [
       {
         description: 'Start a new conversation',
         handler: async (ctx) => {
@@ -587,6 +588,32 @@ export class BotMessageRouter {
         name: 'stop',
       },
     ];
+
+    // Phase 23: merge custom commands from settings (data-driven).
+    // Custom commands have no handler — they reply with the canned response text.
+    const builtinNames = new Set(builtins.map((c) => c.name));
+    const customCommands = settings?.customCommands as
+      | Array<{ description?: string; name?: string; response?: string }>
+      | undefined;
+
+    const customs: BotCommand[] = [];
+    if (Array.isArray(customCommands)) {
+      for (const cc of customCommands) {
+        const name = typeof cc.name === 'string' ? cc.name.toLowerCase().trim() : '';
+        if (!name || builtinNames.has(name)) continue;
+        const response = typeof cc.response === 'string' ? cc.response : '';
+        customs.push({
+          description: typeof cc.description === 'string' ? cc.description : name,
+          handler: async (ctx) => {
+            await ctx.post(response || `Команда /${name}`);
+          },
+          name,
+        });
+        builtinNames.add(name);
+      }
+    }
+
+    return [...builtins, ...customs];
   }
 
   /**

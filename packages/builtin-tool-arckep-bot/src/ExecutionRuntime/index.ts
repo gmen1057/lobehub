@@ -1,21 +1,28 @@
 import { type BuiltinServerRuntimeOutput } from '@lobechat/types';
 
-import { type BotConfigResult, type BotSummary, type GetBotConfigParams } from '../types';
+import {
+  type BotConfigResult,
+  type BotSummary,
+  type DisableBotParams,
+  type EnableBotParams,
+  type GetBotConfigParams,
+  type SetAccessRuleParams,
+  type SetCommandsParams,
+  type SetGreetingParams,
+  type SetModelParams,
+} from '../types';
 
 interface ArckepBotRuntimeDeps {
   getBotConfig: (botId: string) => Promise<BotConfigResult>;
   listMyBots: () => Promise<BotSummary[]>;
+  setGreeting: (botId: string, greeting: string) => Promise<{ ok: boolean }>;
+  setCommands: (botId: string, commands: Array<{ description: string; name: string; response: string }>) => Promise<{ ok: boolean }>;
+  setAccessRule: (botId: string, dmPolicy?: string, charLimit?: number) => Promise<{ ok: boolean }>;
+  setModel: (botId: string, model: string, provider: string) => Promise<{ ok: boolean }>;
+  enableBot: (botId: string) => Promise<{ ok: boolean; status: string }>;
+  disableBot: (botId: string) => Promise<{ ok: boolean; status: string }>;
 }
 
-/**
- * ArcKep Bot configurator Execution Runtime (shared by client + server paths).
- *
- * Data access is injected by the executors (browser executor for 1-on-1 chat,
- * server runtime for group/background), which resolve the LobeChat user → arckep
- * user_id and read the bots from the canonical agent_bot_providers home (D1) via
- * the image-studio backend. Formatting lives here so both paths give the model
- * identical tool output.
- */
 export class ArckepBotExecutionRuntime {
   private deps: ArckepBotRuntimeDeps;
 
@@ -52,6 +59,85 @@ export class ArckepBotExecutionRuntime {
     } catch (error) {
       return {
         content: `Не удалось прочитать конфигурацию бота: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async setGreeting(args: SetGreetingParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.setGreeting(args.bot_id, args.greeting);
+      return { content: 'Приветствие обновлено.', success: true };
+    } catch (error) {
+      return {
+        content: `Не удалось обновить приветствие: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async setCommands(args: SetCommandsParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.setCommands(args.bot_id, args.commands);
+      const names = args.commands.map((c) => `/${c.name}`).join(', ');
+      return {
+        content: `Команды обновлены: ${names || '(нет)'}. Меню обновится через несколько секунд.`,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        content: `Не удалось обновить команды: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async setAccessRule(args: SetAccessRuleParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.setAccessRule(args.bot_id, args.dm_policy, args.char_limit);
+      return { content: 'Правила доступа обновлены.', success: true };
+    } catch (error) {
+      return {
+        content: `Не удалось обновить правила доступа: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async setModel(args: SetModelParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.setModel(args.bot_id, args.model, args.provider);
+      return {
+        content: `Модель изменена на ${args.provider}/${args.model}. Изменения вступят в силу со следующего сообщения.`,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        content: `Не удалось изменить модель: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async enableBot(args: EnableBotParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.enableBot(args.bot_id);
+      return { content: 'Бот включён. Он начнёт отвечать в течение нескольких секунд.', success: true };
+    } catch (error) {
+      return {
+        content: `Не удалось включить бота: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async disableBot(args: DisableBotParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      await this.deps.disableBot(args.bot_id);
+      return { content: 'Бот выключен. Он перестанет отвечать в течение нескольких секунд.', success: true };
+    } catch (error) {
+      return {
+        content: `Не удалось выключить бота: ${(error as Error).message}`,
         success: false,
       };
     }
