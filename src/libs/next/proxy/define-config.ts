@@ -174,6 +174,7 @@ export function defineConfig() {
     '/api/bridge(.*)', // arckep.ru SSO bridge — creates Better Auth session from X-User-Id
     '/api/webhooks(.*)',
     '/api/bot-tool(.*)', // arckep «Мои боты» on/off bridge — server-to-server, self-authed via X-Arckep-Token (no BetterAuth session)
+    '/api/video-send(.*)', // arckep video→Telegram bridge — server-to-server, self-authed via X-Arckep-Token
     '/api/workflows(.*)',
     '/api/agent(.*)',
     '/api/dev(.*)',
