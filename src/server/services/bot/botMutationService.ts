@@ -1,11 +1,12 @@
 import debug from 'debug';
 
+import { getServerDB } from '@/database/core/db-adaptor';
 import { AgentModel } from '@/database/models/agent';
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
-import { getServerDB } from '@/database/core/db-adaptor';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 
 import { getBotMessageRouter } from './BotMessageRouter';
+import { assertModelValid } from './botModelCatalog';
 
 const log = debug('lobe-server:service:bot-mutation');
 
@@ -37,6 +38,8 @@ export interface SetModelParams {
 
 export interface MutationResult {
   botId: string;
+  error?: 'no_agent' | 'unknown_model' | 'catalog_unavailable';
+  message?: string;
   ok: boolean;
 }
 
@@ -44,7 +47,7 @@ function mergeSettings(
   existing: Record<string, unknown> | null,
   patch: Record<string, unknown>,
 ): Record<string, unknown> {
-  return { ...(existing ?? {}), ...patch };
+  return { ...existing, ...patch };
 }
 
 async function getBotModel(userId: string, serverDB?: any) {
@@ -95,12 +98,7 @@ export async function setCommands(
   await model.update(botId, { settings: merged });
 
   await getBotMessageRouter().invalidateBot(bot.platform, bot.applicationId);
-  log(
-    'setCommands: %d commands for bot %s:%s',
-    commands.length,
-    bot.platform,
-    bot.applicationId,
-  );
+  log('setCommands: %d commands for bot %s:%s', commands.length, bot.platform, bot.applicationId);
 
   return { botId, ok: true };
 }
@@ -120,9 +118,9 @@ export async function setAccessRule(
   }
 
   const existing = (bot.settings ?? {}) as Record<string, unknown>;
-  const existingDm = (existing.dm && typeof existing.dm === 'object'
-    ? (existing.dm as Record<string, unknown>)
-    : {}) as Record<string, unknown>;
+  const existingDm = (
+    existing.dm && typeof existing.dm === 'object' ? (existing.dm as Record<string, unknown>) : {}
+  ) as Record<string, unknown>;
 
   const patch: Record<string, unknown> = {
     dm: { ...existingDm, ...(dmPolicy !== undefined ? { policy: dmPolicy } : {}) },
@@ -162,7 +160,21 @@ export async function setModel(
 
   if (!bot.agentId) {
     log('setModel: bot %s has no bound agent', botId);
-    return { botId, ok: false };
+    return { botId, ok: false, error: 'no_agent' };
+  }
+
+  // Validate model exists in the backend catalog before writing
+  const validation = await assertModelValid(provider, modelName);
+  if (!validation.ok) {
+    log('setModel: invalid model %s/%s – %s', provider, modelName, validation.message);
+    return {
+      botId,
+      ok: false,
+      error: validation.message.includes('каталог недоступен')
+        ? 'catalog_unavailable'
+        : 'unknown_model',
+      message: validation.message,
+    };
   }
 
   const db = serverDB ?? (await getServerDB());

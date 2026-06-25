@@ -48,13 +48,13 @@ const VALID_ACTIONS = new Set([
 interface BotToolRequestBody {
   action?: unknown;
   botId?: unknown;
-  userId?: unknown;
-  greeting?: unknown;
+  charLimit?: unknown;
   commands?: unknown;
   dmPolicy?: unknown;
-  charLimit?: unknown;
+  greeting?: unknown;
   model?: unknown;
   provider?: unknown;
+  userId?: unknown;
 }
 
 export async function POST(req: NextRequest) {
@@ -83,10 +83,7 @@ export async function POST(req: NextRequest) {
     );
   }
   if (typeof botId !== 'string' || !botId || typeof userId !== 'string' || !userId) {
-    return Response.json(
-      { error: 'botId and userId are required' },
-      { status: 400 },
-    );
+    return Response.json({ error: 'botId and userId are required' }, { status: 400 });
   }
 
   try {
@@ -176,7 +173,10 @@ export async function POST(req: NextRequest) {
         return Response.json({ error: 'Bot not found' }, { status: 404 });
       }
       if (!result.ok) {
-        return Response.json({ error: 'Bot has no bound agent' }, { status: 400 });
+        return Response.json(
+          { error: result.message || 'Bot has no bound agent' },
+          { status: 400 },
+        );
       }
       return Response.json({ ok: true });
     }

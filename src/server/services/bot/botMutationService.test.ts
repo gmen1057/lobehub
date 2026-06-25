@@ -27,6 +27,11 @@ vi.mock('./BotMessageRouter', () => ({
   getBotMessageRouter: () => ({ invalidateBot }),
 }));
 
+const { assertModelValid } = vi.hoisted(() => ({
+  assertModelValid: vi.fn(),
+}));
+vi.mock('./botModelCatalog', () => ({ assertModelValid }));
+
 const OWNER = 'user-1';
 const BOT = 'bot-uuid-1';
 const row = {
@@ -42,6 +47,7 @@ beforeEach(() => {
   update.mockReset().mockResolvedValue(undefined);
   invalidateBot.mockReset().mockResolvedValue(undefined);
   agentUpdate.mockReset().mockResolvedValue(undefined);
+  assertModelValid.mockReset();
 });
 
 describe('setGreeting', () => {
@@ -66,11 +72,17 @@ describe('setGreeting', () => {
 describe('setCommands', () => {
   it('merges customCommands into settings', async () => {
     findById.mockResolvedValue({ ...row, settings: { greeting: 'hi' } });
-    await setCommands(OWNER, BOT, [
-      { description: 'Price list', name: 'price', response: '100₽' },
-    ], {});
+    await setCommands(
+      OWNER,
+      BOT,
+      [{ description: 'Price list', name: 'price', response: '100₽' }],
+      {},
+    );
     expect(update).toHaveBeenCalledWith(BOT, {
-      settings: { greeting: 'hi', customCommands: [{ description: 'Price list', name: 'price', response: '100₽' }] },
+      settings: {
+        greeting: 'hi',
+        customCommands: [{ description: 'Price list', name: 'price', response: '100₽' }],
+      },
     });
     expect(invalidateBot).toHaveBeenCalledWith('telegram', '8677993854');
   });
@@ -101,8 +113,9 @@ describe('setAccessRule', () => {
 });
 
 describe('setModel', () => {
-  it('updates the bound agent and invalidates bot', async () => {
+  it('updates the bound agent and invalidates bot when model is valid', async () => {
     findById.mockResolvedValue(row);
+    assertModelValid.mockResolvedValue({ ok: true });
     await setModel(OWNER, BOT, 'claude-sonnet-4', 'anthropic', {});
     expect(agentUpdate).toHaveBeenCalledWith('agent-1', {
       model: 'claude-sonnet-4',
@@ -111,16 +124,58 @@ describe('setModel', () => {
     expect(invalidateBot).toHaveBeenCalledWith('telegram', '8677993854');
   });
 
-  it('returns {ok:false} when bot has no bound agent', async () => {
+  it('returns {ok:false, error:"no_agent"} when bot has no bound agent', async () => {
     findById.mockResolvedValue({ ...row, agentId: null });
     const r = await setModel(OWNER, BOT, 'claude-sonnet-4', 'anthropic', {});
-    expect(r).toEqual({ botId: BOT, ok: false });
+    expect(r).toEqual({ botId: BOT, ok: false, error: 'no_agent' });
     expect(agentUpdate).not.toHaveBeenCalled();
+    expect(assertModelValid).not.toHaveBeenCalled();
   });
 
-  it('returns null for foreign bot', async () => {
+  it('returns null for foreign bot (anti-IDOR, no validation)', async () => {
     findById.mockResolvedValue(undefined);
     const r = await setModel(OWNER, BOT, 'claude-sonnet-4', 'anthropic', {});
     expect(r).toBeNull();
+    expect(assertModelValid).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown model and does NOT call agentModel.update', async () => {
+    findById.mockResolvedValue(row);
+    assertModelValid.mockResolvedValue({
+      ok: false,
+      message:
+        'Модель «deepseek/deepseek-chat» недоступна. Доступные: deepseek/deepseek-v4-pro, deepseek/deepseek-v4-flash',
+    });
+
+    const r = await setModel(OWNER, BOT, 'deepseek-chat', 'deepseek', {});
+
+    expect(r).toEqual({
+      botId: BOT,
+      ok: false,
+      error: 'unknown_model',
+      message: expect.stringContaining('deepseek/deepseek-chat'),
+    });
+    expect(r!.message).toMatch(/недоступна/);
+    expect(agentUpdate).not.toHaveBeenCalled();
+    expect(invalidateBot).not.toHaveBeenCalled();
+  });
+
+  it('rejects when catalog is unavailable (fail-closed)', async () => {
+    findById.mockResolvedValue(row);
+    assertModelValid.mockResolvedValue({
+      ok: false,
+      message: 'Не удалось проверить модель (каталог недоступен), попробуйте ещё раз позже.',
+    });
+
+    const r = await setModel(OWNER, BOT, 'any-model', 'any-provider', {});
+
+    expect(r).toEqual({
+      botId: BOT,
+      ok: false,
+      error: 'catalog_unavailable',
+      message: expect.stringContaining('каталог недоступен'),
+    });
+    expect(agentUpdate).not.toHaveBeenCalled();
+    expect(invalidateBot).not.toHaveBeenCalled();
   });
 });

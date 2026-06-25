@@ -14,13 +14,13 @@ import { type NextRequest } from 'next/server';
 import { auth } from '@/auth';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { getBotConfigForUser, listBotsForUser } from '@/server/services/bot/botConfigRead';
+import { setBotEnabled } from '@/server/services/bot/botEnableService';
 import {
   setAccessRule,
   setCommands,
   setGreeting,
   setModel,
 } from '@/server/services/bot/botMutationService';
-import { setBotEnabled } from '@/server/services/bot/botEnableService';
 
 const MUTATION_ACTIONS = new Set([
   'enable',
@@ -34,10 +34,10 @@ const MUTATION_ACTIONS = new Set([
 interface BotConfigToolBody {
   action?: unknown;
   bot_id?: unknown;
-  greeting?: unknown;
+  charLimit?: unknown;
   commands?: unknown;
   dmPolicy?: unknown;
-  charLimit?: unknown;
+  greeting?: unknown;
   model?: unknown;
   provider?: unknown;
 }
@@ -116,11 +116,16 @@ export async function POST(req: NextRequest) {
         if (body.dmPolicy !== undefined && typeof body.dmPolicy !== 'string') {
           return Response.json({ error: 'dmPolicy must be a string' }, { status: 400 });
         }
-        if (body.charLimit !== undefined && body.charLimit !== null && typeof body.charLimit !== 'number') {
+        if (
+          body.charLimit !== undefined &&
+          body.charLimit !== null &&
+          typeof body.charLimit !== 'number'
+        ) {
           return Response.json({ error: 'charLimit must be a number' }, { status: 400 });
         }
         const result = await setAccessRule(
-          userId, botId,
+          userId,
+          botId,
           body.dmPolicy as string | null | undefined,
           body.charLimit as number | null | undefined,
           serverDB,
@@ -138,7 +143,11 @@ export async function POST(req: NextRequest) {
         }
         const result = await setModel(userId, botId, body.model, body.provider, serverDB);
         if (!result) return Response.json({ error: 'Bot not found' }, { status: 404 });
-        if (!result.ok) return Response.json({ error: 'Bot has no bound agent' }, { status: 400 });
+        if (!result.ok)
+          return Response.json(
+            { error: result.message || 'Bot has no bound agent' },
+            { status: 400 },
+          );
         return Response.json({ ok: true });
       }
     } catch (error) {
@@ -148,7 +157,10 @@ export async function POST(req: NextRequest) {
   }
 
   return Response.json(
-    { error: 'action must be "list", "config", or a mutation: enable, disable, setGreeting, setCommands, setAccessRule, setModel' },
+    {
+      error:
+        'action must be "list", "config", or a mutation: enable, disable, setGreeting, setCommands, setAccessRule, setModel',
+    },
     { status: 400 },
   );
 }
