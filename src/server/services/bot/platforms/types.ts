@@ -58,6 +58,14 @@ export interface PlatformMessenger {
   createMessage: (content: string) => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   removeReaction: (messageId: string, emoji: string) => Promise<void>;
+  /** Send a media attachment (photo, video, or document) to the chat. Optional — platforms that don't support media can omit this. */
+  sendMedia?: (
+    kind: 'document' | 'photo' | 'video',
+    params: {
+      caption?: string;
+      url: string;
+    },
+  ) => Promise<void>;
   triggerTyping: () => Promise<void>;
   updateThreadName?: (name: string) => Promise<void>;
 }

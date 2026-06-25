@@ -144,6 +144,61 @@ export class TelegramApi {
     return { message_id: data.result.message_id };
   }
 
+  // ==================== Media (Photos, Videos, Documents) ====================
+
+  async sendPhoto(
+    chatId: string | number,
+    photo: string,
+    caption?: string,
+  ): Promise<{ message_id: number }> {
+    log('sendPhoto: chatId=%s', chatId);
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      photo,
+    };
+    if (caption) {
+      body.caption = this.truncateText(caption);
+      body.parse_mode = 'HTML';
+    }
+    const data = await this.call('sendPhoto', body);
+    return { message_id: data.result.message_id };
+  }
+
+  async sendVideo(
+    chatId: string | number,
+    video: string,
+    caption?: string,
+  ): Promise<{ message_id: number }> {
+    log('sendVideo: chatId=%s', chatId);
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      video,
+    };
+    if (caption) {
+      body.caption = this.truncateText(caption);
+      body.parse_mode = 'HTML';
+    }
+    const data = await this.call('sendVideo', body);
+    return { message_id: data.result.message_id };
+  }
+
+  async sendDocument(
+    chatId: string | number,
+    document: string,
+    caption?: string,
+  ): Promise<{ message_id: number }> {
+    log('sendDocument: chatId=%s', chatId);
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      document,
+    };
+    if (caption) {
+      body.caption = this.truncateText(caption);
+    }
+    const data = await this.call('sendDocument', body);
+    return { message_id: data.result.message_id };
+  }
+
   // ==================== Polls ====================
 
   async sendPoll(

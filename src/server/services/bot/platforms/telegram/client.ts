@@ -139,6 +139,19 @@ class TelegramWebhookClient implements PlatformClient {
         telegram.editMessageText(chatId, parseTelegramMessageId(messageId), content),
       removeReaction: (messageId) =>
         telegram.removeMessageReaction(chatId, parseTelegramMessageId(messageId)),
+      sendMedia: (kind, { url, caption }) => {
+        switch (kind) {
+          case 'photo': {
+            return telegram.sendPhoto(chatId, url, caption).then(() => {});
+          }
+          case 'video': {
+            return telegram.sendVideo(chatId, url, caption).then(() => {});
+          }
+          case 'document': {
+            return telegram.sendDocument(chatId, url, caption).then(() => {});
+          }
+        }
+      },
       triggerTyping: () => telegram.sendChatAction(chatId, 'typing'),
     };
   }

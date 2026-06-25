@@ -17,6 +17,7 @@ const mockEditMessage = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockTriggerTyping = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockRemoveReaction = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockCreateMessage = vi.hoisted(() => vi.fn().mockResolvedValue({ id: 'new-msg' }));
+const mockSendMedia = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 const mockUpdateThreadName = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 
 // Mock PlatformClient's getMessenger
@@ -25,6 +26,7 @@ const mockGetMessenger = vi.hoisted(() =>
     createMessage: mockCreateMessage,
     editMessage: mockEditMessage,
     removeReaction: mockRemoveReaction,
+    sendMedia: mockSendMedia,
     triggerTyping: mockTriggerTyping,
     updateThreadName: mockUpdateThreadName,
   })),
@@ -143,6 +145,7 @@ describe('BotCallbackService', () => {
       createMessage: mockCreateMessage,
       editMessage: mockEditMessage,
       removeReaction: mockRemoveReaction,
+      sendMedia: mockSendMedia,
       triggerTyping: mockTriggerTyping,
       updateThreadName: mockUpdateThreadName,
     }));
