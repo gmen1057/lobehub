@@ -38,11 +38,13 @@ const mockOnNewMention = vi.hoisted(() => vi.fn());
 const mockOnSubscribedMessage = vi.hoisted(() => vi.fn());
 const mockOnNewMessage = vi.hoisted(() => vi.fn());
 const mockOnSlashCommand = vi.hoisted(() => vi.fn());
+const mockOnAction = vi.hoisted(() => vi.fn());
 
 vi.mock('chat', () => ({
   BaseFormatConverter: class {},
   Chat: vi.fn().mockImplementation(() => ({
     initialize: mockInitialize,
+    onAction: mockOnAction,
     onNewMention: mockOnNewMention,
     onNewMessage: mockOnNewMessage,
     onSlashCommand: mockOnSlashCommand,

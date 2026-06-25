@@ -55,7 +55,13 @@ export interface FieldSchema {
  * LobeHub-specific outbound capabilities used by callback and bridge services.
  */
 export interface PlatformMessenger {
-  createMessage: (content: string) => Promise<void>;
+  createMessage: (
+    content: string,
+    options?: {
+      /** Telegram inline keyboard markup. Ignored by platforms that don't support it. */
+      replyMarkup?: { inline_keyboard: Array<Array<{ callback_data: string; text: string }>> };
+    },
+  ) => Promise<void>;
   editMessage: (messageId: string, content: string) => Promise<void>;
   removeReaction: (messageId: string, emoji: string) => Promise<void>;
   /** Send a media attachment (photo, video, or document) to the chat. Optional — platforms that don't support media can omit this. */

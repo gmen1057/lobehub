@@ -15,13 +15,21 @@ export class TelegramApi {
     this.botToken = botToken;
   }
 
-  async sendMessage(chatId: string | number, text: string): Promise<{ message_id: number }> {
+  async sendMessage(
+    chatId: string | number,
+    text: string,
+    replyMarkup?: { inline_keyboard: Array<Array<{ callback_data: string; text: string }>> },
+  ): Promise<{ message_id: number }> {
     log('sendMessage: chatId=%s', chatId);
-    const data = await this.call('sendMessage', {
+    const body: Record<string, unknown> = {
       chat_id: chatId,
       parse_mode: 'HTML',
       text: this.truncateText(text),
-    });
+    };
+    if (replyMarkup) {
+      body.reply_markup = replyMarkup;
+    }
+    const data = await this.call('sendMessage', body);
     return { message_id: data.result.message_id };
   }
 

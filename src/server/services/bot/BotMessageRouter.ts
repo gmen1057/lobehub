@@ -228,7 +228,12 @@ export class BotMessageRouter {
     const client = entry.clientFactory.createClient(providerConfig, runtimeContext);
     const adapters = client.createAdapter();
 
-    const commands = this.buildCommands(serverDB, { agentId, platform, settings: provider.settings as Record<string, unknown> | undefined, userId });
+    const commands = this.buildCommands(serverDB, {
+      agentId,
+      platform,
+      settings: provider.settings as Record<string, unknown> | undefined,
+      userId,
+    });
 
     const concurrencyStrategy = (settings.concurrency as string) || 'debounce';
     const debounceMs = (settings.debounceMs as number) || DEFAULT_BOT_DEBOUNCE_MS;
@@ -491,6 +496,23 @@ export class BotMessageRouter {
 
     // Register slash command handlers (native + text-based)
     this.registerCommands(bot, commands);
+
+    // Register inline button action handlers.
+    // When a user taps an inline keyboard button, the Telegram adapter routes
+    // the callback_query → chat.processAction → bot.onAction.
+    // Button callback_data should be 'bot_cmd:<commandName>' to dispatch to
+    // the corresponding command handler.
+    for (const cmd of commands) {
+      bot.onAction(`bot_cmd:${cmd.name}`, async (event) => {
+        await cmd.handler({
+          args: '',
+          post: (text) => event.thread?.post(text) ?? Promise.resolve(),
+          setState: (state, opts) =>
+            (event.thread as any)?.setState?.(state, opts) ?? Promise.resolve(),
+          threadId: event.thread?.id ?? '',
+        });
+      });
+    }
 
     // Register onNewMessage handler based on platform config
     const dmEnabled = info.settings?.dm?.enabled ?? false;
