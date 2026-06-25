@@ -831,4 +831,73 @@ describe('BotCallbackService', () => {
       );
     });
   });
+
+  // ==================== Media sending (Phase 17) ====================
+
+  describe('media sending in completion', () => {
+    it('should NOT call sendMedia for text-only response', async () => {
+      const body = makeBody({
+        lastAssistantContent: 'Just text, no images.',
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockSendMedia).not.toHaveBeenCalled();
+    });
+
+    it('should call sendMedia once for a single image', async () => {
+      const body = makeBody({
+        lastAssistantContent: 'Here is an image.',
+        media: [{ kind: 'photo' as const, url: 'https://example.com/photo.jpg' }],
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockSendMedia).toHaveBeenCalledTimes(1);
+      expect(mockSendMedia).toHaveBeenCalledWith('photo', {
+        url: 'https://example.com/photo.jpg',
+      });
+    });
+
+    it('should call sendMedia twice for two images', async () => {
+      const body = makeBody({
+        lastAssistantContent: 'Two images below.',
+        media: [
+          { kind: 'photo' as const, url: 'https://example.com/1.jpg' },
+          { kind: 'photo' as const, url: 'https://example.com/2.jpg' },
+        ],
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      expect(mockSendMedia).toHaveBeenCalledTimes(2);
+      expect(mockSendMedia).toHaveBeenNthCalledWith(1, 'photo', {
+        url: 'https://example.com/1.jpg',
+      });
+      expect(mockSendMedia).toHaveBeenNthCalledWith(2, 'photo', {
+        url: 'https://example.com/2.jpg',
+      });
+    });
+
+    it('should send image when text is empty', async () => {
+      const body = makeBody({
+        lastAssistantContent: '',
+        media: [{ kind: 'photo' as const, url: 'https://example.com/photo.jpg' }],
+        reason: 'completed',
+        type: 'completion',
+      });
+
+      await service.handleCallback(body);
+
+      // Should send the image even though text is empty
+      expect(mockSendMedia).toHaveBeenCalledTimes(1);
+      expect(mockCreateMessage).not.toHaveBeenCalled();
+    });
+  });
 });

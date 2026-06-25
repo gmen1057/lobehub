@@ -1544,13 +1544,34 @@ export class AgentRuntimeService {
     try {
       const metadata = state?.metadata || {};
 
-      // Extract last assistant content from state messages
-      const lastAssistantContent = state?.messages
+      // Extract last assistant content + media (images) from state messages.
+      // In our pipeline, images arrive as markdown ![alt](url) embedded in the
+      // assistant text — NOT as structured content parts.
+      const lastAssistantMsg = state?.messages
         ?.slice()
         .reverse()
-        .find(
-          (m: { content?: string; role: string }) => m.role === 'assistant' && m.content,
-        )?.content;
+        .find((m: { content?: unknown; role: string }) => m.role === 'assistant' && m.content);
+
+      let lastAssistantContent: string | undefined;
+      let media: Array<{ kind: 'photo'; url: string }> | undefined;
+
+      if (lastAssistantMsg) {
+        const raw = lastAssistantMsg.content;
+        if (typeof raw === 'string') {
+          // Extract markdown images: ![alt](url) → collect URLs, strip from text
+          const imageRegex = /!\[.*?\]\((https?:\/\/\S+?)\)/g;
+          const urls: string[] = [];
+          let m: RegExpExecArray | null;
+          while ((m = imageRegex.exec(raw)) !== null) {
+            urls.push(m[1]);
+          }
+          if (urls.length > 0) {
+            media = urls.map((url) => ({ kind: 'photo' as const, url }));
+          }
+          // Strip image markdown to avoid rendering as a non-working link
+          lastAssistantContent = raw.replaceAll(imageRegex, '').trim() || undefined;
+        }
+      }
 
       const duration = state?.createdAt
         ? Date.now() - new Date(state.createdAt).getTime()
@@ -1565,6 +1586,7 @@ export class AgentRuntimeService {
         // Full state available in local mode only (not serialized to webhooks)
         finalState: state,
         lastAssistantContent,
+        media,
         llmCalls: state?.usage?.llm?.apiCalls,
         operationId,
         reason,

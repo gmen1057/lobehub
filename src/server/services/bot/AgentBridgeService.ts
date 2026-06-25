@@ -863,6 +863,28 @@ export class AgentBridgeService {
                           await thread.post(chunk);
                         }
                       }
+
+                      // Send media (photos) after the text reply.
+                      // The Chat SDK adapter renders markdown images as broken links,
+                      // so we send them natively via the Telegram Bot API.
+                      const mediaList = (event as any).media as
+                        | Array<{ kind: 'photo'; url: string }>
+                        | undefined;
+                      if (mediaList && mediaList.length > 0) {
+                        const messenger = client?.getMessenger(thread.id);
+                        if (messenger?.sendMedia) {
+                          for (const item of mediaList) {
+                            try {
+                              await messenger.sendMedia(item.kind, { url: item.url });
+                            } catch (mediaError) {
+                              log(
+                                'executeWithCallback[local]: failed to send media: %O',
+                                mediaError,
+                              );
+                            }
+                          }
+                        }
+                      }
                     } catch (error) {
                       log('executeWithCallback[local]: failed to send final message: %O', error);
                     }

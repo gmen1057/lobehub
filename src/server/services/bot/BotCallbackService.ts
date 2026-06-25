@@ -38,6 +38,8 @@ export interface BotCallbackBody {
   lastLLMContent?: string;
   lastToolsCalling?: any;
   llmCalls?: number;
+  /** Media attachments extracted from the assistant message (image_url parts). */
+  media?: Array<{ kind: 'photo'; url: string }>;
   platformThreadId: string;
   progressMessageId?: string;
   reason?: string;
@@ -240,12 +242,12 @@ export class BotCallbackService {
       return;
     }
 
-    if (!lastAssistantContent) {
-      log('handleCompletion: no lastAssistantContent, skipping');
+    if (!lastAssistantContent && !body.media?.length) {
+      log('handleCompletion: no lastAssistantContent or media, skipping');
       return;
     }
 
-    const msgBody = renderFinalReply(lastAssistantContent);
+    const msgBody = lastAssistantContent ? renderFinalReply(lastAssistantContent) : '';
 
     const stats: UsageStats = {
       elapsedMs: body.duration,
@@ -260,7 +262,7 @@ export class BotCallbackService {
     const chunks = splitMessage(finalText, charLimit);
 
     try {
-      if (canEdit && progressMessageId) {
+      if (canEdit && progressMessageId && chunks.length > 0 && chunks[0]) {
         await messenger.editMessage(progressMessageId, chunks[0]);
         for (let i = 1; i < chunks.length; i++) {
           await messenger.createMessage(chunks[i]);
@@ -268,7 +270,18 @@ export class BotCallbackService {
       } else {
         // No progress message to edit or platform doesn't support edit — send all chunks as new messages
         for (const chunk of chunks) {
-          await messenger.createMessage(chunk);
+          if (chunk) await messenger.createMessage(chunk);
+        }
+      }
+
+      // Send media attachments (photos) after the text
+      if (body.media && body.media.length > 0 && messenger.sendMedia) {
+        for (const item of body.media) {
+          try {
+            await messenger.sendMedia(item.kind, { url: item.url });
+          } catch (mediaError) {
+            log('handleCompletion: failed to send media: %O', mediaError);
+          }
         }
       }
     } catch (error) {
