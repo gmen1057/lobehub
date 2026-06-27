@@ -22,9 +22,16 @@ dayjs.extend(isYesterday);
 // the query string before ChatInput mounts. Capture the slug HERE (initialize
 // runs before the router) and hand it to useSiteDeepLink via sessionStorage.
 if (typeof window !== 'undefined') {
-  const slug = new URLSearchParams(window.location.search).get('site');
+  const params = new URLSearchParams(window.location.search);
+  const slug = params.get('site');
   if (slug && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
     sessionStorage.setItem('arckep-site-deeplink', slug);
+  }
+  // arckep: deep link «Собрать сайт» (/chat/?create=<templateId>) — start a NEW
+  // site from a template prompt. Same capture-before-router trick as site=.
+  const tpl = params.get('create');
+  if (tpl && /^[a-z]{1,20}$/.test(tpl)) {
+    sessionStorage.setItem('arckep-create-deeplink', tpl);
   }
 }
 
