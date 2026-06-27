@@ -45,19 +45,15 @@ export function normalizeUsername(raw?: string | null): string | null {
   return s || null;
 }
 
-function denyByStatusOrQuota(row: {
-  messagesUsed: number;
-  quotaMessages: number | null;
-  status: string;
-}): AccessDecision | null {
+/** Status-only deny (pending / suspended / revoked). Quota is enforced separately
+ *  by an atomic consume (see `decide` below) so it can never overshoot under
+ *  concurrency. */
+function denyByStatus(row: { status: string }): AccessDecision | null {
   if (row.status === 'pending') {
     return { allow: false, message: DENY_PENDING, reason: 'pending' };
   }
   if (row.status === 'suspended' || row.status === 'revoked') {
     return { allow: false, message: DENY_SUSPENDED, reason: 'suspended' };
-  }
-  if (row.quotaMessages != null && row.messagesUsed >= row.quotaMessages) {
-    return { allow: false, message: DENY_QUOTA, reason: 'quota_exhausted' };
   }
   return null;
 }
@@ -96,6 +92,22 @@ export async function checkBotAccess(params: {
 
     const model = new BotEndUserModel(db);
 
+    // Allow an active row iff a quota unit can be atomically consumed. The
+    // conditional UPDATE in tryConsumeQuota is the arbiter — no read-then-write
+    // race, no fire-and-forget undercount. Owner / fail-open never reach here.
+    const decide = async (
+      decideRow: { id: string; status: string },
+      reason: AccessReason,
+    ): Promise<AccessDecision> => {
+      const statusDeny = denyByStatus(decideRow);
+      if (statusDeny) return statusDeny;
+      const consumed = await model.tryConsumeQuota(decideRow.id);
+      if (!consumed) {
+        return { allow: false, message: DENY_QUOTA, reason: 'quota_exhausted' };
+      }
+      return { allow: true, endUserRowId: decideRow.id, reason };
+    };
+
     if (policy === 'open') {
       const row = await model.findOrCreate({
         botProviderId,
@@ -103,15 +115,13 @@ export async function checkBotAccess(params: {
         endUserUsername: params.endUserUsername,
         platform,
       });
-      return denyByStatusOrQuota(row) ?? { allow: true, endUserRowId: row.id, reason: 'open' };
+      return decide(row, 'open');
     }
 
     // allowlist (also the owner-only default): only an existing active row passes.
     const row = await model.findByProviderAndEndUser(botProviderId, endUserId);
     if (row) {
-      return (
-        denyByStatusOrQuota(row) ?? { allow: true, endUserRowId: row.id, reason: 'allowlisted' }
-      );
+      return decide(row, 'allowlisted');
     }
 
     // No numeric-id row. Try sentinel (username-based) match — BRIEF-08 Part A.
@@ -124,13 +134,7 @@ export async function checkBotAccess(params: {
         try {
           const bound = await model.bindNumericId(sentinelRow.id, botProviderId, endUserId);
           if (bound) {
-            return (
-              denyByStatusOrQuota(bound) ?? {
-                allow: true,
-                endUserRowId: bound.id,
-                reason: 'uname_match',
-              }
-            );
+            return decide(bound, 'uname_match');
           }
         } catch {
           // UNIQUE collision: a row with the real numeric id already exists.
@@ -140,13 +144,7 @@ export async function checkBotAccess(params: {
         // Re-query by numeric id (the collision row or a row we just bound).
         const idRow = await model.findByProviderAndEndUser(botProviderId, endUserId);
         if (idRow) {
-          return (
-            denyByStatusOrQuota(idRow) ?? {
-              allow: true,
-              endUserRowId: idRow.id,
-              reason: 'allowlisted',
-            }
-          );
+          return decide(idRow, 'allowlisted');
         }
       }
     }

@@ -8,6 +8,7 @@ const findByProviderAndUsername = vi.fn();
 const bindNumericId = vi.fn();
 const createPending = vi.fn();
 const deleteById = vi.fn();
+const tryConsumeQuota = vi.fn();
 
 vi.mock('@/database/models/botEndUser', () => ({
   BotEndUserModel: vi.fn().mockImplementation(() => ({
@@ -17,6 +18,7 @@ vi.mock('@/database/models/botEndUser', () => ({
     bindNumericId,
     createPending,
     deleteById,
+    tryConsumeQuota,
   })),
 }));
 
@@ -38,6 +40,9 @@ beforeEach(() => {
   bindNumericId.mockReset();
   createPending.mockReset();
   deleteById.mockReset();
+  tryConsumeQuota.mockReset();
+  // Default: quota available — a unit is consumed and the message proceeds.
+  tryConsumeQuota.mockResolvedValue(true);
 });
 
 describe('checkBotAccess', () => {
@@ -67,7 +72,7 @@ describe('checkBotAccess', () => {
     expect(findOrCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('allowlist: allows an active under-quota row', async () => {
+  it('allowlist: allows an active under-quota row (consumes one quota unit)', async () => {
     findByProviderAndEndUser.mockResolvedValue({
       ...activeRow,
       messagesUsed: 5,
@@ -77,31 +82,33 @@ describe('checkBotAccess', () => {
     expect(d.allow).toBe(true);
     expect(d.reason).toBe('allowlisted');
     expect(d.endUserRowId).toBe('row-1');
+    // Quota consumed atomically at the allow decision.
+    expect(tryConsumeQuota).toHaveBeenCalledWith('row-1');
   });
 
-  it('denies a suspended user', async () => {
+  it('denies a suspended user WITHOUT consuming quota', async () => {
     findByProviderAndEndUser.mockResolvedValue({ ...activeRow, status: 'suspended' });
     const d = await checkBotAccess({ ...base, policy: 'allowlist' });
     expect(d.allow).toBe(false);
     expect(d.reason).toBe('suspended');
+    expect(tryConsumeQuota).not.toHaveBeenCalled();
   });
 
-  it('denies a revoked user', async () => {
+  it('denies a revoked user WITHOUT consuming quota', async () => {
     findByProviderAndEndUser.mockResolvedValue({ ...activeRow, status: 'revoked' });
     const d = await checkBotAccess({ ...base, policy: 'allowlist' });
     expect(d.allow).toBe(false);
     expect(d.reason).toBe('suspended');
+    expect(tryConsumeQuota).not.toHaveBeenCalled();
   });
 
-  it('denies when the message quota is exhausted', async () => {
-    findByProviderAndEndUser.mockResolvedValue({
-      ...activeRow,
-      messagesUsed: 10,
-      quotaMessages: 10,
-    });
+  it('denies when the quota is exhausted (atomic consume returns false)', async () => {
+    findByProviderAndEndUser.mockResolvedValue({ ...activeRow });
+    tryConsumeQuota.mockResolvedValue(false);
     const d = await checkBotAccess({ ...base, policy: 'allowlist' });
     expect(d.allow).toBe(false);
     expect(d.reason).toBe('quota_exhausted');
+    expect(tryConsumeQuota).toHaveBeenCalledWith('row-1');
   });
 
   it('FAILS OPEN when the DB throws (never block real users on infra blips)', async () => {

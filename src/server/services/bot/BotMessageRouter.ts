@@ -6,7 +6,6 @@ import debug from 'debug';
 import { getServerDB } from '@/database/core/db-adaptor';
 import type { DecryptedBotProvider } from '@/database/models/agentBotProvider';
 import { AgentBotProviderModel } from '@/database/models/agentBotProvider';
-import { BotEndUserModel } from '@/database/models/botEndUser';
 import type { LobeChatDatabase } from '@/database/type';
 import { getAgentRuntimeRedisClient } from '@/server/modules/AgentRuntime/redis';
 import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
@@ -387,7 +386,6 @@ export class BotMessageRouter {
     const { botProviderId } = info;
     const ownerPlatformUserId = info.settings?.userId ? String(info.settings.userId) : undefined;
     const dmPolicy = info.settings?.dm?.policy as DmPolicy | undefined;
-    const endUserModel = new BotEndUserModel(serverDB);
 
     // ── Phase 27: redeem one-time access codes BEFORE any access gate ─────
     const tryRedeemCode = async (
@@ -457,11 +455,8 @@ export class BotMessageRouter {
         }
         return false;
       }
-      if (decision.endUserRowId) {
-        endUserModel.incrementUsage(decision.endUserRowId).catch((error) => {
-          log('incrementUsage failed for %s: %O', decision.endUserRowId, error);
-        });
-      }
+      // Quota is consumed atomically inside checkBotAccess (tryConsumeQuota) at the
+      // allow decision — no separate increment here (no fire-and-forget undercount).
       return true;
     };
 

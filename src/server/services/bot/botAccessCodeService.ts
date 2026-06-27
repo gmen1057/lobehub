@@ -24,6 +24,15 @@ export async function redeemCode(params: {
   const { botProviderId, code, endUserId, endUserUsername, platform, db } = params;
 
   const codeModel = new BotAccessCodeModel(db);
+  const endUserModel = new BotEndUserModel(db);
+
+  // Suspension is sticky: a suspended/revoked end-user cannot self-reactivate by
+  // redeeming a code. Check BEFORE consuming so a valid code is not burned on a
+  // user the owner has deliberately blocked.
+  const existing = await endUserModel.findByProviderAndEndUser(botProviderId, endUserId);
+  if (existing && (existing.status === 'suspended' || existing.status === 'revoked')) {
+    return { ok: false, message: 'Ваш доступ к этому боту приостановлен.' };
+  }
 
   // Atomically consume the code — only one caller gets the row.
   const consumed = await codeModel.consumeCode(botProviderId, code, endUserId);
@@ -32,7 +41,6 @@ export async function redeemCode(params: {
   }
 
   // Upsert the end-user as active with the code's quota and granted_via='code'.
-  const endUserModel = new BotEndUserModel(db);
   await endUserModel.upsertActive({
     botProviderId,
     endUserId,
