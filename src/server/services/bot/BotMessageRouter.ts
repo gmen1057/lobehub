@@ -603,6 +603,11 @@ export class BotMessageRouter {
       bot.onNewMessage(/./, async (thread, message, context?: MessageContext) => {
         if (message.author.isBot === true) return;
 
+        // ── Phase 27: redeem one-time access codes BEFORE any access gate ─────
+        // This is the DM catch-all — the t.me/<bot>?start=<code> deep-link lands
+        // here, so redeem MUST run here too (not only in onNewMention).
+        if (await tryRedeemCode(thread, message)) return;
+
         // Skip text-based slash commands — already handled by registerCommands
         if (BotMessageRouter.dispatchTextCommand(message.text, commands)) return;
 
