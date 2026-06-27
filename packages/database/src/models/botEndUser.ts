@@ -159,4 +159,45 @@ export class BotEndUserModel {
   deleteById = async (id: string): Promise<void> => {
     await this.db.delete(botEndUsers).where(eq(botEndUsers.id, id));
   };
+
+  /**
+   * Upsert an active end-user row granting access (Phase 27 code redeem).
+   * INSERT ... ON CONFLICT DO UPDATE ensures the row is always active, even if
+   * a suspended/revoked row already exists.
+   */
+  upsertActive = async (params: {
+    botProviderId: string;
+    endUserId: string;
+    endUserUsername?: string | null;
+    platform: string;
+    quotaMessages?: number | null;
+  }): Promise<BotEndUserItem> => {
+    const [row] = await this.db
+      .insert(botEndUsers)
+      .values({
+        botProviderId: params.botProviderId,
+        endUserId: params.endUserId,
+        endUserUsername: params.endUserUsername ?? null,
+        grantedVia: 'code',
+        platform: params.platform,
+        status: 'active',
+        quotaMessages: params.quotaMessages ?? null,
+      } satisfies NewBotEndUser)
+      .onConflictDoUpdate({
+        target: [botEndUsers.botProviderId, botEndUsers.endUserId],
+        set: {
+          status: 'active',
+          grantedVia: 'code',
+          endUserUsername: params.endUserUsername ?? botEndUsers.endUserUsername,
+          quotaMessages: params.quotaMessages ?? botEndUsers.quotaMessages,
+          updatedAt: sql`now()`,
+        },
+      })
+      .returning();
+
+    if (!row) {
+      throw new Error('BotEndUserModel.upsertActive: row missing after upsert');
+    }
+    return row;
+  };
 }

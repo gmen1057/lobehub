@@ -13,6 +13,7 @@ import { KeyVaultsGateKeeper } from '@/server/modules/KeyVaultsEncrypt';
 import { AiAgentService } from '@/server/services/aiAgent';
 
 import { AgentBridgeService } from './AgentBridgeService';
+import { parseRedeemCode, redeemCode } from './botAccessCodeService';
 import { checkBotAccess, type DmPolicy } from './botAccessGate';
 import { checkRateLimit } from './botRateLimit';
 import {
@@ -388,6 +389,45 @@ export class BotMessageRouter {
     const dmPolicy = info.settings?.dm?.policy as DmPolicy | undefined;
     const endUserModel = new BotEndUserModel(serverDB);
 
+    // ── Phase 27: redeem one-time access codes BEFORE any access gate ─────
+    const tryRedeemCode = async (
+      thread: { post: (t: string) => Promise<unknown> },
+      message: Message,
+    ): Promise<boolean> => {
+      const code = parseRedeemCode(message.text);
+      if (!code) return false;
+
+      log(
+        'Phase27 redeem attempt: bot=%s endUser=%s code=%s',
+        applicationId,
+        message.author.userId,
+        code.slice(0, 3) + '***',
+      );
+      const result = await redeemCode({
+        botProviderId,
+        code,
+        endUserId: String(message.author.userId),
+        endUserUsername: message.author.userName,
+        platform,
+        db: serverDB,
+      });
+      try {
+        await thread.post(result.message);
+      } catch (error) {
+        log('failed to post redeem result: %O', error);
+      }
+      log(
+        'Phase27 redeem result: bot=%s endUser=%s ok=%s',
+        applicationId,
+        message.author.userId,
+        String(result.ok),
+      );
+      // Always return true to stop further processing (access gate, etc.).
+      // On ok=false the user already got the denial message; on ok=true they
+      // should re-send a real message to use the bot.
+      return true;
+    };
+
     const passesAccessGate = async (
       thread: { post: (t: string) => Promise<unknown> },
       message: Message,
@@ -479,6 +519,9 @@ export class BotMessageRouter {
     };
 
     bot.onNewMention(async (thread, message, context?: MessageContext) => {
+      // ── Phase 27: redeem one-time access codes BEFORE any access gate ─────
+      if (await tryRedeemCode(thread, message)) return;
+
       if (await tryDispatch(thread, message.text)) return;
 
       const merged = BotMessageRouter.mergeSkippedMessages(message, context);
@@ -505,6 +548,10 @@ export class BotMessageRouter {
 
     bot.onSubscribedMessage(async (thread, message, context?: MessageContext) => {
       if (message.author.isBot === true) return;
+
+      // ── Phase 27: redeem one-time access codes BEFORE any access gate ─────
+      if (await tryRedeemCode(thread, message)) return;
+
       if (await tryDispatch(thread, message.text)) return;
 
       const merged = BotMessageRouter.mergeSkippedMessages(message, context);
