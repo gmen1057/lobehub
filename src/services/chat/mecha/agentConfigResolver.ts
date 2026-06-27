@@ -69,6 +69,9 @@ export interface AgentConfigResolverContext {
   /** Agent ID to resolve config for */
   agentId: string;
 
+  /** Bot ID for bot-configurator deep-link (from ?bot= URL param) */
+  botId?: string;
+
   /**
    * Whether to disable all tools for this agent execution.
    * When true, returns empty plugins array (used for broadcast scenarios).
@@ -144,6 +147,14 @@ export interface ResolvedAgentConfig {
 export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAgentConfig => {
   const { agentId, model, documentContent, plugins, targetAgentConfig, isSubTask, disableTools } =
     ctx;
+
+  // Resolve botId: from context first, fallback to sessionStorage (for SessionHydration deep-link)
+  const botId =
+    ctx.botId ||
+    (typeof sessionStorage !== 'undefined'
+      ? sessionStorage.getItem('arckep:bot-configurator:botId')
+      : null) ||
+    undefined;
 
   log(
     'resolveAgentConfig called with agentId: %s, scope: %s, isSubTask: %s, disableTools: %s',
@@ -332,6 +343,7 @@ export const resolveAgentConfig = (ctx: AgentConfigResolverContext): ResolvedAge
   // Use basePlugins as fallback when ctx.plugins is not provided
   // This ensures builtin agents (e.g., INBOX) receive user-configured plugins for merging
   const runtimeConfig = getAgentRuntimeConfig(slug, {
+    botId,
     documentContent,
     groupSupervisorContext,
     isDev,

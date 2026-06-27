@@ -7,6 +7,7 @@ import type { GroupSupervisorContext } from './agents/group-supervisor/type';
  */
 export const BUILTIN_AGENT_SLUGS = {
   agentBuilder: 'agent-builder',
+  botConfigurator: 'bot-configurator',
   groupAgentBuilder: 'group-agent-builder',
   groupSupervisor: 'group-supervisor',
   inbox: 'inbox',
@@ -46,6 +47,9 @@ export interface BuiltinAgentRuntimeResult {
  * Runtime Context - context passed to runtime function
  */
 export interface RuntimeContext {
+  /** Bot ID for bot-configurator agent (from ?bot= URL param) */
+  botId?: string;
+
   /** Document content for PageAgent */
   documentContent?: string;
 

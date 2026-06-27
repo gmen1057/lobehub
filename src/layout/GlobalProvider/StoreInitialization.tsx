@@ -1,5 +1,6 @@
 'use client';
 
+import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { INBOX_SESSION_ID } from '@lobechat/const';
 import { lazy, memo, Suspense } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -62,6 +63,9 @@ const StoreInitialization = memo(() => {
 
   // init inbox agent via builtin agent mechanism
   useInitBuiltinAgent(INBOX_SESSION_ID, { isLogin: isLoginOnInit });
+
+  // init bot-configurator agent
+  useInitBuiltinAgent(BUILTIN_AGENT_SLUGS.botConfigurator, { isLogin: isLoginOnInit });
 
   const onUserStateSuccess = useUserStateRedirect();
 
