@@ -5,11 +5,13 @@ import { useEffect } from 'react';
 import { useChatStore } from '@/store/chat';
 
 /**
- * arckep: deep links that prefill the chat input. Two modes:
- *   ?site=<slug>    — «Править с агентом»: edit an existing published site;
- *                     the agent pulls the live HTML via the arckep-sites tool.
- *   ?create=<tplId> — «Собрать сайт»: start a NEW site from a template prompt
- *                     (CREATE_PROMPTS below). Powers the tiles on /sites.
+ * arckep: deep links that prefill the chat input. Three modes:
+ *   ?site=<slug>     — «Править с агентом»: edit an existing published site;
+ *                      the agent pulls the live HTML via the arckep-sites tool.
+ *   ?create=<tplId>  — «Собрать сайт»: start a NEW site from a template prompt
+ *                      (CREATE_PROMPTS below). Powers the tiles on /sites.
+ *   ?botidea=<tplId> — «Подключить бота»: start a chat about a Telegram bot of
+ *                      that kind (BOT_PROMPTS below). Powers the tiles on /bots.
  * Prefill only, never auto-send: the user stays in control of spending a message.
  *
  * The param comes from sessionStorage, NOT window.location: the SPA router's
@@ -41,6 +43,21 @@ const CREATE_PROMPTS: Record<string, string> = {
   game: 'Собери простую браузерную мини-игру прямо на странице — играбельную, с управлением и подсчётом очков. Моя идея игры: ',
 };
 
+// «Подключить бота» mode: /chat/?botidea=<templateId> opens the chat with a
+// starter prompt about a Telegram bot of that kind. The agent walks the user
+// through @BotFather → token → agent channel. Prefill only — user adds details.
+const BOT_KEY = 'arckep-botidea-deeplink';
+const BOT_CONSUMED_KEY = 'arckep-botidea-deeplink-consumed';
+const BOT_PROMPTS: Record<string, string> = {
+  support:
+    'Хочу подключить Telegram-бота поддержки, который отвечает на частые вопросы моих клиентов. Проведи меня по шагам: что сделать в @BotFather, где взять токен и куда его вставить в настройках агента. Моя тема или бизнес: ',
+  visitcard:
+    'Хочу Telegram-бота-визитку, который рассказывает обо мне, моих услугах и даёт контакты. Проведи по шагам подключения (@BotFather → токен → канал агента) и помоги с приветствием. Чем я занимаюсь: ',
+  leads:
+    'Хочу Telegram-бота, который принимает заявки и записи от клиентов. Проведи по шагам подключения (@BotFather → токен → канал агента) и помоги настроить, что спрашивать у клиента. Что нужно собирать в заявке: ',
+  shop: 'Хочу Telegram-бота-витрину с каталогом моих товаров или услуг. Проведи по шагам подключения (@BotFather → токен → канал агента) и помоги оформить каталог. Что я продаю: ',
+};
+
 export const useSiteDeepLink = () => {
   const mainInputEditor = useChatStore((s) => s.mainInputEditor);
 
@@ -48,13 +65,14 @@ export const useSiteDeepLink = () => {
     if (!mainInputEditor) return;
     const params = new URLSearchParams(window.location.search);
 
-    // Two deep-link modes share the same prefill+retry machinery below.
+    // Three deep-link modes share the same prefill+retry machinery below.
     let text: string;
     let consumedKey: string;
     let marker: string;
 
     const slug = sessionStorage.getItem(DEEPLINK_KEY) || params.get('site');
     const tpl = sessionStorage.getItem(CREATE_KEY) || params.get('create');
+    const botTpl = sessionStorage.getItem(BOT_KEY) || params.get('botidea');
 
     if (slug && SLUG_RE.test(slug)) {
       // One prefill per tab — remounts and topic switches must not re-trigger it.
@@ -67,6 +85,11 @@ export const useSiteDeepLink = () => {
       text = CREATE_PROMPTS[tpl];
       consumedKey = CREATE_CONSUMED_KEY;
       marker = tpl;
+    } else if (botTpl && CREATE_RE.test(botTpl) && BOT_PROMPTS[botTpl]) {
+      if (sessionStorage.getItem(BOT_CONSUMED_KEY) === botTpl) return;
+      text = BOT_PROMPTS[botTpl];
+      consumedKey = BOT_CONSUMED_KEY;
+      marker = botTpl;
     } else {
       return;
     }

@@ -33,6 +33,12 @@ if (typeof window !== 'undefined') {
   if (tpl && /^[a-z]{1,20}$/.test(tpl)) {
     sessionStorage.setItem('arckep-create-deeplink', tpl);
   }
+  // arckep: deep link «Подключить бота» (/chat/?botidea=<templateId>) — start a
+  // chat about a Telegram bot of that kind. Same capture-before-router trick.
+  const botTpl = params.get('botidea');
+  if (botTpl && /^[a-z]{1,20}$/.test(botTpl)) {
+    sessionStorage.setItem('arckep-botidea-deeplink', botTpl);
+  }
 }
 
 // Global fallback: catch async chunk-load failures that escape Error Boundaries
