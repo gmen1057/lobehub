@@ -19,11 +19,11 @@ import { agentBotProviders } from './agentBotProvider';
  * MIGRATION-DEPLOY-PLAYBOOK.md). ON DELETE CASCADE: rows are wiped when the bot
  * provider is deleted (spend history survives in arckep `chat_token_charges`).
  */
-export const botEndUserStatuses = ['active', 'suspended', 'revoked'] as const;
+export const botEndUserStatuses = ['active', 'suspended', 'revoked', 'pending'] as const;
 export type BotEndUserStatus = (typeof botEndUserStatuses)[number];
 
 /** How the end-user came to be granted access (for audit / future grant API). */
-export const botEndUserGrantedVia = ['auto', 'owner', 'code', 'payment'] as const;
+export const botEndUserGrantedVia = ['auto', 'owner', 'code', 'payment', 'knock'] as const;
 export type BotEndUserGrantedVia = (typeof botEndUserGrantedVia)[number];
 
 export const botEndUsers = pgTable(

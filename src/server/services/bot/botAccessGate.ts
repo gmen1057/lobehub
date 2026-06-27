@@ -18,7 +18,9 @@ export type AccessReason =
   | 'not_allowlisted'
   | 'disabled'
   | 'suspended'
-  | 'quota_exhausted';
+  | 'quota_exhausted'
+  | 'pending'
+  | 'uname_match';
 
 export interface AccessDecision {
   allow: boolean;
@@ -31,15 +33,26 @@ export interface AccessDecision {
 
 // Friendly, non-technical deny messages (RU — primary market). Clients may customise later.
 const DENY_DISABLED = 'Этот бот сейчас недоступен.';
-const DENY_NOT_ALLOWLISTED = 'У вас нет доступа к этому боту. Обратитесь к его владельцу.';
 const DENY_SUSPENDED = 'Ваш доступ к этому боту приостановлен.';
 const DENY_QUOTA = 'Вы исчерпали лимит сообщений для этого бота.';
+const DENY_PENDING = 'Запрос на доступ отправлен. Владелец бота одобрит его в ближайшее время.';
+
+/** Normalize a Telegram username for sentinel matching: lowercase, strip leading @. */
+export function normalizeUsername(raw?: string | null): string | null {
+  if (!raw) return null;
+  let s = raw.trim().toLowerCase();
+  if (s.startsWith('@')) s = s.slice(1);
+  return s || null;
+}
 
 function denyByStatusOrQuota(row: {
   messagesUsed: number;
   quotaMessages: number | null;
   status: string;
 }): AccessDecision | null {
+  if (row.status === 'pending') {
+    return { allow: false, message: DENY_PENDING, reason: 'pending' };
+  }
   if (row.status === 'suspended' || row.status === 'revoked') {
     return { allow: false, message: DENY_SUSPENDED, reason: 'suspended' };
   }
@@ -95,10 +108,57 @@ export async function checkBotAccess(params: {
 
     // allowlist (also the owner-only default): only an existing active row passes.
     const row = await model.findByProviderAndEndUser(botProviderId, endUserId);
-    if (!row) {
-      return { allow: false, message: DENY_NOT_ALLOWLISTED, reason: 'not_allowlisted' };
+    if (row) {
+      return (
+        denyByStatusOrQuota(row) ?? { allow: true, endUserRowId: row.id, reason: 'allowlisted' }
+      );
     }
-    return denyByStatusOrQuota(row) ?? { allow: true, endUserRowId: row.id, reason: 'allowlisted' };
+
+    // No numeric-id row. Try sentinel (username-based) match — BRIEF-08 Part A.
+    const uname = normalizeUsername(params.endUserUsername);
+    if (uname) {
+      const sentinelKey = `uname:${uname}`;
+      const sentinelRow = await model.findByProviderAndUsername(botProviderId, sentinelKey);
+      if (sentinelRow) {
+        // Backfill: replace the sentinel end_user_id with the real numeric id.
+        try {
+          const bound = await model.bindNumericId(sentinelRow.id, botProviderId, endUserId);
+          if (bound) {
+            return (
+              denyByStatusOrQuota(bound) ?? {
+                allow: true,
+                endUserRowId: bound.id,
+                reason: 'uname_match',
+              }
+            );
+          }
+        } catch {
+          // UNIQUE collision: a row with the real numeric id already exists.
+          // Delete the sentinel — the id-based row wins.
+        }
+        await model.deleteById(sentinelRow.id);
+        // Re-query by numeric id (the collision row or a row we just bound).
+        const idRow = await model.findByProviderAndEndUser(botProviderId, endUserId);
+        if (idRow) {
+          return (
+            denyByStatusOrQuota(idRow) ?? {
+              allow: true,
+              endUserRowId: idRow.id,
+              reason: 'allowlisted',
+            }
+          );
+        }
+      }
+    }
+
+    // No match by id or username → create a pending knock row (BRIEF-08 Part B).
+    await model.createPending({
+      botProviderId,
+      endUserId,
+      endUserUsername: params.endUserUsername,
+      platform,
+    });
+    return { allow: false, message: DENY_PENDING, reason: 'pending' };
   } catch (error) {
     console.error('[botAccessGate] access check failed — failing OPEN:', error);
     return { allow: true, reason: 'fail_open' };
