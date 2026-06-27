@@ -17,6 +17,7 @@ import { timingSafeEqual } from 'node:crypto';
 
 import { type NextRequest } from 'next/server';
 
+import { setBotBlocked } from '@/server/services/bot/botBlockService';
 import { setBotEnabled } from '@/server/services/bot/botEnableService';
 import {
   setAccessRule,
@@ -39,6 +40,8 @@ const constantTimeEqual = (a: string, b: string): boolean => {
 const VALID_ACTIONS = new Set([
   'enable',
   'disable',
+  'block',
+  'unblock',
   'setGreeting',
   'setCommands',
   'setAccessRule',
@@ -99,6 +102,20 @@ export async function POST(req: NextRequest) {
         platform: result.platform,
         runtimeStatus: result.runtimeStatus,
         status: result.enabled ? 'enabled' : 'disabled',
+      });
+    }
+
+    // ── block / unblock (Phase 30, admin-only) ───────────────────────────
+    if (action === 'block' || action === 'unblock') {
+      const result = await setBotBlocked(userId, botId, action === 'block');
+      if (!result) {
+        return Response.json({ error: 'Bot not found' }, { status: 404 });
+      }
+      return Response.json({
+        applicationId: result.applicationId,
+        blocked: result.blocked,
+        ok: true,
+        platform: result.platform,
       });
     }
 

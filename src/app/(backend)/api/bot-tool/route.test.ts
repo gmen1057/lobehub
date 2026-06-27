@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { POST } from './route';
 
 const setBotEnabled = vi.fn();
+const setBotBlocked = vi.fn();
 const setGreeting = vi.fn();
 const setCommands = vi.fn();
 const setAccessRule = vi.fn();
@@ -10,6 +11,10 @@ const setModel = vi.fn();
 
 vi.mock('@/server/services/bot/botEnableService', () => ({
   setBotEnabled: (...a: unknown[]) => setBotEnabled(...a),
+}));
+
+vi.mock('@/server/services/bot/botBlockService', () => ({
+  setBotBlocked: (...a: unknown[]) => setBotBlocked(...a),
 }));
 
 vi.mock('@/server/services/bot/botMutationService', () => ({
@@ -32,6 +37,7 @@ const makeReq = (opts: { body?: unknown; rawBody?: string; secret?: string | nul
 
 beforeEach(() => {
   setBotEnabled.mockReset();
+  setBotBlocked.mockReset();
   setGreeting.mockReset();
   setCommands.mockReset();
   setAccessRule.mockReset();
@@ -103,6 +109,40 @@ describe('bot-tool POST', () => {
     expect(res.status).toBe(502);
   });
 
+  // ── block / unblock (Phase 30, admin) ─────────────────────────────────
+  it('block: 200 + threads the server-resolved owner through', async () => {
+    setBotBlocked.mockResolvedValue({ applicationId: '8677', blocked: true, platform: 'telegram' });
+    const res = await POST(
+      makeReq({ body: { action: 'block', botId: 'b1', userId: 'owner-9' }, secret: SECRET }),
+    );
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json).toMatchObject({ blocked: true, ok: true, platform: 'telegram' });
+    expect(setBotBlocked).toHaveBeenCalledWith('owner-9', 'b1', true);
+  });
+
+  it('unblock: 200 + calls setBotBlocked(..., false)', async () => {
+    setBotBlocked.mockResolvedValue({
+      applicationId: '8677',
+      blocked: false,
+      platform: 'telegram',
+    });
+    const res = await POST(
+      makeReq({ body: { action: 'unblock', botId: 'b1', userId: 'owner-9' }, secret: SECRET }),
+    );
+    expect(res.status).toBe(200);
+    expect(setBotBlocked).toHaveBeenCalledWith('owner-9', 'b1', false);
+  });
+
+  it('block: 404 when the bot is not owned by the caller (setBotBlocked → null)', async () => {
+    setBotBlocked.mockResolvedValue(null);
+    const res = await POST(
+      makeReq({ body: { action: 'block', botId: 'b', userId: 'u' }, secret: SECRET }),
+    );
+    expect(res.status).toBe(404);
+    expect(setBotBlocked).toHaveBeenCalledWith('u', 'b', true);
+  });
+
   // ── setGreeting (Phase 22) ────────────────────────────────────────────
   it('setGreeting: 400 when greeting is missing', async () => {
     const res = await POST(
@@ -114,7 +154,10 @@ describe('bot-tool POST', () => {
 
   it('setGreeting: 400 when greeting is empty', async () => {
     const res = await POST(
-      makeReq({ body: { action: 'setGreeting', botId: 'b', userId: 'u', greeting: '' }, secret: SECRET }),
+      makeReq({
+        body: { action: 'setGreeting', botId: 'b', userId: 'u', greeting: '' },
+        secret: SECRET,
+      }),
     );
     expect(res.status).toBe(400);
     expect(setGreeting).not.toHaveBeenCalled();
@@ -123,7 +166,10 @@ describe('bot-tool POST', () => {
   it('setGreeting: 200 when greeting is valid', async () => {
     setGreeting.mockResolvedValue({ botId: 'b', ok: true });
     const res = await POST(
-      makeReq({ body: { action: 'setGreeting', botId: 'b', userId: 'u', greeting: 'Hello' }, secret: SECRET }),
+      makeReq({
+        body: { action: 'setGreeting', botId: 'b', userId: 'u', greeting: 'Hello' },
+        secret: SECRET,
+      }),
     );
     expect(res.status).toBe(200);
     expect(setGreeting).toHaveBeenCalledWith('u', 'b', 'Hello');
@@ -132,7 +178,10 @@ describe('bot-tool POST', () => {
   // ── setCommands (Phase 22) ────────────────────────────────────────────
   it('setCommands: 400 when commands is not an array', async () => {
     const res = await POST(
-      makeReq({ body: { action: 'setCommands', botId: 'b', userId: 'u', commands: 'not-array' }, secret: SECRET }),
+      makeReq({
+        body: { action: 'setCommands', botId: 'b', userId: 'u', commands: 'not-array' },
+        secret: SECRET,
+      }),
     );
     expect(res.status).toBe(400);
     expect(setCommands).not.toHaveBeenCalled();
@@ -141,7 +190,12 @@ describe('bot-tool POST', () => {
   it('setCommands: 400 when a command has no name', async () => {
     const res = await POST(
       makeReq({
-        body: { action: 'setCommands', botId: 'b', userId: 'u', commands: [{ description: 'x', name: '', response: 'y' }] },
+        body: {
+          action: 'setCommands',
+          botId: 'b',
+          userId: 'u',
+          commands: [{ description: 'x', name: '', response: 'y' }],
+        },
         secret: SECRET,
       }),
     );
@@ -154,7 +208,13 @@ describe('bot-tool POST', () => {
     setModel.mockResolvedValue(null);
     const res = await POST(
       makeReq({
-        body: { action: 'setModel', botId: 'foreign', userId: 'u', model: 'gpt-5', provider: 'openai' },
+        body: {
+          action: 'setModel',
+          botId: 'foreign',
+          userId: 'u',
+          model: 'gpt-5',
+          provider: 'openai',
+        },
         secret: SECRET,
       }),
     );
@@ -166,7 +226,13 @@ describe('bot-tool POST', () => {
     setModel.mockResolvedValue({ botId: 'b', ok: true });
     const res = await POST(
       makeReq({
-        body: { action: 'setModel', botId: 'b', userId: 'u', model: 'claude-sonnet', provider: 'anthropic' },
+        body: {
+          action: 'setModel',
+          botId: 'b',
+          userId: 'u',
+          model: 'claude-sonnet',
+          provider: 'anthropic',
+        },
         secret: SECRET,
       }),
     );

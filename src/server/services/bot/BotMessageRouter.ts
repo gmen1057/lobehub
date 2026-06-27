@@ -14,6 +14,7 @@ import { AiAgentService } from '@/server/services/aiAgent';
 
 import { AgentBridgeService } from './AgentBridgeService';
 import { checkBotAccess, type DmPolicy } from './botAccessGate';
+import { checkRateLimit } from './botRateLimit';
 import {
   type BotPlatformRuntimeContext,
   type BotProviderConfig,
@@ -424,6 +425,39 @@ export class BotMessageRouter {
       return true;
     };
 
+    // --- Rate-limit guard (Phase 29): fast fuse BEFORE any paid agent run ---
+    // Owner is exempt; per-end-user fixed-window Redis counter; fail-open.
+
+    const passesRateLimit = async (
+      thread: { post: (t: string) => Promise<unknown> },
+      message: Message,
+    ): Promise<boolean> => {
+      // Owner is never rate-limited.
+      if (ownerPlatformUserId && String(message.author.userId) === ownerPlatformUserId) {
+        return true;
+      }
+
+      const rlResult = await checkRateLimit({
+        botProviderId,
+        endUserId: String(message.author.userId),
+        redis: getAgentRuntimeRedisClient(),
+      });
+
+      if (!rlResult.allowed) {
+        log('rate-limit DENIED bot=%s endUser=%s', applicationId, message.author.userId);
+        if (rlResult.message) {
+          try {
+            await thread.post(rlResult.message);
+          } catch (error) {
+            log('failed to post rate-limit-deny message: %O', error);
+          }
+        }
+        return false;
+      }
+
+      return true;
+    };
+
     /** Try dispatching a text command. Returns true if handled. */
     const tryDispatch = async (
       thread: {
@@ -458,6 +492,7 @@ export class BotMessageRouter {
         (context?.skipped?.length ?? 0) + 1,
       );
       if (!(await passesAccessGate(thread, message))) return;
+      if (!(await passesRateLimit(thread, message))) return;
 
       await bridge.handleMention(thread, merged, {
         agentId,
@@ -484,6 +519,7 @@ export class BotMessageRouter {
       );
 
       if (!(await passesAccessGate(thread, message))) return;
+      if (!(await passesRateLimit(thread, message))) return;
 
       await bridge.handleSubscribedMessage(thread, merged, {
         agentId,
@@ -535,6 +571,7 @@ export class BotMessageRouter {
         );
 
         if (!(await passesAccessGate(thread, message))) return;
+        if (!(await passesRateLimit(thread, message))) return;
 
         await bridge.handleMention(thread, merged, {
           agentId,
