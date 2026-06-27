@@ -4,9 +4,11 @@ import { parseRedeemCode, redeemCode } from './botAccessCodeService';
 
 // Mock BotEndUserModel
 const upsertActive = vi.fn();
+const findByProviderAndEndUser = vi.fn();
 vi.mock('@/database/models/botEndUser', () => ({
   BotEndUserModel: vi.fn().mockImplementation(() => ({
     upsertActive,
+    findByProviderAndEndUser,
   })),
 }));
 
@@ -21,6 +23,9 @@ vi.mock('@/database/models/botAccessCode', () => ({
 beforeEach(() => {
   upsertActive.mockReset();
   consumeCode.mockReset();
+  findByProviderAndEndUser.mockReset();
+  // Default: no pre-existing end-user row (so redeem proceeds to consume).
+  findByProviderAndEndUser.mockResolvedValue(undefined);
 });
 
 const base = {
@@ -134,5 +139,41 @@ describe('redeemCode — single-use under concurrency', () => {
     consumeCode.mockResolvedValue(undefined);
     const r2 = await redeemCode(base);
     expect(r2.ok).toBe(false);
+  });
+});
+
+describe('redeemCode — suspension is sticky', () => {
+  it('suspended end-user cannot redeem; the code is NOT burned', async () => {
+    findByProviderAndEndUser.mockResolvedValue({ id: 'eu-1', status: 'suspended' });
+
+    const result = await redeemCode(base);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBeTruthy();
+    // Code must NOT be consumed, end-user must NOT be reactivated.
+    expect(consumeCode).not.toHaveBeenCalled();
+    expect(upsertActive).not.toHaveBeenCalled();
+  });
+
+  it('revoked end-user cannot redeem; the code is NOT burned', async () => {
+    findByProviderAndEndUser.mockResolvedValue({ id: 'eu-1', status: 'revoked' });
+
+    const result = await redeemCode(base);
+
+    expect(result.ok).toBe(false);
+    expect(consumeCode).not.toHaveBeenCalled();
+    expect(upsertActive).not.toHaveBeenCalled();
+  });
+
+  it('active end-user redeems normally (consume + reactivate quota)', async () => {
+    findByProviderAndEndUser.mockResolvedValue({ id: 'eu-1', status: 'active' });
+    consumeCode.mockResolvedValue({ id: 'code-1', code: 'ABCD1234', quotaMessages: 50 });
+    upsertActive.mockResolvedValue({ id: 'eu-1' });
+
+    const result = await redeemCode(base);
+
+    expect(result.ok).toBe(true);
+    expect(consumeCode).toHaveBeenCalledWith('bot-1', 'ABCD1234', '999');
+    expect(upsertActive).toHaveBeenCalled();
   });
 });

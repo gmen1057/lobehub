@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type {
   BotEndUserGrantedVia,
@@ -69,14 +69,31 @@ export class BotEndUserModel {
   };
 
   /**
-   * Durable usage bump (messagesUsed + 1). `updatedAt`/`accessedAt` auto-update via $onUpdate.
-   * Redis may front this as a fast counter elsewhere; this table stays the source of truth.
+   * Atomically consume one quota unit: increment messagesUsed by 1 **only if** the
+   * row is still under its quota (or quotaMessages is NULL = unlimited). Returns
+   * true when a unit was consumed (caller may proceed), false when the quota is
+   * already exhausted.
+   *
+   * The conditional UPDATE is the single arbiter: concurrent messages cannot
+   * overshoot the quota, and the count is never silently dropped (replaces the
+   * old fire-and-forget increment). `updatedAt`/`accessedAt` auto-update via
+   * $onUpdate.
    */
-  incrementUsage = async (id: string): Promise<void> => {
-    await this.db
+  tryConsumeQuota = async (id: string): Promise<boolean> => {
+    const rows = await this.db
       .update(botEndUsers)
       .set({ messagesUsed: sql`${botEndUsers.messagesUsed} + 1` })
-      .where(eq(botEndUsers.id, id));
+      .where(
+        and(
+          eq(botEndUsers.id, id),
+          or(
+            isNull(botEndUsers.quotaMessages),
+            lt(botEndUsers.messagesUsed, botEndUsers.quotaMessages),
+          ),
+        ),
+      )
+      .returning({ id: botEndUsers.id });
+    return rows.length > 0;
   };
 
   /** All end-users of a bot (for the «Мои боты» per-user readout, phase 15). */
