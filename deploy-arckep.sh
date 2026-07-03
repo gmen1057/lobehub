@@ -2,9 +2,10 @@
 # Smart deploy for the arckep LobeChat fork (chat.arckep.ru).
 #
 # Cuts the 15-20 min "rebuild everything" cycle down by:
-#   1. skipping `pnpm install` when package.json/workspace config is unchanged
-#      (the fork has NO lockfile — .npmrc sets lockfile=false upstream, so
-#      `--frozen-lockfile` always errors out here; plain `pnpm install` only);
+#   1. skipping `pnpm install` when pnpm-lock.yaml/manifests are unchanged;
+#      install is `--frozen-lockfile` (lockfile committed since 2026-07-03 —
+#      arckep deviation from upstream's lockfile=false; reproducible builds,
+#      no silent dependency drift like the FloatMenu/editor-4.18 incident);
 #   2. skipping BOTH vite SPA builds (desktop + mobile, ~half the wall time)
 #      when every change since the last deployed commit is server-only
 #      (src/app/, src/server/, next config, instrumentation, middleware);
@@ -23,6 +24,9 @@ STATE_LOCK_HASH="$PROD/.deployed-lockhash"
 cd "$SRC"
 FORCE_FULL=${1:-}
 
+# bun lives in ~/.bun/bin (installed 2026-07-03), not in default PATH.
+command -v bun >/dev/null 2>&1 || export PATH="$HOME/.bun/bin:$PATH"
+
 if [[ -n "$(git status --porcelain)" ]]; then
     echo "ERROR: uncommitted changes in $SRC — commit first (deploy is diff-driven)." >&2
     git status --porcelain | head >&2
@@ -31,15 +35,13 @@ fi
 
 HEAD_COMMIT=$(git rev-parse HEAD)
 
-# --- 1. pnpm install only when dependency manifests changed -----------------
-# No lockfile in this fork (.npmrc lockfile=false) — hash every package.json
-# in the workspace plus the workspace config instead.
-LOCK_HASH=$(cat package.json pnpm-workspace.yaml .npmrc packages/*/package.json 2>/dev/null | sha256sum | cut -d' ' -f1)
+# --- 1. pnpm install only when lockfile/manifests changed --------------------
+LOCK_HASH=$(cat pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc packages/*/package.json 2>/dev/null | sha256sum | cut -d' ' -f1)
 if [[ "$FORCE_FULL" == "--full" || ! -f "$STATE_LOCK_HASH" || "$(cat "$STATE_LOCK_HASH")" != "$LOCK_HASH" ]]; then
-    echo "[deploy] pnpm install (dependency manifests changed or --full)"
-    pnpm install
+    echo "[deploy] pnpm install --frozen-lockfile (lockfile/manifests changed or --full)"
+    pnpm install --frozen-lockfile
 else
-    echo "[deploy] pnpm install skipped (dependency manifests unchanged)"
+    echo "[deploy] pnpm install skipped (lockfile/manifests unchanged)"
 fi
 
 # --- 2. what changed since the last deploy? ---------------------------------
