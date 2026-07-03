@@ -37,6 +37,13 @@ const CREATE_RE = /^[a-z]{1,20}$/;
 // Prepended to the template prompt so the agent requests THIS design brief.
 const STYLE_KEY = 'arckep-style-deeplink';
 const STYLE_RE = /^[a-z][a-z0-9-]{0,39}$/;
+// Style line prepended to build prompts. 'custom' = «Опишу сам» в диалоге
+// «Создать сайт»: пользователь даст пожелания словами — агент следует им,
+// серверный бриф не запрашивает.
+const stylePrefix = (styleId: string) =>
+  styleId === 'custom'
+    ? 'Дизайн: у меня свои пожелания к оформлению — опишу их в этом сообщении, следуй им (дизайн-бриф getDesignBrief не запрашивай).\n\n'
+    : `Стиль оформления: «${styleId}» — примени навык «Мои сайты» (getDesignBrief со style_id="${styleId}") и строго следуй брифу.\n\n`;
 const CREATE_PROMPTS: Record<string, string> = {
   service:
     'Собери одностраничный лендинг для моей услуги или бизнеса. Сделай структуру: первый экран с заголовком и кнопкой, выгоды, как это работает, отзывы, цены, форма заявки и контакты. Вот мои детали (чем занимаюсь, для кого, как связаться): ',
@@ -77,6 +84,7 @@ export const useSiteDeepLink = () => {
     const slug = sessionStorage.getItem(DEEPLINK_KEY) || params.get('site');
     const tpl = sessionStorage.getItem(CREATE_KEY) || params.get('create');
     const botTpl = sessionStorage.getItem(BOT_KEY) || params.get('botidea');
+    const styleOnly = sessionStorage.getItem(STYLE_KEY) || params.get('style');
 
     if (slug && SLUG_RE.test(slug)) {
       // One prefill per tab — remounts and topic switches must not re-trigger it.
@@ -91,11 +99,17 @@ export const useSiteDeepLink = () => {
       // different style is a NEW intent and must re-prefill.
       const createMarker = styleOk ? `${tpl}|${styleOk}` : tpl;
       if (sessionStorage.getItem(CREATE_CONSUMED_KEY) === createMarker) return;
-      text = styleOk
-        ? `Стиль оформления: «${styleOk}» — примени навык «Мои сайты» (getDesignBrief со style_id="${styleOk}") и строго следуй брифу.\n\n${CREATE_PROMPTS[tpl]}`
-        : CREATE_PROMPTS[tpl];
+      text = styleOk ? `${stylePrefix(styleOk)}${CREATE_PROMPTS[tpl]}` : CREATE_PROMPTS[tpl];
       consumedKey = CREATE_CONSUMED_KEY;
       marker = createMarker;
+    } else if (styleOnly && STYLE_RE.test(styleOnly) && styleOnly !== 'custom') {
+      // Style picked without a template («Напишу сам» + конкретный стиль в
+      // диалоге «Создать сайт»): generic build starter carrying the style.
+      const styleMarker = `style-only|${styleOnly}`;
+      if (sessionStorage.getItem(CREATE_CONSUMED_KEY) === styleMarker) return;
+      text = `${stylePrefix(styleOnly)}Собери одностраничный сайт. Вот детали (что за бизнес или проект, для кого, как связаться): `;
+      consumedKey = CREATE_CONSUMED_KEY;
+      marker = styleMarker;
     } else if (botTpl && CREATE_RE.test(botTpl) && BOT_PROMPTS[botTpl]) {
       if (sessionStorage.getItem(BOT_CONSUMED_KEY) === botTpl) return;
       text = BOT_PROMPTS[botTpl];

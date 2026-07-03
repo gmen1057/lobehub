@@ -32,7 +32,7 @@ if (typeof window !== 'undefined') {
   // short-circuits useSiteDeepLink's site→create→botidea branch chain (the create
   // branch hits its consumed-guard and returns) before it ever reaches botidea —
   // so the bot prompt never lands. Clear all six keys, then set the active one.
-  if (slug || tpl || botTpl) {
+  if (slug || tpl || botTpl || style) {
     sessionStorage.removeItem('arckep-site-deeplink');
     sessionStorage.removeItem('arckep-site-deeplink-consumed');
     sessionStorage.removeItem('arckep-create-deeplink');
@@ -48,11 +48,12 @@ if (typeof window !== 'undefined') {
   // site from a template prompt. Same capture-before-router trick as site=.
   if (tpl && /^[a-z]{1,20}$/.test(tpl)) {
     sessionStorage.setItem('arckep-create-deeplink', tpl);
-    // Optional companion: &style=<styleId> — the design style the user picked
-    // on the /sites picker. Only meaningful together with create=.
-    if (style && /^[a-z][a-z0-9-]{0,39}$/.test(style)) {
-      sessionStorage.setItem('arckep-style-deeplink', style);
-    }
+  }
+  // &style=<styleId|custom> — design style picked in the /sites create dialog.
+  // With create= it prefixes the template prompt; alone it starts a generic
+  // «собери сайт в этом стиле» prompt (style-only branch in useSiteDeepLink).
+  if (style && /^[a-z][a-z0-9-]{0,39}$/.test(style)) {
+    sessionStorage.setItem('arckep-style-deeplink', style);
   }
   // arckep: deep link «Подключить бота» (/chat/?botidea=<templateId>) — start a
   // chat about a Telegram bot of that kind. Same capture-before-router trick.
