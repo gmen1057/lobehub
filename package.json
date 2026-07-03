@@ -249,7 +249,7 @@
     "@lobechat/web-crawler": "workspace:*",
     "@lobehub/analytics": "^1.6.0",
     "@lobehub/charts": "^5.0.0",
-    "@lobehub/editor": "^4.5.0",
+    "@lobehub/editor": "4.17.2",
     "@lobehub/icons": "^5.0.0",
     "@lobehub/market-sdk": "0.32.2",
     "@lobehub/tts": "^5.1.2",
@@ -525,6 +525,7 @@
       "ffmpeg-static"
     ],
     "overrides": {
+      "@lobehub/editor": "4.17.2",
       "@types/react": "19.2.13",
       "better-auth": "1.4.6",
       "better-call": "1.1.8",
