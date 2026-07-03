@@ -10,5 +10,10 @@
   "main": "./src/index.ts",
   "devDependencies": {
     "@lobechat/types": "workspace:*"
+  },
+  "peerDependencies": {
+    "@lobehub/ui": "^5",
+    "antd-style": "*",
+    "react": "*"
   }
 }

@@ -21,7 +21,7 @@ const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
 const HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
 
 interface SitesToolRequestBody {
-  action: 'design-brief' | 'generate-image' | 'list' | 'read' | 'telegram-connect-link';
+  action: 'design-brief' | 'generate-image' | 'list' | 'list-styles' | 'read' | 'telegram-connect-link';
   // generate-image fields (model-supplied only — user_id injected server-side)
   aspect_ratio?: 'landscape' | 'portrait' | 'square';
   // design-brief fields
@@ -117,6 +117,9 @@ export async function POST(req: NextRequest) {
       style_id: typeof body.style_id === 'string' ? body.style_id.slice(0, 40) : undefined,
       user_id: Number(userId),
     };
+  } else if (body.action === 'list-styles') {
+    path = '/api/chat/sites-tool/list-styles';
+    forwardBody = {};
   } else if (body.action === 'telegram-connect-link') {
     path = '/api/chat/sites-tool/telegram-connect-link';
     forwardBody = { user_id: Number(userId) };

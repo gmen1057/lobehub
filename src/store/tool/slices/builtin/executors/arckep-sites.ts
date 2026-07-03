@@ -60,6 +60,7 @@ const runtime = new ArckepSitesExecutionRuntime({
     const data = await callSitesTool({ action: 'list' });
     return data.sites;
   },
+  listStyles: async () => callSitesTool({ action: 'list-styles' }),
   readSite: async (siteId: number) => callSitesTool({ action: 'read', site_id: siteId }),
   connectTelegram: async () => callSitesTool({ action: 'telegram-connect-link' }),
 });
@@ -91,6 +92,10 @@ class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
     _ctx: BuiltinToolContext,
   ): Promise<BuiltinToolResult> => {
     return runtime.getDesignBrief(params);
+  };
+
+  listStyles = async (_params: any, _ctx: BuiltinToolContext): Promise<BuiltinToolResult> => {
+    return runtime.listStyles();
   };
 
   connectTelegram = async (_params: any, _ctx: BuiltinToolContext): Promise<BuiltinToolResult> => {

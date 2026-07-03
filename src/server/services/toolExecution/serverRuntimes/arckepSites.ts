@@ -88,6 +88,7 @@ export const arckepSitesRuntime: ServerRuntimeRegistration = {
         const data = await callBackend('/api/chat/sites-tool/list', { user_id: arckepId });
         return data.sites;
       },
+      listStyles: async () => callBackend('/api/chat/sites-tool/list-styles', {}),
       readSite: async (siteId: number) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend('/api/chat/sites-tool/read', { site_id: siteId, user_id: arckepId });

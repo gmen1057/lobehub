@@ -6,6 +6,7 @@ import {
   type GenerateImageParams,
   type GenerateImageResult,
   type GetDesignBriefParams,
+  type ListStylesResult,
   type ReadSiteParams,
   type SiteSummary,
 } from '../types';
@@ -15,6 +16,7 @@ interface ArckepSitesRuntimeDeps {
   generateImage: (params: GenerateImageParams) => Promise<GenerateImageResult>;
   getDesignBrief: (params: GetDesignBriefParams) => Promise<DesignBriefResult>;
   listSites: () => Promise<SiteSummary[]>;
+  listStyles: () => Promise<ListStylesResult>;
   readSite: (siteId: number) => Promise<{ html: string; site_id: number; slug: string }>;
 }
 
@@ -111,7 +113,9 @@ export class ArckepSitesExecutionRuntime {
           `одной фразой и предложите альтернативы: ${alts}.\n\n${result.brief}`,
         state: {
           alternatives: result.alternatives,
+          emoji: result.emoji,
           name: result.name,
+          palette: result.palette,
           style_id: result.style_id,
           tagline: result.tagline,
         },
@@ -123,6 +127,26 @@ export class ArckepSitesExecutionRuntime {
           `Не удалось получить дизайн-бриф: ${(error as Error).message}. ` +
           `Выберите выразительное направление сами (НЕ дефолтный ИИ-лендинг с фиолетовым ` +
           `градиентом и тремя карточками) и скажите пользователю, какой стиль применили.`,
+        success: false,
+      };
+    }
+  }
+
+  async listStyles(): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      const result = await this.deps.listStyles();
+      const names = result.styles.map((s) => `«${s.name}» (style_id="${s.id}")`).join(', ');
+      return {
+        content:
+          `Каталог стилей показан пользователю интерактивной галереей (карточки с палитрами ` +
+          `и кнопками выбора). Доступны: ${names}. НЕ перечисляйте стили текстом — одной ` +
+          `фразой предложите выбрать карточкой или описать желаемое настроение словами.`,
+        state: { styles: result.styles },
+        success: true,
+      };
+    } catch (error) {
+      return {
+        content: `Не удалось получить каталог стилей: ${(error as Error).message}`,
         success: false,
       };
     }

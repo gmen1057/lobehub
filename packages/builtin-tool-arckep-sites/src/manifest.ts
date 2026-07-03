@@ -85,6 +85,16 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
+        'Show the full catalog of design styles as an interactive gallery in the chat. Call when the user asks what styles exist («какие стили есть?», «покажи стили») or wants to browse before choosing. The gallery renders itself with color swatches and pick buttons — keep your own text to ONE short sentence inviting the user to pick; do NOT re-list the styles in text. No parameters.',
+      name: ArckepSitesApiName.listStyles,
+      parameters: {
+        additionalProperties: false,
+        properties: {},
+        type: 'object',
+      },
+    },
+    {
+      description:
         "When the site you built includes a contact/lead form, offer the user Telegram notifications for new submissions. Returns a connect link the user taps to receive leads in Telegram. If already connected, tell the user they're all set. No parameters.",
       name: ArckepSitesApiName.connectTelegram,
       parameters: {

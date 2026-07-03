@@ -5,6 +5,7 @@ export enum ArckepSitesApiName {
   generateImage = 'generateImage',
   getDesignBrief = 'getDesignBrief',
   listSites = 'listSites',
+  listStyles = 'listStyles',
   readSite = 'readSite',
 }
 
@@ -17,13 +18,32 @@ export interface SiteStyleOption {
   emoji: string;
   id: string;
   name: string;
+  palette: string[];
   tagline: string;
 }
 
 export interface DesignBriefResult {
   alternatives: SiteStyleOption[];
   brief: string;
+  emoji: string;
   name: string;
+  palette: string[];
+  style_id: string;
+  tagline: string;
+}
+
+export interface ListStylesParams {}
+
+export interface ListStylesResult {
+  styles: SiteStyleOption[];
+}
+
+/** pluginState of a getDesignBrief tool message — drives the in-chat gallery render */
+export interface DesignBriefState {
+  alternatives: SiteStyleOption[];
+  emoji: string;
+  name: string;
+  palette: string[];
   style_id: string;
   tagline: string;
 }
