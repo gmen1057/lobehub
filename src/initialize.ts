@@ -26,6 +26,7 @@ if (typeof window !== 'undefined') {
   const slug = params.get('site');
   const tpl = params.get('create');
   const botTpl = params.get('botidea');
+  const style = params.get('style');
   // A fresh deep-link supersedes any earlier one left in sessionStorage. Without
   // this, a stale (already-consumed) create-deeplink from a previous /sites visit
   // short-circuits useSiteDeepLink's site→create→botidea branch chain (the create
@@ -38,6 +39,7 @@ if (typeof window !== 'undefined') {
     sessionStorage.removeItem('arckep-create-deeplink-consumed');
     sessionStorage.removeItem('arckep-botidea-deeplink');
     sessionStorage.removeItem('arckep-botidea-deeplink-consumed');
+    sessionStorage.removeItem('arckep-style-deeplink');
   }
   if (slug && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
     sessionStorage.setItem('arckep-site-deeplink', slug);
@@ -46,6 +48,11 @@ if (typeof window !== 'undefined') {
   // site from a template prompt. Same capture-before-router trick as site=.
   if (tpl && /^[a-z]{1,20}$/.test(tpl)) {
     sessionStorage.setItem('arckep-create-deeplink', tpl);
+    // Optional companion: &style=<styleId> — the design style the user picked
+    // on the /sites picker. Only meaningful together with create=.
+    if (style && /^[a-z][a-z0-9-]{0,39}$/.test(style)) {
+      sessionStorage.setItem('arckep-style-deeplink', style);
+    }
   }
   // arckep: deep link «Подключить бота» (/chat/?botidea=<templateId>) — start a
   // chat about a Telegram bot of that kind. Same capture-before-router trick.

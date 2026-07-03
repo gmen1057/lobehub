@@ -64,6 +64,27 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
+        'Get a design brief (art direction) BEFORE building a NEW landing page: palette, fonts, layout structure, imagery direction, style-specific bans. Free, no charge. Pass business — a short description of what the site is for («кофейня», «репетитор по математике») — for a better style match. Pass style_id ONLY when the user already picked a style (from the /sites picker or from the alternatives you offered). The server guarantees the style differs from the user\'s recent sites. Do NOT call it for edits of an existing site.',
+      name: ArckepSitesApiName.getDesignBrief,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          business: {
+            description:
+              'Short description of the user\'s business/purpose in Russian, e.g. «кофейня у дома», «портфолио фотографа».',
+            type: 'string',
+          },
+          style_id: {
+            description:
+              'Exact style id the user picked (e.g. "brutalist", "dark-luxe"). Omit to let the server choose.',
+            type: 'string',
+          },
+        },
+        type: 'object',
+      },
+    },
+    {
+      description:
         "When the site you built includes a contact/lead form, offer the user Telegram notifications for new submissions. Returns a connect link the user taps to receive leads in Telegram. If already connected, tell the user they're all set. No parameters.",
       name: ArckepSitesApiName.connectTelegram,
       parameters: {

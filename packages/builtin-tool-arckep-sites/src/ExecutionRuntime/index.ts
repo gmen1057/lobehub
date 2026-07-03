@@ -2,8 +2,10 @@ import { type BuiltinServerRuntimeOutput } from '@lobechat/types';
 
 import {
   type ConnectTelegramResult,
+  type DesignBriefResult,
   type GenerateImageParams,
   type GenerateImageResult,
+  type GetDesignBriefParams,
   type ReadSiteParams,
   type SiteSummary,
 } from '../types';
@@ -11,6 +13,7 @@ import {
 interface ArckepSitesRuntimeDeps {
   connectTelegram: () => Promise<ConnectTelegramResult>;
   generateImage: (params: GenerateImageParams) => Promise<GenerateImageResult>;
+  getDesignBrief: (params: GetDesignBriefParams) => Promise<DesignBriefResult>;
   listSites: () => Promise<SiteSummary[]>;
   readSite: (siteId: number) => Promise<{ html: string; site_id: number; slug: string }>;
 }
@@ -90,6 +93,36 @@ export class ArckepSitesExecutionRuntime {
       }
       return {
         content: `Не удалось сгенерировать изображение: ${msg}`,
+        success: false,
+      };
+    }
+  }
+
+  async getDesignBrief(args: GetDesignBriefParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      const result = await this.deps.getDesignBrief(args);
+      const alts = result.alternatives
+        .map((a) => `${a.emoji} «${a.name}» (style_id="${a.id}") — ${a.tagline}`)
+        .join('; ');
+      return {
+        content:
+          `Дизайн-бриф выдан. Стиль: «${result.name}» — ${result.tagline}.\n` +
+          `Стройте лендинг СТРОГО по брифу ниже. После артефакта назовите пользователю стиль ` +
+          `одной фразой и предложите альтернативы: ${alts}.\n\n${result.brief}`,
+        state: {
+          alternatives: result.alternatives,
+          name: result.name,
+          style_id: result.style_id,
+          tagline: result.tagline,
+        },
+        success: true,
+      };
+    } catch (error) {
+      return {
+        content:
+          `Не удалось получить дизайн-бриф: ${(error as Error).message}. ` +
+          `Выберите выразительное направление сами (НЕ дефолтный ИИ-лендинг с фиолетовым ` +
+          `градиентом и тремя карточками) и скажите пользователю, какой стиль применили.`,
         success: false,
       };
     }

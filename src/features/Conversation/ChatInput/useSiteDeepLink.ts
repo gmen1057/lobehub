@@ -33,6 +33,10 @@ const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const CREATE_KEY = 'arckep-create-deeplink';
 const CREATE_CONSUMED_KEY = 'arckep-create-deeplink-consumed';
 const CREATE_RE = /^[a-z]{1,20}$/;
+// Optional style companion for create= (picked on the /sites style picker).
+// Prepended to the template prompt so the agent requests THIS design brief.
+const STYLE_KEY = 'arckep-style-deeplink';
+const STYLE_RE = /^[a-z][a-z0-9-]{0,39}$/;
 const CREATE_PROMPTS: Record<string, string> = {
   service:
     'Собери одностраничный лендинг для моей услуги или бизнеса. Сделай структуру: первый экран с заголовком и кнопкой, выгоды, как это работает, отзывы, цены, форма заявки и контакты. Вот мои детали (чем занимаюсь, для кого, как связаться): ',
@@ -81,10 +85,17 @@ export const useSiteDeepLink = () => {
       consumedKey = CONSUMED_KEY;
       marker = slug;
     } else if (tpl && CREATE_RE.test(tpl) && CREATE_PROMPTS[tpl]) {
-      if (sessionStorage.getItem(CREATE_CONSUMED_KEY) === tpl) return;
-      text = CREATE_PROMPTS[tpl];
+      const style = sessionStorage.getItem(STYLE_KEY) || params.get('style');
+      const styleOk = style && STYLE_RE.test(style) ? style : null;
+      // Marker includes the style: re-entering with the same template but a
+      // different style is a NEW intent and must re-prefill.
+      const createMarker = styleOk ? `${tpl}|${styleOk}` : tpl;
+      if (sessionStorage.getItem(CREATE_CONSUMED_KEY) === createMarker) return;
+      text = styleOk
+        ? `Стиль оформления: «${styleOk}» — примени навык «Мои сайты» (getDesignBrief со style_id="${styleOk}") и строго следуй брифу.\n\n${CREATE_PROMPTS[tpl]}`
+        : CREATE_PROMPTS[tpl];
       consumedKey = CREATE_CONSUMED_KEY;
-      marker = tpl;
+      marker = createMarker;
     } else if (botTpl && CREATE_RE.test(botTpl) && BOT_PROMPTS[botTpl]) {
       if (sessionStorage.getItem(BOT_CONSUMED_KEY) === botTpl) return;
       text = BOT_PROMPTS[botTpl];

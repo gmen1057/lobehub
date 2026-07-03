@@ -21,14 +21,17 @@ const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
 const HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
 
 interface SitesToolRequestBody {
-  action: 'generate-image' | 'list' | 'read' | 'telegram-connect-link';
+  action: 'design-brief' | 'generate-image' | 'list' | 'read' | 'telegram-connect-link';
   // generate-image fields (model-supplied only — user_id injected server-side)
   aspect_ratio?: 'landscape' | 'portrait' | 'square';
+  // design-brief fields
+  business?: string;
   prompt?: string;
   quality?: 'high' | 'standard';
   session_id?: string;
   // read field
   site_id?: number;
+  style_id?: string;
   topic_id?: string;
 }
 
@@ -106,6 +109,13 @@ export async function POST(req: NextRequest) {
       user_id: Number(userId),
       session_id: typeof body.session_id === 'string' ? body.session_id.slice(0, 64) : undefined,
       topic_id: typeof body.topic_id === 'string' ? body.topic_id.slice(0, 64) : undefined,
+    };
+  } else if (body.action === 'design-brief') {
+    path = '/api/chat/sites-tool/design-brief';
+    forwardBody = {
+      business: typeof body.business === 'string' ? body.business.slice(0, 200) : undefined,
+      style_id: typeof body.style_id === 'string' ? body.style_id.slice(0, 40) : undefined,
+      user_id: Number(userId),
     };
   } else if (body.action === 'telegram-connect-link') {
     path = '/api/chat/sites-tool/telegram-connect-link';

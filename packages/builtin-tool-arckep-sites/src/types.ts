@@ -3,8 +3,29 @@ export const ArckepSitesIdentifier = 'arckep-sites';
 export enum ArckepSitesApiName {
   connectTelegram = 'connectTelegram',
   generateImage = 'generateImage',
+  getDesignBrief = 'getDesignBrief',
   listSites = 'listSites',
   readSite = 'readSite',
+}
+
+export interface GetDesignBriefParams {
+  business?: string;
+  style_id?: string;
+}
+
+export interface SiteStyleOption {
+  emoji: string;
+  id: string;
+  name: string;
+  tagline: string;
+}
+
+export interface DesignBriefResult {
+  alternatives: SiteStyleOption[];
+  brief: string;
+  name: string;
+  style_id: string;
+  tagline: string;
 }
 
 export interface ListSitesParams {}

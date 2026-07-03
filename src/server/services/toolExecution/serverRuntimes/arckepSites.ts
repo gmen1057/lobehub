@@ -1,6 +1,7 @@
 import {
   ArckepSitesIdentifier,
   type GenerateImageParams,
+  type GetDesignBriefParams,
 } from '@lobechat/builtin-tool-arckep-sites';
 import { ArckepSitesExecutionRuntime } from '@lobechat/builtin-tool-arckep-sites/executionRuntime';
 import { users } from '@lobechat/database/schemas';
@@ -71,6 +72,14 @@ export const arckepSitesRuntime: ServerRuntimeRegistration = {
           prompt: params.prompt,
           quality: params.quality ?? 'standard',
           topic_id: topicId,
+          user_id: arckepId,
+        });
+      },
+      getDesignBrief: async (params: GetDesignBriefParams) => {
+        const arckepId = await resolveArckepUserId(serverDB, userId);
+        return callBackend('/api/chat/sites-tool/design-brief', {
+          business: params.business,
+          style_id: params.style_id,
           user_id: arckepId,
         });
       },

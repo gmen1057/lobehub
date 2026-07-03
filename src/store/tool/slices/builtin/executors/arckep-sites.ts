@@ -15,6 +15,7 @@ import {
   ArckepSitesApiName,
   ArckepSitesIdentifier,
   type GenerateImageParams,
+  type GetDesignBriefParams,
 } from '@lobechat/builtin-tool-arckep-sites';
 import { ArckepSitesExecutionRuntime } from '@lobechat/builtin-tool-arckep-sites/executionRuntime';
 import type { BuiltinToolContext, BuiltinToolResult } from '@lobechat/types';
@@ -49,6 +50,12 @@ const runtime = new ArckepSitesExecutionRuntime({
       session_id: useSessionStore.getState().activeId || undefined,
       topic_id: useChatStore.getState().activeTopicId || undefined,
     }),
+  getDesignBrief: async (params) =>
+    callSitesTool({
+      action: 'design-brief',
+      business: params.business,
+      style_id: params.style_id,
+    }),
   listSites: async () => {
     const data = await callSitesTool({ action: 'list' });
     return data.sites;
@@ -77,6 +84,13 @@ class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
     _ctx: BuiltinToolContext,
   ): Promise<BuiltinToolResult> => {
     return runtime.generateImage(params);
+  };
+
+  getDesignBrief = async (
+    params: GetDesignBriefParams,
+    _ctx: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
+    return runtime.getDesignBrief(params);
   };
 
   connectTelegram = async (_params: any, _ctx: BuiltinToolContext): Promise<BuiltinToolResult> => {
