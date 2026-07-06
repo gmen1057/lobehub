@@ -329,4 +329,80 @@ describe('filesPrompts', () => {
       expect(result).toEqual('');
     });
   });
+
+  describe('Tabular content cap', () => {
+    // Fixed, greppable row shape so we can prove the cut always lands
+    // exactly on a row boundary in the ORIGINAL source, never mid-row.
+    const bigCsv = Array.from({ length: 3000 }, (_, i) => `r${String(i).padStart(5, '0')}`).join(
+      '\n',
+    );
+
+    it('truncates oversized tabular content on a line boundary and appends a note', () => {
+      expect(bigCsv.length).toBeGreaterThan(16_000);
+
+      const result = filesPrompts({
+        fileList: [
+          {
+            content: bigCsv,
+            fileType: 'text/csv',
+            id: 'file-csv',
+            name: 'huge.csv',
+            size: bigCsv.length,
+            url: 'https://example.com/huge.csv',
+          },
+        ],
+      });
+
+      expect(result).toContain('content truncated');
+      expect(result).toContain("download it via this file's url inside the code sandbox");
+
+      const noteStart = result.indexOf('[content truncated');
+      const openTagEnd = result.indexOf('>', result.indexOf('<file ')) + 1;
+      const preview = result.slice(openTagEnd, noteStart - 1); // -1 drops the '\n' before the note
+
+      // Preview is an exact prefix of the source, capped, AND the very next
+      // char in the SOURCE is a newline — proves we never cut mid-row.
+      expect(bigCsv.startsWith(preview)).toBe(true);
+      expect(preview.length).toBeLessThanOrEqual(16_000);
+      expect(bigCsv[preview.length]).toBe('\n');
+    });
+
+    it('leaves tabular content at or under the cap byte-for-byte untouched', () => {
+      const smallCsv = 'a,b\n1,2\n3,4';
+      const result = filesPrompts({
+        fileList: [
+          {
+            content: smallCsv,
+            fileType: 'text/csv',
+            id: 'file-csv-small',
+            name: 'small.csv',
+            size: smallCsv.length,
+            url: 'https://example.com/small.csv',
+          },
+        ],
+      });
+
+      expect(result).toContain(`>${smallCsv}<`);
+      expect(result).not.toContain('content truncated');
+    });
+
+    it('never truncates non-tabular files regardless of size', () => {
+      const bigText = 'x'.repeat(20_000);
+      const result = filesPrompts({
+        fileList: [
+          {
+            content: bigText,
+            fileType: 'application/pdf',
+            id: 'file-pdf',
+            name: 'report.pdf',
+            size: bigText.length,
+            url: 'https://example.com/report.pdf',
+          },
+        ],
+      });
+
+      expect(result).toContain(bigText);
+      expect(result).not.toContain('content truncated');
+    });
+  });
 });
