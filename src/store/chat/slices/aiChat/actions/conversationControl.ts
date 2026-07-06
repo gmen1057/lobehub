@@ -160,7 +160,13 @@ export class ConversationControlActionImpl {
       ...initialContext,
       phase: 'human_approved_tool',
       payload: {
-        approvedToolCall: toolMessage.plugin,
+        // The persisted `plugin` object loses its `id` on the DB round-trip:
+        // tool_call_id is stored in a separate column and mapped back to
+        // message.tool_call_id (not plugin.id) — see database MessageModel query.
+        // Durable executors (lobe-cloud-sandbox executeCode/runCommand) fail-fast
+        // when ctx.toolCallId is missing, so re-attach it here, mirroring
+        // reInvokeToolMessage.
+        approvedToolCall: { ...toolMessage.plugin, id: toolMessage.tool_call_id! },
         parentMessageId: toolMessageId,
         skipCreateToolMessage: true,
       },
