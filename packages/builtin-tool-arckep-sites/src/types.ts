@@ -67,7 +67,12 @@ export interface GenerateImageResult {
 }
 
 export interface SiteSummary {
+  /** Present only for site_kind="dashboard": source/columns/row_count/generated_at. */
+  data_contract?: Record<string, any> | null;
+  http_auth_enabled?: boolean;
   id: number;
+  /** "landing" (default) | "dashboard". Backend-owned, may grow more kinds. */
+  site_kind?: string | null;
   slug: string;
   status: string;
   title: string;

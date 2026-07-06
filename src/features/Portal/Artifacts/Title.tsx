@@ -45,6 +45,10 @@ const legacyMessageKey = (messageId: string) => `arckep-site:${messageId}`;
 const DEEPLINK_KEY = 'arckep-site-deeplink';
 
 interface PublishResponse {
+  // Only present on the FIRST publish of a new password-protected site
+  // (currently: dashboards). Shown once — the backend never returns it again.
+  generated_password?: string | null;
+  http_auth_login?: string | null;
   site_id: number;
   slug: string;
   url: string;
@@ -212,6 +216,13 @@ const Title = () => {
           <a href={data.url} rel="noopener noreferrer" target="_blank">
             {data.url}
           </a>
+          {data.generated_password && (
+            <div style={{ marginTop: 8 }}>
+              Сайт закрыт паролем: логин {data.http_auth_login || 'admin'}, пароль{' '}
+              <strong>{data.generated_password}</strong>. Пароль показывается один раз — сохраните
+              его, сменить можно в «Моих сайтах» на arckep.ru.
+            </div>
+          )}
           {data.version > 1 && (
             <div style={{ marginTop: 8, opacity: 0.65 }}>
               Обновлена версия {data.version} существующего сайта.

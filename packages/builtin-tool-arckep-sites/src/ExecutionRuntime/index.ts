@@ -17,7 +17,14 @@ interface ArckepSitesRuntimeDeps {
   getDesignBrief: (params: GetDesignBriefParams) => Promise<DesignBriefResult>;
   listSites: () => Promise<SiteSummary[]>;
   listStyles: () => Promise<ListStylesResult>;
-  readSite: (siteId: number) => Promise<{ html: string; site_id: number; slug: string }>;
+  readSite: (siteId: number) => Promise<{
+    data_contract?: Record<string, any> | null;
+    html: string;
+    http_auth_enabled?: boolean;
+    site_id: number;
+    site_kind?: string | null;
+    slug: string;
+  }>;
 }
 
 /**
@@ -53,14 +60,35 @@ export class ArckepSitesExecutionRuntime {
   async readSite(args: ReadSiteParams): Promise<BuiltinServerRuntimeOutput> {
     try {
       const result = await this.deps.readSite(args.site_id);
+      // Surface data_contract/http_auth so the model can act on them — without
+      // this, the dashboard columns-diff-before-republish flow in <dashboard>
+      // has nothing to compare against (the HTML alone doesn't carry it).
+      const extraNote = [
+        result.data_contract
+          ? `data-contract сайта (site_kind="${result.site_kind ?? 'unknown'}"): ${JSON.stringify(result.data_contract)}.` +
+            (result.site_kind === 'dashboard'
+              ? ' Это дашборд: перед пересборкой сравните columns с колонками новых данных — при расхождении не публикуйте молча, спросите пользователя.'
+              : '')
+          : null,
+        result.http_auth_enabled ? 'Сайт защищён HTTP-паролем (логин/пароль не раскрывайте повторно).' : null,
+      ]
+        .filter(Boolean)
+        .join(' ');
+
       return {
         content:
           `Текущий HTML сайта ${result.slug} (site_id=${result.site_id}). ` +
           `Правки делайте на основе ЭТОГО документа, футер data-arckep-footer сохраняйте:\n\n` +
           '```html\n' +
           result.html +
-          '\n```',
-        state: { site_id: result.site_id, slug: result.slug },
+          '\n```' +
+          (extraNote ? `\n\n${extraNote}` : ''),
+        state: {
+          data_contract: result.data_contract,
+          site_id: result.site_id,
+          site_kind: result.site_kind,
+          slug: result.slug,
+        },
         success: true,
       };
     } catch (error) {
