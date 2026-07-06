@@ -10,7 +10,10 @@ export const CloudSandboxManifest: BuiltinToolManifest = {
     {
       description:
         'Execute code directly in the sandbox environment. Supports Python, JavaScript, and TypeScript. Returns execution output, errors, and exit code.',
-      humanIntervention: 'required',
+      // Владелец 2026-07-06: авто-одобрение для исполнения кода — оно изолировано
+      // в песочнице и тарифицируется как обычно; клик оставлен для runCommand и
+      // файловых операций (write/edit/move) — у них шире blast radius.
+      humanIntervention: 'never',
       name: CloudSandboxApiName.executeCode,
       parameters: {
         properties: {
