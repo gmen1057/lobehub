@@ -315,14 +315,20 @@ async function queryQwenTaskStatus(
   taskId: string,
   apiKey: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<QwenImageTaskResponse> {
   const endpoint = `${baseUrl}/api/v1/tasks/${taskId}`;
 
   log('Querying task status for: %s', taskId);
 
+  // extraHeaders must reach status polling too: when baseUrl is the arckep
+  // billing proxy, X-Arckep-Token gates every request — without it polling
+  // dies with 401 while task creation succeeds (incident 2026-07-05, 5
+  // charged-but-undelivered wan2.7-image-pro generations).
   const response = await fetch(endpoint, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
+      ...extraHeaders,
     },
   });
 
@@ -346,6 +352,7 @@ async function pollTaskToImageResponse(
   apiKey: string,
   baseUrl: string,
   model: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<CreateImageResponse> {
   return asyncifyPolling<QwenImageTaskResponse, CreateImageResponse>({
     checkStatus: (taskStatus: QwenImageTaskResponse): TaskResult<CreateImageResponse> => {
@@ -383,7 +390,7 @@ async function pollTaskToImageResponse(
       debug: (message: any, ...args: any[]) => log(message, ...args),
       error: (message: any, ...args: any[]) => log(message, ...args),
     },
-    pollingQuery: () => queryQwenTaskStatus(taskId, apiKey, baseUrl),
+    pollingQuery: () => queryQwenTaskStatus(taskId, apiKey, baseUrl, extraHeaders),
   });
 }
 
@@ -420,7 +427,7 @@ export async function createQwenImage(
       const hdrs = defaultHeaders as Record<string, string> | undefined;
       const taskId = await createLegacySynthesisTask(payload, apiKey, endpoint, dashscopeURL, hdrs);
 
-      return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model);
+      return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model, hdrs);
     }
 
     if (isSyncGeneration) {
@@ -434,7 +441,7 @@ export async function createQwenImage(
     const hdrs = defaultHeaders as Record<string, string> | undefined;
     const taskId = await createHTTPAsyncGenerationTask(payload, apiKey, dashscopeURL, hdrs);
 
-    return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model);
+    return await pollTaskToImageResponse(taskId, apiKey, dashscopeURL, model, hdrs);
   } catch (error) {
     log('Error in createQwenImage: %O', error);
 

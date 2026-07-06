@@ -44,14 +44,19 @@ export async function queryQwenVideoStatus(
   taskId: string,
   apiKey: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<QwenVideoTaskResponse> {
   const endpoint = `${baseUrl}/api/v1/tasks/${taskId}`;
 
   log('Querying task status for: %s', taskId);
 
+  // extraHeaders must reach status polling too: when baseUrl is the arckep
+  // billing proxy, X-Arckep-Token gates every request — without it polling
+  // dies with 401 while task creation succeeds (incident 2026-07-05).
   const response = await fetch(endpoint, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
+      ...extraHeaders,
     },
     method: 'GET',
   });
@@ -78,12 +83,13 @@ export async function pollQwenVideoStatus(
   taskId: string,
   apiKey: string,
   baseUrl: string,
+  extraHeaders?: Record<string, string>,
 ): Promise<
   | { status: 'success'; videoUrl: string }
   | { status: 'failed'; error: string }
   | { status: 'pending' }
 > {
-  const response = await queryQwenVideoStatus(taskId, apiKey, baseUrl);
+  const response = await queryQwenVideoStatus(taskId, apiKey, baseUrl, extraHeaders);
 
   if (response.output.task_status === 'SUCCEEDED') {
     const videoUrl = response.output.video_url;
