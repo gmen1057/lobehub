@@ -2,7 +2,7 @@ import { ArtifactType } from '@lobechat/types';
 import { ActionIcon, Flexbox, Icon, Segmented, Text } from '@lobehub/ui';
 import { App, Button, ConfigProvider, Input, Modal } from 'antd';
 import { cx } from 'antd-style';
-import { ArrowLeft, CodeIcon, EyeIcon, FileText, Globe, ImageIcon } from 'lucide-react';
+import { ArrowLeft, CodeIcon, Copy, EyeIcon, FileText, Globe, ImageIcon } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -219,8 +219,18 @@ const Title = () => {
           {data.generated_password && (
             <div style={{ marginTop: 8 }}>
               Сайт закрыт паролем: логин {data.http_auth_login || 'admin'}, пароль{' '}
-              <strong>{data.generated_password}</strong>. Пароль показывается один раз — сохраните
-              его, сменить можно в «Моих сайтах» на arckep.ru.
+              <strong>{data.generated_password}</strong>{' '}
+              <ActionIcon
+                icon={Copy}
+                size={'small'}
+                title={'Скопировать пароль'}
+                onClick={() => {
+                  navigator.clipboard?.writeText(data.generated_password || '');
+                  message.success('Пароль скопирован');
+                }}
+              />
+              . Пароль показывается один раз — сохраните его, сменить можно в «Моих сайтах» на
+              arckep.ru.
             </div>
           )}
           {data.version > 1 && (
