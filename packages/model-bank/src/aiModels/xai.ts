@@ -10,6 +10,33 @@ const xaiChatModels: AIChatModelCard[] = [
       structuredOutput: true,
       vision: true,
     },
+    contextWindowTokens: 500_000,
+    description:
+      'Grok 4.5 is xAI flagship for coding, agentic tool calling, and knowledge work. Configurable reasoning, vision, 500k context.',
+    displayName: 'Grok 4.5',
+    enabled: true,
+    id: 'grok-4.5',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-07-08',
+    settings: {
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
     contextWindowTokens: 2_000_000,
     description: 'Intelligent, blazing-fast model that reasons before responding',
     displayName: 'Grok 4.20 Beta',
