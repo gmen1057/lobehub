@@ -2,12 +2,10 @@ import type { AIChatModelCard } from '../types/aiModel';
 
 // https://openrouter.ai/docs/api-reference/list-available-models
 //
-// arckep: 9 models used in our OPENROUTER_MODEL_LIST (openrouter/auto + 4 chinese
-// models + free variants) added / patched with pricing matching our backend
-// FALLBACK_PRICING (`$1/$3 per 1M`) so LobeChat's `/settings/stats` shows the
-// same number we actually charged via billing_proxy. Free variants set to 0.
-// Real per-model rates vary, but this uniform approach mirrors how our backend
-// bills these requests and keeps stats coherent with balance deductions.
+// arckep: models used in our OPENROUTER_MODEL_LIST. Chinese models use fallback
+// `$1/$3 per 1M` so LobeChat `/settings/stats` stays coherent with older
+// FALLBACK_PRICING. GPT-5.6 family uses real OpenRouter rates (verified 2026-07-09)
+// matching backend chat_models.py so client cost estimates track charges.
 const openrouterChatModels: AIChatModelCard[] = [
   {
     contextWindowTokens: 2_000_000,
@@ -22,6 +20,139 @@ const openrouterChatModels: AIChatModelCard[] = [
         { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
       ],
     },
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Sol (OpenAI via OpenRouter) — real rates
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description:
+      'GPT-5.6 Sol flagship via OpenRouter. Hard reasoning/coding; direct OpenAI key is limited-preview only.',
+    displayName: 'GPT-5.6 Sol',
+    enabled: true,
+    id: 'openai/gpt-5.6-sol',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 30, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Sol Pro
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description: 'GPT-5.6 Sol Pro via OpenRouter — deeper Sol-class compute.',
+    displayName: 'GPT-5.6 Sol Pro',
+    enabled: true,
+    id: 'openai/gpt-5.6-sol-pro',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 30, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Terra
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description: 'GPT-5.6 Terra via OpenRouter — balanced quality/cost for everyday work.',
+    displayName: 'GPT-5.6 Terra',
+    enabled: true,
+    id: 'openai/gpt-5.6-terra',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.25, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 2.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 15, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Terra Pro
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description: 'GPT-5.6 Terra Pro via OpenRouter — deeper Terra-class compute.',
+    displayName: 'GPT-5.6 Terra Pro',
+    enabled: true,
+    id: 'openai/gpt-5.6-terra-pro',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.25, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 2.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 15, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Luna
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description: 'GPT-5.6 Luna via OpenRouter — fast/affordable GPT-5.6 tier.',
+    displayName: 'GPT-5.6 Luna',
+    enabled: true,
+    id: 'openai/gpt-5.6-luna',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
+    type: 'chat',
+  },
+  // arckep: GPT-5.6 Luna Pro
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description: 'GPT-5.6 Luna Pro via OpenRouter — deeper Luna-class compute.',
+    displayName: 'GPT-5.6 Luna Pro',
+    enabled: true,
+    id: 'openai/gpt-5.6-luna-pro',
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-06-26',
     type: 'chat',
   },
   // arckep: Moonshot Kimi K2.5 (paid, fallback rate)
