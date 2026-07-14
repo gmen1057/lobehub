@@ -7,7 +7,7 @@ export const telegram: PlatformDefinition = {
   name: 'Telegram',
   description: 'Connect a Telegram bot',
   documentation: {
-    portalUrl: 'https://t.me/BotFather',
+    portalUrl: 'https://telegram.me/BotFather',
     setupGuideUrl: 'https://lobehub.com/docs/usage/channels/telegram',
   },
   schema,

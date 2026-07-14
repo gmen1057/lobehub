@@ -10,7 +10,6 @@ import { camelCase, identity, pickBy } from 'es-toolkit/compat';
 import qs from 'query-string';
 
 const stringifyHashtags = (hashtags: string[], joinfix: string = ',', prefix?: string) => {
-   
   if (prefix) hashtags = hashtags.map((tag) => prefix + camelCase(tag));
   return hashtags.filter(Boolean).join(joinfix);
 };
@@ -60,7 +59,7 @@ export const useShare = ({
     ) as any;
     return qs.stringifyUrl({
       query,
-      url: 'https://t.me/share/url"',
+      url: 'https://telegram.me/share/url',
     });
   };
 

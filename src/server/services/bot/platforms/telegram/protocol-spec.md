@@ -20,7 +20,7 @@ Telegram Bot API 是 Telegram 官方提供的 HTTP/JSON 协议，用于 Bot 与 
 https://api.telegram.org/bot{token}/{method}
 ```
 
-- `{token}`：通过 [@BotFather](https://t.me/BotFather) 创建 Bot 时获取的 Token，格式形如 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`。
+- `{token}`：通过 [@BotFather](https://telegram.me/BotFather) 创建 Bot 时获取的 Token，格式形如 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`。
 - `{method}`：API 方法名，大小写不敏感（但推荐使用官方文档中的 camelCase 形式）。
 
 ### 2.2 通用请求格式
@@ -74,15 +74,15 @@ Telegram API 的错误有两层：
 
 常见错误码：
 
-| error_code | 典型 description                                     | 说明                               |
-| ---------- | ---------------------------------------------------- | ---------------------------------- |
-| `400`      | `Bad Request: message text is empty`                 | 参数错误。                         |
-| `400`      | `Bad Request: message is not modified`               | 编辑消息时新内容与旧内容完全相同。 |
-| `400`      | `Bad Request: message to delete not found`           | 要删除的消息不存在或已被删除。     |
-| `400`      | `Bad Request: message can't be deleted for everyone` | 消息超过 48 小时删除限制。         |
-| `403`      | `Forbidden: bot was blocked by the user`             | 用户已屏蔽 Bot。                   |
-| `403`      | `Forbidden: bot is not a member of the supergroup`   | Bot 不在群组中。                   |
-| `429`      | `Too Many Requests: retry after X`                   | 速率限制，需等待 X 秒后重试。      |
+| error\_code | 典型 description                                     | 说明                               |
+| ----------- | ---------------------------------------------------- | ---------------------------------- |
+| `400`       | `Bad Request: message text is empty`                 | 参数错误。                         |
+| `400`       | `Bad Request: message is not modified`               | 编辑消息时新内容与旧内容完全相同。 |
+| `400`       | `Bad Request: message to delete not found`           | 要删除的消息不存在或已被删除。     |
+| `400`       | `Bad Request: message can't be deleted for everyone` | 消息超过 48 小时删除限制。         |
+| `403`       | `Forbidden: bot was blocked by the user`             | 用户已屏蔽 Bot。                   |
+| `403`       | `Forbidden: bot is not a member of the supergroup`   | Bot 不在群组中。                   |
+| `429`       | `Too Many Requests: retry after X`                   | 速率限制，需等待 X 秒后重试。      |
 
 **工程建议**
 
@@ -176,7 +176,7 @@ Telegram 单条消息的文本长度上限为 **4096 字符**（实体解析后�
 - 本仓库 `TelegramApi` 实现使用 `truncateText` 方法：超过 4096 字符取前 4093 字符 + `...`。
 - 如果需要发送更长内容，应分片为多条消息发送。
 
-### 3.3 parse_mode 说明
+### 3.3 parse\_mode 说明
 
 | 值           | 说明                                                        |
 | ------------ | ----------------------------------------------------------- |
@@ -631,7 +631,7 @@ curl 'https://api.telegram.org/bot123456789:ABCdefGHIjklMNOpqrsTUVwxyz/unpinChat
     "type": "supergroup",
     "username": "test_group",
     "description": "这是一个测试群组",
-    "invite_link": "https://t.me/+ABCdef123456",
+    "invite_link": "https://telegram.me/+ABCdef123456",
     "permissions": {
       "can_send_messages": true,
       "can_send_media_messages": true,
@@ -912,7 +912,7 @@ curl 'https://api.telegram.org/bot123456789:ABCdefGHIjklMNOpqrsTUVwxyz/sendMessa
 
 - 本仓库 `TelegramApi.sendMessageToTopic` 封装了此调用，自动传入 `message_thread_id`。
 - **重要：`parse_mode` 必须与普通 `sendMessage` 一样传入**（如 `parse_mode: 'HTML'`）。此参数在话题模式下容易遗漏，曾在 code review 中发现原实现缺失了 `parse_mode: 'HTML'`，导致话题消息中 HTML 标签被原样显示而非渲染为富文本。
-- 如果群组开启了论坛模式但未指定 `message_thread_id`，消息将发送到 "General" 话题（thread_id 通常为 1）。
+- 如果群组开启了论坛模式但未指定 `message_thread_id`，消息将发送到 "General" 话题（thread\_id 通常为 1）。
 - `message_thread_id` 也可用于 `sendChatAction` 等其他方法，指定动作所在的话题。
 
 ## 13. sendPoll — 发送投票
@@ -1180,7 +1180,7 @@ Telegram Bot API 有以下速率限制：
 | 消息编辑     | 原生支持 `editMessageText`。               | 无原生编辑能力；需新发消息替代。       |
 | 消息删除     | 原生支持 `deleteMessage`，有 48 小时限制。 | 无原生删除能力。                       |
 | Reaction     | 原生支持 `setMessageReaction`。            | 不支持。                               |
-| 消息格式     | HTML / MarkdownV2。                        | 纯文本 + 媒体 item_list 结构。         |
+| 消息格式     | HTML / MarkdownV2。                        | 纯文本 + 媒体 item\_list 结构。        |
 | 文本长度上限 | 4096 字符。                                | 约 2000 字符（社区经验值）。           |
 | 论坛 / 话题  | 原生支持 Forum Topics。                    | 不支持。                               |
 | 投票         | 原生支持 `sendPoll`。                      | 不支持。                               |
@@ -1194,7 +1194,7 @@ Telegram Bot API 有以下速率限制：
 
 通过 `getMe` 接口验证 Bot Token 有效性：
 
-- **Bot 用户名**：@JianXu_Lobehub_Test_Bot
+- **Bot 用户名**：@JianXu\_Lobehub\_Test\_Bot
 - **Bot ID**：8654315085
 - **验证结果**：Token 有效，Bot 身份确认。
 
@@ -1214,7 +1214,7 @@ Conflict: can't use getUpdates method while webhook is active
 
 | API 方法             | 验证状态   | 备注                                                                  |
 | -------------------- | ---------- | --------------------------------------------------------------------- |
-| `sendMessage`        | 通过       | 参数、parse_mode、截断逻辑均符合规范。                                |
+| `sendMessage`        | 通过       | 参数、parse\_mode、截断逻辑均符合规范。                               |
 | `editMessageText`    | 通过       | 包含 "message is not modified" 静默处理。                             |
 | `deleteMessage`      | 通过       | 参数正确。                                                            |
 | `setMessageReaction` | 通过       | 添加 / 移除 Reaction 两种模式均正确。                                 |
