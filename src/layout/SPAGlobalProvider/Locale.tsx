@@ -11,26 +11,68 @@ const dayjsLocaleLoaders = import.meta.glob<{ default: ILocale }>(
   '/node_modules/dayjs/esm/locale/{ar,bg,de,en,es,fa,fr,it,ja,ko,nl,pl,pt-br,ru,tr,vi,zh-cn,zh-tw}.js',
 );
 
+/** BCP-47 / short codes → dayjs file stem (matches glob keys above). */
 const dayjsLocaleAliases: Record<string, string> = {
   'en-us': 'en',
+  'pt-br': 'pt-br',
+  'ru-ru': 'ru',
   'zh': 'zh-cn',
+  'zh-cn': 'zh-cn',
+  'zh-tw': 'zh-tw',
+};
+
+const dayjsLocaleKey = (stem: string) => `/node_modules/dayjs/esm/locale/${stem}.js`;
+
+/**
+ * Map app language (e.g. ru-RU) to a dayjs locale stem that exists in the glob.
+ * Prefer explicit aliases, then full lowercased tag, then primary subtag (ru-RU → ru).
+ */
+const resolveDayjsLocaleStem = (lang: string): string => {
+  const lower = lang.toLowerCase();
+  const aliased = dayjsLocaleAliases[lower];
+  if (aliased) return aliased;
+  if (dayjsLocaleLoaders[dayjsLocaleKey(lower)]) return lower;
+
+  const primary = lower.split('-')[0] ?? lower;
+  const primaryAliased = dayjsLocaleAliases[primary];
+  if (primaryAliased) return primaryAliased;
+  if (dayjsLocaleLoaders[dayjsLocaleKey(primary)]) return primary;
+
+  return 'en';
 };
 
 const updateDayjs = async (lang: string) => {
-  const locale = dayjsLocaleAliases[lang.toLowerCase()] ?? lang.toLowerCase();
-  const key = `/node_modules/dayjs/esm/locale/${locale}.js`;
-  const loader =
-    dayjsLocaleLoaders[key] ?? dayjsLocaleLoaders['/node_modules/dayjs/esm/locale/en.js'];
+  const stem = resolveDayjsLocaleStem(lang);
+
+  // English is built into dayjs — skip dynamic import (Safari/Yandex flaked on en chunk
+  // + .default access → LOBECHAT-1 unhandledrejection).
+  if (stem === 'en') {
+    dayjs.locale('en');
+    return;
+  }
+
+  const loader = dayjsLocaleLoaders[dayjsLocaleKey(stem)];
+  if (!loader) {
+    dayjs.locale('en');
+    return;
+  }
 
   try {
     const mod = await loader();
-
-    dayjs.locale(mod.default);
+    const data = mod?.default;
+    if (data) {
+      dayjs.locale(data);
+      return;
+    }
+    console.error(
+      `dayjs locale module for ${lang} (${stem}) has no default export, fallback to en`,
+    );
+    dayjs.locale('en');
   } catch (error) {
     console.error('error', error);
     console.error(`dayjs locale for ${lang} not found, fallback to en`);
-    const fallback = await dayjsLocaleLoaders['/node_modules/dayjs/esm/locale/en.js']!();
-    dayjs.locale(fallback.default);
+    // Never re-throw / never touch undefined.default — unhandledrejection was LOBECHAT-1.
+    dayjs.locale('en');
   }
 };
 
