@@ -17,7 +17,7 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Read the current published HTML of one site by its id (from listSites). Use it as the base for edits — never rewrite a site from memory.',
+        'Read the current published HTML of one site by its id (from listSites). Use it as the base for edits — never rewrite a site from memory. For SMALL text changes prefer editSite after reading exact strings.',
       name: ArckepSitesApiName.readSite,
       parameters: {
         additionalProperties: false,
@@ -28,6 +28,50 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
           },
         },
         required: ['site_id'],
+        type: 'object',
+      },
+    },
+    {
+      description:
+        'Surgical edit of a published site: exact find/replace on the CURRENT live HTML, then publish a new version immediately (no full-page artifact). Use for small changes — phone, CTA label, form action URL, typo, one section string. Each find must match the live HTML exactly (call readSite first). If a string appears more than once, pass a longer unique find OR set replace_all=true. Do NOT use this for full redesigns / new layout — those still need a full HTML artifact. Max 20 replacements per call.',
+      name: ArckepSitesApiName.editSite,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          replacements: {
+            description:
+              'Ordered list of find/replace steps applied to the live HTML. find must be an exact substring from readSite.',
+            items: {
+              additionalProperties: false,
+              properties: {
+                find: {
+                  description: 'Exact substring to find in the published HTML',
+                  type: 'string',
+                },
+                replace: {
+                  description: 'Replacement text (may be empty to delete)',
+                  type: 'string',
+                },
+                replace_all: {
+                  default: false,
+                  description:
+                    'If true, replace every occurrence. If false (default), find must match exactly once.',
+                  type: 'boolean',
+                },
+              },
+              required: ['find', 'replace'],
+              type: 'object',
+            },
+            maxItems: 20,
+            minItems: 1,
+            type: 'array',
+          },
+          site_id: {
+            description: 'Site id from listSites',
+            type: 'number',
+          },
+        },
+        required: ['site_id', 'replacements'],
         type: 'object',
       },
     },
@@ -64,14 +108,14 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Get a design brief (art direction) BEFORE building a NEW landing page: palette, fonts, layout structure, imagery direction, style-specific bans. Free, no charge. Pass business — a short description of what the site is for («кофейня», «репетитор по математике») — for a better style match. Pass style_id ONLY when the user already picked a style (from the /sites picker or from the alternatives you offered). The server guarantees the style differs from the user\'s recent sites. Do NOT call it for edits of an existing site.',
+        "Get a design brief (art direction) BEFORE building a NEW landing page: palette, fonts, layout structure, imagery direction, style-specific bans. Free, no charge. Pass business — a short description of what the site is for («кофейня», «репетитор по математике») — for a better style match. Pass style_id ONLY when the user already picked a style (from the /sites picker or from the alternatives you offered). The server guarantees the style differs from the user's recent sites. Do NOT call it for edits of an existing site.",
       name: ArckepSitesApiName.getDesignBrief,
       parameters: {
         additionalProperties: false,
         properties: {
           business: {
             description:
-              'Short description of the user\'s business/purpose in Russian, e.g. «кофейня у дома», «портфолио фотографа».',
+              "Short description of the user's business/purpose in Russian, e.g. «кофейня у дома», «портфолио фотографа».",
             type: 'string',
           },
           style_id: {

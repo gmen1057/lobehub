@@ -18,13 +18,20 @@ export const POST = checkAuth(
 
     try {
       // ============  1. init chat model   ============ //
+      // Browser sends conversation ids (chat/index.ts); forward into billing proxy.
+      const sessionId = req.headers.get('x-session-id') ?? undefined;
+      const topicId = req.headers.get('x-topic-id') ?? undefined;
+
       let modelRuntime: ModelRuntime;
       if (createRuntime) {
         // Legacy support for custom runtime creation
         modelRuntime = createRuntime(jwtPayload);
       } else {
         // Read user's provider config from database
-        modelRuntime = await initModelRuntimeFromDB(serverDB, userId, provider);
+        modelRuntime = await initModelRuntimeFromDB(serverDB, userId, provider, {
+          sessionId,
+          topicId,
+        });
       }
 
       // ============  2. create chat completion   ============ //

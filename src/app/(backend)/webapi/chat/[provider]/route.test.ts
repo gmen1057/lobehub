@@ -88,6 +88,42 @@ describe('POST handler', () => {
         expect.anything(),
         expect.any(String),
         'test-provider',
+        { sessionId: undefined, topicId: undefined },
+      );
+    });
+
+    it('should forward x-session-id and x-topic-id to initModelRuntimeFromDB', async () => {
+      const mockParams = Promise.resolve({ provider: 'test-provider' });
+      vi.mocked(getXorPayload).mockReturnValueOnce({
+        apiKey: 'test-api-key',
+        azureApiVersion: 'v1',
+      });
+      const mockChatResponse = new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const mockRuntime: LobeRuntimeAI = {
+        baseURL: 'abc',
+        chat: vi.fn().mockResolvedValue(mockChatResponse),
+      };
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue(new ModelRuntime(mockRuntime));
+
+      const reqWithConv = new Request(new URL('https://test.com'), {
+        method: 'POST',
+        body: JSON.stringify({ model: 'test-model' }),
+        headers: {
+          [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token',
+          'x-session-id': 'inbox',
+          'x-topic-id': 'tpc_abc',
+        },
+      });
+
+      await POST(reqWithConv as unknown as Request, { params: mockParams });
+
+      expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.any(String),
+        'test-provider',
+        { sessionId: 'inbox', topicId: 'tpc_abc' },
       );
     });
 

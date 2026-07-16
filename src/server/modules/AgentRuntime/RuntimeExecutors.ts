@@ -506,8 +506,12 @@ export const createRuntimeExecutors = (
         processedMessages = llmPayload.messages;
       }
 
-      // Initialize ModelRuntime (read user's keyVaults from database)
-      const modelRuntime = await initModelRuntimeFromDB(ctx.serverDB, ctx.userId!, provider);
+      // Initialize ModelRuntime (read user's keyVaults from database).
+      // Pass conversation ids so billing proxy can attribute charges (site cost).
+      const modelRuntime = await initModelRuntimeFromDB(ctx.serverDB, ctx.userId!, provider, {
+        sessionId: state.metadata?.sessionId,
+        topicId: state.metadata?.topicId ?? ctx.topicId,
+      });
 
       // Construct ChatStreamPayload
       const stream = ctx.stream ?? true;
@@ -1501,8 +1505,7 @@ export const createRuntimeExecutors = (
 
       // Persist ToolsActivator discovery results to state.activatedStepTools
       const discoveredTools = executionResult.state?.activatedTools as
-        | Array<{ identifier: string }>
-        | undefined;
+        Array<{ identifier: string }> | undefined;
       if (discoveredTools?.length) {
         const existingIds = new Set(
           (newState.activatedStepTools ?? []).map((t: { id: string }) => t.id),
@@ -1819,8 +1822,7 @@ export const createRuntimeExecutors = (
     );
     for (const result of toolResults) {
       const discovered = result.data?.state?.activatedTools as
-        | Array<{ identifier: string }>
-        | undefined;
+        Array<{ identifier: string }> | undefined;
       if (discovered?.length) {
         const newActivations = discovered
           .filter((t) => !existingActivationIds.has(t.identifier))

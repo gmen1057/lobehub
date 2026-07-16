@@ -452,6 +452,43 @@ describe('initModelRuntimeWithUserPayload method', () => {
       expect(runtime['_runtime'].baseURL).toBe('https://proxy.example.com/v1');
     });
 
+    it('arckep: injects conversation + auth headers when PROXY_URL + userId', async () => {
+      process.env.OPENAI_PROXY_URL = 'http://127.0.0.1:8202/api/billing-proxy/openai';
+      process.env.LOBECHAT_BACKEND_KEY = 'test-internal-key';
+
+      const jwtPayload: ClientSecretPayload = { apiKey: 'sk-test' };
+      const runtime = await initModelRuntimeWithUserPayload(ModelProvider.OpenAI, jwtPayload, {
+        userId: 'user_abc',
+        sessionId: 'inbox',
+        topicId: 'tpc_test123',
+      });
+
+      const opts = (runtime['_runtime'] as any)._options as Record<string, any>;
+      expect(opts.defaultHeaders).toMatchObject({
+        'X-User-Id': 'user_abc',
+        'X-Arckep-Token': 'test-internal-key',
+        'x-session-id': 'inbox',
+        'x-topic-id': 'tpc_test123',
+      });
+    });
+
+    it('arckep: skips empty conversation ids and truncates long ones', async () => {
+      process.env.OPENAI_PROXY_URL = 'http://127.0.0.1:8202/api/billing-proxy/openai';
+      process.env.LOBECHAT_BACKEND_KEY = 'test-internal-key';
+      const longId = 'x'.repeat(100);
+
+      const runtime = await initModelRuntimeWithUserPayload(
+        ModelProvider.OpenAI,
+        { apiKey: 'sk-test' },
+        { userId: 'u1', sessionId: '  ', topicId: longId },
+      );
+
+      const opts = (runtime['_runtime'] as any)._options as Record<string, any>;
+      expect(opts.defaultHeaders['x-session-id']).toBeUndefined();
+      expect(opts.defaultHeaders['x-topic-id']).toHaveLength(64);
+      expect(opts.defaultHeaders['X-User-Id']).toBe('u1');
+    });
+
     it('Qwen AI provider: without apiKey and endpoint with OPENAI_PROXY_URL', async () => {
       process.env.OPENAI_PROXY_URL = 'https://proxy.example.com/v1';
 

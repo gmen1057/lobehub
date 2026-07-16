@@ -3,6 +3,8 @@ import { type BuiltinServerRuntimeOutput } from '@lobechat/types';
 import {
   type ConnectTelegramResult,
   type DesignBriefResult,
+  type EditSiteParams,
+  type EditSiteResult,
   type GenerateImageParams,
   type GenerateImageResult,
   type GetDesignBriefParams,
@@ -13,6 +15,7 @@ import {
 
 interface ArckepSitesRuntimeDeps {
   connectTelegram: () => Promise<ConnectTelegramResult>;
+  editSite: (params: EditSiteParams) => Promise<EditSiteResult>;
   generateImage: (params: GenerateImageParams) => Promise<GenerateImageResult>;
   getDesignBrief: (params: GetDesignBriefParams) => Promise<DesignBriefResult>;
   listSites: () => Promise<SiteSummary[]>;
@@ -70,7 +73,9 @@ export class ArckepSitesExecutionRuntime {
               ? ' Это дашборд: перед пересборкой сравните columns с колонками новых данных — при расхождении не публикуйте молча, спросите пользователя.'
               : '')
           : null,
-        result.http_auth_enabled ? 'Сайт защищён HTTP-паролем (логин/пароль не раскрывайте повторно).' : null,
+        result.http_auth_enabled
+          ? 'Сайт защищён HTTP-паролем (логин/пароль не раскрывайте повторно).'
+          : null,
       ]
         .filter(Boolean)
         .join(' ');
@@ -94,6 +99,39 @@ export class ArckepSitesExecutionRuntime {
     } catch (error) {
       return {
         content: `Не удалось прочитать сайт: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async editSite(args: EditSiteParams): Promise<BuiltinServerRuntimeOutput> {
+    try {
+      if (!args.site_id || !Array.isArray(args.replacements) || args.replacements.length === 0) {
+        return {
+          content: 'editSite: нужны site_id и непустой replacements (find/replace).',
+          success: false,
+        };
+      }
+      const result = await this.deps.editSite(args);
+      const lines = result.applied.map(
+        (a) =>
+          `• «${a.find.slice(0, 60)}${a.find.length > 60 ? '…' : ''}» → «${a.replace.slice(0, 60)}${a.replace.length > 60 ? '…' : ''}» (${a.count}×${a.replace_all ? ', all' : ''})`,
+      );
+      return {
+        content:
+          `Точечная правка опубликована. Сайт: ${result.url}\n` +
+          `Версия: ${result.version}. site_id=${result.site_id} (${result.slug}).\n` +
+          `Применено:\n${lines.join('\n')}\n` +
+          `Пользователю: изменения уже в интернете — полную пересборку HTML в чат выкладывать не нужно.`,
+        state: result,
+        success: true,
+      };
+    } catch (error) {
+      return {
+        content:
+          `Не удалось применить точечную правку: ${(error as Error).message}. ` +
+          `Если «not found» — вызовите readSite и скопируйте точную подстроку. ` +
+          `Если «matched N times» — удлините find или поставьте replace_all=true.`,
         success: false,
       };
     }
