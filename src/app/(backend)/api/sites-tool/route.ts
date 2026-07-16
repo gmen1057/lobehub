@@ -21,15 +21,24 @@ const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
 const HOST_ALLOWLIST = new Set(['127.0.0.1', 'localhost']);
 
 interface SitesToolRequestBody {
-  action: 'design-brief' | 'generate-image' | 'list' | 'list-styles' | 'read' | 'telegram-connect-link';
+  action:
+    | 'design-brief'
+    | 'edit'
+    | 'generate-image'
+    | 'list'
+    | 'list-styles'
+    | 'read'
+    | 'telegram-connect-link';
   // generate-image fields (model-supplied only — user_id injected server-side)
   aspect_ratio?: 'landscape' | 'portrait' | 'square';
   // design-brief fields
   business?: string;
   prompt?: string;
   quality?: 'high' | 'standard';
+  // edit fields
+  replacements?: Array<{ find: string; replace: string; replace_all?: boolean }>;
   session_id?: string;
-  // read field
+  // read / edit field
   site_id?: number;
   style_id?: string;
   topic_id?: string;
@@ -99,6 +108,24 @@ export async function POST(req: NextRequest) {
   } else if (body.action === 'read' && Number.isInteger(body.site_id)) {
     path = '/api/chat/sites-tool/read';
     forwardBody = { site_id: body.site_id, user_id: Number(userId) };
+  } else if (
+    body.action === 'edit' &&
+    Number.isInteger(body.site_id) &&
+    Array.isArray(body.replacements) &&
+    body.replacements.length > 0
+  ) {
+    path = '/api/chat/sites-tool/edit';
+    forwardBody = {
+      replacements: body.replacements.slice(0, 20).map((r) => ({
+        find: String(r.find ?? ''),
+        replace: String(r.replace ?? ''),
+        replace_all: Boolean(r.replace_all),
+      })),
+      session_id: typeof body.session_id === 'string' ? body.session_id.slice(0, 64) : undefined,
+      site_id: body.site_id,
+      topic_id: typeof body.topic_id === 'string' ? body.topic_id.slice(0, 64) : undefined,
+      user_id: Number(userId),
+    };
   } else if (body.action === 'generate-image' && typeof body.prompt === 'string' && body.prompt) {
     path = '/api/chat/sites-tool/generate-image';
     // user_id injected here from the authenticated session — never from the model
@@ -127,14 +154,14 @@ export async function POST(req: NextRequest) {
     return Response.json(
       {
         error:
-          'action must be list, read (with integer site_id), generate-image (with prompt), or telegram-connect-link',
+          'action must be list, read (site_id), edit (site_id+replacements), generate-image (prompt), design-brief, list-styles, or telegram-connect-link',
       },
       { status: 400 },
     );
   }
 
-  // Image generation can take up to 90 s for high-quality models; other ops are fast.
-  const timeoutMs = body.action === 'generate-image' ? 120_000 : 30_000;
+  // Image generation up to 90s; edit republishes (S3) — allow 90s; rest are fast.
+  const timeoutMs = body.action === 'generate-image' || body.action === 'edit' ? 120_000 : 30_000;
 
   let upstream: Response;
   try {

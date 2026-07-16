@@ -14,6 +14,7 @@
 import {
   ArckepSitesApiName,
   ArckepSitesIdentifier,
+  type EditSiteParams,
   type GenerateImageParams,
   type GetDesignBriefParams,
 } from '@lobechat/builtin-tool-arckep-sites';
@@ -37,6 +38,11 @@ const callSitesTool = async (body: Record<string, unknown>) => {
   return res.json();
 };
 
+const conversationIds = () => ({
+  session_id: useSessionStore.getState().activeId || undefined,
+  topic_id: useChatStore.getState().activeTopicId || undefined,
+});
+
 const runtime = new ArckepSitesExecutionRuntime({
   generateImage: async (params) =>
     // session_id/topic_id read from the same stores Title.tsx uses for publish,
@@ -47,8 +53,14 @@ const runtime = new ArckepSitesExecutionRuntime({
       aspect_ratio: params.aspect_ratio,
       prompt: params.prompt,
       quality: params.quality,
-      session_id: useSessionStore.getState().activeId || undefined,
-      topic_id: useChatStore.getState().activeTopicId || undefined,
+      ...conversationIds(),
+    }),
+  editSite: async (params) =>
+    callSitesTool({
+      action: 'edit',
+      replacements: params.replacements,
+      site_id: params.site_id,
+      ...conversationIds(),
     }),
   getDesignBrief: async (params) =>
     callSitesTool({
@@ -78,6 +90,13 @@ class ArckepSitesExecutor extends BaseExecutor<typeof ArckepSitesApiName> {
     _ctx: BuiltinToolContext,
   ): Promise<BuiltinToolResult> => {
     return runtime.readSite(params);
+  };
+
+  editSite = async (
+    params: EditSiteParams,
+    _ctx: BuiltinToolContext,
+  ): Promise<BuiltinToolResult> => {
+    return runtime.editSite(params);
   };
 
   generateImage = async (

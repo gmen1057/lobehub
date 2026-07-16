@@ -2,6 +2,7 @@ export const ArckepSitesIdentifier = 'arckep-sites';
 
 export enum ArckepSitesApiName {
   connectTelegram = 'connectTelegram',
+  editSite = 'editSite',
   generateImage = 'generateImage',
   getDesignBrief = 'getDesignBrief',
   listSites = 'listSites',
@@ -52,6 +53,31 @@ export interface ListSitesParams {}
 
 export interface ReadSiteParams {
   site_id: number;
+}
+
+export interface EditSiteReplacement {
+  find: string;
+  replace: string;
+  /** If true, replace every occurrence; default false requires a unique match. */
+  replace_all?: boolean;
+}
+
+export interface EditSiteParams {
+  replacements: EditSiteReplacement[];
+  site_id: number;
+}
+
+export interface EditSiteResult {
+  applied: Array<{
+    count: number;
+    find: string;
+    replace: string;
+    replace_all: boolean;
+  }>;
+  site_id: number;
+  slug: string;
+  url: string;
+  version: number;
 }
 
 export interface GenerateImageParams {

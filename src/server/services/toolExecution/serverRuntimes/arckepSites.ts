@@ -1,5 +1,6 @@
 import {
   ArckepSitesIdentifier,
+  type EditSiteParams,
   type GenerateImageParams,
   type GetDesignBriefParams,
 } from '@lobechat/builtin-tool-arckep-sites';
@@ -36,14 +37,14 @@ const resolveArckepUserId = async (serverDB: any, lobeUserId: string): Promise<n
   return Number(match[1]);
 };
 
-const callBackend = async (path: string, body: Record<string, unknown>) => {
+const callBackend = async (path: string, body: Record<string, unknown>, timeoutMs = 30_000) => {
   const token = getInternalToken();
   if (!token) throw new Error('Internal token not configured');
   const res = await fetch(`${getBackendUrl()}${path}`, {
     body: JSON.stringify(body),
     headers: { 'Content-Type': 'application/json', 'X-Arckep-Token': token },
     method: 'POST',
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   if (!res.ok) {
     const text = await res.text();
@@ -92,6 +93,20 @@ export const arckepSitesRuntime: ServerRuntimeRegistration = {
       readSite: async (siteId: number) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend('/api/chat/sites-tool/read', { site_id: siteId, user_id: arckepId });
+      },
+      editSite: async (params: EditSiteParams) => {
+        const arckepId = await resolveArckepUserId(serverDB, userId);
+        // edit republishes (S3 + vitrina) — allow longer than list/read
+        return callBackend(
+          '/api/chat/sites-tool/edit',
+          {
+            replacements: params.replacements,
+            site_id: params.site_id,
+            topic_id: topicId,
+            user_id: arckepId,
+          },
+          90_000,
+        );
       },
       connectTelegram: async () => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
