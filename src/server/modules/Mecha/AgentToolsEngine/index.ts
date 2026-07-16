@@ -104,6 +104,10 @@ export const createServerAgentToolsEngine = (
   } = params;
   const searchMode = agentConfig.chatConfig?.searchMode ?? 'auto';
   const isSearchEnabled = searchMode !== 'off';
+  // arckep (2026-07-16): no SEARCH_PROVIDERS/SEARXNG. Do not auto-enable
+  // lobe-web-browsing — native provider search is wired via enabledSearch/:online
+  // on the client chat path. Models without native search stay without search.
+  const enableAppWebBrowsing = false;
 
   // Determine runtime mode based on platform
   const isDesktopClient = !!deviceContext?.gatewayConfigured;
@@ -147,7 +151,7 @@ export const createServerAgentToolsEngine = (
         [RemoteDeviceManifest.identifier]:
           !!deviceContext?.gatewayConfigured && !deviceContext?.autoActivated,
         [AgentDocumentsManifest.identifier]: hasAgentDocuments,
-        [WebBrowsingManifest.identifier]: isSearchEnabled,
+        [WebBrowsingManifest.identifier]: isSearchEnabled && enableAppWebBrowsing,
       },
     }),
   });

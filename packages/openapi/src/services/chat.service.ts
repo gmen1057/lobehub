@@ -155,10 +155,11 @@ export class ChatService extends BaseService {
    */
   private buildSearchParams(chatConfig: LobeAgentChatConfig) {
     const enabledSearch = chatConfig.searchMode !== 'off';
-    const { useModelBuiltinSearch } = chatConfig;
+    // arckep: undefined = prefer native provider search (same as UI ?? true)
+    const preferModelBuiltinSearch = chatConfig.useModelBuiltinSearch ?? true;
 
     return {
-      enabledSearch: enabledSearch && useModelBuiltinSearch,
+      enabledSearch: enabledSearch && preferModelBuiltinSearch,
       searchFCModel: chatConfig.searchFCModel,
     };
   }

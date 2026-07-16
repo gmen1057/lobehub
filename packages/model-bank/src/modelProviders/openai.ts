@@ -14,6 +14,8 @@ const OpenAI: ModelProviderCard = {
   name: 'OpenAI',
   settings: {
     responseAnimation: 'smooth',
+    // arckep: native web_search via enabledSearch (Responses API)
+    searchMode: 'params',
     showModelFetcher: true,
     supportResponsesApi: true,
   },

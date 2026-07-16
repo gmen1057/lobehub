@@ -38,7 +38,7 @@ describe('getSearchConfig', () => {
     vi.clearAllMocks();
   });
 
-  it('should return correct config when search is enabled and no builtin search', () => {
+  it('should not use app web-browsing when search is on but model has no native search (arckep)', () => {
     vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
       () =>
         ({
@@ -64,7 +64,8 @@ describe('getSearchConfig', () => {
       isProviderHasBuiltinSearch: false,
       isModelHasBuiltinSearch: false,
       useModelSearch: false,
-      useApplicationBuiltinSearchTool: true,
+      // arckep: no SEARCH_PROVIDERS — app layer never enabled
+      useApplicationBuiltinSearchTool: false,
     });
   });
 
@@ -114,6 +115,31 @@ describe('getSearchConfig', () => {
     });
   });
 
+  it('should treat undefined useModelBuiltinSearch as true (prefer native)', () => {
+    vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
+      () =>
+        ({
+          searchMode: 'auto',
+          // field missing — most production agents
+        }) as any,
+    );
+
+    vi.mocked(aiInfraSelectors.aiProviderSelectors.isProviderHasBuiltinSearch).mockReturnValue(
+      () => true,
+    );
+    vi.mocked(aiInfraSelectors.aiModelSelectors.isModelHasBuiltinSearch).mockReturnValue(
+      () => false,
+    );
+    vi.mocked(aiInfraSelectors.aiModelSelectors.isModelBuiltinSearchInternal).mockReturnValue(
+      () => false,
+    );
+
+    const result = getSearchConfig(model, provider);
+
+    expect(result.useModelSearch).toBe(true);
+    expect(result.useApplicationBuiltinSearchTool).toBe(false);
+  });
+
   it('should use model search when model has builtin search and it is enabled', () => {
     vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
       () =>
@@ -144,7 +170,7 @@ describe('getSearchConfig', () => {
     });
   });
 
-  it('should not use model search when model has builtin search but preference is disabled', () => {
+  it('should not use model search when preference is explicitly disabled', () => {
     vi.mocked(chatConfigByIdSelectors.getChatConfigById).mockReturnValue(
       () =>
         ({
@@ -170,7 +196,8 @@ describe('getSearchConfig', () => {
       isProviderHasBuiltinSearch: false,
       isModelHasBuiltinSearch: true,
       useModelSearch: false,
-      useApplicationBuiltinSearchTool: true,
+      // arckep: still no app-layer search
+      useApplicationBuiltinSearchTool: false,
     });
   });
 

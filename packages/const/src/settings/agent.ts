@@ -35,6 +35,9 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
   reasoningBudgetToken: 1024,
   searchFCModel: DEFAULT_AGENT_SEARCH_FC_MODEL,
   searchMode: 'auto',
+  // arckep: prefer provider/model native web search when globe is on
+  // (OpenAI/Anthropic/Google/xAI/Qwen/OpenRouter). No app-layer SEARCH_PROVIDERS.
+  useModelBuiltinSearch: true,
 };
 
 // arckep: short helper-agent prompt for chat.arckep.ru. Trimmed from ~800 to

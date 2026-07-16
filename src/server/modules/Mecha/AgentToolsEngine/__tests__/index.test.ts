@@ -172,7 +172,7 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).not.toContain(LocalSystemManifest.identifier);
   });
 
-  it('should enable WebBrowsing when search mode is on', () => {
+  it('should not enable WebBrowsing when search mode is on (arckep: no app search backend)', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {
       agentConfig: {
@@ -189,7 +189,8 @@ describe('createServerAgentToolsEngine', () => {
       provider: 'openai',
     });
 
-    expect(result.enabledToolIds).toContain(WebBrowsingManifest.identifier);
+    // Native provider search is used instead; lobe-web-browsing stays off
+    expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
   });
 
   it('should disable WebBrowsing when search mode is off', () => {
@@ -248,7 +249,7 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).not.toContain(KnowledgeBaseManifest.identifier);
   });
 
-  it('should include default tools (WebBrowsing, KnowledgeBase)', () => {
+  it('should include KnowledgeBase as default tool but not WebBrowsing (arckep)', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {
       agentConfig: {
@@ -268,7 +269,8 @@ describe('createServerAgentToolsEngine', () => {
 
     // Should include default tools alongside user tools
     expect(result.enabledToolIds).toContain('test-plugin');
-    expect(result.enabledToolIds).toContain(WebBrowsingManifest.identifier);
+    // arckep: app-layer web browsing disabled (no SEARCH_PROVIDERS)
+    expect(result.enabledToolIds).not.toContain(WebBrowsingManifest.identifier);
     expect(result.enabledToolIds).toContain(KnowledgeBaseManifest.identifier);
   });
 

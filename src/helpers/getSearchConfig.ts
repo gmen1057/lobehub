@@ -48,12 +48,19 @@ export const getSearchConfig = (
     provider!,
   )(aiInfraStoreState);
 
+  // arckep: align with UI selector (useModelBuiltinSearch ?? true). Undefined must
+  // mean "prefer provider/model native search" — previously `&& undefined` forced
+  // useModelSearch=false and fell through to lobe-web-browsing (SearXNG, not configured).
+  const preferModelBuiltinSearch = chatConfig.useModelBuiltinSearch ?? true;
+
   const useModelSearch =
-    ((isProviderHasBuiltinSearch || isModelHasBuiltinSearch) && chatConfig.useModelBuiltinSearch) ||
+    ((isProviderHasBuiltinSearch || isModelHasBuiltinSearch) && preferModelBuiltinSearch) ||
     isModelBuiltinSearchInternal ||
     false;
 
-  const useApplicationBuiltinSearchTool = enabledSearch && !useModelSearch;
+  // arckep (2026-07-16): no paid SEARCH_PROVIDERS / SEARXNG. Never inject app-layer
+  // web-browsing. Models without native provider search simply have no search.
+  const useApplicationBuiltinSearchTool = false;
 
   return {
     enabledSearch,

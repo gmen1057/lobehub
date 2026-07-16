@@ -16,6 +16,8 @@ const XAI: ModelProviderCard = {
       placeholder: 'https://api.x.ai/v1',
     },
     sdkType: 'openai',
+    // arckep: native xAI web_search + x_search via enabledSearch
+    searchMode: 'params',
     showModelFetcher: true,
   },
   url: 'https://x.ai/api',

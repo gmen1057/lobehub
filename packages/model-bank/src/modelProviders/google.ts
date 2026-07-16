@@ -23,6 +23,8 @@ const Google: ModelProviderCard = {
       text: 'smooth',
     },
     sdkType: 'google',
+    // arckep: native Google Search grounding via enabledSearch
+    searchMode: 'params',
     showModelFetcher: true,
   },
   url: 'https://ai.google.dev',

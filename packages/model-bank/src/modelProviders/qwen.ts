@@ -21,6 +21,8 @@ const Qwen: ModelProviderCard = {
       text: 'smooth',
     },
     sdkType: 'openai',
+    // arckep: native Qwen enable_search via enabledSearch
+    searchMode: 'params',
     showDeployName: true,
     showModelFetcher: true,
   },

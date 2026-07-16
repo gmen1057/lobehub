@@ -19,6 +19,8 @@ const Anthropic: ModelProviderCard = {
     },
     responseAnimation: 'smooth',
     sdkType: 'anthropic',
+    // arckep: native Anthropic web search tool via enabledSearch
+    searchMode: 'params',
     showModelFetcher: true,
   },
   url: 'https://anthropic.com',
