@@ -21,6 +21,7 @@ import type {
   UpdateMessageRAGParams,
 } from '@lobechat/types';
 import { MessageGroupType, ThreadType } from '@lobechat/types';
+import { isVisionImageMime } from '@lobechat/utils/isVisionImage';
 import type { HeatmapsProps } from '@lobehub/charts';
 import dayjs from 'dayjs';
 import type { SQL } from 'drizzle-orm';
@@ -365,10 +366,11 @@ export class MessageModel {
       );
     }
 
-    const imageList = relatedFileList.filter((i) => (i.fileType || '').startsWith('image'));
+    // SVG is not a vision image — route to fileList (source code), not imageList.
+    const imageList = relatedFileList.filter((i) => isVisionImageMime(i.fileType));
     const videoList = relatedFileList.filter((i) => (i.fileType || '').startsWith('video'));
     const fileList = relatedFileList.filter(
-      (i) => !(i.fileType || '').startsWith('image') && !(i.fileType || '').startsWith('video'),
+      (i) => !isVisionImageMime(i.fileType) && !(i.fileType || '').startsWith('video'),
     );
 
     // 4. get relative file chunks
@@ -708,10 +710,11 @@ export class MessageModel {
       );
     }
 
-    const imageList = relatedFileList.filter((i) => (i.fileType || '').startsWith('image'));
+    // SVG is not a vision image — route to fileList (source code), not imageList.
+    const imageList = relatedFileList.filter((i) => isVisionImageMime(i.fileType));
     const videoList = relatedFileList.filter((i) => (i.fileType || '').startsWith('video'));
     const fileList = relatedFileList.filter(
-      (i) => !(i.fileType || '').startsWith('image') && !(i.fileType || '').startsWith('video'),
+      (i) => !isVisionImageMime(i.fileType) && !(i.fileType || '').startsWith('video'),
     );
 
     // 4. Build thread map

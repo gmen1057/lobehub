@@ -282,8 +282,12 @@ export class ConversationLifecycleActionImpl {
 
     // Construct local media preview for server-mode temporary messages (S3 URL takes priority)
     const filesInStore = getFileStoreState().chatUploadFileList;
+    // SVG must not enter imageList (vision) — providers reject image/svg+xml.
     const tempImages: ChatImageItem[] = filesInStore
-      .filter((f) => f.file?.type?.startsWith('image'))
+      .filter((f) => {
+        const t = f.file?.type || '';
+        return t.startsWith('image') && !t.toLowerCase().includes('svg');
+      })
       .map((f) => ({
         id: f.id,
         url: f.fileUrl || f.base64Url || f.previewUrl || '',

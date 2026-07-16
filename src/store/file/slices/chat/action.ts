@@ -1,5 +1,14 @@
 import { type ChatContextContent } from '@lobechat/types';
+import { convertSvgFileToPng } from '@lobechat/utils/client/svgToPng';
 import { COMPRESSIBLE_IMAGE_TYPES, compressImageFile } from '@lobechat/utils/compressImage';
+import {
+  isLargeSvg,
+  isSvgFileName,
+  isSvgMime,
+  SVG_CODE_SOFT_CAP_BYTES,
+  SVG_LARGE_THRESHOLD_BYTES,
+} from '@lobechat/utils/isVisionImage';
+import { Modal } from 'antd';
 import { t } from 'i18next';
 
 import { notification } from '@/components/AntdStaticMethods';
@@ -106,13 +115,73 @@ export class FileActionImpl {
     }
   };
 
+  /**
+   * Large SVG: ask whether to rasterize to PNG (vision) or keep full SVG source as code.
+   * Small SVG: always keep as code (providers reject SVG in vision image_url).
+   */
+  #maybeConvertLargeSvg = async (file: File): Promise<File> => {
+    const isSvg = isSvgMime(file.type) || isSvgFileName(file.name);
+    if (!isSvg || !isLargeSvg(file.size)) return file;
+
+    const sizeKb = Math.round(file.size / 1024);
+    const thresholdKb = Math.round(SVG_LARGE_THRESHOLD_BYTES / 1024);
+
+    const convertToPng = await new Promise<boolean>((resolve) => {
+      Modal.confirm({
+        title: 'Большой SVG',
+        content: `Файл «${file.name}» (${sizeKb} КБ) больше ${thresholdKb} КБ. Модели не принимают SVG как картинку. Конвертировать в PNG (удобно «увидеть» логотип) или отправить полный исходный код SVG в запрос?`,
+        okText: 'Конвертировать в PNG',
+        cancelText: 'Полный SVG (код)',
+        centered: true,
+        onOk: () => resolve(true),
+        onCancel: () => resolve(false),
+      });
+    });
+
+    if (!convertToPng) {
+      if (file.size > SVG_CODE_SOFT_CAP_BYTES) {
+        notification.info({
+          message: 'SVG как код',
+          description: `Файл большой (${sizeKb} КБ) — в запрос уйдёт полный исходник. Это может увеличить расход токенов.`,
+          duration: 6,
+        });
+      }
+      return file;
+    }
+
+    try {
+      const png = await convertSvgFileToPng(file);
+      notification.success({
+        message: 'SVG → PNG',
+        description: `«${file.name}» конвертирован в PNG для vision.`,
+        duration: 4,
+      });
+      return png;
+    } catch (e) {
+      console.error('SVG→PNG conversion failed', e);
+      notification.warning({
+        message: 'Не удалось конвертировать SVG',
+        description: 'Отправляем полный SVG как код.',
+        duration: 5,
+      });
+      return file;
+    }
+  };
+
   uploadChatFiles = async (rawFiles: File[]): Promise<void> => {
     const { dispatchChatUploadFileList } = this.#get();
     // 0. skip file in blacklist
     const filteredFiles = rawFiles.filter((file) => !FILE_UPLOAD_BLACKLIST.includes(file.name));
+
+    // 0.5 large SVG → offer PNG conversion (vision) vs full source as code
+    const afterSvgChoice: File[] = [];
+    for (const file of filteredFiles) {
+      afterSvgChoice.push(await this.#maybeConvertLargeSvg(file));
+    }
+
     // 1. compress images and add files with base64
     const files = await Promise.all(
-      filteredFiles.map((file) =>
+      afterSvgChoice.map((file) =>
         COMPRESSIBLE_IMAGE_TYPES.has(file.type) ? compressImageFile(file) : file,
       ),
     );

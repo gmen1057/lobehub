@@ -3,11 +3,15 @@ import { describe, expect, it } from 'vitest';
 import { isChunkingUnsupported } from './isChunkingUnsupported';
 
 describe('isChunkingUnsupported', () => {
-  it('should return true for image file types', () => {
+  it('should return true for raster image file types', () => {
     expect(isChunkingUnsupported('image/jpeg')).toBe(true);
     expect(isChunkingUnsupported('image/png')).toBe(true);
     expect(isChunkingUnsupported('image/gif')).toBe(true);
-    expect(isChunkingUnsupported('image/svg+xml')).toBe(true);
+  });
+
+  it('should return false for SVG so source can be parsed as text', () => {
+    expect(isChunkingUnsupported('image/svg+xml')).toBe(false);
+    expect(isChunkingUnsupported('image/svg')).toBe(false);
   });
 
   it('should return true for video file types', () => {

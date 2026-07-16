@@ -137,11 +137,46 @@ export class MessageContentProcessor extends BaseProcessor {
   /**
    * Process user message content
    */
+  /**
+   * SVG may land in fileList without documents.content (legacy uploads).
+   * Fetch source once so the model receives code, not an empty <file/> shell.
+   */
+  private async hydrateSvgFileContents(fileList: any[] | undefined): Promise<any[] | undefined> {
+    if (!fileList?.length) return fileList;
+
+    return Promise.all(
+      fileList.map(async (file) => {
+        const ft = String(file.fileType || '').toLowerCase();
+        const name = String(file.name || '').toLowerCase();
+        const isSvg = ft.includes('svg') || name.endsWith('.svg');
+        if (!isSvg || file.content) return file;
+        if (!file.url) return file;
+
+        try {
+          const res = await fetch(file.url);
+          if (!res.ok) return file;
+          const text = await res.text();
+          // Guard: only treat as SVG source if it looks like XML/SVG
+          if (!text || (!text.includes('<svg') && !text.includes('<?xml'))) return file;
+          return { ...file, content: text };
+        } catch (e) {
+          log('hydrateSvgFileContents failed for %s: %o', file.id, e);
+          return file;
+        }
+      }),
+    );
+  }
+
   private async processUserMessage(message: any): Promise<any> {
     // Check if images, videos or files need processing
     const hasImages = message.imageList && message.imageList.length > 0;
     const hasVideos = message.videoList && message.videoList.length > 0;
-    const hasFiles = message.fileList && message.fileList.length > 0;
+    let fileList = message.fileList;
+    // Best-effort: fill SVG source for fileList items missing content
+    if (fileList?.length) {
+      fileList = await this.hydrateSvgFileContents(fileList);
+    }
+    const hasFiles = fileList && fileList.length > 0;
 
     // If no images, videos and files, return plain text content directly
     if (!hasImages && !hasVideos && !hasFiles) {
@@ -160,7 +195,7 @@ export class MessageContentProcessor extends BaseProcessor {
     if ((hasFiles || hasImages || hasVideos) && this.config.fileContext?.enabled) {
       const filesContext = filesPrompts({
         addUrl: this.config.fileContext.includeFileUrl ?? true,
-        fileList: message.fileList,
+        fileList,
         imageList: message.imageList || [],
         videoList: message.videoList || [],
       });
@@ -376,8 +411,18 @@ export class MessageContentProcessor extends BaseProcessor {
       return [];
     }
 
+    // Defensive: never send SVG as vision image_url (providers 400).
+    // SVGs are routed to fileList upstream; filter leftovers by URL/mime.
+    const rasterOnly = imageList.filter((image) => {
+      const url = String(image?.url || '').toLowerCase();
+      const alt = String(image?.alt || image?.name || '').toLowerCase();
+      if (url.includes('image/svg') || url.endsWith('.svg') || alt.endsWith('.svg')) return false;
+      if (url.startsWith('data:image/svg')) return false;
+      return true;
+    });
+
     return Promise.all(
-      imageList.map(async (image) => {
+      rasterOnly.map(async (image) => {
         const { type } = parseDataUri(image.url);
 
         let processedUrl = image.url;
