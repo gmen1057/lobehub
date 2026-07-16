@@ -353,6 +353,20 @@ const buildVertexOptions = (
   return options;
 };
 
+/** Trim + cap to 64 chars (matches image-studio ChargeAuditMeta / middleware). */
+const normalizeConversationId = (value: unknown): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const s = String(value).trim();
+  if (!s) return undefined;
+  return s.slice(0, 64);
+};
+
+/** Optional conversation ids for billing attribution (site cost, analytics). */
+export type ModelRuntimeConversationContext = {
+  sessionId?: string | null;
+  topicId?: string | null;
+};
+
 /**
  * Initializes the agent runtime with the user payload in backend
  * @param provider - The provider name.
@@ -377,21 +391,33 @@ export const initModelRuntimeWithUserPayload = (
     return new ModelRuntime(runtime, hooks);
   }
 
+  // Keep arckep-only fields out of provider SDK options (userId was already
+  // filtered implicitly by SDKs; session/topic must not leak as client opts).
+  const { userId, sessionId: convSessionId, topicId: convTopicId, ...restParams } = params;
+
   const resolvedParams = {
     ...getParamsFromPayload(runtimeProvider, payload),
-    ...params,
+    ...restParams,
   };
 
-  // Inject X-User-Id + arckep internal token for billing proxy (only when PROXY_URL is set)
-  if (resolvedParams.baseURL && params.userId) {
+  // Inject billing-proxy headers (only when PROXY_URL is set → baseURL points at our proxy).
+  // X-User-Id + X-Arckep-Token: auth / charge target.
+  // x-session-id + x-topic-id: conversation attribution for site creation cost
+  // (arckep «Потрачено на создание»). Browser already sends them; without this
+  // hop they never reach image-studio billing_proxy / chat_token_charges.
+  if (resolvedParams.baseURL && userId) {
     const headers: Record<string, string> = {
       ...resolvedParams.defaultHeaders,
-      'X-User-Id': String(params.userId),
+      'X-User-Id': String(userId),
     };
     const internalKey = process.env.LOBECHAT_BACKEND_KEY;
     if (internalKey) {
       headers['X-Arckep-Token'] = internalKey;
     }
+    const sessionId = normalizeConversationId(convSessionId);
+    const topicId = normalizeConversationId(convTopicId);
+    if (sessionId) headers['x-session-id'] = sessionId;
+    if (topicId) headers['x-topic-id'] = topicId;
     resolvedParams.defaultHeaders = headers;
   }
 
@@ -420,6 +446,7 @@ export const initModelRuntimeFromDB = async (
   db: LobeChatDatabase,
   userId: string,
   provider: string,
+  conversation?: ModelRuntimeConversationContext,
 ): Promise<ModelRuntime> => {
   // 1. Get user's provider configuration from database
   const aiProviderModel = new AiProviderModel(db, userId);
@@ -444,5 +471,14 @@ export const initModelRuntimeFromDB = async (
   const hooks = getBusinessModelRuntimeHooks(userId, provider);
 
   // 5. Initialize ModelRuntime with the payload and hooks
-  return initModelRuntimeWithUserPayload(provider, payload, { userId }, hooks);
+  return initModelRuntimeWithUserPayload(
+    provider,
+    payload,
+    {
+      userId,
+      sessionId: conversation?.sessionId,
+      topicId: conversation?.topicId,
+    },
+    hooks,
+  );
 };
