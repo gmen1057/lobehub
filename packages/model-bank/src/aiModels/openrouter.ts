@@ -22,6 +22,26 @@ const openrouterChatModels: AIChatModelCard[] = [
     },
     type: 'chat',
   },
+  // arckep: Free Models Router — $0 (matches chat_models; no user charge)
+  {
+    abilities: {
+      functionCall: true,
+      vision: true,
+    },
+    contextWindowTokens: 200_000,
+    description:
+      'OpenRouter Free Models Router — routes to a free model that supports the request features. Completely free.',
+    displayName: 'Бесплатные модели',
+    enabled: true,
+    id: 'openrouter/free',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
   // arckep: GPT-5.6 Sol (OpenAI via OpenRouter) — real rates
   {
     abilities: {
@@ -155,30 +175,48 @@ const openrouterChatModels: AIChatModelCard[] = [
     releasedAt: '2026-06-26',
     type: 'chat',
   },
-  // arckep: Moonshot Kimi K2.5 (paid, fallback rate)
+  // arckep: Moonshot Kimi K2.7 Code (paid; rates match image-studio chat_models)
   {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
     contextWindowTokens: 262_144,
-    displayName: 'Kimi K2.5',
-    id: 'moonshotai/kimi-k2.5',
+    description:
+      'Kimi K2.7 Code — coding-focused Moonshot model with mandatory thinking, multimodal input, 256K context.',
+    displayName: 'Kimi K2.7 Code',
+    enabled: true,
+    id: 'moonshotai/kimi-k2.7-code',
     pricing: {
       units: [
         { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 4.5, strategy: 'fixed', unit: 'millionTokens' },
       ],
     },
+    releasedAt: '2026-06-12',
     type: 'chat',
   },
-  // arckep: Moonshot Kimi K2 Thinking (paid, fallback rate)
+  // arckep: Moonshot Kimi K3 (paid; rates match image-studio chat_models)
   {
-    contextWindowTokens: 262_144,
-    displayName: 'Kimi K2 Thinking',
-    id: 'moonshotai/kimi-k2-thinking',
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576,
+    description:
+      'Kimi K3 — 2.8T multimodal flagship from Moonshot AI, 1M context, agentic coding and long-horizon workflows.',
+    displayName: 'Kimi K3',
+    enabled: true,
+    id: 'moonshotai/kimi-k3',
     pricing: {
       units: [
-        { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
-        { name: 'textOutput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 3.5, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 17.5, strategy: 'fixed', unit: 'millionTokens' },
       ],
     },
+    releasedAt: '2026-07-16',
     type: 'chat',
   },
   // arckep: Z.AI GLM 5.1 (paid, fallback rate)
