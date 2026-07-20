@@ -1,12 +1,12 @@
 // Arckep branding — replaces LobeHub defaults
 // Verified on: LobeChat v2.1.46
 
-export const LOBE_CHAT_CLOUD = 'ArcKep AI';
+export const LOBE_CHAT_CLOUD = 'Arckep';
 
-export const BRANDING_NAME = 'ArcKep AI';
+export const BRANDING_NAME = 'Arckep';
 export const BRANDING_LOGO_URL = '/favicon.svg';
 
-export const ORG_NAME = 'ArcKep';
+export const ORG_NAME = 'Arckep';
 
 export const BRANDING_URL = {
   help: 'https://arckep.ru/help',

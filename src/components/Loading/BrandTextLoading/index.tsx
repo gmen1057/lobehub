@@ -1,28 +1,25 @@
-import { BrandLoading, LobeHubText } from '@lobehub/ui/brand';
+import { BRANDING_NAME } from '@lobechat/business-const';
 
-import { isCustomBranding } from '@/const/version';
+import { ProductLogo } from '@/components/Branding';
 
-import CircleLoading from '../CircleLoading';
 import styles from './index.module.css';
 
 interface BrandTextLoadingProps {
   debugId: string;
 }
 
+/**
+ * Chat shell loading indicator. Always show Arckep branding — never the
+ * upstream LobeHub wordmark (custom branding used to fall back to a bare
+ * spinner, while the SPA HTML splash still showed LobeHub SVG).
+ */
 const BrandTextLoading = ({ debugId }: BrandTextLoadingProps) => {
-  if (isCustomBranding)
-    return (
-      <div className={styles.container}>
-        <CircleLoading />
-      </div>
-    );
-
   const showDebug = process.env.NODE_ENV === 'development' && debugId;
 
   return (
     <div className={styles.container}>
-      <div aria-label="Loading" className={styles.brand} role="status">
-        <BrandLoading size={40} text={LobeHubText} />
+      <div aria-label={`Loading ${BRANDING_NAME}`} className={styles.brand} role="status">
+        <ProductLogo size={40} type={'text'} />
       </div>
       {showDebug && (
         <div className={styles.debug}>

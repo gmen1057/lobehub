@@ -30,8 +30,8 @@ const openrouterChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 200_000,
     description:
-      'OpenRouter Free Models Router — routes to a free model that supports the request features. Completely free.',
-    displayName: 'Бесплатные модели',
+      'Бесплатно (0₽): Hy3 · Nemotron 3 Super · GPT-OSS. Полный функционал агентов; на стороне Arckep всегда эти три, не случайный free-пул OR.',
+    displayName: 'Бесплатные (Hy3 / Nemotron / GPT-OSS)',
     enabled: true,
     id: 'openrouter/free',
     pricing: {
