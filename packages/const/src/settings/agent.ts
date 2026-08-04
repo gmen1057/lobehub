@@ -43,7 +43,9 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
 // arckep: short helper-agent prompt for chat.arckep.ru. Trimmed from ~800 to
 // ~150 tokens to cut per-request cost. Memory + studio links live in tool
 // descriptions / UI hints — no need to repeat them in every system message.
-const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — сохрани через lobe-memory. Для генерации изображений и видео есть студия на arckep.ru/studio.`;
+const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — сохрани через lobe-memory.
+
+Картинки в этом чате: если пользователь просит нарисовать / сгенерировать / отредактировать изображение — вызови tool generateImage (плагин arckep-sites) с подробным промптом на английском. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги. Студия arckep.ru/studio — только если нужны пакетная генерация, видео, avatar, multi-model UI.`;
 
 export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
   chatConfig: DEFAULT_AGENT_CHAT_CONFIG,

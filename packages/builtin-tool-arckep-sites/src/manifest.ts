@@ -77,7 +77,7 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Generate a real image for use in a landing page and return its permanent URL. Use for every photo slot a landing needs (hero, product shots, team, backgrounds). Insert the returned URL directly into <img src="..."> or CSS background-image. Charges the user in RUB — prefer quality="standard" for supporting images, quality="high" for hero/product where fidelity matters.',
+        'Generate a real image via ArcKep (Nano Banana 2 / Pro) and return a permanent URL. USE THIS whenever the user asks to draw, generate, create, or edit an image in chat — avatars, product shots, covers, illustrations, social posts — NOT only for landing pages. Do NOT switch the chat model to Nano Banana / gemini-*-image; call this tool instead (fixed per-image price, no full chat history billed). For landing HTML, insert the URL into <img src> or CSS. Prefer quality="standard" (Banana 2); quality="high" (Banana Pro) only when the user asks for premium fidelity or hero/main product. Charges RUB; always tell the user the cost from the tool result.',
       name: ArckepSitesApiName.generateImage,
       parameters: {
         additionalProperties: false,
@@ -85,7 +85,7 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
           aspect_ratio: {
             default: 'landscape',
             description:
-              'Image aspect ratio. landscape (default, 16:9) for hero/banner; portrait (9:16) for mobile/profile; square (1:1) for avatars/logos/icons.',
+              'Image aspect ratio. landscape (default, 16:9) for hero/banner; portrait (9:16) for mobile/stories/profile; square (1:1) for avatars/logos/icons.',
             enum: ['landscape', 'portrait', 'square'],
             type: 'string',
           },
@@ -97,7 +97,7 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
           quality: {
             default: 'standard',
             description:
-              'standard (default) — faster, cheaper (Nano Banana 2); high — premium fidelity (Nano Banana Pro), use only for hero/product images.',
+              'standard (default) — faster, cheaper (Nano Banana 2); high — premium fidelity (Nano Banana Pro), only when user asks premium or for hero/product.',
             enum: ['high', 'standard'],
             type: 'string',
           },

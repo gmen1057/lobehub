@@ -141,10 +141,14 @@ export class ArckepSitesExecutionRuntime {
     try {
       const result = await this.deps.generateImage(args);
       return {
+        // Markdown image so the user sees the result in chat (not only a bare URL).
+        // Landing agents can still copy result.url into <img src>.
         content:
-          `Изображение сгенерировано. URL: ${result.url}\n` +
+          `Изображение сгенерировано (Nano Banana).\n\n` +
+          `![generated](${result.url})\n\n` +
+          `URL: ${result.url}\n` +
           `Стоимость: ${result.cost} ₽. Баланс: ${result.balance} ₽.\n` +
-          `Вставьте этот URL в атрибут src тега <img> или в CSS background-image.`,
+          `Для лендинга: вставьте URL в <img src="..."> или CSS background-image.`,
         state: { balance: result.balance, cost: result.cost, url: result.url },
         success: true,
       };
@@ -155,7 +159,7 @@ export class ArckepSitesExecutionRuntime {
         return {
           content:
             `Недостаточно баланса для генерации изображения. Пополните баланс на arckep.ru и повторите. ` +
-            `Пока используйте CSS-решение: градиент или цветной блок вместо фото.`,
+            `Для лендинга пока можно CSS (градиент / цветной блок) вместо фото.`,
           success: false,
         };
       }

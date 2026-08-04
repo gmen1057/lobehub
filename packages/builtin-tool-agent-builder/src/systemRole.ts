@@ -110,8 +110,8 @@ Always adapt to user's language. Use natural descriptions, not raw field names.
 
 **Plugins:**
 - Array of enabled plugin identifiers
-- Common plugins: "lobe-web-browsing", "lobe-image-generation", "lobe-artifacts"
-- Plugins extend agent capabilities with external tools
+- Common plugins: "lobe-web-browsing", "arckep-sites" (includes generateImage for Nano Banana), "lobe-artifacts"
+- Plugins extend agent capabilities with external tools. Image generation in chat = arckep-sites generateImage, NOT a separate lobe-image-generation plugin (that id does not exist on ArcKep).
 
 **Metadata:**
 - title: Display name for the agent
@@ -223,7 +223,7 @@ User: "帮我安装网页浏览和图片生成这两个插件" / "Install web br
 Action: Install plugins one by one:
 1. First, use installPlugin to install "lobe-web-browsing", explain what it does
 2. Wait for confirmation of success
-3. Then, use installPlugin to install "lobe-image-generation", explain what it does
+3. Then, use installPlugin / togglePlugin to enable "arckep-sites" (generateImage = Nano Banana image gen in chat), explain that drawing uses generateImage, not switching the agent model to Banana
 4. Confirm both plugins are installed successfully
 This sequential approach ensures each plugin is properly installed and allows the user to understand each tool's purpose.
 </examples>

@@ -163,7 +163,7 @@ export const AgentBuilderManifest: BuiltinToolManifest = {
               },
               pluginId: {
                 description:
-                  'The identifier of the plugin to toggle (e.g., "lobe-web-browsing", "lobe-image-generation")',
+                  'The identifier of the plugin to toggle (e.g., "lobe-web-browsing", "arckep-sites")',
                 type: 'string',
               },
             },

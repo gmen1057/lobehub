@@ -117,13 +117,12 @@ const googleChatModels: AIChatModelCard[] = [
     abilities: {
       imageOutput: true,
       reasoning: true,
-      search: true,
       vision: true,
     },
     contextWindowTokens: 131_072 + 32_768,
     description:
-      "Gemini 3.1 Flash Image (Nano Banana 2) is Google's fastest native image generation model with thinking support, conversational image generation and editing.",
-    displayName: 'Nano Banana 2',
+      'Nano Banana 2 — генерация и правка картинок. Не для длинного текстового чата: каждый запрос тарифицирует историю. В агентах вызывайте tool generateImage (arckep-sites).',
+    displayName: 'Nano Banana 2 · картинки',
     enabled: true,
     id: 'gemini-3.1-flash-image-preview',
     maxOutput: 32_768,
@@ -275,13 +274,12 @@ const googleChatModels: AIChatModelCard[] = [
     abilities: {
       imageOutput: true,
       reasoning: true,
-      search: true,
       vision: true,
     },
     contextWindowTokens: 131_072 + 32_768,
     description:
-      'Gemini 3 Pro Image (Nano Banana Pro) is Google’s image generation model and also supports multimodal chat.',
-    displayName: 'Nano Banana Pro',
+      'Nano Banana Pro — премиум-генерация картинок. Не для длинного текстового чата (дорого). В агентах — tool generateImage с quality=high.',
+    displayName: 'Nano Banana Pro · картинки',
     enabled: true,
     id: 'gemini-3-pro-image-preview',
     maxOutput: 32_768,
@@ -395,8 +393,8 @@ const googleChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 65_536 + 32_768,
     description:
-      'Nano Banana is Google’s newest, fastest, and most efficient native multimodal model, enabling conversational image generation and editing.',
-    displayName: 'Nano Banana',
+      'Nano Banana (legacy) — генерация картинок. Не для текстового чата. Предпочтительнее Nano Banana 2 или tool generateImage.',
+    displayName: 'Nano Banana · картинки',
     id: 'gemini-2.5-flash-image',
     maxOutput: 32_768,
     pricing: {

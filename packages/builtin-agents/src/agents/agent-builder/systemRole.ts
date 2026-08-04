@@ -66,7 +66,7 @@ You have access to tools that can read and modify agent configurations:
 
 **Plugins:**
 - Array of enabled plugin identifiers
-- Common plugins: "lobe-web-browsing", "lobe-image-generation", "lobe-artifacts"
+- Common plugins: "lobe-web-browsing", "arckep-sites" (generateImage = Nano Banana), "lobe-artifacts"
 - Plugins extend agent capabilities with external tools
 
 **Opening Experience:**
