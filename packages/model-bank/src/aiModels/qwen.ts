@@ -7,6 +7,141 @@ import {
 // https://help.aliyun.com/zh/model-studio/models?spm=a2c4g.11186623
 
 const qwenChatModels: AIChatModelCard[] = [
+  // arckep: Qwen 3.8 / 3.7 (2026-08) — DashScope intl; 3.6 intentionally omitted
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      video: true,
+      vision: true,
+    },
+    config: {
+      deploymentName: 'qwen3.8-max', // Supports context caching
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Qwen 3.8 Max — 2.4T MoE flagship (Aug 2026). Strongest Qwen for coding, long-horizon agents, and professional work. Native image/video understanding, 1M context.',
+    displayName: 'Qwen 3.8 Max',
+    enabled: true,
+    id: 'qwen3.8-max',
+    maxOutput: 131_072,
+    organization: 'Qwen',
+    pricing: {
+      // Singapore International (dashscope-intl) pay-as-you-go, 2026-08
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput_cacheRead', rate: 0.25, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-08-03',
+    settings: {
+      extendParams: ['enableReasoning', 'reasoningBudgetToken'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+    },
+    config: {
+      deploymentName: 'qwen3.7-max',
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Qwen 3.7 Max — agent-centric flagship (text). Strong coding, office, and long-horizon autonomous tasks. 1M context.',
+    displayName: 'Qwen 3.7 Max',
+    enabled: true,
+    id: 'qwen3.7-max',
+    maxOutput: 65_536,
+    organization: 'Qwen',
+    pricing: {
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 1.65, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 4.95, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-05-20',
+    settings: {
+      extendParams: ['enableReasoning', 'reasoningBudgetToken'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      video: true,
+      vision: true,
+    },
+    config: {
+      deploymentName: 'qwen3.7-plus',
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Qwen 3.7 Plus — balanced multimodal model for coding and knowledge work. Image/video input, 1M context.',
+    displayName: 'Qwen 3.7 Plus',
+    enabled: true,
+    id: 'qwen3.7-plus',
+    maxOutput: 65_536,
+    organization: 'Qwen',
+    pricing: {
+      // Base tier Input<=256k; higher brackets cost more
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 0.28, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 1.1, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-05-26',
+    settings: {
+      extendParams: ['enableReasoning', 'reasoningBudgetToken'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      video: true,
+      vision: true,
+    },
+    config: {
+      deploymentName: 'qwen3.7-flash',
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Qwen 3.7 Flash — fastest/cheapest 3.7 tier with multimodal input. Ideal for simple and high-volume tasks.',
+    displayName: 'Qwen 3.7 Flash',
+    enabled: true,
+    id: 'qwen3.7-flash',
+    maxOutput: 65_536,
+    organization: 'Qwen',
+    pricing: {
+      // Base tier Input<=32k
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 0.03, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0.11, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-07-15',
+    settings: {
+      extendParams: ['enableReasoning', 'reasoningBudgetToken'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
   {
     abilities: {
       functionCall: true,
