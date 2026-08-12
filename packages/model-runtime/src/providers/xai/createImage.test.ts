@@ -189,6 +189,51 @@ describe('createXAIImage', () => {
       });
     });
 
+    it('should pass quality and cap 2.0 refs at 3', async () => {
+      const mockImageUrl = 'https://xai-cdn.com/images/generated/v2.jpg';
+
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [
+            {
+              url: mockImageUrl,
+              revised_prompt: 'edit',
+            },
+          ],
+        }),
+      });
+
+      const payload: CreateImagePayload = {
+        model: 'grok-imagine-image-2.0',
+        params: {
+          prompt: 'change the shirt',
+          quality: 'medium',
+          resolution: '1k',
+          imageUrls: ['https://a', 'https://b', 'https://c', 'https://d'],
+        },
+      };
+
+      await createXAIImage(payload, mockOptions);
+
+      expect(fetch).toHaveBeenCalledWith(
+        'https://api.x.ai/v1/images/edits',
+        expect.objectContaining({
+          body: JSON.stringify({
+            model: 'grok-imagine-image-2.0',
+            prompt: 'change the shirt',
+            resolution: '1k',
+            quality: 'medium',
+            images: [
+              { type: 'image_url', url: 'https://a' },
+              { type: 'image_url', url: 'https://b' },
+              { type: 'image_url', url: 'https://c' },
+            ],
+          }),
+        }),
+      );
+    });
+
     it('should include resolution when value is 1k', async () => {
       const mockImageUrl = 'https://xai-cdn.com/images/generated/1k-res.jpg';
 

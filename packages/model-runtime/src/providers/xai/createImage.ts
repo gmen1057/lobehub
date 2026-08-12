@@ -84,6 +84,10 @@ export async function createXAIImage(
       requestBody.resolution = params.resolution as XAIImageRequest['resolution'];
     }
 
+    if (params.quality) {
+      requestBody.quality = params.quality as XAIImageRequest['quality'];
+    }
+
     if (isImageEdit) {
       if (hasImageUrl && params.imageUrl) {
         requestBody.image = {
@@ -91,7 +95,8 @@ export async function createXAIImage(
           url: params.imageUrl,
         };
       } else if (hasImageUrls && params.imageUrls) {
-        requestBody.images = params.imageUrls.map((url) => ({
+        const urls = model.includes('2.0') ? params.imageUrls.slice(0, 3) : params.imageUrls;
+        requestBody.images = urls.map((url) => ({
           type: 'image_url',
           url,
         }));

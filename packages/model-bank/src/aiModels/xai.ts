@@ -12,10 +12,10 @@ const xaiChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 500_000,
     description:
-      'Grok 4.5 is xAI flagship for coding, agentic tool calling, and knowledge work. Configurable reasoning, vision, 500k context.',
-    displayName: 'Grok 4.5',
+      'Grok 4.6 is xAI flagship for coding, agentic tool calling, and knowledge work. Configurable reasoning, vision, 500k context.',
+    displayName: 'Grok 4.6',
     enabled: true,
-    id: 'grok-4.5',
+    id: 'grok-4.6',
     pricing: {
       units: [
         { name: 'textInput_cacheRead', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
@@ -23,7 +23,7 @@ const xaiChatModels: AIChatModelCard[] = [
         { name: 'textOutput', rate: 6, strategy: 'fixed', unit: 'millionTokens' },
       ],
     },
-    releasedAt: '2026-07-08',
+    releasedAt: '2026-08-12',
     settings: {
       searchImpl: 'params',
     },
@@ -451,6 +451,51 @@ const xaiChatModels: AIChatModelCard[] = [
 ];
 
 const xaiImageModels: AIImageModelCard[] = [
+  {
+    description:
+      'Imagine 2.0: 1K/2K × low/medium, up to 3 reference images. Precise local edits via prompt (no mask in REST).',
+    displayName: 'Grok Imagine Image 2.0',
+    enabled: true,
+    id: 'grok-imagine-image-2.0',
+    parameters: {
+      aspectRatio: {
+        default: 'auto',
+        enum: [
+          'auto',
+          '1:1',
+          '3:4',
+          '4:3',
+          '9:16',
+          '16:9',
+          '2:3',
+          '3:2',
+          '9:19.5',
+          '19.5:9',
+          '9:20',
+          '20:9',
+          '1:2',
+          '2:1',
+        ],
+      },
+      imageUrls: { default: [] },
+      prompt: {
+        default: '',
+      },
+      quality: {
+        default: 'medium',
+        enum: ['low', 'medium'],
+      },
+      resolution: {
+        default: '1k',
+        enum: ['1k', '2k'],
+      },
+    },
+    pricing: {
+      units: [{ name: 'imageGeneration', rate: 0.06, strategy: 'fixed', unit: 'image' }],
+    },
+    releasedAt: '2026-08-07',
+    type: 'image',
+  },
   {
     description:
       'Generate images from text prompts, edit existing images with natural language, or iteratively refine images through multi-turn conversations.',
