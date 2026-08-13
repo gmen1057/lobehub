@@ -7,6 +7,38 @@ import { type AIChatModelCard, type AIImageModelCard, type AIVideoModelCard } fr
  */
 
 const googleChatModels: AIChatModelCard[] = [
+  // arckep: Gemini 3.7 Flash (GA 2026-08-13) — $0.75/$3.75 intro through 2026-12-31
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      video: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576 + 65_536,
+    description:
+      'Gemini 3.7 Flash — Google Flash (August 2026). Agentic + multimodal, 1M context. Intro $0.75/$3.75 through 2026-12-31.',
+    displayName: 'Gemini 3.7 Flash',
+    enabled: true,
+    id: 'gemini-3.7-flash',
+    maxOutput: 65_536,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.075, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 0.75, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 3.75, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-08-13',
+    settings: {
+      extendParams: ['thinkingBudget', 'urlContext'],
+      searchImpl: 'params',
+      searchProvider: 'google',
+    },
+    type: 'chat',
+  },
   // arckep: Gemini 3.6 Flash (GA 2026-07-21) — $1.50/$7.50 per 1M
   {
     abilities: {
