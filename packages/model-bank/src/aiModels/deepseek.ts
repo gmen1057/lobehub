@@ -2,6 +2,29 @@ import type { AIChatModelCard } from '../types/aiModel';
 
 // https://api-docs.deepseek.com/zh-cn/quick_start/pricing
 const deepseekChatModels: AIChatModelCard[] = [
+  // arckep: DeepSeek V4 Flash Vision (2026-08-25) — USD peak cache-miss, separate from text-only flash
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Понимает изображения (текст + фото → текст). На тексте — как V4 Flash. 1M контекст.',
+    displayName: 'DeepSeek V4 Flash Vision',
+    enabled: true,
+    id: 'deepseek-v4-flash-vision-exp',
+    pricing: {
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 0.44, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 1.32, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-08-25',
+    type: 'chat',
+  },
   {
     abilities: {
       functionCall: true,

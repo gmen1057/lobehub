@@ -232,6 +232,23 @@ const openrouterChatModels: AIChatModelCard[] = [
     },
     type: 'chat',
   },
+  // arckep: Z.AI GLM 5.3 (paid; rates match image-studio chat_models)
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+    },
+    contextWindowTokens: 1_000_000,
+    displayName: 'GLM 5.3',
+    id: 'z-ai/glm-5.3',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 1.4, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 4.4, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
   // arckep: Z.AI GLM 5 Turbo (paid, fallback rate)
   {
     contextWindowTokens: 202_752,
