@@ -19,6 +19,7 @@ import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 
 import { type ShareModalProps } from '../components/ShareMessageModal';
 import ShareMessageModal from '../components/ShareMessageModal';
+import { restoreUserMessageToInput } from '../Messages/User/Actions/restoreToInput';
 import {
   createStore,
   dataSelectors,
@@ -122,6 +123,7 @@ export const useChatItemContextMenu = ({
       edit,
       expand,
       regenerate,
+      restoreToInput,
       share,
       translate,
       tts,
@@ -173,7 +175,7 @@ export const useChatItemContextMenu = ({
     }
 
     if (role === 'user') {
-      const list: MenuItem[] = [edit, copy];
+      const list: MenuItem[] = [edit, copy, restoreToInput];
 
       if (!inThread && isDevMode) list.push(branching);
 
@@ -219,6 +221,10 @@ export const useChatItemContextMenu = ({
       switch (action.key) {
         case 'edit': {
           toggleMessageEditing(id, true);
+          break;
+        }
+        case 'restoreToInput': {
+          restoreUserMessageToInput(item, t('restoreToInputSuccess'));
           break;
         }
         case 'copy': {

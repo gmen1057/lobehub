@@ -26,6 +26,7 @@ import {
   useConversationStore,
   useConversationStoreApi,
 } from '../store';
+import OpStatusTray from './OpStatusTray';
 import QueueTray from './QueueTray';
 import { useSiteDeepLink } from './useSiteDeepLink';
 
@@ -262,6 +263,7 @@ const ChatInput = memo<ChatInputProps>(
                 <QueueTray />
               </Flexbox>
             )}
+            <OpStatusTray />
             <DesktopChatInput
               actionBarStyle={actionBarStyle}
               borderRadius={12}

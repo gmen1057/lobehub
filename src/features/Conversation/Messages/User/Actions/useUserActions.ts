@@ -1,7 +1,7 @@
 import { type ActionIconGroupItemType } from '@lobehub/ui';
 import { copyToClipboard } from '@lobehub/ui';
 import { App } from 'antd';
-import { Copy, Edit, LanguagesIcon, Play, RotateCcw, Trash } from 'lucide-react';
+import { Copy, Edit, LanguagesIcon, Play, RotateCcw, Trash, Undo2 } from 'lucide-react';
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -10,6 +10,7 @@ import { cleanSpeakerTag } from '@/store/chat/utils/cleanSpeakerTag';
 import { type UIChatMessage } from '@/types/index';
 
 import { messageStateSelectors, useConversationStore } from '../../../store';
+import { restoreUserMessageToInput } from './restoreToInput';
 
 export interface ActionItem extends ActionIconGroupItemType {
   children?: Array<{ handleClick?: () => void; key: string; label: string }>;
@@ -22,6 +23,7 @@ export interface UserActions {
   divider: { type: 'divider' };
   edit: ActionItem;
   regenerate: ActionItem;
+  restoreToInput: ActionItem;
   translate: ActionItem;
   tts: ActionItem;
 }
@@ -88,6 +90,12 @@ export const useUserActions = ({ id, data }: UseUserActionsParams): UserActions 
         label: t('regenerate'),
         spin: isRegenerating || undefined,
       },
+      restoreToInput: {
+        handleClick: () => restoreUserMessageToInput(data, t('restoreToInputSuccess')),
+        icon: Undo2,
+        key: 'restoreToInput',
+        label: t('restoreToInput'),
+      },
       translate: {
         children: localeOptions.map((i) => ({
           key: i.value,
@@ -117,6 +125,7 @@ export const useUserActions = ({ id, data }: UseUserActionsParams): UserActions 
       translateMessage,
       ttsMessage,
       message,
+      data,
     ],
   );
 };

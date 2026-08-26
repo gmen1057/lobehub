@@ -279,6 +279,8 @@ export default {
   'copy': 'Copy',
   'copyFail': 'Copy failed',
   'copySuccess': 'Copied',
+  'restoreToInput': 'Restore to input',
+  'restoreToInputSuccess': 'Restored to input',
   'dataStatistics.messages': 'Messages',
   'dataStatistics.sessions': 'Agents',
   'dataStatistics.today': "Today's New",

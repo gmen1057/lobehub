@@ -82,7 +82,7 @@
   "response.GoogleAIBlockReason.SPII": "Содержимое может включать чувствительную личную информацию (SPII). Пожалуйста, удалите чувствительные данные и попробуйте снова.",
   "response.GoogleAIBlockReason.default": "Содержимое было заблокировано ({{blockReason}}). Пожалуйста, отредактируйте его и попробуйте снова.",
   "response.InsufficientBudgetForModel": "Ваших оставшихся кредитов недостаточно для этой модели. Пожалуйста, пополните кредиты, обновите свой план или попробуйте менее дорогую модель.",
-  "response.InsufficientQuota": "Извините, достигнут лимит по ключу. Проверьте баланс аккаунта или увеличьте квоту ключа.",
+  "response.InsufficientQuota": "Не хватает рублей на балансе Студии. Пополните на arckep.ru/settings#balance и повторите.",
   "response.InvalidAccessCode": "Неверный или пустой код доступа. Введите корректный код или добавьте пользовательский API-ключ.",
   "response.InvalidBedrockCredentials": "Ошибка аутентификации Bedrock. Проверьте AccessKeyId/SecretAccessKey и повторите попытку.",
   "response.InvalidComfyUIArgs": "Некорректная конфигурация ComfyUI. Проверьте настройки и повторите попытку.",

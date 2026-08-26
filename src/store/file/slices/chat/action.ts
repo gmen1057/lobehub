@@ -71,9 +71,11 @@ export class FileActionImpl {
   };
 
   removeChatUploadFile = async (id: string): Promise<void> => {
-    const { dispatchChatUploadFileList } = this.#get();
+    const { dispatchChatUploadFileList, chatUploadFileList } = this.#get();
+    const item = chatUploadFileList.find((file) => file.id === id);
 
     dispatchChatUploadFileList({ id, type: 'removeFile' });
+    if (item?.skipRemoveFile) return;
     await fileService.removeFile(id);
   };
 
