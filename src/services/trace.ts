@@ -1,6 +1,4 @@
 import { API_ENDPOINTS } from '@/services/_url';
-import { useUserStore } from '@/store/user';
-import { userGeneralSettingsSelectors } from '@/store/user/selectors';
 import { type TraceEventBasePayload, type TraceEventPayloads } from '@/types/trace';
 
 class TraceService {
@@ -17,10 +15,7 @@ class TraceService {
   };
 
   traceEvent = async (data: TraceEventPayloads & TraceEventBasePayload) => {
-    const enabled = userGeneralSettingsSelectors.telemetry(useUserStore.getState());
-
-    if (!enabled) return;
-
+    // Arckep: always POST; TraceClient no-ops when ENABLE_LANGFUSE is off.
     return this.request(data);
   };
 }

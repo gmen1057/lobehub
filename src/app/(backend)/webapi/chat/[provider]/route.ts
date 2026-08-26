@@ -38,12 +38,22 @@ export const POST = checkAuth(
 
       const data = (await req.json()) as ChatStreamPayload;
 
-      const tracePayload = getTracePayload(req);
-
+      const clientTrace = getTracePayload(req);
       let traceOptions = {};
-      // If user enable trace
-      if (tracePayload?.enabled) {
-        traceOptions = createTraceOptions(data, { provider, trace: tracePayload });
+      // Arckep: trace every billed chat to Langfuse when the server flag is on.
+      // Read process.env here (not getLangfuseConfig) so route tests stay isolated.
+      // Do not honor the client telemetry opt-out — owner requires all users.
+      if (process.env.ENABLE_LANGFUSE === '1') {
+        traceOptions = createTraceOptions(data, {
+          provider,
+          trace: {
+            ...clientTrace,
+            enabled: true,
+            sessionId: clientTrace?.sessionId || sessionId,
+            topicId: clientTrace?.topicId || topicId,
+            userId: clientTrace?.userId || userId,
+          },
+        });
       }
 
       return await modelRuntime.chat(data, {

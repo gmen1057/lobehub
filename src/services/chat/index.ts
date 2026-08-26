@@ -530,10 +530,7 @@ class ChatService {
   private mapTrace = (trace?: TracePayload, tag?: TraceTagMap): TracePayload => {
     const tags = agentSelectors.currentAgentMeta(getAgentStoreState()).tags || [];
 
-    const enabled = userGeneralSettingsSelectors.telemetry(getUserStoreState());
-
-    if (!enabled) return { ...trace, enabled: false };
-
+    // Arckep: Langfuse is on for every signed-in user. Ignore the settings toggle.
     return {
       ...trace,
       enabled: true,

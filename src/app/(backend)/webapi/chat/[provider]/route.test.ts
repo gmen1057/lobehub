@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as EnvsAuthModule from '@/envs/auth';
 import { LOBE_CHAT_AUTH_HEADER } from '@/envs/auth';
-import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { POST } from './route';
 
@@ -41,7 +41,9 @@ vi.mock('@/auth', () => ({
 
 // 模拟请求和响应
 let request: Request;
+const originalEnableLangfuse = process.env.ENABLE_LANGFUSE;
 beforeEach(() => {
+  process.env.ENABLE_LANGFUSE = '0';
   request = new Request(new URL('https://test.com'), {
     headers: {
       [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token',
@@ -52,7 +54,11 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  // 清除模拟调用历史
+  if (originalEnableLangfuse === undefined) {
+    delete process.env.ENABLE_LANGFUSE;
+  } else {
+    process.env.ENABLE_LANGFUSE = originalEnableLangfuse;
+  }
   vi.clearAllMocks();
 });
 
@@ -124,6 +130,33 @@ describe('POST handler', () => {
         expect.any(String),
         'test-provider',
         { sessionId: 'inbox', topicId: 'tpc_abc' },
+      );
+    });
+
+    it('should create Langfuse traces when ENABLE_LANGFUSE even without client opt-in', async () => {
+      process.env.ENABLE_LANGFUSE = '1';
+      const mockParams = Promise.resolve({ provider: 'test-provider' });
+      vi.mocked(getXorPayload).mockReturnValueOnce({
+        apiKey: 'test-api-key',
+        azureApiVersion: 'v1',
+      });
+      const mockChatResponse = new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const mockRuntime: LobeRuntimeAI = {
+        baseURL: 'abc',
+        chat: vi.fn().mockResolvedValue(mockChatResponse),
+      };
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue(new ModelRuntime(mockRuntime));
+
+      await POST(request as unknown as Request, { params: mockParams });
+
+      expect(createTraceOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'test-model' }),
+        expect.objectContaining({
+          provider: 'test-provider',
+          trace: expect.objectContaining({ enabled: true }),
+        }),
       );
     });
 
