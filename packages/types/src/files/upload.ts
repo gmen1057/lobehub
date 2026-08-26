@@ -15,12 +15,7 @@ export interface FileUploadState {
 }
 
 export type FileUploadStatus =
-  | 'pending'
-  | 'uploading'
-  | 'processing'
-  | 'success'
-  | 'error'
-  | 'cancelled';
+  'pending' | 'uploading' | 'processing' | 'success' | 'error' | 'cancelled';
 
 export type FileProcessStatus = 'pending' | 'chunking' | 'embedding' | 'success' | 'error';
 
@@ -48,6 +43,11 @@ export interface UploadFileItem {
    * it will use in the file preview before send the message
    */
   previewUrl?: string;
+  /**
+   * Already-persisted chat attachment restored into the composer.
+   * Removing it from the input must not delete the original file.
+   */
+  skipRemoveFile?: boolean;
   status: FileUploadStatus;
   tasks?: FileParsingTask;
   uploadState?: FileUploadState;

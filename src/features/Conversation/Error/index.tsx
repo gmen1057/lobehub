@@ -12,10 +12,9 @@ import useBusinessErrorAlertConfig from '@/business/client/hooks/useBusinessErro
 import useBusinessErrorContent from '@/business/client/hooks/useBusinessErrorContent';
 import useRenderBusinessChatErrorMessageExtra from '@/business/client/hooks/useRenderBusinessChatErrorMessageExtra';
 import ErrorContent from '@/features/Conversation/ChatItem/components/ErrorContent';
+import { useConversationStore } from '@/features/Conversation/store';
 import { useProviderName } from '@/hooks/useProviderName';
 import dynamic from '@/libs/next/dynamic';
-
-import ChatInvalidAPIKey from './ChatInvalidApiKey';
 
 interface ErrorMessageData {
   error?: ChatMessageError | null;
@@ -117,9 +116,17 @@ interface ErrorExtraProps {
   error?: AlertProps;
 }
 
+const isBillingOrBalanceError = (error?: ChatMessageError | null) => {
+  if (!error) return false;
+  const haystack =
+    `${error.type ?? ''} ${error.message ?? ''} ${JSON.stringify(error.body ?? {})}`.toLowerCase();
+  return /insufficient|balance|quota|пополн|недостаточно|не хватает/.test(haystack);
+};
+
 const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data }) => {
   const error = data.error;
   const businessChatErrorMessageExtra = useRenderBusinessChatErrorMessageExtra(error, data.id);
+  const regenerateAssistantMessage = useConversationStore((s) => s.regenerateAssistantMessage);
 
   if (ENABLE_BUSINESS_FEATURES && businessChatErrorMessageExtra)
     return businessChatErrorMessageExtra;
@@ -138,33 +145,29 @@ const ErrorMessageExtra = memo<ErrorExtraProps>(({ error: alertError, data }) =>
     case AgentRuntimeErrorType.ExceededContextWindow: {
       return <ExceededContextWindowError id={data.id} />;
     }
-
-    case AgentRuntimeErrorType.NoOpenAIAPIKey: {
-      {
-        return <ChatInvalidAPIKey id={data.id} provider={data.error?.body?.provider} />;
-      }
-    }
   }
 
-  if (error.type.toString().includes('Invalid')) {
-    return <ChatInvalidAPIKey id={data.id} provider={data.error?.body?.provider} />;
-  }
+  const hideRawJson = isBillingOrBalanceError(error);
 
   return (
     <ErrorContent
       id={data.id}
       error={{
         ...alertError,
-        extra: data.error?.body ? (
-          <Highlighter
-            actionIconSize={'small'}
-            language={'json'}
-            padding={8}
-            variant={'borderless'}
-          >
-            {JSON.stringify(data.error?.body, null, 2)}
-          </Highlighter>
-        ) : undefined,
+        extra:
+          !hideRawJson && data.error?.body ? (
+            <Highlighter
+              actionIconSize={'small'}
+              language={'json'}
+              padding={8}
+              variant={'borderless'}
+            >
+              {JSON.stringify(data.error.body, null, 2)}
+            </Highlighter>
+          ) : undefined,
+      }}
+      onRegenerate={() => {
+        void regenerateAssistantMessage(data.id);
       }}
     />
   );

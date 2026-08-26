@@ -84,16 +84,24 @@ export const UserActionsBar = memo<UserActionsProps>(({ actionsConfig, id, data 
   const barItems = useMemo(() => {
     const base = actionsConfig?.bar ?? [
       defaultActions.regenerate,
+      defaultActions.restoreToInput,
       defaultActions.edit,
       defaultActions.copy,
     ];
     return [...base, ...extraBarItems];
-  }, [actionsConfig?.bar, defaultActions.regenerate, defaultActions.edit, extraBarItems]);
+  }, [
+    actionsConfig?.bar,
+    defaultActions.regenerate,
+    defaultActions.restoreToInput,
+    defaultActions.edit,
+    extraBarItems,
+  ]);
 
   const menuItems = useMemo(() => {
     const base = actionsConfig?.menu ?? [
       defaultActions.edit,
       defaultActions.copy,
+      defaultActions.restoreToInput,
       defaultActions.divider,
       defaultActions.tts,
       defaultActions.translate,
@@ -106,6 +114,7 @@ export const UserActionsBar = memo<UserActionsProps>(({ actionsConfig, id, data 
     actionsConfig?.menu,
     defaultActions.edit,
     defaultActions.copy,
+    defaultActions.restoreToInput,
     defaultActions.divider,
     defaultActions.tts,
     defaultActions.translate,

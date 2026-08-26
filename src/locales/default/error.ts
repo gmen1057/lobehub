@@ -143,7 +143,7 @@ export default {
   'response.GoogleAIBlockReason.default':
     'The content was blocked ({{blockReason}}). Please adjust it and try again.',
   'response.InsufficientQuota':
-    "Sorry, the quota for this key has been reached. Please check if your account balance is sufficient or try again after increasing the key's quota.",
+    'Not enough Studio balance. Top up at arckep.ru/settings#balance and try again.',
   'response.InvalidAccessCode':
     'Invalid access code or empty. Please enter the correct access code or add a custom API Key.',
   'response.InvalidBedrockCredentials':

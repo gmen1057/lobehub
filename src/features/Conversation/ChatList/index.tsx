@@ -16,6 +16,7 @@ import MessageItem from '../Messages';
 import { MessageActionProvider } from '../Messages/Contexts/MessageActionProvider';
 import { dataSelectors, useConversationStore } from '../store';
 import VirtualizedList from './components/VirtualizedList';
+import { useAutoCollapseFinishedTurns } from './hooks/useAutoCollapseFinishedTurns';
 
 export interface ChatListProps {
   /**
@@ -54,6 +55,7 @@ const ChatList = memo<ChatListProps>(({ disableActionsBar, welcome, itemContent 
   useFetchAgentDocuments(isSharePage ? undefined : activeAgentId);
   useFetchNotebookDocuments(isSharePage ? undefined : context.topicId!);
   useFetchTopicMemories(enableUserMemories && !isSharePage ? context.topicId : undefined);
+  useAutoCollapseFinishedTurns();
 
   // Use selectors for data
 

@@ -21,15 +21,18 @@ import {
   preferenceSelectors,
   settingsSelectors,
   systemAgentSelectors,
+  userProfileSelectors,
 } from '@/store/user/selectors';
 
 import { useAgentId } from '../hooks/useAgentId';
+import { useChatInputHistory } from '../hooks/useChatInputHistory';
 import { useChatInputStore, useStoreApi } from '../store';
 import {
   INSERT_ACTION_TAG_COMMAND,
   type InsertActionTagPayload,
   useSlashActionItems,
 } from './ActionTag';
+import InputHistoryPopup, { getHistoryPreviewText } from './InputHistoryPopup';
 import { createMentionMenu } from './MentionMenu';
 import type { MentionMenuState } from './MentionMenu/types';
 import Placeholder from './Placeholder';
@@ -41,6 +44,13 @@ const className = cx(css`
   p {
     margin-block-end: 0;
   }
+`);
+
+const ghostClassName = cx(css`
+  overflow: hidden;
+  display: block;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 `);
 
 const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
@@ -58,10 +68,24 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
   const state = useEditorState(editor);
   const hotkey = useUserStore(settingsSelectors.getHotkeyById(HotkeyEnum.AddUserMessage));
   const { enableScope, disableScope } = useHotkeysContext();
+  const userId = useUserStore(userProfileSelectors.userId);
+  const agentId = useAgentId();
+  const inputHistoryScope = useMemo(() => ({ agentId, userId }), [agentId, userId]);
 
   const { compositionProps, isComposingRef } = useIMECompositionEvent();
 
   const useCmdEnterToSend = useUserStore(preferenceSelectors.useCmdEnterToSend);
+  const getMarkdownContent = useCallback(
+    () => storeApi.getState().getMarkdownContent(),
+    [storeApi],
+  );
+  const inputHistory = useChatInputHistory({
+    editor,
+    enabled: true,
+    getMarkdownContent,
+    isComposingRef,
+    scope: inputHistoryScope,
+  });
 
   // --- Category-based mention system ---
   const categories = useMentionCategories();
@@ -99,7 +123,6 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
   const enableMention = allMentionItems.length > 0;
 
   // Get agent's model info for vision support check and handle paste upload
-  const agentId = useAgentId();
   const model = useAgentStore((s) => agentByIdSelectors.getAgentModelById(agentId)(s));
   const provider = useAgentStore((s) => agentByIdSelectors.getAgentModelProviderById(agentId)(s));
   const { handleUploadFiles } = useUploadFiles({ model, provider });
@@ -272,82 +295,109 @@ const InputEditor = memo<{ defaultRows?: number }>(({ defaultRows = 2 }) => {
       : { plugins };
   }, [enableRichRender, expand, slashMenuRef, autoCompletePlugin]);
 
+  const ghostMarkdown = inputHistory.ghostMarkdown;
+
   return (
-    <Editor
-      autoFocus
-      pasteAsPlainText
-      className={className}
-      content={''}
-      editor={editor}
-      {...{ slashPlacement }}
-      {...richRenderProps}
-      mentionOption={mentionOption}
-      placeholder={<Placeholder />}
-      slashOption={slashOption}
-      type={'text'}
-      variant={'chat'}
-      style={{
-        minHeight: defaultRows > 1 ? defaultRows * 23 : undefined,
-      }}
-      onCompositionEnd={({ event }) => compositionProps.onCompositionEnd(event)}
-      onCompositionStart={({ event }) => compositionProps.onCompositionStart(event)}
-      onBlur={() => {
-        disableScope(HotkeyEnum.AddUserMessage);
-      }}
-      onChange={() => {
-        updateMarkdownContent();
-      }}
-      onContextMenu={async ({ event: e, editor }) => {
-        if (isDesktop) {
-          e.preventDefault();
-          const { electronSystemService } = await import('@/services/electron/system');
+    <>
+      <InputHistoryPopup
+        activeIndex={inputHistory.popup.activeIndex}
+        container={(slashMenuRef as any)?.current ?? null}
+        entries={inputHistory.popup.entries}
+        open={inputHistory.popup.open}
+        onClose={inputHistory.close}
+        onHover={inputHistory.setActiveIndex}
+        onSelect={inputHistory.confirm}
+      />
+      <Editor
+        autoFocus
+        pasteAsPlainText
+        className={className}
+        content={''}
+        editor={editor}
+        {...{ slashPlacement }}
+        {...richRenderProps}
+        mentionOption={mentionOption}
+        slashOption={slashOption}
+        type={'text'}
+        variant={'chat'}
+        placeholder={
+          ghostMarkdown === undefined ? (
+            <Placeholder />
+          ) : (
+            <span className={ghostClassName}>{getHistoryPreviewText(ghostMarkdown)}</span>
+          )
+        }
+        style={{
+          minHeight: defaultRows > 1 ? defaultRows * 23 : undefined,
+        }}
+        onCompositionEnd={({ event }) => compositionProps.onCompositionEnd(event)}
+        onCompositionStart={({ event }) => compositionProps.onCompositionStart(event)}
+        onBlur={() => {
+          disableScope(HotkeyEnum.AddUserMessage);
+        }}
+        onChange={() => {
+          updateMarkdownContent();
+          inputHistory.handleEditorChange();
+        }}
+        onContextMenu={async ({ event: e, editor }) => {
+          if (isDesktop) {
+            e.preventDefault();
+            const { electronSystemService } = await import('@/services/electron/system');
 
-          const selectionText = editor.getSelectionDocument('markdown') as unknown as string;
+            const selectionText = editor.getSelectionDocument('markdown') as unknown as string;
 
-          await electronSystemService.showContextMenu('editor', {
-            selectionText: selectionText || undefined,
-          });
-        }
-      }}
-      onFocus={() => {
-        enableScope(HotkeyEnum.AddUserMessage);
-      }}
-      onInit={(editor) => {
-        const saved = storeApi.getState()._savedEditorState;
-        storeApi.setState({ _savedEditorState: undefined, editor });
-        if (saved) {
-          requestAnimationFrame(() => {
-            editor.setDocument('json', saved);
-          });
-        }
-      }}
-      onPressEnter={({ event: e }) => {
-        if (e.shiftKey || isComposingRef.current) return;
-        // when user like alt + enter to add ai message
-        if (e.altKey && hotkey === combineKeys([KeyEnum.Alt, KeyEnum.Enter])) return true;
-        const commandKey = isCommandPressed(e);
-        // In fullscreen mode, Enter inserts newline; only Cmd/Ctrl+Enter sends
-        if (expand) {
-          if (commandKey) {
-            send();
+            await electronSystemService.showContextMenu('editor', {
+              selectionText: selectionText || undefined,
+            });
+          }
+        }}
+        onFocus={() => {
+          enableScope(HotkeyEnum.AddUserMessage);
+        }}
+        onInit={(editor) => {
+          const saved = storeApi.getState()._savedEditorState;
+          storeApi.setState({ _savedEditorState: undefined, editor });
+          if (saved) {
+            requestAnimationFrame(() => {
+              editor.setDocument('json', saved);
+            });
+          }
+        }}
+        onKeyDown={({ event }) => {
+          if (inputHistory.handleKeyDown(event)) return true;
+        }}
+        onPressEnter={({ event: e }) => {
+          if (inputHistory.popup.open) {
+            inputHistory.confirm();
             return true;
           }
-          return;
-        }
-        // when user like cmd + enter to send message
-        if (useCmdEnterToSend) {
-          if (commandKey) {
-            send();
-            return true;
+          if (e.shiftKey || isComposingRef.current) return;
+          // when user like alt + enter to add ai message
+          if (e.altKey && hotkey === combineKeys([KeyEnum.Alt, KeyEnum.Enter])) return true;
+          const commandKey = isCommandPressed(e);
+          // In fullscreen mode, Enter inserts newline; only Cmd/Ctrl+Enter sends
+          if (expand) {
+            if (commandKey) {
+              send();
+              return true;
+            }
+            return;
           }
-        } else {
-          if (!commandKey) {
-            send();
-            return true;
+          // when user like cmd + enter to send message
+          if (useCmdEnterToSend) {
+            if (commandKey) {
+              send();
+              return true;
+            }
+          } else {
+            if (!commandKey) {
+              send();
+              return true;
+            }
           }
-        }
-      }}
-    />
+        }}
+      />
+    </>
   );
 });
 

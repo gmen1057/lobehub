@@ -368,6 +368,8 @@
   "rename": "Переименовать",
   "reset": "Сбросить",
   "restartToUpdate": "Перезапустите для обновления",
+  "restoreToInput": "Вернуть в поле",
+  "restoreToInputSuccess": "Вернули в поле ввода",
   "retry": "Повторить",
   "run": "Запустить",
   "save": "Сохранить",
