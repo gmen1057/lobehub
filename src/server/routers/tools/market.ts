@@ -252,7 +252,11 @@ const execInSandboxHandler = async ({
           name: 'execute_code',
         },
       }),
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Arckep-Topic': topicId || '',
+        'X-Arckep-User': input.userId || '',
+      },
       method: 'POST',
       signal: AbortSignal.timeout(120_000),
     });

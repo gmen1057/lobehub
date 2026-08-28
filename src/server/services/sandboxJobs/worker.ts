@@ -331,7 +331,11 @@ export class SandboxJobWorker {
             name: 'execute_code',
           },
         }),
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Arckep-Topic': job.topicId || '',
+          'X-Arckep-User': job.userId || '',
+        },
         method: 'POST',
         signal: controller.signal,
       });
