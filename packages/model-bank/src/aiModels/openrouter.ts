@@ -249,6 +249,24 @@ const openrouterChatModels: AIChatModelCard[] = [
     },
     type: 'chat',
   },
+  // arckep: Z.AI GLM 5.3 Flash (paid; list $0.15/$0.50 — not OR promo)
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_000_000,
+    displayName: 'GLM 5.3 Flash',
+    id: 'z-ai/glm-5.3-flash',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 0.15, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0.5, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    type: 'chat',
+  },
   // arckep: Z.AI GLM 5 Turbo (paid, fallback rate)
   {
     contextWindowTokens: 202_752,

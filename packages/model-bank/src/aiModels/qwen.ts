@@ -48,6 +48,40 @@ const qwenChatModels: AIChatModelCard[] = [
       functionCall: true,
       reasoning: true,
       search: true,
+      video: true,
+      vision: true,
+    },
+    config: {
+      deploymentName: 'qwen3.8-flash',
+    },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Qwen 3.8 Flash — fast multimodal (Aug 2026). Image/video understanding, 1M context, cheaper than 3.8 Max.',
+    displayName: 'Qwen 3.8 Flash',
+    enabled: true,
+    id: 'qwen3.8-flash',
+    maxOutput: 131_072,
+    organization: 'Qwen',
+    pricing: {
+      currency: 'USD',
+      units: [
+        { name: 'textInput', rate: 0.15, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 0.47, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput_cacheRead', rate: 0.016, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-08-26',
+    settings: {
+      extendParams: ['enableReasoning', 'reasoningBudgetToken'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
     },
     config: {
       deploymentName: 'qwen3.7-max',
