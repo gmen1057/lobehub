@@ -3,6 +3,7 @@ import { AnimatePresence, m } from 'motion/react';
 import { useEffect, useMemo, useRef } from 'react';
 
 import DragUploadZone, { useUploadFiles } from '@/components/DragUploadZone';
+import { ArckepHomeCapabilities } from '@/features/ArckepCapabilities';
 import { type ActionKeys } from '@/features/ChatInput';
 import { ChatInputProvider, DesktopChatInput } from '@/features/ChatInput';
 import { useSiteDeepLink } from '@/features/Conversation/ChatInput/useSiteDeepLink';
@@ -144,7 +145,11 @@ const InputArea = () => {
             }}
           >
             <Flexbox gap={24}>
-              <SuggestQuestions mode={inputActiveMode} />
+              {inputActiveMode ? (
+                <SuggestQuestions mode={inputActiveMode} />
+              ) : (
+                <ArckepHomeCapabilities />
+              )}
               <CommunityRecommend mode={inputActiveMode} />
             </Flexbox>
           </m.div>
