@@ -254,6 +254,10 @@ describe('LobeOpenAI', () => {
   });
 
   describe('chatCompletion.handlePayload', () => {
+    it('sends vision images as base64 instead of remote URLs', () => {
+      expect(params.chatCompletion?.forceImageBase64).toBe(true);
+    });
+
     it('should use responses API for gpt-6-astra', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

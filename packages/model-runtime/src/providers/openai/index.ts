@@ -82,6 +82,9 @@ const supportsFlexTier = (model: string) => {
 export const params = {
   baseURL: 'https://api.openai.com/v1',
   chatCompletion: {
+    // Yandex Object Storage URLs time out from OpenAI's fetch (gpt-6-astra
+    // user 53, 2026-09-05). Send images as data URLs instead.
+    forceImageBase64: true,
     handlePayload: (payload) => {
       const { enabledSearch, model, openaiImageQuality, openaiImageSize, tools, ...rest } = payload;
       const openAIImageTools = mergeOpenAIImageGenerationTool({
