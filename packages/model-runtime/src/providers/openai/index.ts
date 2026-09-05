@@ -11,7 +11,7 @@ export interface OpenAIModelCard {
   id: string;
 }
 
-const prunePrefixes = ['o1', 'o3', 'o4', 'codex', 'computer-use', 'gpt-5'];
+const prunePrefixes = ['o1', 'o3', 'o4', 'codex', 'computer-use', 'gpt-5', 'gpt-6'];
 const oaiSearchContextSize = process.env.OPENAI_SEARCH_CONTEXT_SIZE; // low, medium, high
 const enableServiceTierFlex = process.env.OPENAI_SERVICE_TIER_FLEX === '1';
 const flexSupportedModels = ['gpt-5', 'o3', 'o4-mini']; // Flex tier is only available for these models
@@ -180,6 +180,15 @@ export const params = {
           : { summary: 'auto' };
         if (model.startsWith('gpt-5-pro')) {
           reasoning.effort = 'high';
+        }
+        if (model.startsWith('gpt-6')) {
+          // Astra: no `none` / `minimal`. Docs: start at low.
+          const effort = reasoning.effort || payload.reasoning_effort;
+          if (!effort || effort === 'none' || effort === 'minimal') {
+            reasoning.effort = 'low';
+          } else {
+            reasoning.effort = effort;
+          }
         }
         return pruneReasoningPayload({
           ...rest,

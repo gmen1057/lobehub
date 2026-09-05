@@ -137,6 +137,10 @@ export const resolveModelExtendParams = (ctx: ModelParamsContext): ModelExtendPa
     extendParams.reasoning_effort = chatConfig.gpt5_2ReasoningEffort;
   }
 
+  if (modelExtendParams.includes('gpt6ReasoningEffort') && chatConfig.gpt6ReasoningEffort) {
+    extendParams.reasoning_effort = chatConfig.gpt6ReasoningEffort;
+  }
+
   if (
     modelExtendParams.includes('gpt5_2ProReasoningEffort') &&
     chatConfig.gpt5_2ProReasoningEffort

@@ -8,6 +8,7 @@ import { Trans, useTranslation } from 'react-i18next';
 import CodexMaxReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/CodexMaxReasoningEffortSlider';
 import EffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/EffortSlider';
 import GPT5ReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/GPT5ReasoningEffortSlider';
+import GPT6ReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/GPT6ReasoningEffortSlider';
 import GPT51ReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/GPT51ReasoningEffortSlider';
 import GPT52ProReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/GPT52ProReasoningEffortSlider';
 import GPT52ReasoningEffortSlider from '@/features/ModelSwitchPanel/components/ControlsForm/GPT52ReasoningEffortSlider';
@@ -84,6 +85,10 @@ const EXTEND_PARAMS_OPTIONS: ExtendParamsOption[] = [
   {
     hintKey: 'providerModels.item.modelConfig.extendParams.options.gpt5_2ProReasoningEffort.hint',
     key: 'gpt5_2ProReasoningEffort',
+  },
+  {
+    hintKey: 'providerModels.item.modelConfig.extendParams.options.gpt6ReasoningEffort.hint',
+    key: 'gpt6ReasoningEffort',
   },
   {
     hintKey: 'providerModels.item.modelConfig.extendParams.options.grok4_20ReasoningEffort.hint',
@@ -163,6 +168,7 @@ const TITLE_KEY_ALIASES: Partial<Record<ExtendParamsType, ExtendParamsType>> = {
   gpt5_1ReasoningEffort: 'reasoningEffort',
   gpt5_2ProReasoningEffort: 'reasoningEffort',
   gpt5_2ReasoningEffort: 'reasoningEffort',
+  gpt6ReasoningEffort: 'reasoningEffort',
   grok4_20ReasoningEffort: 'reasoningEffort',
   imageAspectRatio2: 'imageAspectRatio',
   reasoningBudgetToken32k: 'reasoningBudgetToken',
@@ -202,6 +208,11 @@ const PREVIEW_META: Partial<Record<ExtendParamsType, PreviewMeta>> = {
     tag: 'reasoning_effort',
   },
   gpt5_2ReasoningEffort: { labelSuffix: ' (GPT-5.2)', previewWidth: 300, tag: 'reasoning_effort' },
+  gpt6ReasoningEffort: {
+    labelSuffix: ' (GPT-6 Astra)',
+    previewWidth: 300,
+    tag: 'reasoning_effort',
+  },
   grok4_20ReasoningEffort: {
     labelSuffix: ' (Grok 4.20)',
     previewWidth: 300,
@@ -336,6 +347,7 @@ const ExtendParamsSelect = memo<ExtendParamsSelectProps>(({ value, onChange }) =
       gpt5_1ReasoningEffort: <GPT51ReasoningEffortSlider value="none" />,
       gpt5_2ProReasoningEffort: <GPT52ProReasoningEffortSlider value="medium" />,
       gpt5_2ReasoningEffort: <GPT52ReasoningEffortSlider value="none" />,
+      gpt6ReasoningEffort: <GPT6ReasoningEffortSlider value="medium" />,
       grok4_20ReasoningEffort: <Grok420ReasoningEffortSlider value="medium" />,
       imageAspectRatio: <ImageAspectRatioSelect value="1:1" />,
       imageAspectRatio2: <ImageAspectRatio2Select value="1:1" />,

@@ -254,6 +254,21 @@ describe('LobeOpenAI', () => {
   });
 
   describe('chatCompletion.handlePayload', () => {
+    it('should use responses API for gpt-6-astra', async () => {
+      const payload = {
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-6-astra',
+        temperature: 0.7,
+      };
+
+      await instance.chat(payload);
+
+      expect(instance['client'].responses.create).toHaveBeenCalled();
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.model).toBe('gpt-6-astra');
+      expect(createCall.temperature).toBeUndefined();
+    });
+
     it('should use responses API for responsesAPIModels without enabledSearch', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

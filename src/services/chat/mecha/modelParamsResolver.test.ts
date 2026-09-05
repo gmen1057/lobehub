@@ -289,6 +289,29 @@ describe('resolveModelExtendParams', () => {
       });
     });
 
+    describe('gpt6ReasoningEffort param', () => {
+      beforeEach(() => {
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(
+          () => true,
+        );
+        vi.spyOn(aiModelSelectors.aiModelSelectors, 'modelExtendParams').mockReturnValue(() => [
+          'gpt6ReasoningEffort',
+        ]);
+      });
+
+      it('should set reasoning_effort for gpt-6 astra', () => {
+        const result = resolveModelExtendParams({
+          chatConfig: {
+            gpt6ReasoningEffort: 'max',
+          } as any,
+          model: 'gpt-6-astra',
+          provider: 'openai',
+        });
+
+        expect(result.reasoning_effort).toBe('max');
+      });
+    });
+
     describe('gpt5_2ReasoningEffort param', () => {
       beforeEach(() => {
         vi.spyOn(aiModelSelectors.aiModelSelectors, 'isModelHasExtendParams').mockReturnValue(

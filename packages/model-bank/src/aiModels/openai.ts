@@ -40,6 +40,68 @@ export const openaiChatModels: AIChatModelCard[] = [
       structuredOutput: true,
       vision: true,
     },
+    contextWindowTokens: 1_050_000,
+    description:
+      'GPT-6 Astra is the OpenAI flagship for hard end-to-end work: coding, research, computer use, long documents. Image-in, text-out. reasoning.effort: low / medium / high / xhigh / max (no none).',
+    displayName: 'GPT-6 Astra',
+    enabled: true,
+    id: 'gpt-6-astra',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        {
+          lookup: {
+            prices: {
+              '[0, 0.272]': 10,
+              '[0.272, infinity]': 20,
+            },
+            pricingParams: ['textInput'],
+          },
+          name: 'textInput',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          lookup: {
+            prices: {
+              '[0, 0.272]': 1,
+              '[0.272, infinity]': 2,
+            },
+            pricingParams: ['textInput'],
+          },
+          name: 'textInput_cacheRead',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          lookup: {
+            prices: {
+              '[0, 0.272]': 50,
+              '[0.272, infinity]': 75,
+            },
+            pricingParams: ['textInput'],
+          },
+          name: 'textOutput',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-09-04',
+    settings: {
+      extendParams: ['gpt6ReasoningEffort', 'textVerbosity'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
     contextWindowTokens: 1_000_000,
     description:
       'GPT-5.5 is OpenAI flagship released April 2026, claiming a new class of intelligence at 2x the output price of GPT-5.4. 1M context, vision and reasoning.',
