@@ -2,8 +2,9 @@ import { type OpenAISTTPayload } from '@lobehub/tts';
 import { createOpenaiAudioTranscriptions } from '@lobehub/tts/server';
 
 import { createBizOpenAI } from '@/app/(backend)/_deprecated/createBizOpenAI';
+import { checkAuth } from '@/app/(backend)/middleware/auth';
 
-export const POST = async (req: Request) => {
+export const POST = checkAuth(async (req: Request) => {
   const formData = await req.formData();
   const speechBlob = formData.get('speech') as Blob;
   const optionsString = formData.get('options') as string;
@@ -27,4 +28,4 @@ export const POST = async (req: Request) => {
       'content-type': 'application/json;charset=UTF-8',
     },
   });
-};
+});

@@ -2,41 +2,33 @@
 import { type LobeRuntimeAI } from '@lobechat/model-runtime';
 import { ModelRuntime } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
-import { getXorPayload } from '@lobechat/utils/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as EnvsAuthModule from '@/envs/auth';
-import { LOBE_CHAT_AUTH_HEADER } from '@/envs/auth';
+import { auth } from '@/auth';
 import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { POST } from './route';
-
-vi.mock('@/app/(backend)/middleware/auth/utils', () => ({
-  checkAuthMethod: vi.fn(),
-}));
-
-vi.mock('@lobechat/utils/server', () => ({
-  getXorPayload: vi.fn(),
-}));
 
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB: vi.fn(),
   createTraceOptions: vi.fn().mockReturnValue({}),
 }));
 
-vi.mock('@/envs/auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof EnvsAuthModule>();
-  return {
-    ...actual,
-  };
-});
+vi.mock('@/libs/arckep/validateToken', () => ({
+  validateArckepToken: vi.fn().mockResolvedValue({ status: 'valid', userId: '123' }),
+}));
 
 vi.mock('@/auth', () => ({
   auth: {
     api: {
-      getSession: vi.fn().mockResolvedValue(null),
+      getSession: vi.fn(),
+      signOut: vi.fn(),
     },
   },
+}));
+
+vi.mock('@/database/core/db-adaptor', () => ({
+  getServerDB: vi.fn().mockResolvedValue({}),
 }));
 
 // 模拟请求和响应
@@ -44,10 +36,10 @@ let request: Request;
 const originalEnableLangfuse = process.env.ENABLE_LANGFUSE;
 beforeEach(() => {
   process.env.ENABLE_LANGFUSE = '0';
+  vi.mocked(auth.api.getSession).mockResolvedValue({
+    user: { id: 'usr_test', email: 'user123@arckep.ru' },
+  } as any);
   request = new Request(new URL('https://test.com'), {
-    headers: {
-      [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token',
-    },
     method: 'POST',
     body: JSON.stringify({ model: 'test-model' }),
   });
@@ -67,12 +59,6 @@ describe('POST handler', () => {
     it('should initialize ModelRuntime correctly with valid authorization', async () => {
       const mockParams = Promise.resolve({ provider: 'test-provider' });
 
-      // 设置 getJWTPayload 的模拟返回值
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-        azureApiVersion: 'v1',
-      });
-
       // chat mock 需要返回一个 Response 对象，否则中间件访问 res.headers 会报错
       const mockChatResponse = new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },
@@ -89,7 +75,6 @@ describe('POST handler', () => {
       await POST(request as unknown as Request, { params: mockParams });
 
       // 验证是否正确调用了模拟函数
-      expect(getXorPayload).toHaveBeenCalledWith('Bearer some-valid-token');
       expect(initModelRuntimeFromDB).toHaveBeenCalledWith(
         expect.anything(),
         expect.any(String),
@@ -100,10 +85,6 @@ describe('POST handler', () => {
 
     it('should forward x-session-id and x-topic-id to initModelRuntimeFromDB', async () => {
       const mockParams = Promise.resolve({ provider: 'test-provider' });
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-        azureApiVersion: 'v1',
-      });
       const mockChatResponse = new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -117,7 +98,6 @@ describe('POST handler', () => {
         method: 'POST',
         body: JSON.stringify({ model: 'test-model' }),
         headers: {
-          [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token',
           'x-session-id': 'inbox',
           'x-topic-id': 'tpc_abc',
         },
@@ -136,10 +116,6 @@ describe('POST handler', () => {
     it('should create Langfuse traces when ENABLE_LANGFUSE even without client opt-in', async () => {
       process.env.ENABLE_LANGFUSE = '1';
       const mockParams = Promise.resolve({ provider: 'test-provider' });
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-        azureApiVersion: 'v1',
-      });
       const mockChatResponse = new Response(JSON.stringify({ success: true }), {
         headers: { 'Content-Type': 'application/json' },
       });
@@ -160,7 +136,9 @@ describe('POST handler', () => {
       );
     });
 
-    it('should return Unauthorized error when LOBE_CHAT_AUTH_HEADER is missing', async () => {
+    it('should return Unauthorized error when session is missing', async () => {
+      const { auth } = await import('@/auth');
+      vi.mocked(auth.api.getSession).mockResolvedValueOnce(null as any);
       const mockParams = Promise.resolve({ provider: 'test-provider' });
       const requestWithoutAuthHeader = new Request(new URL('https://test.com'), {
         method: 'POST',
@@ -181,9 +159,7 @@ describe('POST handler', () => {
 
     it('should return InternalServerError error when throw a unknown error', async () => {
       const mockParams = Promise.resolve({ provider: 'test-provider' });
-      vi.mocked(getXorPayload).mockImplementationOnce(() => {
-        throw new Error('unknown error');
-      });
+      vi.mocked(initModelRuntimeFromDB).mockRejectedValueOnce(new Error('unknown error'));
 
       const response = await POST(request, { params: mockParams });
 
@@ -200,16 +176,9 @@ describe('POST handler', () => {
 
   describe('chat', () => {
     it('should correctly handle chat completion with valid payload', async () => {
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-        azureApiVersion: 'v1',
-        userId: 'abc',
-      });
-
       const mockParams = Promise.resolve({ provider: 'test-provider' });
       const mockChatPayload = { message: 'Hello, world!' };
       request = new Request(new URL('https://test.com'), {
-        headers: { [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token' },
         method: 'POST',
         body: JSON.stringify(mockChatPayload),
       });
@@ -232,15 +201,9 @@ describe('POST handler', () => {
     });
 
     it('should return an error response when chat completion fails', async () => {
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-        azureApiVersion: 'v1',
-      });
-
       const mockParams = Promise.resolve({ provider: 'test-provider' });
       const mockChatPayload = { message: 'Hello, world!' };
       request = new Request(new URL('https://test.com'), {
-        headers: { [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token' },
         method: 'POST',
         body: JSON.stringify(mockChatPayload),
       });

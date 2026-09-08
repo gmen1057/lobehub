@@ -3,18 +3,13 @@ import { AgentRuntimeError } from '@lobechat/model-runtime';
 import { context as otContext } from '@lobechat/observability-otel/api';
 import { type ClientSecretPayload } from '@lobechat/types';
 import { ChatErrorType } from '@lobechat/types';
-import { getXorPayload } from '@lobechat/utils/server';
 
 import { auth } from '@/auth';
 import { getServerDB } from '@/database/core/db-adaptor';
 import { type LobeChatDatabase } from '@/database/type';
-import { LOBE_CHAT_AUTH_HEADER, LOBE_CHAT_OIDC_AUTH_HEADER } from '@/envs/auth';
 import { validateArckepToken } from '@/libs/arckep/validateToken';
 import { extractTraceContext, injectActiveTraceHeaders } from '@/libs/observability/traceparent';
-import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
 import { createErrorResponse } from '@/utils/errorResponse';
-
-import { checkAuthMethod } from './utils';
 
 type CreateRuntime = (jwtPayload: ClientSecretPayload) => ModelRuntime;
 type RequestOptions = { createRuntime?: CreateRuntime; params: Promise<{ provider?: string }> };
@@ -132,60 +127,33 @@ export const checkAuth =
       return handleExpiredOrMissing();
     }
 
-    let jwtPayload: ClientSecretPayload;
-
+    // GHSA-5mwj-v5jw-5c97 / CVE-2026-39411: never trust X-lobe-chat-auth (XOR).
+    // Identity is the BetterAuth session, already bound to the arckep cookie above.
+    let userId: string;
     try {
-      // get Authorization from header
-      const authorization = req.headers.get(LOBE_CHAT_AUTH_HEADER);
-
-      // better auth handler
       const session = await auth.api.getSession({
         headers: req.headers,
       });
 
-      const betterAuthAuthorized = !!session?.user?.id;
-
-      // arckep: SSO account switch guard.
-      // If the active arckep.ru user doesn't match the BetterAuth session user,
-      // we must treat this session as expired, signOut, and force re-bridge.
-      if (arckepResult.status === 'valid' && session?.user?.email) {
+      if (session?.user?.email) {
         const expectedEmail = `user${arckepResult.userId}@arckep.ru`;
         if (session.user.email !== expectedEmail) {
           return handleExpiredOrMissing();
         }
       }
 
-      if (!authorization) throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
-
-      jwtPayload = getXorPayload(authorization);
-
-      const oidcAuthorization = req.headers.get(LOBE_CHAT_OIDC_AUTH_HEADER);
-      let isUseOidcAuth = false;
-      if (!!oidcAuthorization) {
-        const oidc = await validateOIDCJWT(oidcAuthorization);
-
-        isUseOidcAuth = true;
-
-        jwtPayload = {
-          ...jwtPayload,
-          userId: oidc.userId,
-        };
+      if (!session?.user?.id) {
+        throw AgentRuntimeError.createError(ChatErrorType.Unauthorized);
       }
 
-      if (!isUseOidcAuth)
-        checkAuthMethod({
-          apiKey: jwtPayload.apiKey,
-          betterAuthAuthorized,
-        });
+      userId = session.user.id;
     } catch (e) {
       const params = await options.params;
 
-      // if the error is not a ChatCompletionErrorPayload, it means the application error
       if (!(e as ChatCompletionErrorPayload).errorType) {
         if ((e as any).code === 'ERR_JWT_EXPIRED')
           return createErrorResponse(ChatErrorType.SystemTimeNotMatchError, e);
 
-        // other issue will be internal server error
         console.error(e);
         return createErrorResponse(ChatErrorType.InternalServerError, {
           error: e,
@@ -204,25 +172,7 @@ export const checkAuth =
       return createErrorResponse(errorType, { error, ...res, provider: params?.provider });
     }
 
-    // Fallback to BetterAuth session userId when JWT payload only carries an
-    // API key (happens when the frontend forwards a key-auth header without
-    // a userId). Without this fallback, downstream models try to insert rows
-    // with user_id='' and hit FK violations.
-    let userId = jwtPayload.userId || '';
-    if (!userId) {
-      try {
-        const session = await auth.api.getSession({ headers: req.headers });
-        userId = session?.user?.id || '';
-      } catch {
-        /* empty */
-      }
-    }
-    if (!userId) {
-      return createErrorResponse(ChatErrorType.Unauthorized, {
-        error: 'Missing userId — session required',
-        provider: (await options.params)?.provider,
-      });
-    }
+    const jwtPayload: ClientSecretPayload = { userId };
 
     const extractedContext = extractTraceContext(req.headers);
 

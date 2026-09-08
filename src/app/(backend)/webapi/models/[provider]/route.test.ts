@@ -2,36 +2,27 @@
 import { type LobeRuntimeAI } from '@lobechat/model-runtime';
 import { ModelRuntime } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
-import { getXorPayload } from '@lobechat/utils/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type * as EnvsAuthModule from '@/envs/auth';
-import { LOBE_CHAT_AUTH_HEADER } from '@/envs/auth';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
 import { GET } from './route';
 
-vi.mock('@/app/(backend)/middleware/auth/utils', () => ({
-  checkAuthMethod: vi.fn(),
-}));
-
-vi.mock('@lobechat/utils/server', () => ({
-  getXorPayload: vi.fn(),
-}));
-
-vi.mock('@/envs/auth', async (importOriginal) => {
-  const actual = await importOriginal<typeof EnvsAuthModule>();
-  return {
-    ...actual,
-  };
-});
-
 vi.mock('@/auth', () => ({
   auth: {
     api: {
-      getSession: vi.fn().mockResolvedValue(null),
+      getSession: vi.fn(),
+      signOut: vi.fn(),
     },
   },
+}));
+
+vi.mock('@/libs/arckep/validateToken', () => ({
+  validateArckepToken: vi.fn().mockResolvedValue({ status: 'valid', userId: '123' }),
+}));
+
+vi.mock('@/database/core/db-adaptor', () => ({
+  getServerDB: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock('@/server/modules/ModelRuntime', () => ({
@@ -40,13 +31,12 @@ vi.mock('@/server/modules/ModelRuntime', () => ({
 
 let request: Request;
 
-beforeEach(() => {
-  request = new Request(new URL('https://test.com'), {
-    headers: {
-      [LOBE_CHAT_AUTH_HEADER]: 'Bearer some-valid-token',
-    },
-    method: 'GET',
-  });
+beforeEach(async () => {
+  const { auth } = await import('@/auth');
+  vi.mocked(auth.api.getSession).mockResolvedValue({
+    user: { id: 'usr_test', email: 'user123@arckep.ru' },
+  } as any);
+  request = new Request(new URL('https://test.com'), { method: 'GET' });
 });
 
 afterEach(() => {
@@ -57,10 +47,6 @@ describe('GET handler', () => {
   describe('error handling', () => {
     it('should not expose stack trace when an Error is thrown', async () => {
       const mockParams = Promise.resolve({ provider: 'google' });
-
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
 
       const errorWithStack = new Error('Something went wrong');
       errorWithStack.stack =
@@ -92,10 +78,6 @@ describe('GET handler', () => {
     it('should preserve error name for custom error types', async () => {
       const mockParams = Promise.resolve({ provider: 'google' });
 
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
-
       class CustomError extends Error {
         constructor(message: string) {
           super(message);
@@ -124,10 +106,6 @@ describe('GET handler', () => {
     it('should pass through structured error objects as-is', async () => {
       const mockParams = Promise.resolve({ provider: 'google' });
 
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
-
       const structuredError = {
         errorType: ChatErrorType.InternalServerError,
         error: { code: 'PROVIDER_ERROR', details: 'API limit exceeded' },
@@ -151,10 +129,6 @@ describe('GET handler', () => {
     it('should return correct status code for errors', async () => {
       const mockParams = Promise.resolve({ provider: 'google' });
 
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
-
       const mockRuntime: LobeRuntimeAI = {
         baseURL: 'abc',
         chat: vi.fn(),
@@ -169,10 +143,6 @@ describe('GET handler', () => {
 
     it('should include provider in error response', async () => {
       const mockParams = Promise.resolve({ provider: 'openai' });
-
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
 
       const mockRuntime: LobeRuntimeAI = {
         baseURL: 'abc',
@@ -191,10 +161,6 @@ describe('GET handler', () => {
   describe('success cases', () => {
     it('should return model list on success', async () => {
       const mockParams = Promise.resolve({ provider: 'openai' });
-
-      vi.mocked(getXorPayload).mockReturnValueOnce({
-        apiKey: 'test-api-key',
-      });
 
       const mockModelList = [
         { id: 'gpt-4', name: 'GPT-4' },

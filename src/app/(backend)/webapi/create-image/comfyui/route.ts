@@ -1,13 +1,10 @@
 import { NextResponse } from 'next/server';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
-import { getServerDBConfig } from '@/config/db';
 import { createCallerFactory } from '@/libs/trpc/lambda';
 import { lambdaRouter } from '@/server/routers/lambda';
 
 export const maxDuration = 300;
-
-const serverDBEnv = getServerDBConfig();
 
 // Custom handler that supports both regular auth and internal service auth
 const handler = async (req: Request, { jwtPayload }: { jwtPayload?: any }) => {
@@ -78,19 +75,7 @@ const handler = async (req: Request, { jwtPayload }: { jwtPayload?: any }) => {
 };
 
 export const POST = async (req: Request) => {
-  // Check for internal service authentication (only if KEY_VAULTS_SECRET is set)
-  if (serverDBEnv.KEY_VAULTS_SECRET) {
-    const authorization = req.headers.get('Authorization');
-
-    // If request has internal service token, bypass regular auth
-    if (authorization === `Bearer ${serverDBEnv.KEY_VAULTS_SECRET}`) {
-      // Internal service call from ComfyUI provider
-      // Pass a system user ID for internal service calls
-      return handler(req, { jwtPayload: { userId: 'INTERNAL_SERVICE' } });
-    }
-  }
-
-  // Otherwise use regular checkAuth
-  // ComfyUI doesn't have a provider param, but checkAuth requires it
+  // ComfyUI is disabled on this deployment (ENABLED_COMFYUI=0). Never bypass
+  // checkAuth via a shared secret — that secret also lives in env files.
   return checkAuth(handler)(req, { params: Promise.resolve({ provider: 'comfyui' }) });
 };

@@ -80,6 +80,15 @@ if [[ "$NEED_SPA" == 1 ]]; then
     rsync -a --delete "$SRC/public/_spa/" "$PROD/public/_spa/"
 fi
 
+# Process runs as User=lobechat. rsync as root would otherwise leave
+# .next owned by root and the next restart fails to read/write cache.
+if id lobechat >/dev/null 2>&1; then
+    chown -R lobechat:lobechat "$PROD/.next"
+    if [[ "$NEED_SPA" == 1 ]]; then
+        chown -R lobechat:lobechat "$PROD/public"
+    fi
+fi
+
 # --- 5. restart + health ------------------------------------------------------
 # Real entry point is arckep.ru/chat/ (basePath /chat, iframe ?embed=1);
 # chat.arckep.ru is a legacy 301. Anonymous probe → 302 to login is healthy.

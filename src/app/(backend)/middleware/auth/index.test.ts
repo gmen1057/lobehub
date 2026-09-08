@@ -1,6 +1,5 @@
 import { AgentRuntimeError } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
-import { getXorPayload } from '@lobechat/utils/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as EnvsAuthModule from '@/envs/auth';
@@ -9,18 +8,9 @@ import { createErrorResponse } from '@/utils/errorResponse';
 
 import { type RequestHandler } from './index';
 import { checkAuth } from './index';
-import { checkAuthMethod } from './utils';
 
 vi.mock('@/utils/errorResponse', () => ({
   createErrorResponse: vi.fn(),
-}));
-
-vi.mock('./utils', () => ({
-  checkAuthMethod: vi.fn(),
-}));
-
-vi.mock('@lobechat/utils/server', () => ({
-  getXorPayload: vi.fn(),
 }));
 
 vi.mock('@/envs/auth', async (importOriginal) => {
@@ -72,7 +62,7 @@ describe('checkAuth', () => {
     vi.resetAllMocks();
   });
 
-  it('should return unauthorized error if no authorization header', async () => {
+  it('should return unauthorized error if there is no Better Auth session', async () => {
     const req = new Request('https://example.com');
     await checkAuth(mockHandler)(req, mockOptions);
 
@@ -83,37 +73,26 @@ describe('checkAuth', () => {
     expect(mockHandler).not.toHaveBeenCalled();
   });
 
-  it('should return error response on getJWTPayload error', async () => {
-    const mockError = AgentRuntimeError.createError(ChatErrorType.Unauthorized);
-    const req = new Request('https://example.com');
-    req.headers.set('Authorization', 'invalid');
-    vi.mocked(getXorPayload).mockRejectedValueOnce(mockError);
+  it('ignores a forged XOR userId and uses the session id', async () => {
+    const { auth } = await import('@/auth');
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: 'usr_real', email: 'user123@arckep.ru' },
+    } as any);
+
+    const req = new Request('https://example.com', {
+      headers: { 'X-lobe-chat-auth': 'N00DFSE+B1ngjQI0TR8=' },
+    });
+    vi.mocked(mockHandler).mockResolvedValueOnce(new Response('ok'));
 
     await checkAuth(mockHandler)(req, mockOptions);
 
-    expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
-      error: mockError,
-      provider: 'mock',
-    });
-    expect(mockHandler).not.toHaveBeenCalled();
-  });
-
-  it('should return error response on checkAuthMethod error', async () => {
-    const mockError = AgentRuntimeError.createError(ChatErrorType.Unauthorized);
-    const req = new Request('https://example.com');
-    req.headers.set('Authorization', 'valid');
-    vi.mocked(getXorPayload).mockResolvedValueOnce({});
-    vi.mocked(checkAuthMethod).mockImplementationOnce(() => {
-      throw mockError;
-    });
-
-    await checkAuth(mockHandler)(req, mockOptions);
-
-    expect(createErrorResponse).toHaveBeenCalledWith(ChatErrorType.Unauthorized, {
-      error: mockError,
-      provider: 'mock',
-    });
-    expect(mockHandler).not.toHaveBeenCalled();
+    expect(mockHandler).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        jwtPayload: { userId: 'usr_real' },
+        userId: 'usr_real',
+      }),
+    );
   });
 
   describe('arckep gate', () => {

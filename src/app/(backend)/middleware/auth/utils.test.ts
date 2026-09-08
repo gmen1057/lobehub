@@ -15,12 +15,8 @@ describe('checkAuthMethod', () => {
     ).not.toThrow();
   });
 
-  it('should pass with valid API key', () => {
-    expect(() =>
-      checkAuthMethod({
-        apiKey: 'someApiKey',
-      }),
-    ).not.toThrow();
+  it('does not accept an API key as authentication', () => {
+    expect(() => checkAuthMethod({})).toThrow();
   });
 
   it('should throw Unauthorized with no auth params', () => {
