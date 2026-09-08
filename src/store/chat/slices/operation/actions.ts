@@ -8,6 +8,7 @@ import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { type StoreSetter } from '@/store/types';
 import { setNamespace } from '@/utils/storeDebug';
 
+import { isOperationAlive } from './liveness';
 import {
   type AfterCompletionCallback,
   type Operation,
@@ -115,6 +116,12 @@ export class OperationActionsImpl {
     }
 
     log('[startOperation] create operation %s (type=%s, context=%o)', operationId, type, context);
+
+    // A dead topic lock (aborted / missing controller / stale) must not block
+    // a new top-level send. Child ops inherit a live parent and skip the sweep.
+    if (!parentOperationId && context.agentId) {
+      this.releaseDeadTopicLock(context);
+    }
 
     const abortController = new AbortController();
     const now = Date.now();
@@ -253,6 +260,34 @@ export class OperationActionsImpl {
       false,
       n(`updateOperationProgress/${operationId}`),
     );
+  };
+
+  /**
+   * Drop in-memory topic locks that are no longer a real run.
+   * Returns the operation ids that were released.
+   */
+  releaseDeadTopicLock = (context: Partial<OperationContext>): string[] => {
+    if (!context.agentId) return [];
+
+    const contextKey = messageMapKey(context as MessageMapKeyInput);
+    const operationIds = this.#get().operationsByContext[contextKey] || [];
+    const released: string[] = [];
+
+    for (const operationId of operationIds) {
+      const operation = this.#get().operations[operationId];
+      if (!operation || operation.status !== 'running') continue;
+      if (isOperationAlive(operation)) continue;
+
+      log(
+        '[releaseDeadTopicLock] releasing dead operation %s (type=%s)',
+        operationId,
+        operation.type,
+      );
+      this.cancelOperation(operationId, 'dead_topic_lock');
+      released.push(operationId);
+    }
+
+    return released;
   };
 
   completeOperation = (operationId: string, metadata?: Partial<OperationMetadata>): void => {
