@@ -6,7 +6,10 @@ import {
   type CallLLMPayload,
   type GeneralAgentCallLLMResultPayload,
   type GeneralAgentCompressionResultPayload,
+  hasRepeatedToolCall,
   type InstructionExecutor,
+  TOOL_CALL_REPEAT_STOP_MESSAGE,
+  updateToolCallRepeatGuard,
   UsageCounter,
 } from '@lobechat/agent-runtime';
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
@@ -891,6 +894,20 @@ export const createRuntimeExecutors = (
             log(`[${operationLogId}][usage] %O`, currentStepUsage);
           }
 
+          // arckep: tool-call repeat guard
+          const toolCallRepeatGuard = updateToolCallRepeatGuard(
+            state.toolCallRepeatGuard,
+            toolsCalling,
+          );
+          let blockedRepeatedToolCall = false;
+          if (hasRepeatedToolCall(toolCallRepeatGuard) && !(await isOperationInterrupted(ctx))) {
+            content = TOOL_CALL_REPEAT_STOP_MESSAGE;
+            hasContentImages = false;
+            toolsCalling = [];
+            tool_calls = [];
+            blockedRepeatedToolCall = true;
+          }
+
           // Add a complete llm_stream event (including all streaming chunks)
           // Compute final content NOW (before emitting llm_result) so the
           // state machine downstream sees a non-empty content string when
@@ -904,6 +921,7 @@ export const createRuntimeExecutors = (
           events.push({
             result: {
               content: finalContent,
+              ...(blockedRepeatedToolCall ? { finishReason: 'tool_call_repeat_limit' } : {}),
               reasoning: thinkingContent,
               tool_calls,
               usage: currentStepUsage,
@@ -983,6 +1001,7 @@ export const createRuntimeExecutors = (
 
           // ===== 2. Then accumulate to AgentState =====
           const newState = structuredClone(state);
+          newState.toolCallRepeatGuard = toolCallRepeatGuard;
 
           newState.messages.push({
             content,

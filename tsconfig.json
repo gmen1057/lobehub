@@ -17,6 +17,7 @@
     "incremental": true,
     "types": ["vitest/globals"],
     "paths": {
+      "@lobechat/agent-runtime": ["./packages/agent-runtime/src/index.ts"],
       "@lobechat/desktop-bridge": ["./packages/desktop-bridge/src/index.ts"],
       "@lobechat/electron-client-ipc": ["./packages/electron-client-ipc/src/index.ts"],
       "@lobechat/builtin-tool-remote-device": [

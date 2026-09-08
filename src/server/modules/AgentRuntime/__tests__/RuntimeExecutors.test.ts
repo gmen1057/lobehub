@@ -1,4 +1,4 @@
-import { type AgentState } from '@lobechat/agent-runtime';
+import { type AgentState, TOOL_CALL_REPEAT_STOP_MESSAGE } from '@lobechat/agent-runtime';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1306,6 +1306,111 @@ describe('RuntimeExecutors', () => {
         // imageList stays empty because no DB file row exists for FK.
         expect(updatePatch.imageList).toBeUndefined();
         expect(updatePatch.metadata?.isMultimodal).toBe(true);
+      });
+    });
+
+    describe('tool-call repeat guard', () => {
+      const repeatedSignature = JSON.stringify(['credentials', 'inject', '{"keys":["github"]}']);
+      const toolCallPayload = [
+        {
+          function: { arguments: '{"keys":["github"]}', name: 'credentials____inject' },
+          id: 'call-5',
+          type: 'function',
+        },
+      ];
+
+      const callWithRepeatedTool = async (overrides?: {
+        loadAgentState?: RuntimeExecutorContext['loadAgentState'];
+        state?: Partial<AgentState>;
+      }) => {
+        const mockChat = vi.fn().mockImplementation(async (_payload: any, options: any) => {
+          await options?.callback?.onToolsCalling?.({ toolsCalling: toolCallPayload });
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+
+        const executors = createRuntimeExecutors({
+          ...ctx,
+          ...(overrides?.loadAgentState ? { loadAgentState: overrides.loadAgentState } : {}),
+        });
+        const state = createMockState({
+          toolCallRepeatGuard: { counts: { [repeatedSignature]: 4 } },
+          ...overrides?.state,
+        });
+        const instruction = {
+          payload: {
+            messages: [{ content: 'retry credentials', role: 'user' }],
+            model: 'gpt-4',
+            parentId: 'parent-123',
+            provider: 'openai',
+            tools: [],
+          },
+          type: 'call_llm' as const,
+        };
+
+        return executors.call_llm!(instruction, state);
+      };
+
+      it('blocks the fifth consecutive identical tool call and does not execute it', async () => {
+        const result = await callWithRepeatedTool();
+
+        expect(result.nextContext).toMatchObject({
+          payload: {
+            hasToolsCalling: false,
+            result: {
+              content: TOOL_CALL_REPEAT_STOP_MESSAGE,
+              tool_calls: [],
+            },
+            toolsCalling: [],
+          },
+          phase: 'llm_result',
+        });
+        expect(result.events).toContainEqual(
+          expect.objectContaining({
+            result: expect.objectContaining({ finishReason: 'tool_call_repeat_limit' }),
+            type: 'llm_result',
+          }),
+        );
+        expect(mockMessageModel.update).toHaveBeenCalledWith(
+          'msg-123',
+          expect.objectContaining({
+            content: TOOL_CALL_REPEAT_STOP_MESSAGE,
+            tools: undefined,
+          }),
+        );
+        expect(mockToolExecutionService.executeTool).not.toHaveBeenCalled();
+        expect(result.newState.toolCallRepeatGuard?.counts[repeatedSignature]).toBe(5);
+      });
+
+      it('lets abort win over the loop guard', async () => {
+        const loadAgentState = vi.fn().mockResolvedValue({ status: 'interrupted' });
+        const result = await callWithRepeatedTool({ loadAgentState });
+
+        expect(result.nextContext?.payload).toMatchObject({
+          hasToolsCalling: true,
+          toolsCalling: [
+            expect.objectContaining({
+              apiName: 'inject',
+              identifier: 'credentials',
+            }),
+          ],
+        });
+        expect(result.events).not.toContainEqual(
+          expect.objectContaining({
+            result: expect.objectContaining({ finishReason: 'tool_call_repeat_limit' }),
+          }),
+        );
+        expect(mockMessageModel.update).toHaveBeenCalledWith(
+          'msg-123',
+          expect.objectContaining({
+            tools: [
+              expect.objectContaining({
+                apiName: 'inject',
+                identifier: 'credentials',
+              }),
+            ],
+          }),
+        );
       });
     });
   });

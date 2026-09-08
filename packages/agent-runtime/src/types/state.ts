@@ -122,6 +122,14 @@ export interface AgentState {
   stepCount: number;
 
   systemRole?: string;
+  /**
+   * Consecutive LLM turns that emitted the same normalized tool calls.
+   * Only signatures present in the latest tool-calling turn are retained.
+   */
+  toolCallRepeatGuard?: {
+    counts: Record<string, number>;
+  };
+
   toolManifestMap: Record<string, any>;
 
   tools?: any[];

@@ -18,7 +18,13 @@ import type {
   TaskResultPayload,
   TasksBatchResultPayload,
 } from '@lobechat/agent-runtime';
-import { calculateMessageTokens, UsageCounter } from '@lobechat/agent-runtime';
+import {
+  calculateMessageTokens,
+  hasRepeatedToolCall,
+  TOOL_CALL_REPEAT_STOP_MESSAGE,
+  updateToolCallRepeatGuard,
+  UsageCounter,
+} from '@lobechat/agent-runtime';
 import { isDesktop } from '@lobechat/const';
 import type { ToolsEngine } from '@lobechat/context-engine';
 import { chainCompressContext } from '@lobechat/prompts';
@@ -609,7 +615,12 @@ export const createAgentExecutors = (context: {
         if (cost) newState.cost = cost;
       }
 
+      // arckep: tool-call repeat guard
+      const toolCallRepeatGuard = updateToolCallRepeatGuard(state.toolCallRepeatGuard, toolCalls);
+      newState.toolCallRepeatGuard = toolCallRepeatGuard;
+
       // If operation was aborted, enter human_abort phase to let agent decide how to handle
+      // Abort/cancel must win over the loop guard.
       if (finishType === 'abort') {
         log(
           '[%s:%d] call_llm aborted by user, entering human_abort phase',
@@ -635,6 +646,37 @@ export const createAgentExecutors = (context: {
               status: 'running',
               stepCount: state.stepCount + 1,
             },
+          } as AgentRuntimeContext,
+        };
+      }
+
+      if (hasRepeatedToolCall(toolCallRepeatGuard)) {
+        await optimisticUpdateMessageContent(
+          assistantMessageId,
+          TOOL_CALL_REPEAT_STOP_MESSAGE,
+          { tools: [] },
+          { operationId: context.operationId },
+        );
+        newState.messages = context.get().dbMessagesMap[context.messageKey] || latestMessages;
+
+        return {
+          events: [],
+          newState,
+          nextContext: {
+            payload: {
+              hasToolsCalling: false,
+              parentMessageId: assistantMessageId,
+              result: { content: TOOL_CALL_REPEAT_STOP_MESSAGE, tool_calls: [] },
+              toolsCalling: [],
+            } as GeneralAgentCallLLMResultPayload,
+            phase: 'llm_result',
+            session: {
+              messageCount: newState.messages.length,
+              sessionId: state.operationId,
+              status: 'running',
+              stepCount: state.stepCount + 1,
+            },
+            stepUsage: currentStepUsage,
           } as AgentRuntimeContext,
         };
       }
