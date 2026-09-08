@@ -84,8 +84,11 @@ afterEach(() => {
 });
 
 describe('sites auto-continue flags', () => {
-  it('is off by default', () => {
-    expect(isSitesAutoContinueEnabled()).toBe(false);
+  it('follows the master switch when chatConfig is unset', () => {
+    expect(isSitesAutoContinueEnabled()).toBe(true);
+  });
+
+  it('explicit chatConfig false stays off', () => {
     expect(isSitesAutoContinueEnabled({ enableSitesAutoContinue: false })).toBe(false);
   });
 

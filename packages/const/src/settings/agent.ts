@@ -30,9 +30,8 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
   enableContextCompression: true,
   enableHistoryCount: false,
   enableReasoning: false,
-  // arckep: Wave 4 site auto-continue stays off on the default helper until
-  // SITES_AUTO_CONTINUE_ENABLED (or this flag / ARCKEP_SITES_AUTO_CONTINUE=1) is flipped.
-  enableSitesAutoContinue: false,
+  // arckep: Wave 4 on for the default helper (owner 2026-09-08).
+  enableSitesAutoContinue: true,
   enableStreaming: true,
   historyCount: 20,
   reasoningBudgetToken: 1024,

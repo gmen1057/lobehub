@@ -9,11 +9,10 @@ const USER_INTERACTION_ID = 'lobe-user-interaction';
 const ASK_USER_QUESTION_API = 'askUserQuestion';
 
 /**
- * Master switch. Flip to true to turn on auto-continue for eligible agents.
- * Default helper chatConfig stays off; per-agent `enableSitesAutoContinue: true` can opt in
- * without flipping this constant. Env `ARCKEP_SITES_AUTO_CONTINUE=1` also enables.
+ * Master switch. Owner 2026-09-08: on for helper + agents with arckep-sites.
+ * Cap 150 ₽ / max 2 repairs. Env ARCKEP_SITES_AUTO_CONTINUE=1 is a spare on-switch.
  */
-export const SITES_AUTO_CONTINUE_ENABLED = false;
+export const SITES_AUTO_CONTINUE_ENABLED = true;
 
 /** RUB already charged on this topic (GET /chat/api/arckep/topic-spend). Easy to change. */
 export const SITES_AUTO_CONTINUE_SPEND_CAP_RUB = 150;
@@ -140,6 +139,7 @@ export const isSitesAutoContinueEnabled = (chatConfig?: {
   enableSitesAutoContinue?: boolean;
 }): boolean => {
   if (chatConfig?.enableSitesAutoContinue === true) return true;
+  if (chatConfig?.enableSitesAutoContinue === false) return false;
   if (typeof process !== 'undefined' && process.env?.ARCKEP_SITES_AUTO_CONTINUE === '1') {
     return true;
   }
