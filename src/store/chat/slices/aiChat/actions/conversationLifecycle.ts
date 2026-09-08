@@ -704,6 +704,18 @@ export class ConversationLifecycleActionImpl {
     const { agentId, topicId } = context;
     if (!topicId) return;
 
+    // arckep: skip repeat compression
+    if (
+      hasRunningCompressionOperation(Object.values(this.#get().operations), {
+        agentId,
+        groupId: context.groupId,
+        threadId: context.threadId,
+        topicId,
+      })
+    ) {
+      return;
+    }
+
     const contextKey = messageMapKey(context as any);
     const dbMessages = dbMessageSelectors.getDbMessagesByKey(contextKey)(this.#get()) || [];
     const messageIds = getCompressionCandidateMessageIds(dbMessages);
