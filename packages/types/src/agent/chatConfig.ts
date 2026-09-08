@@ -72,6 +72,11 @@ export interface LobeAgentChatConfig extends AgentMemoryChatConfig {
    */
   enableReasoningEffort?: boolean;
   /**
+   * arckep: opt-in auto-continue + cheap self-check after a site-building turn.
+   * Default helper leaves this false. Master switch: SITES_AUTO_CONTINUE_ENABLED.
+   */
+  enableSitesAutoContinue?: boolean;
+  /**
    * Whether to enable streaming output
    */
   enableStreaming?: boolean;
@@ -196,6 +201,7 @@ export const AgentChatConfigSchema = z
     enableMaxTokens: z.boolean().optional(),
     enableReasoning: z.boolean().optional(),
     enableReasoningEffort: z.boolean().optional(),
+    enableSitesAutoContinue: z.boolean().optional(),
     enableStreaming: z.boolean().optional(),
     gpt5ReasoningEffort: z.enum(['minimal', 'low', 'medium', 'high']).optional(),
     gpt5_1ReasoningEffort: z.enum(['none', 'low', 'medium', 'high']).optional(),
