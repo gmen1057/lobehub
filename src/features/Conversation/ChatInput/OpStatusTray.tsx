@@ -52,6 +52,12 @@ const OpStatusTray = memo(() => {
   const isGenerating = useChatStore((s) =>
     operationSelectors.isAgentRuntimeRunningByContext(context)(s),
   );
+  const trayHint = useChatStore((s) => {
+    const hit = operationSelectors
+      .getCurrentContextOperations(s)
+      .find((op) => op.status === 'running' && typeof op.metadata?.trayHint === 'string');
+    return hit?.metadata.trayHint as string | undefined;
+  });
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [linger, setLinger] = useState(false);
   const [now, setNow] = useState(Date.now());
@@ -71,7 +77,7 @@ const OpStatusTray = memo(() => {
     return () => window.clearTimeout(t);
   }, [isGenerating, startedAt]);
 
-  const visible = isGenerating || linger;
+  const visible = isGenerating || linger || Boolean(trayHint);
 
   useEffect(() => {
     if (!visible) return;
@@ -107,6 +113,7 @@ const OpStatusTray = memo(() => {
   return (
     <Flexbox horizontal align="center" className={styles.container} gap={12}>
       <span className={styles.metric}>{elapsed}</span>
+      {trayHint ? <span className={styles.metric}>{trayHint}</span> : null}
       <span className={styles.metric}>{costLabel}</span>
     </Flexbox>
   );

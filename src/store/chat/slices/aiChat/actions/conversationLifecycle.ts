@@ -48,6 +48,7 @@ import {
   parseSelectedToolsFromEditorData,
   processCommands,
 } from './commandBus';
+import { maybeSitesAutoContinue } from './sitesAutoContinue';
 
 /**
  * Extended params for sendMessage with context
@@ -628,6 +629,13 @@ export class ConversationLifecycleActionImpl {
           inPortalThread: !!data.createdThreadId,
           skipCreateFirstMessage: true,
         });
+
+        // arckep: sites auto-continue hook
+        try {
+          await maybeSitesAutoContinue(this.#get, execContext);
+        } catch (error) {
+          console.error('[sitesAutoContinue]', error);
+        }
 
         const userFiles = dbMessageSelectors
           .dbUserFiles(this.#get())

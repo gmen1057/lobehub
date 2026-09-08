@@ -58,6 +58,13 @@ curl -sS -o /dev/null -w "%{http_code}" https://chat.arckep.ru/_spa/assets/$(ls 
 | 2026-05-11 | `--no-verify` в коммите                                                                        | Pre-commit hooks (eslint+prettier) таймаутились на 5 файлах                                              | Не обходить hooks; если таймаут — увеличить patience или фиксить конфиг                       |
 | 2026-05-22 | Все Opus 4.6/4.7 запросы возвращали 400 `tools: Tool names must be unique.` — чат «не отвечал» | `enabledSearch` добавлял встроенный `web_search` поверх плагина с тем же именем → дубликат в payload     | Дедуп `postTools` по `name` после слияния search-tool в `anthropicCompatibleFactory/index.ts` |
 
+## Решения
+
+- Вопрос: самоход агента сайтов (Wave 4) — серверный CAO или клиентский follow-up?
+- Взяли: клиентский хук после `sendMessage` → `internal_execAgentRuntime` (скрытое продолжение, не дубль user bubble). Судья — `gemini-2.5-flash-lite` через `fetchPresetTaskResult` (тот же billing proxy). Потолок 150 ₽ из `GET /chat/api/arckep/topic-spend`. Макс. 2 ремонта, потом AskUserQuestion.
+- Отвергли: их CAO / Upstash / `agent_operations` / verify_* таблицы; новый write-path биллинга; RuntimeExecutors (Gemini 6-layer).
+- Почему: флаг `SITES_AUTO_CONTINUE_ENABLED = false` + `chatConfig.enableSitesAutoContinue` на дефолтном помощнике выключен. Живое не трогаем, пока не перевернём константу.
+
 ## Известные особенности
 
 - **Kling video** доступен через Qwen-провайдер (см. `packages/model-runtime/src/providers/qwen/createVideo.ts`). Отдельный custom runtime не нужен.
