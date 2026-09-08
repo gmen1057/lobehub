@@ -13,7 +13,6 @@ import {
   type SendMessageServerResponse,
 } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
-import { TRPCClientError } from '@trpc/client';
 import { t } from 'i18next';
 
 import { markUserValidAction } from '@/business/client/markUserValidAction';
@@ -39,6 +38,7 @@ import { useUserMemoryStore } from '@/store/userMemory';
 
 import { dbMessageSelectors, displayMessageSelectors, topicSelectors } from '../../../selectors';
 import { messageMapKey } from '../../../utils/messageMapKey';
+import { isOperationAlive } from '../../operation/liveness';
 import {
   type CommandSendOverrides,
   hasNonActionContent,
@@ -216,13 +216,16 @@ export class ConversationLifecycleActionImpl {
     if (!message && !hasFile) return;
 
     // ━━━ Message Queue: enqueue if agent is currently running ━━━
-    // Check if there's a running execAgentRuntime operation in the current context.
-    // If so, enqueue the message instead of starting a new operation.
+    // A dead lock (aborted / missing / stale) is not a real run — clear it and
+    // send. The composer is already empty, so enqueueing into a queue that
+    // never drains would swallow the message.
+    this.#get().releaseDeadTopicLock(operationContext);
+
     const currentContextKey = messageMapKey(operationContext);
     const contextOpIds = this.#get().operationsByContext[currentContextKey] || [];
     const runningAgentOp = contextOpIds
       .map((id) => this.#get().operations[id])
-      .find((op) => op && op.type === 'execAgentRuntime' && op.status === 'running');
+      .find((op) => op?.type === 'execAgentRuntime' && isOperationAlive(op));
 
     if (runningAgentOp) {
       this.#get().enqueueMessage(
@@ -476,17 +479,17 @@ export class ConversationLifecycleActionImpl {
         message: e instanceof Error ? e.message : 'Unknown error',
       });
 
-      if (e instanceof TRPCClientError) {
-        const isAbort = e.message.includes('aborted') || e.name === 'AbortError';
-        // Check if error is due to cancellation
-        if (!isAbort) {
-          this.#get().updateOperationMetadata(operationId, { inputSendErrorMsg: e.message });
-          const op = this.#get().operations[operationId];
-          if (op?.metadata.inputEditorTempState) {
-            this.#get().mainInputEditor?.setJSONState(op.metadata.inputEditorTempState);
-          } else {
-            this.#get().mainInputEditor?.setDocument('markdown', message);
-          }
+      // Composer is cleared the instant Enter is pressed. Restore it whenever
+      // the user message was not persisted — otherwise the typed text is gone.
+      if (!isAbortError(e, abortController)) {
+        this.#get().updateOperationMetadata(operationId, {
+          inputSendErrorMsg: e instanceof Error ? e.message : 'Unknown error',
+        });
+        const op = this.#get().operations[operationId];
+        if (op?.metadata.inputEditorTempState) {
+          this.#get().mainInputEditor?.setJSONState(op.metadata.inputEditorTempState);
+        } else {
+          this.#get().mainInputEditor?.setDocument('markdown', message);
         }
       }
     } finally {

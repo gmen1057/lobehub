@@ -616,10 +616,11 @@ describe('ConversationLifecycle actions', () => {
           useChatStore.setState({
             operations: {
               'op-running': {
+                abortController: new AbortController(),
                 childOperationIds: [],
                 context,
                 id: 'op-running',
-                metadata: {},
+                metadata: { startTime: Date.now() },
                 status: 'running',
                 type: 'execAgentRuntime',
               },
@@ -648,6 +649,149 @@ describe('ConversationLifecycle actions', () => {
           }),
           'op-running',
         );
+      });
+
+      it('should send instead of enqueue when the topic lock is aborted', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const context = createTestContext();
+        const contextKey = messageMapKey(context);
+        const abortController = new AbortController();
+        abortController.abort();
+
+        act(() => {
+          useChatStore.setState({
+            operations: {
+              'op-dead': {
+                abortController,
+                childOperationIds: [],
+                context,
+                id: 'op-dead',
+                metadata: { startTime: Date.now() },
+                status: 'running',
+                type: 'execAgentRuntime',
+              },
+            } as any,
+            operationsByContext: {
+              [contextKey]: ['op-dead'],
+            },
+          });
+        });
+
+        const enqueueMessageSpy = vi.spyOn(result.current, 'enqueueMessage');
+        const sendMessageInServerSpy = vi
+          .spyOn(aiChatService, 'sendMessageInServer')
+          .mockResolvedValue({
+            messages: [
+              createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+              createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+            ],
+            topics: [],
+            assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+            userMessageId: TEST_IDS.USER_MESSAGE_ID,
+          } as any);
+
+        await act(async () => {
+          await result.current.sendMessage({
+            context,
+            message: TEST_CONTENT.USER_MESSAGE,
+          });
+        });
+
+        expect(enqueueMessageSpy).not.toHaveBeenCalled();
+        expect(sendMessageInServerSpy).toHaveBeenCalled();
+        expect(result.current.operations['op-dead']?.status).toBe('cancelled');
+        expect(result.current.internal_execAgentRuntime).toHaveBeenCalled();
+      });
+
+      it('should send instead of enqueue when the topic lock has no abort controller', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const context = createTestContext();
+        const contextKey = messageMapKey(context);
+
+        act(() => {
+          useChatStore.setState({
+            operations: {
+              'op-orphan': {
+                childOperationIds: [],
+                context,
+                id: 'op-orphan',
+                metadata: {},
+                status: 'running',
+                type: 'execAgentRuntime',
+              },
+            } as any,
+            operationsByContext: {
+              [contextKey]: ['op-orphan'],
+            },
+          });
+        });
+
+        const enqueueMessageSpy = vi.spyOn(result.current, 'enqueueMessage');
+        vi.spyOn(aiChatService, 'sendMessageInServer').mockResolvedValue({
+          messages: [
+            createMockMessage({ id: TEST_IDS.USER_MESSAGE_ID, role: 'user' }),
+            createMockMessage({ id: TEST_IDS.ASSISTANT_MESSAGE_ID, role: 'assistant' }),
+          ],
+          topics: [],
+          assistantMessageId: TEST_IDS.ASSISTANT_MESSAGE_ID,
+          userMessageId: TEST_IDS.USER_MESSAGE_ID,
+        } as any);
+
+        await act(async () => {
+          await result.current.sendMessage({
+            context,
+            message: TEST_CONTENT.USER_MESSAGE,
+          });
+        });
+
+        expect(enqueueMessageSpy).not.toHaveBeenCalled();
+        expect(result.current.operations['op-orphan']?.status).toBe('cancelled');
+        expect(result.current.internal_execAgentRuntime).toHaveBeenCalled();
+      });
+
+      it('should restore the composer when a non-TRPC send error drops the message', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const inputEditorState = {
+          root: {
+            children: [
+              {
+                children: [{ text: 'Swallowed text', type: 'text', version: 1 }],
+                type: 'paragraph',
+                version: 1,
+              },
+            ],
+            type: 'root',
+            version: 1,
+          },
+        };
+        const setDocument = vi.fn();
+        const setJSONState = vi.fn();
+
+        vi.spyOn(aiChatService, 'sendMessageInServer').mockRejectedValue(new Error('network down'));
+
+        act(() => {
+          useChatStore.setState({
+            mainInputEditor: {
+              getJSONState: vi.fn().mockReturnValue({ root: { children: [], type: 'root' } }),
+              setDocument,
+              setJSONState,
+            } as any,
+          });
+        });
+
+        await act(async () => {
+          await result.current.sendMessage({
+            context: createTestContext(),
+            editorData: inputEditorState as any,
+            message: 'Swallowed text',
+          });
+        });
+
+        expect(setJSONState).toHaveBeenCalledWith(inputEditorState);
+        const sendMessageOperation = Object.values(result.current.operations).find(
+          (operation) => operation.type === 'sendMessage',
+        );
+        expect(sendMessageOperation?.metadata.inputSendErrorMsg).toBe('network down');
       });
     });
 

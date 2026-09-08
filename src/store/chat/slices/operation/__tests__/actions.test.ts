@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react';
 import { produce } from 'immer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ABANDONED_OPERATION_TTL_MS } from '@/store/chat/slices/operation/liveness';
 import { mergeQueuedMessages } from '@/store/chat/slices/operation/types';
 import { useChatStore } from '@/store/chat/store';
 
@@ -56,6 +57,132 @@ describe('Operation Actions', () => {
         expect.objectContaining({ children: [], type: 'paragraph' }),
       );
       expect(merged.editorData?.root.children[2]).toEqual(secondParagraph);
+    });
+  });
+
+  describe('releaseDeadTopicLock', () => {
+    it('should fail aborted running operations in the same topic', () => {
+      const { result } = renderHook(() => useChatStore());
+      const abortController = new AbortController();
+
+      let operationId: string;
+      act(() => {
+        operationId = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: { agentId: 'session1', topicId: 'topic1' },
+        }).operationId;
+      });
+
+      act(() => {
+        abortController.abort();
+        useChatStore.setState(
+          produce((state) => {
+            const operation = state.operations[operationId!];
+            if (operation) operation.abortController = abortController;
+          }),
+        );
+      });
+
+      let released: string[] = [];
+      act(() => {
+        released = result.current.releaseDeadTopicLock({
+          agentId: 'session1',
+          topicId: 'topic1',
+        });
+      });
+
+      expect(released).toEqual([operationId!]);
+      expect(result.current.operations[operationId!].status).toBe('cancelled');
+      expect(result.current.operations[operationId!].metadata.cancelReason).toBe('dead_topic_lock');
+    });
+
+    it('should keep a live running operation locked', () => {
+      const { result } = renderHook(() => useChatStore());
+
+      let operationId: string;
+      act(() => {
+        operationId = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: { agentId: 'session1', topicId: 'topic1' },
+        }).operationId;
+      });
+
+      let released: string[] = [];
+      act(() => {
+        released = result.current.releaseDeadTopicLock({
+          agentId: 'session1',
+          topicId: 'topic1',
+        });
+      });
+
+      expect(released).toEqual([]);
+      expect(result.current.operations[operationId!].status).toBe('running');
+    });
+
+    it('should fail a running operation whose startTime is older than the abandoned TTL', () => {
+      const { result } = renderHook(() => useChatStore());
+
+      let operationId: string;
+      act(() => {
+        operationId = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: { agentId: 'session1', topicId: 'topic1' },
+        }).operationId;
+      });
+
+      act(() => {
+        useChatStore.setState(
+          produce((state) => {
+            const operation = state.operations[operationId!];
+            if (operation) {
+              operation.metadata.startTime = Date.now() - ABANDONED_OPERATION_TTL_MS - 1;
+            }
+          }),
+        );
+      });
+
+      let released: string[] = [];
+      act(() => {
+        released = result.current.releaseDeadTopicLock({
+          agentId: 'session1',
+          topicId: 'topic1',
+        });
+      });
+
+      expect(released).toEqual([operationId!]);
+      expect(result.current.operations[operationId!].status).toBe('cancelled');
+    });
+
+    it('should release a dead lock when startOperation begins a new top-level run', () => {
+      const { result } = renderHook(() => useChatStore());
+      const abortController = new AbortController();
+      abortController.abort();
+
+      let deadOpId: string;
+      act(() => {
+        deadOpId = result.current.startOperation({
+          type: 'execAgentRuntime',
+          context: { agentId: 'session1', topicId: 'topic1' },
+        }).operationId;
+      });
+
+      act(() => {
+        useChatStore.setState(
+          produce((state) => {
+            const operation = state.operations[deadOpId!];
+            if (operation) operation.abortController = abortController;
+          }),
+        );
+      });
+
+      act(() => {
+        result.current.startOperation({
+          type: 'sendMessage',
+          context: { agentId: 'session1', topicId: 'topic1' },
+        });
+      });
+
+      expect(result.current.operations[deadOpId!].status).toBe('cancelled');
     });
   });
 
