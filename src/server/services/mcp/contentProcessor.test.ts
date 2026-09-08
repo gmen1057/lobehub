@@ -138,6 +138,37 @@ describe('contentProcessor', () => {
       expect(result[0]).toEqual({ type: 'text', text: 'hello' });
     });
 
+    it('should upload JSON content_base64 payloads and replace with a download link', async () => {
+      mockFileService.uploadBase64.mockResolvedValue({
+        url: 'https://example.com/f/file_docx',
+        fileId: 'file-docx',
+        key: 'mcp/files/2025-01-01/abc-Kadguru_KP.docx',
+      });
+
+      const blocks: ToolCallContent[] = [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            success: true,
+            filename: 'Kadguru_KP.docx',
+            size: 12,
+            content_base64: 'UEsDBBQAAAAI',
+          }),
+        },
+      ];
+
+      const result = await processContentBlocks(blocks, mockFileService);
+
+      expect(result[0]).toEqual({
+        type: 'text',
+        text: 'Файл готов: [Kadguru_KP.docx](https://example.com/f/file_docx)',
+      });
+      expect(mockFileService.uploadBase64).toHaveBeenCalledWith(
+        'UEsDBBQAAAAI',
+        expect.stringContaining('Kadguru_KP.docx'),
+      );
+    });
+
     it('should produce correct string when combined with contentBlocksToString', async () => {
       mockFileService.uploadBase64.mockResolvedValue({
         url: 'https://myapp.com/f/img-uuid',

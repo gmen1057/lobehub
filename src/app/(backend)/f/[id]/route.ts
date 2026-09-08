@@ -68,8 +68,23 @@ export const GET = async (_req: Request, segmentData: { params: Params }) => {
     // Create file service with file owner's userId
     const fileService = new FileService(db, file.userId);
 
-    // Web: Generate S3 presigned URL (5 minutes expiry)
-    const redirectUrl = await fileService.createPreSignedUrlForPreview(file.url, 300);
+    const fileType = file.fileType || '';
+    const inlinePreview =
+      fileType.startsWith('image/') ||
+      fileType.startsWith('audio/') ||
+      fileType.startsWith('video/');
+    const asciiName = (file.name || 'file').replaceAll(/[^\w.-]+/g, '_').slice(0, 120) || 'file';
+
+    // Web: Generate S3 presigned URL (5 minutes expiry).
+    // Documents must download as attachment — a 302 inside the chat iframe
+    // otherwise swallows the click (incident 2026-09-08 getpiano KP .docx).
+    const redirectUrl = await fileService.createPreSignedUrlForPreview(
+      file.url,
+      300,
+      inlinePreview
+        ? undefined
+        : { responseContentDisposition: `attachment; filename="${asciiName}"` },
+    );
     log('Web S3 presigned URL generated (expires in 5 min)');
 
     // Cache the presigned URL in Redis

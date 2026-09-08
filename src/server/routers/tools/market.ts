@@ -834,15 +834,17 @@ export const marketRouter = router({
         const fileHash = sha256(key + Date.now().toString());
         const mimeType = filename.endsWith('.xlsx')
           ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-          : filename.endsWith('.csv')
-            ? 'text/csv'
-            : filename.endsWith('.pdf')
-              ? 'application/pdf'
-              : filename.endsWith('.png')
-                ? 'image/png'
-                : filename.endsWith('.jpg') || filename.endsWith('.jpeg')
-                  ? 'image/jpeg'
-                  : 'application/octet-stream';
+          : filename.endsWith('.docx')
+            ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            : filename.endsWith('.csv')
+              ? 'text/csv'
+              : filename.endsWith('.pdf')
+                ? 'application/pdf'
+                : filename.endsWith('.png')
+                  ? 'image/png'
+                  : filename.endsWith('.jpg') || filename.endsWith('.jpeg')
+                    ? 'image/jpeg'
+                    : 'application/octet-stream';
 
         const { fileId, url } = await ctx.fileService.createFileRecord({
           fileHash,

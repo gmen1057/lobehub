@@ -9,7 +9,11 @@ export interface FileServiceImpl {
   /**
    * Create pre-signed preview URL
    */
-  createPreSignedUrlForPreview: (key: string, expiresIn?: number) => Promise<string>;
+  createPreSignedUrlForPreview: (
+    key: string,
+    expiresIn?: number,
+    options?: { responseContentDisposition?: string },
+  ) => Promise<string>;
 
   /**
    * Delete file

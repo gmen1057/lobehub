@@ -76,8 +76,12 @@ export class FileService {
   /**
    * Create pre-signed preview URL
    */
-  public async createPreSignedUrlForPreview(key: string, expiresIn?: number): Promise<string> {
-    return this.impl.createPreSignedUrlForPreview(key, expiresIn);
+  public async createPreSignedUrlForPreview(
+    key: string,
+    expiresIn?: number,
+    options?: { responseContentDisposition?: string },
+  ): Promise<string> {
+    return this.impl.createPreSignedUrlForPreview(key, expiresIn, options);
   }
 
   /**

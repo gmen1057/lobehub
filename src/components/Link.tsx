@@ -7,16 +7,21 @@ interface LinkProps extends AnchorHTMLAttributes<HTMLAnchorElement> {
   href?: string;
 }
 
+const isChatFileProxy = (href?: string) =>
+  !!href && (href.includes('/f/file_') || href.includes('/chat/f/'));
+
 /**
  * Smart Link component for global use.
  * - External links (http://, https://) → native <a> tag
+ * - Chat file proxy (/f/file_…) → new tab (iframe otherwise swallows the download)
  * - Internal routes → React Router Link
  */
 const Link = memo<LinkProps>(({ href, children, ...props }) => {
   // External links use native <a> tag
   if (href?.startsWith('http://') || href?.startsWith('https://')) {
+    const fileProxy = isChatFileProxy(href);
     return (
-      <a href={href} rel="noreferrer" {...props}>
+      <a href={href} rel="noreferrer" {...props} {...(fileProxy ? { target: '_blank' } : {})}>
         {children}
       </a>
     );

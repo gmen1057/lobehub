@@ -142,10 +142,17 @@ export class S3 {
     return getSignedUrl(this.client, command, { expiresIn: 3600 });
   }
 
-  public async createPreSignedUrlForPreview(key: string, expiresIn?: number): Promise<string> {
+  public async createPreSignedUrlForPreview(
+    key: string,
+    expiresIn?: number,
+    options?: { responseContentDisposition?: string },
+  ): Promise<string> {
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
+      ...(options?.responseContentDisposition
+        ? { ResponseContentDisposition: options.responseContentDisposition }
+        : {}),
     });
 
     return getSignedUrl(this.client, command, {
