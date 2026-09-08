@@ -40,7 +40,8 @@ export const currentDisplayChatKey = (s: ChatStoreState) =>
 const getDisplayMessagesByKey =
   (key: string) =>
   (s: ChatStoreState): UIChatMessage[] => {
-    return s.messagesMap[key] || [];
+    const messages = s.messagesMap[key] || [];
+    return messages.filter((m) => !m.metadata?.arckepSitesAutoContinue);
   };
 
 /**

@@ -20,8 +20,8 @@ export const SITES_AUTO_CONTINUE_SPEND_CAP_RUB = 150;
 
 export const SITES_AUTO_CONTINUE_MAX_REPAIRS = 2;
 
-/** Cheapest Gemini Flash in packages/model-bank google chat list (not an image model). */
-export const SITES_AUTO_CONTINUE_JUDGE_MODEL = 'gemini-2.5-flash-lite';
+/** Live cheap Flash in our Google picker (3.6), not retired 2.5-lite. */
+export const SITES_AUTO_CONTINUE_JUDGE_MODEL = 'gemini-3.6-flash';
 
 export const SITES_AUTO_CONTINUE_JUDGE_PROVIDER = 'google';
 
