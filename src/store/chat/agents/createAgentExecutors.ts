@@ -44,7 +44,10 @@ import { messageService } from '@/services/message';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { getAgentStoreState } from '@/store/agent/store';
 import { type ChatStore } from '@/store/chat/store';
-import { getCompressionCandidateMessageIds } from '@/store/chat/utils/compression';
+import {
+  getCompressionCandidateMessageIds,
+  hasRunningCompressionOperation,
+} from '@/store/chat/utils/compression';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { getFileStoreState } from '@/store/file/store';
 import { sleep } from '@/utils/sleep';
@@ -2630,11 +2633,27 @@ export const createAgentExecutors = (context: {
       const sessionLogId = `${state.operationId}:${state.stepCount}`;
       const stagePrefix = `[${sessionLogId}][compress_context]`;
 
-      const { messages, currentTokenCount } = (instruction as AgentInstructionCompressContext)
+      const { currentTokenCount, messages } = (instruction as AgentInstructionCompressContext)
         .payload;
 
       // Get topicId from operation context (same as agentId)
-      const { topicId } = getOperationContext();
+      const opContext = getOperationContext();
+      const { topicId } = opContext;
+
+      const createCompressionResultContext = (
+        payload: GeneralAgentCompressionResultPayload,
+        messageCount: number,
+      ): AgentRuntimeContext =>
+        ({
+          payload,
+          phase: 'compression_result',
+          session: {
+            messageCount,
+            sessionId: state.operationId,
+            status: 'running',
+            stepCount: state.stepCount + 1,
+          },
+        }) as AgentRuntimeContext;
 
       log(
         `${stagePrefix} Starting compression. displayMessages=%d, tokens=%d`,
@@ -2648,8 +2667,12 @@ export const createAgentExecutors = (context: {
       const dbMessages = context.get().dbMessagesMap[context.messageKey] || [];
       const messageIds = getCompressionCandidateMessageIds(dbMessages);
 
-      if (!topicId || messageIds.length === 0) {
-        // No topicId or no messages, skip compression
+      // arckep: skip repeat compression
+      if (
+        hasRunningCompressionOperation(Object.values(context.get().operations), opContext) ||
+        !topicId ||
+        messageIds.length === 0
+      ) {
         log(
           `${stagePrefix} Skipping compression: topicId=%s, messageIds=%d`,
           topicId,
@@ -2658,22 +2681,15 @@ export const createAgentExecutors = (context: {
         return {
           events: [],
           newState: state,
-          nextContext: {
-            payload: {
-              compressedMessages: messages,
+          nextContext: createCompressionResultContext(
+            {
               compressedTokenCount: currentTokenCount,
               groupId: '',
               originalTokenCount: currentTokenCount,
               skipped: true,
-            } as GeneralAgentCompressionResultPayload,
-            phase: 'compression_result',
-            session: {
-              messageCount: state.messages.length,
-              sessionId: state.operationId,
-              status: 'running',
-              stepCount: state.stepCount + 1,
             },
-          } as AgentRuntimeContext,
+            state.messages.length,
+          ),
         };
       }
 
@@ -2700,7 +2716,6 @@ export const createAgentExecutors = (context: {
       });
 
       try {
-        const opContext = getOperationContext();
         // agentId is guaranteed to exist in compression context
         const agentId = getEffectiveAgentId()!;
 
@@ -2800,22 +2815,15 @@ export const createAgentExecutors = (context: {
         return {
           events,
           newState: { ...state, messages: compressedMessages },
-          nextContext: {
-            payload: {
-              compressedMessages,
+          nextContext: createCompressionResultContext(
+            {
               compressedTokenCount,
               groupId,
               originalTokenCount: currentTokenCount,
               parentMessageId,
-            } as GeneralAgentCompressionResultPayload,
-            phase: 'compression_result',
-            session: {
-              messageCount: compressedMessages.length,
-              sessionId: state.operationId,
-              status: 'running',
-              stepCount: state.stepCount + 1,
             },
-          } as AgentRuntimeContext,
+            compressedMessages.length,
+          ),
         };
       } catch (error) {
         if (isAbortError(error)) {
@@ -2830,19 +2838,10 @@ export const createAgentExecutors = (context: {
           return {
             events,
             newState: state,
-            nextContext: {
-              payload: {
-                compressedMessages: messages,
-                skipped: true,
-              } as GeneralAgentCompressionResultPayload,
-              phase: 'compression_result',
-              session: {
-                messageCount: state.messages.length,
-                sessionId: state.operationId,
-                status: 'running',
-                stepCount: state.stepCount + 1,
-              },
-            } as AgentRuntimeContext,
+            nextContext: createCompressionResultContext(
+              { groupId: '', skipped: true },
+              state.messages.length,
+            ),
           };
         }
 
@@ -2862,19 +2861,10 @@ export const createAgentExecutors = (context: {
         return {
           events,
           newState: state,
-          nextContext: {
-            payload: {
-              compressedMessages: messages,
-              skipped: true,
-            } as GeneralAgentCompressionResultPayload,
-            phase: 'compression_result',
-            session: {
-              messageCount: state.messages.length,
-              sessionId: state.operationId,
-              status: 'running',
-              stepCount: state.stepCount + 1,
-            },
-          } as AgentRuntimeContext,
+          nextContext: createCompressionResultContext(
+            { groupId: '', skipped: true },
+            state.messages.length,
+          ),
         };
       }
     },

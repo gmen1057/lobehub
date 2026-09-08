@@ -199,6 +199,101 @@ describe('ConversationLifecycle actions', () => {
         });
       });
 
+      it('should skip /compact when compression is already running for the same topic', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const topicId = TEST_IDS.TOPIC_ID;
+        const agentId = TEST_IDS.SESSION_ID;
+        const key = messageMapKey({ agentId, topicId });
+        const existingMessages = [
+          createMockMessage({ id: 'user-1', role: 'user', topicId }),
+          createMockMessage({ id: 'assistant-1', role: 'assistant', topicId }),
+        ];
+        const createCompressionGroupSpy = vi.spyOn(messageService, 'createCompressionGroup');
+
+        await act(async () => {
+          useChatStore.setState({
+            activeAgentId: agentId,
+            activeTopicId: topicId,
+            dbMessagesMap: { [key]: existingMessages },
+            messagesMap: { [key]: existingMessages },
+            operations: {
+              'op-running-compress': {
+                abortController: new AbortController(),
+                context: { agentId, threadId: null, topicId },
+                id: 'op-running-compress',
+                metadata: { startTime: Date.now() },
+                status: 'running',
+                type: 'contextCompression',
+              },
+            },
+          });
+        });
+
+        await act(async () => {
+          await result.current.sendMessage({
+            context: { agentId, topicId, threadId: null },
+            editorData: {
+              root: {
+                children: [
+                  {
+                    children: [
+                      {
+                        actionCategory: 'command',
+                        actionLabel: 'Compact context',
+                        actionType: 'compact',
+                        type: 'action-tag',
+                      },
+                    ],
+                    type: 'paragraph',
+                  },
+                ],
+                type: 'root',
+              },
+            } as any,
+            message: '',
+          });
+        });
+
+        expect(createCompressionGroupSpy).not.toHaveBeenCalled();
+      });
+
+      it('should skip executeCompression when a compression operation is already running', async () => {
+        const { result } = renderHook(() => useChatStore());
+        const topicId = TEST_IDS.TOPIC_ID;
+        const agentId = TEST_IDS.SESSION_ID;
+        const key = messageMapKey({ agentId, topicId });
+        const existingMessages = [
+          createMockMessage({ id: 'user-1', role: 'user', topicId }),
+          createMockMessage({ id: 'assistant-1', role: 'assistant', topicId }),
+        ];
+        const createCompressionGroupSpy = vi.spyOn(messageService, 'createCompressionGroup');
+
+        await act(async () => {
+          useChatStore.setState({
+            activeAgentId: agentId,
+            activeTopicId: topicId,
+            dbMessagesMap: { [key]: existingMessages },
+            messagesMap: { [key]: existingMessages },
+            operations: {
+              'op-running-compress': {
+                abortController: new AbortController(),
+                context: { agentId, threadId: null, topicId },
+                id: 'op-running-compress',
+                metadata: { startTime: Date.now() },
+                status: 'running',
+                type: 'generateSummary',
+              },
+            },
+          });
+        });
+
+        await act(async () => {
+          await result.current.executeCompression({ agentId, topicId, threadId: null }, '');
+        });
+
+        expect(createCompressionGroupSpy).not.toHaveBeenCalled();
+      });
+
       it('should not process AI when onlyAddUserMessage is true', async () => {
         const { result } = renderHook(() => useChatStore());
 

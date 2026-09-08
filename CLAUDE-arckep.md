@@ -62,5 +62,13 @@ curl -sS -o /dev/null -w "%{http_code}" https://chat.arckep.ru/_spa/assets/$(ls 
 
 - **Kling video** доступен через Qwen-провайдер (см. `packages/model-runtime/src/providers/qwen/createVideo.ts`). Отдельный custom runtime не нужен.
 - **Codegraph**: slug = `lobechat` (не `lobechat-src`). Проект индексируется web+AST без Joern (см. `/opt/lobechat-src/.agents/codegraph.json`).
+- **Сжатие длинного чата:** после первого сжатия порог поднимается до 65% окна (гистерезис, идеи upstream #18626). Иначе сжатый контекст сидит около 50% и каждый мелкий tool-result снова гоняет суммаризацию — жжёт токены и может зациклить. `/compact` и автосжатие не стартуют, пока уже идёт сжатие этого же топика. RuntimeExecutors.ts не трогаем: решение «сжимать или нет» в GeneralChatAgent.
+
+## Решения
+
+- Вопрос: после сжатия снова сжимать сразу, если всё ещё >50% окна?
+- Взяли: гистерезис 50% → 65% (и явный `recompressionThresholdRatio`, если задан).
+- Отвергли: вечный skip (длинный чат упрётся в лимит) и тот же порог 50% (петля суммаризаций).
+- Почему: свежее сжатие почти всегда около нижнего порога; одна tool-выдача не должна запускать второй проход.
 
 Подробности по AI-tooling, codegraph и общей карте проектов — в `/root/CLAUDE.md`.

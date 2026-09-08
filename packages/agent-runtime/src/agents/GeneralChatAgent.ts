@@ -26,6 +26,10 @@ import {
 } from '../types';
 import { shouldCompress } from '../utils/tokenCounter';
 
+// Leave 35% of the model window after the first compression so a small
+// follow-up does not immediately trigger another summarization pass.
+const DEFAULT_RECOMPRESSION_THRESHOLD_RATIO = 0.65;
+
 /**
  * ChatAgent - The "Brain" of the chat agent
  *
@@ -309,15 +313,19 @@ export class GeneralChatAgent implements Agent {
    * Looks for MessageGroup with type 'compression' and extracts its content
    */
   private findExistingSummary(messages: any[]): string | undefined {
-    // Look for compression group summary in messages
-    // The summary is typically stored as a system message with compression metadata
-    // or as a MessageGroup content field
-    for (const msg of messages) {
+    const compressedGroupSummaries = messages
+      .filter(
+        (message) =>
+          (message.role === 'compressedGroup' || message.messageGroupType === 'compression') &&
+          message.content,
+      )
+      .map((message) => message.content as string);
+
+    if (compressedGroupSummaries.length > 0) return compressedGroupSummaries.join('\n\n');
+
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const msg = messages[index];
       if (msg.role === 'system' && msg.metadata?.compressionSummary) {
-        return msg.content;
-      }
-      // Check for MessageGroup type compression
-      if (msg.messageGroupType === 'compression' && msg.content) {
         return msg.content;
       }
     }
@@ -325,33 +333,54 @@ export class GeneralChatAgent implements Agent {
   }
 
   /**
+   * Use hysteresis after the first compression. A freshly compressed context can
+   * sit just below the ordinary threshold; applying the same threshold again
+   * makes one small tool result trigger another compression before the model can
+   * act on it. Keep the initial threshold conservative, then allow the compressed
+   * context to grow to a higher watermark before compressing it again.
+   */
+  private getCompressionThresholdRatio(messages: any[]): number | undefined {
+    const initialRatio = this.config.compressionConfig?.thresholdRatio;
+    if (!this.findExistingSummary(messages)) return initialRatio;
+
+    const configuredRecompressionRatio = this.config.compressionConfig?.recompressionThresholdRatio;
+    if (configuredRecompressionRatio !== undefined) return configuredRecompressionRatio;
+
+    return Math.max(initialRatio ?? 0, DEFAULT_RECOMPRESSION_THRESHOLD_RATIO);
+  }
+
+  private hasCompressibleMessages(messages: any[]): boolean {
+    return messages.some((message) => message.role && message.role !== 'compressedGroup');
+  }
+
+  private maybeCompress(messages: any[]): AgentInstructionCompressContext | undefined {
+    const compressionEnabled = this.config.compressionConfig?.enabled ?? true;
+    if (!compressionEnabled) return undefined;
+    // Already fully compressed: another pass would skip in the executor and loop.
+    if (!this.hasCompressibleMessages(messages)) return undefined;
+
+    const compressionCheck = shouldCompress(messages, {
+      maxWindowToken: this.config.compressionConfig?.maxWindowToken,
+      thresholdRatio: this.getCompressionThresholdRatio(messages),
+    });
+
+    if (!compressionCheck.needsCompression) return undefined;
+
+    return {
+      payload: {
+        currentTokenCount: compressionCheck.currentTokenCount,
+        existingSummary: this.findExistingSummary(messages),
+        messages,
+      },
+      type: 'compress_context',
+    };
+  }
+
+  /**
    * Proceed to the next LLM call, inserting compression first when needed.
    */
   private toLLMCall(payload: GeneralAgentCallLLMInstructionPayload): AgentInstruction {
-    const compressionEnabled = this.config.compressionConfig?.enabled ?? true;
-
-    if (compressionEnabled) {
-      const messages = payload.messages;
-      const compressionCheck = shouldCompress(messages, {
-        maxWindowToken: this.config.compressionConfig?.maxWindowToken,
-      });
-
-      if (compressionCheck.needsCompression) {
-        return {
-          payload: {
-            currentTokenCount: compressionCheck.currentTokenCount,
-            existingSummary: this.findExistingSummary(messages),
-            messages,
-          },
-          type: 'compress_context',
-        };
-      }
-    }
-
-    return {
-      payload,
-      type: 'call_llm',
-    };
+    return this.maybeCompress(payload.messages) ?? { payload, type: 'call_llm' };
   }
 
   /**
@@ -395,26 +424,8 @@ export class GeneralChatAgent implements Agent {
     switch (context.phase) {
       case 'init':
       case 'user_input': {
-        // Check if context compression is enabled and needed before calling LLM
-        const compressionEnabled = this.config.compressionConfig?.enabled ?? true; // Default to enabled
-
-        if (compressionEnabled) {
-          const compressionCheck = shouldCompress(state.messages, {
-            maxWindowToken: this.config.compressionConfig?.maxWindowToken,
-          });
-
-          if (compressionCheck.needsCompression) {
-            // Context exceeds threshold, compress ALL messages into a single summary
-            return {
-              payload: {
-                currentTokenCount: compressionCheck.currentTokenCount,
-                existingSummary: this.findExistingSummary(state.messages),
-                messages: state.messages,
-              },
-              type: 'compress_context',
-            } as AgentInstructionCompressContext;
-          }
-        }
+        const compression = this.maybeCompress(state.messages);
+        if (compression) return compression;
 
         // User input received, call LLM to generate response
         // At this point, messages may have been preprocessed with RAG/Search
@@ -665,7 +676,7 @@ export class GeneralChatAgent implements Agent {
           payload: {
             // Force create new assistant message after compression
             createAssistantMessage: true,
-            messages: compressionPayload.compressedMessages,
+            messages: compressionPayload.compressedMessages ?? state.messages,
             model: this.config.modelRuntimeConfig?.model,
             parentMessageId: compressionPayload.parentMessageId,
             provider: this.config.modelRuntimeConfig?.provider,

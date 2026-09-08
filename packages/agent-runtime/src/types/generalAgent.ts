@@ -81,6 +81,10 @@ export interface GeneralAgentConfig {
     enabled?: boolean;
     /** Model's max context window token count (default: 128k) */
     maxWindowToken?: number;
+    /** Explicit threshold after a compression summary exists; default 0.65 reserves prompt headroom. */
+    recompressionThresholdRatio?: number;
+    /** Threshold ratio for triggering compression (default: 0.5) */
+    thresholdRatio?: number;
   };
   /**
    * Dynamic intervention audits registry (per-tool)
@@ -113,8 +117,8 @@ export interface GeneralAgentConfig {
  * Payload for compression_result phase
  */
 export interface GeneralAgentCompressionResultPayload {
-  /** Compressed messages (summary + pinned + recent) */
-  compressedMessages: any[];
+  /** Compressed messages (summary + pinned + recent). Optional — callers may rely on state.messages. */
+  compressedMessages?: any[];
   /** Compression group ID in database */
   groupId: string;
   /** Parent message ID for subsequent LLM call (last assistant message before compression) */
