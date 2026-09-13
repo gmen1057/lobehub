@@ -35,6 +35,7 @@ export const systemPrompt = `You have access to an Agent Documents tool for crea
 - Use renameDocument for title-only changes; avoid rewriting content unnecessarily.
 - Use copyDocument before major edits when user may want a backup version.
 - Keep load-rule changes explicit and summarize their effect, especially when they change permissions, sharing scope, load location, or load strategy.
+- **Long translation / localization:** the markdown document is the deliverable. createDocument per attached file (or ~20–30 pages). Do not paste the book into chat — only a short status. Do not open the skill marketplace. When all markdown is done, ask if they want PDF or another format; conversion is a later step, not the first step.
 </best_practices>
 
 <response_format>

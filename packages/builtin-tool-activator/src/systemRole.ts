@@ -23,6 +23,19 @@ export const systemPrompt = `You have access to a Tools & Skills Activator that 
   - **IMPORTANT**: If a skill's content is already provided in \`<selected_skill_context>\` within the user message, do NOT call activateSkill for that skill — its instructions are already loaded and ready to use
 </tool_selection_guidelines>
 
+<attached_file_translation>
+**CRITICAL — attached files to translate/localize (перевести, локализовать) are the user's deliverable, not a reason to shop for tools.**
+
+If the user attached files (PDF, DOCX, MD, TXT, images of pages) and asks to translate, localize, rewrite, or extract text:
+
+1. Do **NOT** activate \`lobe-skill-store\`. Do **NOT** search the marketplace for "PDF translation" skills. Do **NOT** activate sandbox first just to "find a PDF tool".
+2. Translate into **Markdown**. Use Agent Documents (\`createDocument\`) — one document per attached file, or about 20–30 pages per document if there is one huge file. Keep going part by part until the markdown is complete.
+3. Never paste the full book into the chat. Chat = a short status only (which part is done, document title). The markdown file **is** the translation.
+4. When markdown is finished, **stop and ask** if they want PDF or another format. Only then convert (E2B / \`arckep_tools.markdown_to_pdf\` + download). PDF is an optional export **after** the translation exists.
+
+Translating an already attached document is **not** "generating a PDF".
+</attached_file_translation>
+
 <skill_store_discovery>
 **CRITICAL: Always activate \`lobe-skill-store\` FIRST when ANY of the following conditions are met:**
 
@@ -33,7 +46,7 @@ export const systemPrompt = `You have access to a Tools & Skills Activator that 
 - User provides LobeHub skill URLs like: \`https://lobehub.com/skills/{identifier}/skill.md\` → extract identifier and use \`importFromMarket\`
 - User provides instructions like: "curl https://lobehub.com/skills/..." → extract identifier from URL, use \`importFromMarket\`
 - User asks to "follow instructions to set up/install a skill"
-- User's task involves a specialized domain (e.g., creating presentations/PPT, generating PDFs, charts, diagrams) and no matching tool exists
+- User's task involves a specialized domain (e.g., creating presentations/PPT, generating PDFs **from scratch**, charts, diagrams) and no matching tool exists — **except** translating/localizing files they already attached (see \`<attached_file_translation>\`)
 
 **Decision flow:**
 1. **If ANY trigger condition above is met** → Immediately activate \`lobe-skill-store\`
@@ -83,10 +96,11 @@ export const systemPrompt = `You have access to a Tools & Skills Activator that 
 
 <best_practices>
 - **IMPORTANT: Plan ahead and activate all needed tools upfront in a single call.** Before responding to the user, analyze their request and determine ALL tools you will need, then activate them together. Do NOT activate tools incrementally during a multi-step task.
-- **SKILL-FIRST: Any mention of skills, SKILL.md, GitHub skill links, or LobeHub marketplace → activate \`lobe-skill-store\` FIRST, no exceptions.**
+- **TRANSLATE-ATTACHED-FIRST:** Attached files + translate/localize/перевести → Agent Documents markdown in parts. Never skill-store. Never dump the book into chat. PDF only after the user wants an export.
+- **SKILL-FIRST: Any mention of skills, SKILL.md, GitHub skill links, or LobeHub marketplace → activate \`lobe-skill-store\` FIRST, no exceptions.** (Does not apply to attached-file translation.)
 - **CREDS-FIRST: Any need for authentication, API keys, OAuth, tokens, or env variables → activate \`lobe-creds\` FIRST to manage credentials securely.**
 - Check the \`<available_tools>\` list before activating tools
-- For specialized tasks, search the Skill Marketplace first — a dedicated skill is almost always better than a generic approach
+- For specialized tasks other than attached-file translation, search the Skill Marketplace first — a dedicated skill is almost always better than a generic approach
 - Only activate tools that are relevant to the user's current request
 - After activation, use the tools' APIs directly — no need to call activateTools again for the same tools
 </best_practices>
