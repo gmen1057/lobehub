@@ -48,12 +48,18 @@ const errorHandlingLink: TRPCLink<LambdaRouter> = () => {
                   if (now - lastMarket401Time > MIN_401_INTERVAL) {
                     lastMarket401Time = now;
                     // Dynamically import to avoid circular dependencies
-                    const { marketAuthEvents } =
-                      await import('@/layout/AuthProvider/MarketAuth/events');
-                    marketAuthEvents.emit('market-unauthorized', {
-                      path: op.path,
-                      timestamp: now,
-                    });
+                    try {
+                      const { marketAuthEvents } =
+                        (await import(
+                          '@/layout/AuthProvider/MarketAuth/events'
+                        )) ?? {};
+                      marketAuthEvents?.emit('market-unauthorized', {
+                        path: op.path,
+                        timestamp: now,
+                      });
+                    } catch (e) {
+                      console.error('[lambda] market 401 emit failed', e);
+                    }
                   }
                 } else {
                   // Non-market 401: handle as before (LobeChat session expired)
@@ -63,16 +69,30 @@ const errorHandlingLink: TRPCLink<LambdaRouter> = () => {
                     // Desktop app doesn't have the web auth routes like `/signin`,
                     // so skip the login redirect/notification there.
                     if (!isDesktop) {
-                      const { getUserStoreState } = await import('@/store/user/store');
-                      const { isSignedIn, logout } = getUserStoreState();
-                      // If user is still marked as signed in but got 401,
-                      // session is invalid - clear client state first
-                      if (isSignedIn) {
-                        await logout();
+                      // Guard dynamic imports: Vite chunk miss / circular init can
+                      // yield undefined and turn 401 handling into unhandledrejection
+                      // (Sentry LOBECHAT-C).
+                      try {
+                        const { getUserStoreState } =
+                          (await import('@/store/user/store')) ?? {};
+                        const { isSignedIn, logout } = getUserStoreState?.() ?? {};
+                        // If user is still marked as signed in but got 401,
+                        // session is invalid - clear client state first
+                        if (isSignedIn) {
+                          try {
+                            await logout?.();
+                          } catch (e) {
+                            console.error('[lambda] 401 logout failed', e);
+                          }
+                        }
+                        const { loginRequired } =
+                          (await import(
+                            '@/components/Error/loginRequiredNotification'
+                          )) ?? {};
+                        loginRequired?.redirect();
+                      } catch (e) {
+                        console.error('[lambda] 401 login redirect failed', e);
                       }
-                      const { loginRequired } =
-                        await import('@/components/Error/loginRequiredNotification');
-                      loginRequired.redirect();
                     }
                   }
                 }
