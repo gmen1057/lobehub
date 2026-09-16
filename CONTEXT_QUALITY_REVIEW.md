@@ -4,7 +4,22 @@ Owner: codex
 Branch: codex/fix-context-quality
 Worktree: /var/tmp/wt/lc-context-quality
 Base: 1d2ca12a01
-Rollout: пользователь разрешил commit/push и deployment 2026-09-16. Выполняется подготовка релиза; ниже сохранены результаты дорелизного ревью.
+Rollout: опубликовано 2026-09-16, рестарт в 11:24:33 CEST. Ниже сохранены результаты релиза и дорелизное ревью.
+
+## Результат релиза
+
+- Код: `c96007af14429c4ec609d6ddd73d985886efd610`, merged fast-forward и pushed в `origin/arckep/v2.1.46`. Последующее обновление этого отчёта меняет только документацию.
+- `pnpm install --frozen-lockfile`: PASS. Полный `bun run build` с действующими настройками: exit 0; desktop SPA, mobile SPA, Next.js и все 3149 статических страниц. Лог: `/var/tmp/lc-context-release-build.log`.
+- Повторные тесты закоммиченного кода: 211 пакетных + 213 приложения = 424 PASS. Логи: `/var/tmp/lc-context-release-tests-packages.log`, `/var/tmp/lc-context-release-tests-root.log`.
+- Повторный TypeScript: 555 диагностик против 557 baseline; новых/увеличившихся пар файл+код нет. Полная проверка не зелёная. Лог: `/var/tmp/lc-context-release-types.log`.
+- Выполнены обе rsync: `.next` и `public/_spa`, права восстановлены для `lobechat`, сервис `image-studio-lobechat` перезапущен. `BUILD_ID` исходной сборки, `/opt/lobechat-src` и production совпадают: `PkK60p1eEhfSDdEWtHZ1x`. Сгенерированные SPA-шаблоны исходного checkout также обновлены для будущих server-only rebuild.
+- Smoke: service active/running; локальный и публичные desktop/mobile запросы `/chat/` дают штатный 302 на авторизацию. `topic.getTopicContext` без авторизации даёт 401. Studio `/api/health` — status ok.
+- Публичные `/_spa/assets/index-8IU8wfh7.js` и `index.mobile-CRIOqTi1.js` успешно скачаны; SHA-256 точно совпали с релизными файлами.
+- Более 60 секунд после первого smoke: 0 `Failed to proxy`/`EPROTO`, 0 missing-module errors, 0 TypeError/ReferenceError/uncaughtException/unhandledRejection в новом сегменте runtime-лога. Авторизованный пользовательский/платный LLM E2E не выполнялся.
+- GitHub CI форка не запустился: `gh run list -R gmen1057/lobehub` пуст; API возвращает 0 workflows и 0 check runs коммита. Поэтому ID для `gh run view` отсутствует и зелёный удалённый CI НЕ подтверждён. Настройки Actions не менялись.
+- Codegraph fast-hook предупредил об устаревшем/неполном индексе. Дополнительный deep-анализ не завершился за 16 минут и остановлен; его успешное прохождение не утверждается. Локальные тесты и ручной разбор связей остаются основными проверками этой правки.
+- Откат: `/var/tmp/lc-context-rollback-lAV3ME/` содержит прежние `.next`, `_spa` и deployment markers. Старый build: `kyCQz5lb44QKSSEkA-tyG`, код `1d2ca12a01aed92b5ca84dc1e7a027d3bac74697`.
+- Миграций, изменений баланса или ключей не было. Резервирование денег на всю многошаговую цепочку этим релизом не реализовано.
 
 ## Что изменено
 
