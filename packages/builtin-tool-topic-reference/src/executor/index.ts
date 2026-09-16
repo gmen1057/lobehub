@@ -8,6 +8,10 @@ const TopicReferenceApiName = {
 } as const;
 
 interface GetTopicContextParams {
+  mode?: 'summary' | 'archive';
+  offset?: number;
+  query?: string;
+  snapshotAt?: string;
   topicId: string;
 }
 

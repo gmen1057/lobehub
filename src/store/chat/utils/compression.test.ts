@@ -3,12 +3,28 @@ import { describe, expect, it } from 'vitest';
 import { type Operation } from '../slices/operation/types';
 import {
   createPendingCompressedGroup,
+  getAutomaticCompressionCandidateMessageIds,
   getCompressionCandidateMessageIds,
   hasRunningCompressionOperation,
   isCompressionOperationType,
 } from './compression';
 
 describe('compression utils', () => {
+  it('keeps recent user turns and their tool pairs intact during automatic compression', () => {
+    const messages = [
+      { id: 'old', role: 'user' },
+      { id: 'old-answer', role: 'assistant' },
+      { id: 'recent', role: 'user' },
+      { id: 'call', role: 'assistant' },
+      { id: 'result', role: 'tool' },
+      { id: 'current', role: 'user' },
+    ];
+    expect(getAutomaticCompressionCandidateMessageIds(messages as any)).toEqual([
+      'old',
+      'old-answer',
+    ]);
+    expect(getAutomaticCompressionCandidateMessageIds(messages.slice(-1) as any)).toEqual([]);
+  });
   it('should treat contextCompression and generateSummary as compression operations', () => {
     expect(isCompressionOperationType('contextCompression')).toBe(true);
     expect(isCompressionOperationType('generateSummary')).toBe(true);

@@ -17,6 +17,7 @@ import { cloudSandboxRuntime } from './cloudSandbox';
 import { credsRuntime } from './creds';
 import { cronRuntime } from './cron';
 import { documentsRuntime } from './documents';
+import { knowledgeBaseRuntime } from './knowledgeBase';
 import { localSystemRuntime } from './localSystem';
 import { memoryRuntime } from './memory';
 import { messageRuntime } from './message';
@@ -47,6 +48,7 @@ const registerRuntimes = (runtimes: ServerRuntimeRegistration[]) => {
 
 // Register all server runtimes
 registerRuntimes([
+  knowledgeBaseRuntime,
   arckepSitesRuntime,
   arckepBotRuntime,
   webBrowsingRuntime,

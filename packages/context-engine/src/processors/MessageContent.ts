@@ -1,4 +1,4 @@
-import { filesPrompts } from '@lobechat/prompts';
+import { FILE_CONTEXT_CHARS, FILE_PREVIEW_CHARS, filesPrompts } from '@lobechat/prompts';
 import type { MessageContentPart } from '@lobechat/types';
 import { imageUrlToBase64 } from '@lobechat/utils/imageToBase64';
 import { parseDataUri } from '@lobechat/utils/uriParser';
@@ -90,16 +90,17 @@ export class MessageContentProcessor extends BaseProcessor {
     let processedCount = 0;
     let userMessagesProcessed = 0;
     let assistantMessagesProcessed = 0;
+    const fileBudget = { remaining: FILE_CONTEXT_CHARS };
 
-    // Process the content of each message
-    for (let i = 0; i < clonedContext.messages.length; i++) {
+    // Allocate file previews to recent uploads first; preserve the output message order.
+    for (let i = clonedContext.messages.length - 1; i >= 0; i--) {
       const message = clonedContext.messages[i];
 
       try {
         let updatedMessage = message;
 
         if (message.role === 'user') {
-          updatedMessage = await this.processUserMessage(message);
+          updatedMessage = await this.processUserMessage(message, fileBudget);
           if (updatedMessage !== message) {
             userMessagesProcessed++;
             processedCount++;
@@ -167,7 +168,7 @@ export class MessageContentProcessor extends BaseProcessor {
     );
   }
 
-  private async processUserMessage(message: any): Promise<any> {
+  private async processUserMessage(message: any, fileBudget: { remaining: number }): Promise<any> {
     // Check if images, videos or files need processing
     const hasImages = message.imageList && message.imageList.length > 0;
     const hasVideos = message.videoList && message.videoList.length > 0;
@@ -196,9 +197,17 @@ export class MessageContentProcessor extends BaseProcessor {
       const filesContext = filesPrompts({
         addUrl: this.config.fileContext.includeFileUrl ?? true,
         fileList,
+        fileBudget: fileBudget.remaining,
         imageList: message.imageList || [],
         videoList: message.videoList || [],
       });
+      for (const file of fileList || []) {
+        fileBudget.remaining -= Math.min(
+          file.content?.length || 0,
+          FILE_PREVIEW_CHARS,
+          fileBudget.remaining,
+        );
+      }
 
       if (filesContext) {
         textContent = (textContent + '\n\n' + filesContext).trim();

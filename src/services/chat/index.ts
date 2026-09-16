@@ -1,3 +1,4 @@
+import { calculatePromptTokens } from '@lobechat/agent-runtime';
 import { AgentBuilderIdentifier } from '@lobechat/builtin-tool-agent-builder';
 import { KLAVIS_SERVER_TYPES, LOBEHUB_SKILL_PROVIDERS } from '@lobechat/const';
 import { type OfficialToolItem } from '@lobechat/context-engine';
@@ -97,6 +98,7 @@ interface CreateAssistantMessageStream extends FetchSSEOptions {
   historySummary?: string;
   /** Initial context for page editor (captured at operation start) */
   initialContext?: RuntimeInitialContext;
+  onFinalContext?: FetchOptions['onFinalContext'];
   params: GetChatCompletionPayload;
   /** Step context for page editor (updated each step) */
   stepContext?: RuntimeStepContext;
@@ -299,6 +301,10 @@ class ChatService {
     });
 
     // ============  3. process extend params   ============ //
+    if (options?.onFinalContext) {
+      const finalTokens = calculatePromptTokens(modelMessages, tools);
+      if (!(await options.onFinalContext(finalTokens))) return;
+    }
 
     const extendParams = resolveModelExtendParams({
       chatConfig,
@@ -321,6 +327,7 @@ class ChatService {
   };
 
   createAssistantMessageStream = async ({
+    onFinalContext,
     params,
     abortController,
     onAbort,
@@ -333,6 +340,7 @@ class ChatService {
     stepContext,
   }: CreateAssistantMessageStream) => {
     await this.createAssistantMessage(params, {
+      onFinalContext,
       historySummary,
       initialContext,
       onAbort,

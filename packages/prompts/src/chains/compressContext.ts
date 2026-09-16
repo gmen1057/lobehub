@@ -4,6 +4,7 @@ import {
   chatHistoryPrompts,
   compressContextSystemPrompt,
   compressContextUserPrompt,
+  fileReferences,
 } from '../prompts';
 
 /**
@@ -17,7 +18,15 @@ export const chainCompressContext = (messages: UIChatMessage[]): Partial<ChatStr
       role: 'system',
     },
     {
-      content: `${chatHistoryPrompts(messages)}
+      content: `${chatHistoryPrompts(
+        messages.map((message) => ({
+          ...message,
+          content:
+            `[source_message_id: ${message.id}]\n${message.content || ''}` +
+            (message.tools?.length ? `\nTool calls: ${JSON.stringify(message.tools)}` : ''),
+        })),
+      )}
+${fileReferences(messages)}
 
 ${compressContextUserPrompt}`,
       role: 'user',

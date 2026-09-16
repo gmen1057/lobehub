@@ -133,6 +133,24 @@ vi.mock('@/helpers/isCanUseFC', () => ({
 
 describe('ChatService', () => {
   describe('createAssistantMessage', () => {
+    it('checks final injected context before making a provider call and can defer for compression', async () => {
+      vi.spyOn(mechaModule, 'contextEngineering').mockResolvedValue([
+        { role: 'user', content: 'injected file text '.repeat(10_000) },
+      ] as any);
+      const provider = vi.spyOn(chatService, 'getChatCompletion');
+      const onFinalContext = vi.fn(async (_tokens: number) => false);
+      await chatService.createAssistantMessage(
+        {
+          messages: [{ role: 'user', content: 'short question', id: 'question' }] as any,
+          model: 'gpt-4',
+          provider: 'openai',
+          resolvedAgentConfig: createMockResolvedConfig(),
+        },
+        { onFinalContext },
+      );
+      expect(onFinalContext.mock.calls[0][0]).toBeGreaterThan(10_000);
+      expect(provider).not.toHaveBeenCalled();
+    });
     it('should process messages and call getChatCompletion with the right parameters', async () => {
       const getChatCompletionSpy = vi.spyOn(chatService, 'getChatCompletion');
       const messages = [{ content: 'Hello', role: 'user' }] as UIChatMessage[];

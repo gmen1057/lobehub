@@ -8,6 +8,7 @@ export const KnowledgeBaseApiName = {
 };
 
 export interface SearchKnowledgeBaseArgs {
+  fileIds?: string[];
   query: string;
   topK?: number;
 }
@@ -19,6 +20,8 @@ export interface SearchKnowledgeBaseState {
 
 export interface ReadKnowledgeArgs {
   fileIds: string[];
+  offset?: number;
+  query?: string;
 }
 
 export interface FileContentDetail {

@@ -49,9 +49,10 @@ import { type ResolvedAgentConfig } from '@/services/chat/mecha';
 import { messageService } from '@/services/message';
 import { agentByIdSelectors } from '@/store/agent/selectors';
 import { getAgentStoreState } from '@/store/agent/store';
+import { aiModelSelectors, getAiInfraStoreState } from '@/store/aiInfra';
 import { type ChatStore } from '@/store/chat/store';
 import {
-  getCompressionCandidateMessageIds,
+  getAutomaticCompressionCandidateMessageIds,
   hasRunningCompressionOperation,
 } from '@/store/chat/utils/compression';
 import { messageMapKey } from '@/store/chat/utils/messageMapKey';
@@ -164,6 +165,8 @@ export const createAgentExecutors = (context: {
   toolsEngine?: ToolsEngine;
 }) => {
   let shouldSkipCreateMessage = context.skipCreateFirstMessage;
+  const preflightCompressionAttempts = new Set<string>();
+  let deferredAssistantMessageId: string | undefined;
 
   /**
    * Get operation context via closure
@@ -234,7 +237,10 @@ export const createAgentExecutors = (context: {
       // - shouldSkipCreateMessage is true (e.g., regenerate mode)
       // - BUT if createAssistantMessage is explicitly true, always create new message
       //   (e.g., after compression we need a new assistant message)
-      if (shouldSkipCreateMessage && !llmPayload.createAssistantMessage) {
+      if (deferredAssistantMessageId) {
+        assistantMessageId = deferredAssistantMessageId;
+        deferredAssistantMessageId = undefined;
+      } else if (shouldSkipCreateMessage && !llmPayload.createAssistantMessage) {
         // Skip first creation, subsequent calls will not skip
         assistantMessageId = context.parentId;
         shouldSkipCreateMessage = false;
@@ -465,7 +471,37 @@ export const createAgentExecutors = (context: {
         }
       }
 
+      let preflightResult: Awaited<ReturnType<InstructionExecutor>> | undefined;
       await chatService.createAssistantMessageStream({
+        onFinalContext: async (estimatedTokens) => {
+          const modelWindow =
+            aiModelSelectors.modelContextWindowTokens(
+              llmPayload.model!,
+              llmPayload.provider!,
+            )(getAiInfraStoreState()) || 128_000;
+          const threshold = Math.floor(Math.min(modelWindow, 128_000) * 0.5);
+          if (
+            agentConfigData.chatConfig?.enableContextCompression === false ||
+            estimatedTokens <= threshold
+          )
+            return true;
+          const candidates = getAutomaticCompressionCandidateMessageIds(
+            context.get().dbMessagesMap[context.messageKey] || [],
+          );
+          const key = candidates.join(',');
+          if (!key || preflightCompressionAttempts.has(key)) return true;
+          preflightCompressionAttempts.add(key);
+          preflightResult = await executors.compress_context!(
+            {
+              type: 'compress_context',
+              payload: { currentTokenCount: estimatedTokens, messages: state.messages },
+            },
+            state,
+            runtimeContext,
+          );
+          deferredAssistantMessageId = assistantMessageId;
+          return false;
+        },
         abortController,
         params: {
           agentId: agentId || undefined,
@@ -553,6 +589,8 @@ export const createAgentExecutors = (context: {
           handler.handleChunk(chunk as StreamChunk);
         },
       });
+
+      if (preflightResult) return preflightResult;
 
       const isFunctionCall = handler.getIsFunctionCall();
       const content = handler.getOutput();
@@ -2707,7 +2745,7 @@ export const createAgentExecutors = (context: {
 
       // Get message IDs from dbMessagesMap (raw db messages)
       const dbMessages = context.get().dbMessagesMap[context.messageKey] || [];
-      const messageIds = getCompressionCandidateMessageIds(dbMessages);
+      const messageIds = getAutomaticCompressionCandidateMessageIds(dbMessages);
 
       // arckep: skip repeat compression
       if (

@@ -8,7 +8,6 @@ import { eq, inArray } from 'drizzle-orm';
 import { after } from 'next/server';
 import { z } from 'zod';
 
-import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
 import { TopicShareModel } from '@/database/models/topicShare';
 import { AgentMigrationRepo } from '@/database/repositories/agentMigration';
@@ -16,6 +15,7 @@ import { TopicImporterRepo } from '@/database/repositories/topicImporter';
 import { agents, chatGroups, chatGroupsAgents } from '@/database/schemas';
 import { authedProcedure, router } from '@/libs/trpc/lambda';
 import { serverDatabase } from '@/libs/trpc/lambda/middleware';
+import { getTopicContext } from '@/server/services/topicContext';
 import { type BatchTaskResult } from '@/types/service';
 
 import {
@@ -40,46 +40,16 @@ const topicProcedure = authedProcedure.use(serverDatabase).use(async (opts) => {
 
 export const topicRouter = router({
   getTopicContext: topicProcedure
-    .input(z.object({ topicId: z.string() }))
-    .query(async ({ input, ctx }) => {
-      const topic = await ctx.topicModel.findById(input.topicId);
-
-      if (!topic) {
-        return { content: `Topic not found: ${input.topicId}`, success: false };
-      }
-
-      const title = topic.title || 'Untitled';
-
-      // Prefer historySummary if available
-      if (topic.historySummary) {
-        return {
-          content: `# Topic: ${title}\n\n## Summary\n${topic.historySummary}`,
-          success: true,
-        };
-      }
-
-      // Fallback: fetch recent messages with correct agentId/groupId
-      const messageModel = new MessageModel(ctx.serverDB, ctx.userId);
-      const messages = await messageModel.query({
-        agentId: topic.agentId ?? undefined,
-        groupId: topic.groupId ?? undefined,
-        topicId: input.topicId,
-      });
-
-      const recentMessages = messages.slice(-30);
-      const lines = [`# Topic: ${title}`, '', '## Recent Messages', ''];
-
-      for (const msg of recentMessages) {
-        const role =
-          msg.role === 'user' ? 'User' : msg.role === 'assistant' ? 'Assistant' : msg.role;
-        const content = (msg.content || '').trim();
-        if (content) {
-          lines.push(`**${role}**: ${content}`, '');
-        }
-      }
-
-      return { content: lines.join('\n'), success: true };
-    }),
+    .input(
+      z.object({
+        topicId: z.string(),
+        mode: z.enum(['summary', 'archive']).optional(),
+        offset: z.number().int().min(0).optional(),
+        query: z.string().max(500).optional(),
+        snapshotAt: z.string().datetime().optional(),
+      }),
+    )
+    .query(({ input, ctx }) => getTopicContext(ctx.serverDB, ctx.userId, input)),
 
   batchCreateTopics: topicProcedure
     .input(

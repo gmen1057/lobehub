@@ -135,8 +135,8 @@ describe('filesPrompts', () => {
 
     expect(result).toContain('second image');
     expect(result).toContain('document.docx');
-    expect(result).toMatch(/<image.*?>.*<image.*?>/s); // Check for multiple image tags
-    expect(result).toMatch(/<file.*?>.*<file.*?>/s); // Check for multiple file tags
+    expect(result.match(/<image /g)).toHaveLength(2);
+    expect(result.match(/<file /g)).toHaveLength(2);
   });
 
   it('should handle without url', () => {
@@ -287,7 +287,7 @@ describe('filesPrompts', () => {
 
       expect(result).toContain('test video');
       expect(result).toContain('second video');
-      expect(result).toMatch(/<video.*?>.*<video.*?>/s); // Check for multiple video tags
+      expect(result.match(/<video /g)).toHaveLength(2);
     });
 
     it('should handle videos without url when addUrl is false', () => {
@@ -353,10 +353,10 @@ describe('filesPrompts', () => {
         ],
       });
 
-      expect(result).toContain('content truncated');
-      expect(result).toContain("download it via this file's url inside the code sandbox");
+      expect(result).toContain('Partial preview');
+      expect(result).toContain('Use readKnowledge');
 
-      const noteStart = result.indexOf('[content truncated');
+      const noteStart = result.indexOf('[Partial preview');
       const openTagEnd = result.indexOf('>', result.indexOf('<file ')) + 1;
       const preview = result.slice(openTagEnd, noteStart - 1); // -1 drops the '\n' before the note
 
@@ -386,7 +386,7 @@ describe('filesPrompts', () => {
       expect(result).not.toContain('content truncated');
     });
 
-    it('never truncates non-tabular files regardless of size', () => {
+    it('bounds non-tabular previews while keeping original retrieval available', () => {
       const bigText = 'x'.repeat(20_000);
       const result = filesPrompts({
         fileList: [
@@ -401,8 +401,10 @@ describe('filesPrompts', () => {
         ],
       });
 
-      expect(result).toContain(bigText);
-      expect(result).not.toContain('content truncated');
+      expect(result).not.toContain(bigText);
+      expect(result).toContain('Partial preview');
+      expect(result).toContain('file-pdf');
+      expect(result).toContain('readKnowledge');
     });
   });
 });

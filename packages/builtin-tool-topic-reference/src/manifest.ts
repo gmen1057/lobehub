@@ -15,6 +15,28 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
             description: 'The ID of the topic to retrieve context from',
             type: 'string',
           },
+          mode: {
+            type: 'string',
+            enum: ['summary', 'archive'],
+            description:
+              'Use archive to retrieve original messages, including compressed history, without relying on summaries.',
+          },
+          offset: {
+            type: 'integer',
+            minimum: 0,
+            description: 'For archive pages: start at 0, then follow nextOffset automatically.',
+          },
+          snapshotAt: {
+            type: 'string',
+            description:
+              'For archive continuation, copy snapshotAt from the previous page unchanged to exclude newly generated messages.',
+          },
+          query: {
+            type: 'string',
+            maxLength: 500,
+            description:
+              'Optional literal search within the original archive. Omit to read sequentially.',
+          },
         },
         required: ['topicId'],
         type: 'object',

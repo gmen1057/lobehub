@@ -4,6 +4,15 @@ import { filePrompts } from './file';
 import { imagesPrompts } from './image';
 import { videosPrompts } from './video';
 
+export type { FileReadOptions, FileReadPage } from './context';
+export {
+  FILE_CONTEXT_CHARS,
+  FILE_PREVIEW_CHARS,
+  FILE_READ_CHARS,
+  filePreview,
+  fileReferences,
+  readFilePage,
+} from './context';
 export type { KnowledgeBaseInfo, PromptKnowledgeOptions } from './knowledgeBase';
 export { promptAgentKnowledge } from './knowledgeBase';
 
@@ -12,8 +21,10 @@ export const filesPrompts = ({
   fileList,
   videoList,
   addUrl = true,
+  fileBudget,
 }: {
   addUrl?: boolean;
+  fileBudget?: number;
   fileList?: ChatFileItem[];
   imageList?: ChatImageItem[];
   videoList?: ChatVideoItem[];
@@ -26,7 +37,7 @@ export const filesPrompts = ({
 
   const contentParts = [
     hasImages ? imagesPrompts(imageList!, addUrl) : '',
-    hasFiles ? filePrompts(fileList!, addUrl) : '',
+    hasFiles ? filePrompts(fileList!, addUrl, fileBudget) : '',
     hasVideos ? videosPrompts(videoList!, addUrl) : '',
   ].filter(Boolean);
 

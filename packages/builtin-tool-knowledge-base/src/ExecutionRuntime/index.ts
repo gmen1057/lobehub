@@ -21,7 +21,7 @@ interface FileContentResult {
 interface RagService {
   getFileContents: (fileIds: string[], signal?: AbortSignal) => Promise<FileContentResult[]>;
   semanticSearchForChat: (
-    params: { knowledgeIds?: string[]; query: string; topK: number },
+    params: { fileIds?: string[]; knowledgeIds?: string[]; query: string; topK: number },
     signal?: AbortSignal,
   ) => Promise<{ chunks: any[]; fileResults: any[] }>;
 }
@@ -47,10 +47,9 @@ export class KnowledgeBaseExecutionRuntime {
     try {
       const { query, topK = 20 } = args;
 
-      // Only search in knowledge bases, not agent files
-      // Agent files will be injected as full content in context-engine
+      // Search configured knowledge bases and explicitly requested attachments.
       const { chunks, fileResults } = await this.ragService.semanticSearchForChat(
-        { knowledgeIds: options?.knowledgeBaseIds, query, topK },
+        { fileIds: args.fileIds, knowledgeIds: options?.knowledgeBaseIds, query, topK },
         options?.signal,
       );
 
@@ -68,7 +67,7 @@ export class KnowledgeBaseExecutionRuntime {
       return { content: formattedContent, state, success: true };
     } catch (e) {
       return {
-        content: `Error searching knowledge base: ${(e as Error).message}`,
+        content: `Search unavailable: ${(e as Error).message}. This is not evidence that the source has no relevant information. For known attachment IDs, use readKnowledge with query (literal search) or offset (sequential reading); continue automatically.`,
         error: e,
         success: false,
       };
@@ -76,7 +75,7 @@ export class KnowledgeBaseExecutionRuntime {
   }
 
   /**
-   * Read full content of specific files from knowledge base
+   * Read bounded pages from original files without requiring embeddings.
    */
   async readKnowledge(
     args: ReadKnowledgeArgs,
@@ -85,16 +84,16 @@ export class KnowledgeBaseExecutionRuntime {
     try {
       const { fileIds } = args;
 
-      if (!fileIds || fileIds.length === 0) {
+      if (!fileIds || fileIds.length === 0 || fileIds.length > 8) {
         return {
-          content: 'Error: No file IDs provided',
+          content: 'Provide between 1 and 8 file IDs. Read additional files in subsequent calls.',
           success: false,
         };
       }
 
       const fileContents = await this.ragService.getFileContents(fileIds, options?.signal);
 
-      const formattedContent = promptFileContents(fileContents);
+      const formattedContent = promptFileContents(fileContents, args);
 
       const state: ReadKnowledgeState = {
         files: fileContents.map((file) => ({

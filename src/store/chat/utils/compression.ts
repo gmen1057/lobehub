@@ -1,3 +1,4 @@
+import { getCompressionBoundary } from '@lobechat/agent-runtime';
 import {
   type CompressionGroupMetadata,
   type ConversationContext,
@@ -14,6 +15,12 @@ export const getCompressionCandidateMessageIds = (messages: UIChatMessage[]) =>
     .filter((message) => message.role !== 'compressedGroup')
     .map((message) => message.id)
     .filter(Boolean);
+
+/** Preserve the latest two user turns and their tool-call/result pairs verbatim. */
+export const getAutomaticCompressionCandidateMessageIds = (messages: UIChatMessage[]) => {
+  const cutoff = getCompressionBoundary(messages);
+  return getCompressionCandidateMessageIds(messages.slice(0, cutoff));
+};
 
 export const createPendingCompressedGroup = ({
   agentId,

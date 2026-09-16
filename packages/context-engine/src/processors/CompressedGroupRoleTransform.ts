@@ -1,3 +1,4 @@
+import { fileReferences } from '@lobechat/prompts';
 import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
@@ -52,9 +53,15 @@ export class CompressedGroupRoleTransformProcessor extends BaseProcessor {
         log(`Transforming compressedGroup message to user role`);
 
         // Wrap the compressed summary content in a context block
-        const wrappedContent = msg.content
+        const summaryContent = msg.content
           ? `<compressed_history_summary>\n${msg.content}\n</compressed_history_summary>`
           : '';
+        const wrappedContent =
+          summaryContent +
+          fileReferences([{ fileList: msg.fileList, compressedMessages: msg.compressedMessages }]) +
+          (msg.topicId
+            ? `\n<original_history>${JSON.stringify({ topicId: msg.topicId })} Use getTopicContext with mode="archive" and query or offset to verify details omitted by this summary.</original_history>`
+            : '');
 
         return {
           ...msg,

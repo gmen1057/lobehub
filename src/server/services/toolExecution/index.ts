@@ -95,7 +95,13 @@ export class ToolExecutionService {
 
       // Truncate result content to prevent context overflow
       // Use agent-specific config if provided, otherwise use default
-      const truncatedContent = truncateToolResult(data.content, context.toolResultMaxLength);
+      // Source readers already return bounded pages with exact cursors. Cutting a page
+      // again would silently skip source characters on the next read.
+      const truncatedContent =
+        (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') ||
+        (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext')
+          ? data.content
+          : truncateToolResult(data.content, context.toolResultMaxLength);
 
       // Log if content was truncated
       if (truncatedContent !== data.content) {

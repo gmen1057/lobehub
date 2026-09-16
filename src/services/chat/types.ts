@@ -18,6 +18,8 @@ export interface FetchOptions extends FetchSSEOptions {
   historySummary?: string;
   /** Initial context for page editor (captured at operation start) */
   initialContext?: RuntimeInitialContext;
+  /** Called after all context/tool injection, before any provider request. False defers the call. */
+  onFinalContext?: (estimatedTokens: number) => Promise<boolean>;
   signal?: AbortSignal | undefined;
   /** Step context for page editor (updated each step) */
   stepContext?: RuntimeStepContext;

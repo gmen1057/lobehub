@@ -93,6 +93,59 @@ const mockStreamResponse = (response: {
 };
 
 describe('call_llm executor', () => {
+  it('defers an oversized final prompt for compression and reuses the unpaid placeholder', async () => {
+    const mockStore = createMockStore();
+    const context = createTestContext();
+    const state = createInitialState();
+    mockStore.operations[context.operationId] = {
+      abortController: new AbortController(),
+      childOperationIds: [],
+      context: { agentId: context.agentId, topicId: context.topicId },
+      id: context.operationId,
+      metadata: {},
+      status: 'running',
+      type: 'execAgentRuntime',
+    } as any;
+    mockStore.dbMessagesMap[context.messageKey] = [
+      { id: 'old', role: 'user' },
+      { id: 'recent', role: 'user' },
+      { id: 'current', role: 'user' },
+    ] as any;
+    const executors = createAgentExecutors({
+      agentConfig: {
+        agentConfig: { model: 'gpt-4', provider: 'openai', params: {}, chatConfig: {} },
+        chatConfig: {},
+        plugins: [],
+        isBuiltinAgent: false,
+      } as any,
+      get: () => mockStore,
+      messageKey: context.messageKey,
+      operationId: context.operationId,
+      parentId: context.parentId,
+    });
+    const compressed = {
+      events: [],
+      newState: state,
+      nextContext: { phase: 'compression_result', payload: { groupId: 'summary' } },
+    };
+    executors.compress_context = vi.fn().mockResolvedValue(compressed);
+    vi.mocked(chatService.createAssistantMessageStream).mockImplementationOnce(async (params) => {
+      expect(await params.onFinalContext!(100_000)).toBe(false);
+    });
+    const instruction = createCallLLMInstruction({
+      model: 'gpt-4',
+      provider: 'openai',
+      messages: [],
+    });
+    expect(await executors.call_llm!(instruction, state)).toBe(compressed);
+    expect(executors.compress_context).toHaveBeenCalledTimes(1);
+    const creations = vi.mocked(mockStore.optimisticCreateMessage).mock.calls.length;
+    vi.mocked(chatService.createAssistantMessageStream).mockImplementationOnce(async (params) => {
+      expect(await params.onFinalContext!(100)).toBe(true);
+    });
+    await executors.call_llm!(instruction, state);
+    expect(vi.mocked(mockStore.optimisticCreateMessage).mock.calls.length).toBe(creations);
+  });
   describe('Basic Behavior', () => {
     it('should create assistant message with LOADING_FLAT content', async () => {
       // Given

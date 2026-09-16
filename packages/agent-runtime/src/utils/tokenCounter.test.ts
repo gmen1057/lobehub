@@ -2,12 +2,51 @@ import { describe, expect, it } from 'vitest';
 
 import {
   calculateMessageTokens,
+  calculatePromptTokens,
   DEFAULT_MAX_CONTEXT,
   DEFAULT_THRESHOLD_RATIO,
   estimateTokens,
   getCompressionThreshold,
   shouldCompress,
 } from './tokenCounter';
+
+it('counts bounded attachments and serialized tool calls before compression', () => {
+  const small = calculateMessageTokens([{ role: 'user', content: 'Read this' }]);
+  const large = calculateMessageTokens([
+    {
+      role: 'user',
+      content: 'Read this',
+      fileList: [{ content: 'contact '.repeat(200_000), id: 'vcf' }],
+    },
+  ]);
+  expect(large).toBeGreaterThan(small + 500);
+  expect(large).toBeLessThan(10_000);
+  expect(
+    calculateMessageTokens([
+      { role: 'assistant', content: '', tools: [{ arguments: 'data '.repeat(500) }] },
+    ]),
+  ).toBeGreaterThan(100);
+});
+
+it('counts injected text and tool schemas without treating base64 images as text', () => {
+  const tokens = calculatePromptTokens(
+    [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'full injected content '.repeat(1000) },
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,' + 'x'.repeat(1_000_000) },
+          },
+        ],
+      },
+    ],
+    [{ function: { name: 'read', description: 'schema '.repeat(1000) } }],
+  );
+  expect(tokens).toBeGreaterThan(1000);
+  expect(tokens).toBeLessThan(20000);
+});
 
 describe('tokenCounter', () => {
   describe('estimateTokens', () => {

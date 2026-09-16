@@ -9,6 +9,7 @@
     "test:coverage": "vitest --coverage --silent='passed-only'"
   },
   "dependencies": {
+    "@lobechat/prompts": "workspace:*",
     "p-map": "^7.0.4"
   },
   "devDependencies": {

@@ -1,3 +1,4 @@
+export * from './compression';
 export * from './messageSelectors';
 export * from './stepContextComputer';
 export * from './tokenCounter';

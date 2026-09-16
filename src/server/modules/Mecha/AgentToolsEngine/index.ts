@@ -16,6 +16,7 @@ import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
 import { MessageManifest } from '@lobechat/builtin-tool-message';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
+import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { alwaysOnToolIds, builtinTools, defaultToolIds } from '@lobechat/builtin-tools';
 import { createEnableChecker, type LobeToolManifest } from '@lobechat/context-engine';
@@ -97,7 +98,6 @@ export const createServerAgentToolsEngine = (
     deviceContext,
     globalMemoryEnabled = false,
     hasAgentDocuments = false,
-    hasEnabledKnowledgeBases = false,
     isBotConversation = false,
     model,
     provider,
@@ -139,7 +139,8 @@ export const createServerAgentToolsEngine = (
         ...Object.fromEntries(alwaysOnToolIds.map((id) => [id, true])),
         // System-level rules (may override user selection for specific tools)
         [CloudSandboxManifest.identifier]: runtimeMode === 'cloud',
-        [KnowledgeBaseManifest.identifier]: hasEnabledKnowledgeBases,
+        [KnowledgeBaseManifest.identifier]: true,
+        [TopicReferenceManifest.identifier]: true,
         [LocalSystemManifest.identifier]:
           runtimeMode === 'local' &&
           !!deviceContext?.gatewayConfigured &&

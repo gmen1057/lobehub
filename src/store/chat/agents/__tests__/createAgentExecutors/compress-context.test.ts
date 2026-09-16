@@ -96,11 +96,11 @@ describe('compress_context executor', () => {
     mockStore.dbMessagesMap[context.messageKey] = [
       { id: 'user-1', role: 'user' },
       { id: 'assistant-1', role: 'assistant' },
+      { id: 'user-recent', role: 'user' },
+      { id: 'user-current', role: 'user' },
     ] as any;
 
-    const compressedMessages = [
-      { content: 'summary', id: 'group-123', role: 'compressedGroup' },
-    ];
+    const compressedMessages = [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }];
 
     vi.mocked(messageService.createCompressionGroup).mockResolvedValue({
       messageGroupId: 'group-123',

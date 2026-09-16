@@ -44,12 +44,11 @@ class KnowledgeBaseExecutor extends BaseExecutor<{
       const agentState = getAgentStoreState();
       const knowledgeIds = agentSelectors.currentKnowledgeIds(agentState);
 
-      // Only search in knowledge bases, not agent files
-      // Agent files will be injected as full content in context-engine
+      // Search configured knowledge bases and explicitly requested attachments.
       const knowledgeBaseIds = knowledgeIds.knowledgeBaseIds;
 
       const { chunks, fileResults } = await ragService.semanticSearchForChat(
-        { knowledgeIds: knowledgeBaseIds, query, topK },
+        { fileIds: params.fileIds, knowledgeIds: knowledgeBaseIds, query, topK },
         ctx.signal,
       );
 
@@ -67,7 +66,7 @@ class KnowledgeBaseExecutor extends BaseExecutor<{
       return { content: formattedContent, state, success: true };
     } catch (e) {
       return {
-        content: `Error searching knowledge base: ${(e as Error).message}`,
+        content: `Search unavailable: ${(e as Error).message}. This is not evidence that the source has no relevant information. For known attachment IDs, use readKnowledge with query (literal search) or offset (sequential reading); continue automatically.`,
         error: { body: e, message: (e as Error).message, type: 'PluginServerError' },
         success: false,
       };
@@ -75,34 +74,32 @@ class KnowledgeBaseExecutor extends BaseExecutor<{
   };
 
   /**
-   * Read full content of specific files from knowledge base
+   * Read bounded pages from original files without requiring embeddings.
    */
   readKnowledge = async (params: ReadKnowledgeArgs): Promise<BuiltinToolResult> => {
     try {
       const { fileIds } = params;
 
-      if (!fileIds || fileIds.length === 0) {
+      if (!fileIds || fileIds.length === 0 || fileIds.length > 8) {
         return {
-          content: 'Error: No file IDs provided',
+          content: 'Provide between 1 and 8 file IDs. Read additional files in subsequent calls.',
           success: false,
         };
       }
 
       const fileContents = await ragService.getFileContents(fileIds);
 
-      const formattedContent = promptFileContents(fileContents);
+      const formattedContent = promptFileContents(fileContents, params);
 
       const state: ReadKnowledgeState = {
-        files: fileContents.map(
-          (file): FileContentDetail => ({
-            error: file.error,
-            fileId: file.fileId,
-            filename: file.filename,
-            preview: file.preview,
-            totalCharCount: file.totalCharCount,
-            totalLineCount: file.totalLineCount,
-          }),
-        ),
+        files: fileContents.map((file): FileContentDetail => ({
+          error: file.error,
+          fileId: file.fileId,
+          filename: file.filename,
+          preview: file.preview,
+          totalCharCount: file.totalCharCount,
+          totalLineCount: file.totalLineCount,
+        })),
       };
 
       return { content: formattedContent, state, success: true };

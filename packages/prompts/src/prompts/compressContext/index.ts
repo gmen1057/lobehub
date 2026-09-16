@@ -41,6 +41,9 @@ Preserve essential code snippets, commands, or technical syntax
 - Preserve ALL technical terms, code identifiers, file paths, and proper nouns exactly
 - Maintain factual accuracy - never invent or assume information
 - Keep code snippets that are essential for context
+- Preserve the user's constraints, exceptions, exact quantities, unresolved questions, source IDs and reading cursors
+- Distinguish verified findings from hypotheses; never turn partial search results into an exhaustive conclusion
+- Preserve file IDs exactly so the next model can retrieve the original source; a summary is not the original
 
 ### SHOULD
 - Achieve 60-80% compression ratio (summary should be 20-40% of original length)

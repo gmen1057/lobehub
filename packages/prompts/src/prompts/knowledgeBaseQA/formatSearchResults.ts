@@ -1,3 +1,5 @@
+import { filePreview } from '../files/context';
+
 export interface FileSearchResultChunk {
   similarity: number;
   text: string;
@@ -13,15 +15,24 @@ export interface FileSearchResult {
 /**
  * Formats a single chunk with XML tags
  */
-const formatChunk = (chunk: FileSearchResultChunk, fileId: string, fileName: string): string => {
-  return `<chunk fileId="${fileId}" fileName="${fileName}" similarity="${chunk.similarity}">${chunk.text}</chunk>`;
+const formatChunk = (
+  chunk: FileSearchResultChunk,
+  fileId: string,
+  fileName: string,
+  budget: { remaining: number },
+): string => {
+  const limit = Math.max(0, Math.min(4_000, budget.remaining));
+  budget.remaining -= Math.min(chunk.text.length, limit);
+  return `<chunk fileId="${fileId}" fileName="${fileName}" similarity="${chunk.similarity}">${filePreview(chunk.text, limit)}</chunk>`;
 };
 
 /**
  * Formats a single file search result with XML tags
  */
-const formatFile = (file: FileSearchResult): string => {
-  const chunks = file.topChunks.map((chunk) => formatChunk(chunk, file.fileId, file.fileName));
+const formatFile = (file: FileSearchResult, budget: { remaining: number }): string => {
+  const chunks = file.topChunks.map((chunk) =>
+    formatChunk(chunk, file.fileId, file.fileName, budget),
+  );
 
   return `<file id="${file.fileId}" name="${file.fileName}" relevanceScore="${file.relevanceScore}">
 ${chunks.join('\n')}
@@ -41,7 +52,8 @@ export const formatSearchResults = (fileResults: FileSearchResult[], query: stri
 </knowledge_base_search_results>`;
   }
 
-  const filesXml = fileResults.map((file) => formatFile(file)).join('\n');
+  const budget = { remaining: 20_000 };
+  const filesXml = fileResults.map((file) => formatFile(file, budget)).join('\n');
 
   return `<knowledge_base_search_results query="${query}" totalCount="${fileResults.length}">
 <instruction>Here are the search results from the knowledge base. Use the readKnowledge tool with file IDs to get complete content.</instruction>

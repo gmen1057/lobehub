@@ -5,6 +5,7 @@ import { CloudSandboxManifest } from '@lobechat/builtin-tool-cloud-sandbox';
 import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
+import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { alwaysOnToolIds, defaultToolIds } from '@lobechat/builtin-tools';
 import { createEnableChecker, type PluginEnableChecker } from '@lobechat/context-engine';
@@ -117,7 +118,9 @@ export const createAgentToolsEngine = (
         // System-level rules (may override user selection for specific tools)
         [CloudSandboxManifest.identifier]:
           agentChatConfigSelectors.isCloudSandboxEnabled(agentState),
-        [KnowledgeBaseManifest.identifier]: agentSelectors.hasEnabledKnowledgeBases(agentState),
+        // Attachment retrieval must work without requiring users to configure a KB.
+        [KnowledgeBaseManifest.identifier]: true,
+        [TopicReferenceManifest.identifier]: true,
         [LocalSystemManifest.identifier]: agentChatConfigSelectors.isLocalSystemEnabled(agentState),
         [MemoryManifest.identifier]:
           agentChatConfigSelectors.currentChatConfig(agentState).memory?.enabled ??

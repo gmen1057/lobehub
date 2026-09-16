@@ -1,3 +1,4 @@
+import { FILE_CONTEXT_CHARS, FILE_PREVIEW_CHARS } from '@lobechat/prompts';
 import { estimateTokenCount } from 'tokenx';
 
 /**
@@ -21,12 +22,16 @@ export const DEFAULT_THRESHOLD_RATIO = 0.5;
  */
 export interface TokenCountMessage {
   content?: string | unknown;
+  fileList?: { content?: string | null; id?: string; name?: string }[];
   metadata?: {
     usage?: {
       totalOutputTokens?: number;
     };
   } | null;
+  reasoning?: unknown;
   role: string;
+  tool_calls?: unknown;
+  tools?: unknown;
 }
 
 /**
@@ -52,18 +57,53 @@ export function estimateTokens(content: string | unknown): number {
  * @returns Total token count
  */
 export function calculateMessageTokens(messages: TokenCountMessage[]): number {
-  return messages.reduce((total, msg) => {
+  // Match the prompt's bounded attachment previews. Never estimate the entire stored file.
+  let fileCharactersRemaining = FILE_CONTEXT_CHARS;
+  return [...messages].reverse().reduce((total, msg) => {
+    let attachments = 0;
+    for (const file of msg.fileList || []) {
+      const text = (file.content || '').slice(
+        0,
+        Math.min(FILE_PREVIEW_CHARS, fileCharactersRemaining),
+      );
+      fileCharactersRemaining -= text.length;
+      attachments +=
+        estimateTokens(text) + estimateTokens(file.id) + estimateTokens(file.name) + 160;
+    }
+    const serialized =
+      estimateTokens(msg.content) +
+      estimateTokens(msg.tools ?? msg.tool_calls) +
+      estimateTokens(msg.reasoning);
     // For assistant messages, prefer the recorded token count from usage metadata
     if (msg.role === 'assistant') {
       const outputTokens = msg.metadata?.usage?.totalOutputTokens;
       if (outputTokens && outputTokens > 0) {
-        return total + outputTokens;
+        return total + Math.max(outputTokens, serialized) + attachments;
       }
     }
 
     // For user/system messages or assistant messages without usage data, estimate tokens
-    return total + estimateTokens(msg.content);
+    return total + serialized + attachments;
   }, 0);
+}
+
+/** Count the assembled text and tool schemas; binary image URLs are not text tokens. */
+export function calculatePromptTokens(messages: TokenCountMessage[], tools?: unknown): number {
+  const normalized = messages.map((message) => ({
+    role: message.role,
+    content: Array.isArray(message.content)
+      ? message.content
+          .map((part: unknown) => {
+            if (!part || typeof part !== 'object') return '';
+            if ('text' in part && typeof part.text === 'string') return part.text;
+            if ('thinking' in part && typeof part.thinking === 'string') return part.thinking;
+            return '';
+          })
+          .join('\n')
+      : message.content,
+    tool_calls: message.tool_calls,
+  }));
+  return calculateMessageTokens(normalized) + estimateTokens(tools) + messages.length * 4;
 }
 
 /**

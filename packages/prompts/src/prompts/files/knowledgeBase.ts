@@ -1,4 +1,5 @@
 import type { FileContent } from '../knowledgeBaseQA';
+import { FILE_CONTEXT_CHARS, FILE_PREVIEW_CHARS, filePreview } from './context';
 
 export interface KnowledgeBaseInfo {
   description?: string | null;
@@ -16,13 +17,13 @@ export interface PromptKnowledgeOptions {
 /**
  * Formats a single file content with XML tags
  */
-const formatFileContent = (file: FileContent): string => {
+const formatFileContent = (file: FileContent, limit: number): string => {
   if (file.error) {
     return `<file id="${file.fileId}" name="${file.filename}" error="${file.error}" />`;
   }
 
   return `<file id="${file.fileId}" name="${file.filename}">
-${file.content}
+${filePreview(file.content, limit)}
 </file>`;
 };
 
@@ -60,7 +61,14 @@ export const promptAgentKnowledge = ({
 
   // Add files section
   if (hasFiles) {
-    const filesXml = fileContents.map((file) => formatFileContent(file)).join('\n');
+    let remaining = FILE_CONTEXT_CHARS;
+    const filesXml = fileContents
+      .map((file) => {
+        const limit = Math.max(0, Math.min(FILE_PREVIEW_CHARS, remaining));
+        remaining -= Math.min(file.content.length, limit);
+        return formatFileContent(file, limit);
+      })
+      .join('\n');
     contentParts.push(`<files totalCount="${fileContents.length}">
 ${filesXml}
 </files>`);

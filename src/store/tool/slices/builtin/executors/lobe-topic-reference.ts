@@ -4,6 +4,10 @@ import type { BuiltinToolResult } from '@lobechat/types';
 import { lambdaClient } from '@/libs/trpc/client';
 
 interface GetTopicContextParams {
+  mode?: 'summary' | 'archive';
+  offset?: number;
+  query?: string;
+  snapshotAt?: string;
   topicId: string;
 }
 
@@ -16,7 +20,7 @@ class TopicReferenceExecutionRuntime {
     }
 
     try {
-      const result = await lambdaClient.topic.getTopicContext.query({ topicId });
+      const result = await lambdaClient.topic.getTopicContext.query(params);
       return { content: result.content, success: result.success };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);

@@ -231,22 +231,23 @@ describe('createServerAgentToolsEngine', () => {
     expect(result.enabledToolIds).toContain(KnowledgeBaseManifest.identifier);
   });
 
-  it('should disable KnowledgeBase when hasEnabledKnowledgeBases is false', () => {
+  it('should keep attachment retrieval available without a configured knowledge base', () => {
     const context = createMockContext();
     const engine = createServerAgentToolsEngine(context, {
-      agentConfig: { plugins: [KnowledgeBaseManifest.identifier] },
+      agentConfig: { plugins: [] },
       model: 'gpt-4',
       provider: 'openai',
       hasEnabledKnowledgeBases: false,
     });
 
     const result = engine.generateToolsDetailed({
-      toolIds: [KnowledgeBaseManifest.identifier],
+      toolIds: [],
       model: 'gpt-4',
       provider: 'openai',
     });
 
-    expect(result.enabledToolIds).not.toContain(KnowledgeBaseManifest.identifier);
+    expect(result.enabledToolIds).toContain(KnowledgeBaseManifest.identifier);
+    expect(result.enabledToolIds).toContain('lobe-topic-reference');
   });
 
   it('should include KnowledgeBase as default tool but not WebBrowsing (arckep)', () => {
