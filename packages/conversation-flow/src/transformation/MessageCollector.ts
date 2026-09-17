@@ -10,10 +10,17 @@ import type { ContextNode, IdNode, Message, MessageNode } from '../types';
  * 4. Finding next messages in sequences
  */
 export class MessageCollector {
+  /** Tool → next assistant more than this apart is a new send, not this turn. */
+  private readonly sameTurnMs = 5 * 60 * 1000;
+
   constructor(
     private messageMap: Map<string, Message>,
     private childrenMap: Map<string | null, string[]>,
   ) {}
+
+  private createdAtMs(message: Message): number {
+    return new Date(message.createdAt as Date).getTime() || 0;
+  }
 
   /**
    * Collect all messages belonging to a message group
@@ -56,85 +63,46 @@ export class MessageCollector {
     const toolMessages = this.collectToolMessages(currentAssistant, allMessages);
     allToolMessages.push(...toolMessages);
 
-    // Find next assistant after tools
-    toolLoop: for (const toolMsg of toolMessages) {
-      // Stop if tool message has agentCouncil mode - its children belong to AgentCouncil
-      if ((toolMsg.metadata as any)?.agentCouncil === true) {
-        continue;
-      }
+    const nextAssistants: Message[] = [];
+    const seen = new Set<string>(assistantChain.map((m) => m.id));
 
+    for (const toolMsg of toolMessages) {
+      if ((toolMsg.metadata as any)?.agentCouncil === true) continue;
       const nextMessages = allMessages.filter((m) => m.parentId === toolMsg.id);
-
-      // Stop if there are task children - they should be handled separately, not part of AssistantGroup
-      // This ensures that messages after a task are not merged into the AssistantGroup before the task
-      const taskChildren = nextMessages.filter((m) => m.role === 'task');
-      if (taskChildren.length > 0) {
-        continue;
-      }
+      if (nextMessages.some((m) => m.role === 'task')) continue;
 
       for (const nextMsg of nextMessages) {
-        // Only continue if the next assistant has the SAME agentId
-        // Different agentId means it's a different agent responding (e.g., via speak tool)
-        const isSameAgent = nextMsg.agentId === groupAgentId;
-
-        if (
-          nextMsg.role === 'assistant' &&
-          nextMsg.tools &&
-          nextMsg.tools.length > 0 &&
-          isSameAgent
-        ) {
-          // Continue the chain only for same agent
-          this.collectAssistantChain(
-            nextMsg,
-            allMessages,
-            assistantChain,
-            allToolMessages,
-            processedIds,
-          );
-          break toolLoop;
-        } else if (nextMsg.role === 'assistant' && isSameAgent) {
-          // Final assistant without tools (same agent)
-          assistantChain.push(nextMsg);
-          break toolLoop;
-        }
-        // If different agentId, don't add to chain - let it be processed separately
+        if (nextMsg.role !== 'assistant' || nextMsg.agentId !== groupAgentId) continue;
+        if (this.createdAtMs(nextMsg) - this.createdAtMs(toolMsg) > this.sameTurnMs) continue;
+        if (seen.has(nextMsg.id)) continue;
+        seen.add(nextMsg.id);
+        nextAssistants.push(nextMsg);
       }
     }
 
-    this.appendFollowupsParentedToRoot(assistantChain[0], allMessages, assistantChain);
-  }
+    for (const nextMsg of allMessages) {
+      if (nextMsg.parentId !== currentAssistant.id) continue;
+      if (nextMsg.role !== 'assistant' || nextMsg.agentId !== groupAgentId) continue;
+      if (seen.has(nextMsg.id)) continue;
+      seen.add(nextMsg.id);
+      nextAssistants.push(nextMsg);
+    }
 
-  /**
-   * Follow-up text is sometimes parented to the first tool-calling assistant
-   * instead of the last tool. The walker only follows tool → next assistant,
-   * so that reply would never join the group and the UI stays empty.
-   * Incident 2026-09-17 (agent inbox after knowledge-base reads).
-   */
-  appendFollowupsParentedToRoot(
-    rootAssistant: Message,
-    allMessages: Message[],
-    assistantChain: Message[],
-  ): void {
-    if (!rootAssistant) return;
+    nextAssistants.sort((a, b) => this.createdAtMs(a) - this.createdAtMs(b));
 
-    const groupAgentId = assistantChain[0]?.agentId ?? rootAssistant.agentId;
-    const inChain = new Set(assistantChain.map((m) => m.id));
-    const followups = allMessages
-      .filter((m) => {
-        if (m.parentId !== rootAssistant.id) return false;
-        if (m.role !== 'assistant') return false;
-        if (m.tools && m.tools.length > 0) return false;
-        if (m.agentId !== groupAgentId) return false;
-        if (inChain.has(m.id)) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        const ta = new Date(a.createdAt as any).getTime();
-        const tb = new Date(b.createdAt as any).getTime();
-        return ta - tb;
-      });
-
-    assistantChain.push(...followups);
+    for (const nextMsg of nextAssistants) {
+      if (nextMsg.tools && nextMsg.tools.length > 0) {
+        this.collectAssistantChain(
+          nextMsg,
+          allMessages,
+          assistantChain,
+          allToolMessages,
+          processedIds,
+        );
+      } else {
+        assistantChain.push(nextMsg);
+      }
+    }
   }
 
   /**
@@ -194,7 +162,11 @@ export class MessageCollector {
         const nextMsg = this.messageMap.get(nextChild.id);
 
         // Only continue if the next assistant has the SAME agentId
-        if (nextMsg?.role === 'assistant' && nextMsg.agentId === agentId) {
+        if (
+          nextMsg?.role === 'assistant' &&
+          nextMsg.agentId === agentId &&
+          this.createdAtMs(nextMsg) - this.createdAtMs(toolMsg) <= this.sameTurnMs
+        ) {
           // Recursively collect this assistant and its descendants (same agent only)
           this.collectAssistantGroupMessages(nextMsg, nextChild, children, agentId);
           break;

@@ -21,6 +21,7 @@ import type {
 import {
   calculateMessageTokens,
   hasRepeatedToolCall,
+  resolveAssistantParentId,
   TOOL_CALL_REPEAT_STOP_MESSAGE,
   updateToolCallRepeatGuard,
   UsageCounter,
@@ -258,6 +259,12 @@ export const createAgentExecutors = (context: {
         if (!llmPayload.parentMessageId) {
           llmPayload.parentMessageId = context.parentId;
         }
+
+        const dbMessages = context.get().dbMessagesMap[context.messageKey] || [];
+        llmPayload.parentMessageId = resolveAssistantParentId(
+          dbMessages,
+          llmPayload.parentMessageId,
+        );
 
         // Build metadata
         const metadata: Record<string, any> = {};
