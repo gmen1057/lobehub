@@ -380,7 +380,19 @@ export class GeneralChatAgent implements Agent {
    * Proceed to the next LLM call, inserting compression first when needed.
    */
   private toLLMCall(payload: GeneralAgentCallLLMInstructionPayload): AgentInstruction {
-    return this.maybeCompress(payload.messages) ?? { payload, type: 'call_llm' };
+    const compress = this.maybeCompress(payload.messages);
+    if (!compress) return { payload, type: 'call_llm' };
+
+    // Compression must keep the tool-chain parent. Dropping it made the next
+    // assistant message hang off the first tool-calling turn, and the chat UI
+    // never painted the reply. Incident 2026-09-17.
+    return {
+      payload: {
+        ...compress.payload,
+        parentMessageId: payload.parentMessageId,
+      },
+      type: 'compress_context',
+    };
   }
 
   /**

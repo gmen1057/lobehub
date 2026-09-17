@@ -64,12 +64,16 @@ describe('GeneralChatAgent', () => {
       modelRuntimeConfig: mockModelRuntimeConfig,
     });
 
-  const expectCompressionInstruction = (messages: AgentState['messages']) => ({
+  const expectCompressionInstruction = (
+    messages: AgentState['messages'],
+    parentMessageId?: string,
+  ) => ({
     type: 'compress_context',
     payload: {
       currentTokenCount: expect.any(Number),
       existingSummary: undefined,
       messages,
+      ...(parentMessageId !== undefined ? { parentMessageId } : {}),
     },
   });
 
@@ -649,7 +653,7 @@ describe('GeneralChatAgent', () => {
 
       const result = await agent.runner(context, state);
 
-      expect(result).toEqual(expectCompressionInstruction(state.messages));
+      expect(result).toEqual(expectCompressionInstruction(state.messages, 'tool-msg-1'));
     });
 
     it('should return request_human_approve when there are pending tools', async () => {
@@ -795,7 +799,7 @@ describe('GeneralChatAgent', () => {
 
       const result = await agent.runner(context, state);
 
-      expect(result).toEqual(expectCompressionInstruction(state.messages));
+      expect(result).toEqual(expectCompressionInstruction(state.messages, 'tool-msg-2'));
     });
   });
 
@@ -1263,7 +1267,7 @@ describe('GeneralChatAgent', () => {
 
       const result = await agent.runner(context, state);
 
-      expect(result).toEqual(expectCompressionInstruction(state.messages));
+      expect(result).toEqual(expectCompressionInstruction(state.messages, 'task-parent-msg'));
     });
   });
 
@@ -1382,14 +1386,17 @@ describe('GeneralChatAgent', () => {
       const result = await agent.runner(context, state);
 
       expect(result).toEqual(
-        expectCompressionInstruction([
-          ...state.messages,
-          {
-            content:
-              'All tasks above have been completed. Please summarize the results or continue with your response following user query language.',
-            role: 'user',
-          },
-        ]),
+        expectCompressionInstruction(
+          [
+            ...state.messages,
+            {
+              content:
+                'All tasks above have been completed. Please summarize the results or continue with your response following user query language.',
+              role: 'user',
+            },
+          ],
+          'task-parent-msg',
+        ),
       );
     });
   });
@@ -1557,6 +1564,7 @@ describe('GeneralChatAgent', () => {
           currentTokenCount: expect.any(Number),
           existingSummary: 'Existing summary',
           messages: state.messages,
+          parentMessageId: 'tool-msg-1',
         },
         type: 'compress_context',
       });

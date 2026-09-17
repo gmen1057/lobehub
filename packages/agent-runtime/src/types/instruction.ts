@@ -219,6 +219,12 @@ export interface AgentInstructionCompressContext {
     existingSummary?: string;
     /** Messages to compress */
     messages: any[];
+    /**
+     * Parent for the next assistant message after compression.
+     * Must be the last tool (or task) in the current turn, not the first
+     * assistant of the operation.
+     */
+    parentMessageId?: string;
   };
   type: 'compress_context';
 }

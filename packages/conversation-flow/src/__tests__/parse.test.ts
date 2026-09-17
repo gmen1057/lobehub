@@ -39,6 +39,90 @@ describe('parse', () => {
 
       expect(serializeParseResult(result)).toEqual(outputs.assistantChainWithFollowup);
     });
+
+    it('should include follow-up text parented to the first tool-calling assistant', () => {
+      // Incident 2026-09-17: after several knowledge-base rounds the final
+      // reply was saved as a child of the first assistant, not the last tool.
+      // The UI then showed only empty tool cards.
+      const messages = [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'Read the project',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'asst-1',
+          role: 'assistant',
+          content: '',
+          parentId: 'user-1',
+          tools: [
+            {
+              id: 'call-search',
+              type: 'builtin',
+              apiName: 'searchKnowledgeBase',
+              identifier: 'lobe-knowledge-base',
+              arguments: '{}',
+            },
+          ],
+          createdAt: 2,
+          updatedAt: 2,
+        },
+        {
+          id: 'tool-search',
+          role: 'tool',
+          content: 'search miss',
+          parentId: 'asst-1',
+          tool_call_id: 'call-search',
+          createdAt: 3,
+          updatedAt: 3,
+        },
+        {
+          id: 'asst-2',
+          role: 'assistant',
+          content: '',
+          parentId: 'tool-search',
+          tools: [
+            {
+              id: 'call-read',
+              type: 'builtin',
+              apiName: 'readKnowledge',
+              identifier: 'lobe-knowledge-base',
+              arguments: '{}',
+            },
+          ],
+          createdAt: 4,
+          updatedAt: 4,
+        },
+        {
+          id: 'tool-read',
+          role: 'tool',
+          content: 'document chunk',
+          parentId: 'asst-2',
+          tool_call_id: 'call-read',
+          createdAt: 5,
+          updatedAt: 5,
+        },
+        {
+          id: 'asst-final',
+          role: 'assistant',
+          content: 'Here is the actual answer after reading the files.',
+          parentId: 'asst-1',
+          createdAt: 6,
+          updatedAt: 6,
+        },
+      ];
+
+      const result = parse(messages as any);
+      expect(result.flatList).toHaveLength(2);
+      expect(result.flatList[0].id).toBe('user-1');
+      expect(result.flatList[1].role).toBe('assistantGroup');
+      const childIds = (result.flatList[1].children || []).map((c: { id: string }) => c.id);
+      expect(childIds).toEqual(['asst-1', 'asst-2', 'asst-final']);
+      expect(result.flatList[1].children?.at(-1)?.content).toContain('actual answer');
+      expect(JSON.stringify(result.flatList)).toContain('actual answer');
+    });
   });
 
   describe('Branching', () => {
