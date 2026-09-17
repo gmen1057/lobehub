@@ -424,6 +424,40 @@ describe('call_llm executor', () => {
       );
     });
 
+    it('should parent the next assistant to the last tool after a tool round', async () => {
+      const mockStore = createMockStore();
+      const context = createTestContext({ parentId: 'msg_user' });
+      const instruction = createCallLLMInstruction({
+        parentMessageId: 'msg_first_assistant',
+      });
+      const state = createInitialState();
+
+      mockStreamResponse({ content: 'AI response' });
+      mockStore.dbMessagesMap[context.messageKey] = [
+        { id: 'msg_user', role: 'user', createdAt: 1 },
+        { id: 'msg_first_assistant', role: 'assistant', createdAt: 2, tools: [{ id: 'call-1' }] },
+        { id: 'msg_tool_1', role: 'tool', createdAt: 3, parentId: 'msg_first_assistant' },
+        { id: 'msg_tool_2', role: 'tool', createdAt: 4, parentId: 'msg_first_assistant' },
+      ] as any;
+
+      await executeWithMockContext({
+        executor: 'call_llm',
+        instruction,
+        state,
+        mockStore,
+        context,
+      });
+
+      expect(mockStore.optimisticCreateMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          parentId: 'msg_tool_2',
+        }),
+        expect.objectContaining({
+          operationId: expect.any(String),
+        }),
+      );
+    });
+
     it('should fall back to context.parentId if parentMessageId not provided', async () => {
       // Given
       const mockStore = createMockStore();

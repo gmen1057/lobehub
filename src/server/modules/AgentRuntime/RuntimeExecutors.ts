@@ -8,6 +8,7 @@ import {
   type GeneralAgentCompressionResultPayload,
   hasRepeatedToolCall,
   type InstructionExecutor,
+  resolveAssistantParentId,
   TOOL_CALL_REPEAT_STOP_MESSAGE,
   updateToolCallRepeatGuard,
   UsageCounter,
@@ -321,7 +322,17 @@ export const createRuntimeExecutors = (
     log(`${stagePrefix} Starting operation`);
 
     // Get parentId from payload (parentId or parentMessageId depending on payload type)
-    const parentId = llmPayload.parentId || (llmPayload as any).parentMessageId;
+    let parentId = llmPayload.parentId || (llmPayload as any).parentMessageId;
+    if (ctx.messageModel && state.metadata?.topicId) {
+      const dbMessages = await ctx.messageModel.query({
+        agentId: state.metadata?.agentId,
+        threadId: state.metadata?.threadId,
+        topicId: state.metadata.topicId,
+      });
+      parentId = resolveAssistantParentId(dbMessages, parentId);
+    } else {
+      parentId = resolveAssistantParentId(state.messages || [], parentId);
+    }
 
     // Get or create assistant message
     // If assistantMessageId is provided in payload, use existing message instead of creating new one

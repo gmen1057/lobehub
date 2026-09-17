@@ -123,6 +123,72 @@ describe('parse', () => {
       expect(result.flatList[1].children?.at(-1)?.content).toContain('actual answer');
       expect(JSON.stringify(result.flatList)).toContain('actual answer');
     });
+
+    it('does not swallow a later send that hangs off an old tool', () => {
+      const hour = 60 * 60 * 1000;
+      const messages = [
+        {
+          id: 'user-1',
+          role: 'user',
+          content: 'first',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        {
+          id: 'asst-1',
+          role: 'assistant',
+          content: '',
+          parentId: 'user-1',
+          tools: [
+            {
+              id: 'call-1',
+              type: 'builtin',
+              apiName: 'readKnowledge',
+              identifier: 'lobe-knowledge-base',
+              arguments: '{}',
+            },
+          ],
+          createdAt: 2,
+          updatedAt: 2,
+        },
+        {
+          id: 'tool-1',
+          role: 'tool',
+          content: 'chunk',
+          parentId: 'asst-1',
+          tool_call_id: 'call-1',
+          createdAt: 3,
+          updatedAt: 3,
+        },
+        {
+          id: 'asst-final',
+          role: 'assistant',
+          content: 'first answer',
+          parentId: 'asst-1',
+          createdAt: 4,
+          updatedAt: 4,
+        },
+        {
+          id: 'asst-later',
+          role: 'assistant',
+          content: 'later turn',
+          parentId: 'tool-1',
+          createdAt: hour,
+          updatedAt: hour,
+        },
+      ];
+
+      const result = parse(messages as any);
+      const ids = JSON.stringify(result.flatList);
+      expect(ids).toContain('asst-final');
+      expect(
+        result.flatList.some(
+          (m) =>
+            m.id === 'asst-later' ||
+            (m.children || []).some((c: { id: string }) => c.id === 'asst-later'),
+        ),
+      ).toBe(true);
+    });
   });
 
   describe('Branching', () => {
