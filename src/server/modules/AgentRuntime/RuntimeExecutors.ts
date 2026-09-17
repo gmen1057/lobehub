@@ -1101,7 +1101,7 @@ export const createRuntimeExecutors = (
 
   compress_context: async (instruction, state) => {
     const { payload } = instruction as AgentInstructionCompressContext;
-    const { messages, currentTokenCount } = payload;
+    const { messages, currentTokenCount, parentMessageId: incomingParentMessageId } = payload;
     const { operationId, stepIndex } = ctx;
     const operationLogId = `${operationId}:${stepIndex}`;
     const stagePrefix = `[${operationLogId}][compress_context]`;
@@ -1125,7 +1125,7 @@ export const createRuntimeExecutors = (
           payload: {
             compressedMessages: compressedMessagesFallback,
             groupId: '',
-            parentMessageId: undefined,
+            parentMessageId: incomingParentMessageId,
             skipped: true,
           } as GeneralAgentCompressionResultPayload,
           phase: 'compression_result',
@@ -1163,7 +1163,7 @@ export const createRuntimeExecutors = (
             payload: {
               compressedMessages: compressedMessagesFallback,
               groupId: '',
-              parentMessageId: undefined,
+              parentMessageId: incomingParentMessageId,
               skipped: true,
             } as GeneralAgentCompressionResultPayload,
             phase: 'compression_result',
@@ -1178,6 +1178,7 @@ export const createRuntimeExecutors = (
       }
 
       const latestAssistantMessage = dbMessages.findLast((message) => message.role === 'assistant');
+      const followUpParentId = incomingParentMessageId ?? latestAssistantMessage?.id;
       const messageService = new MessageService(ctx.serverDB, ctx.userId);
       const compressionResult = await messageService.createCompressionGroup(topicId, messageIds, {
         agentId: state.metadata?.agentId,
@@ -1196,7 +1197,7 @@ export const createRuntimeExecutors = (
             payload: {
               compressedMessages: compressedMessagesFallback,
               groupId: '',
-              parentMessageId: latestAssistantMessage?.id,
+              parentMessageId: followUpParentId,
               skipped: true,
             } as GeneralAgentCompressionResultPayload,
             phase: 'compression_result',
@@ -1298,7 +1299,7 @@ export const createRuntimeExecutors = (
 
       events.push({
         groupId: compressionResult.messageGroupId,
-        parentMessageId: latestAssistantMessage?.id,
+        parentMessageId: followUpParentId,
         type: 'compression_complete',
       });
 
@@ -1309,7 +1310,7 @@ export const createRuntimeExecutors = (
           payload: {
             compressedMessages,
             groupId: compressionResult.messageGroupId,
-            parentMessageId: latestAssistantMessage?.id,
+            parentMessageId: followUpParentId,
           } as GeneralAgentCompressionResultPayload,
           phase: 'compression_result',
           session: {
@@ -1336,7 +1337,7 @@ export const createRuntimeExecutors = (
           payload: {
             compressedMessages: compressedMessagesFallback,
             groupId: '',
-            parentMessageId: undefined,
+            parentMessageId: incomingParentMessageId,
             skipped: true,
           } as GeneralAgentCompressionResultPayload,
           phase: 'compression_result',

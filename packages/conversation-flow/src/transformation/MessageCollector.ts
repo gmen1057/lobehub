@@ -57,7 +57,7 @@ export class MessageCollector {
     allToolMessages.push(...toolMessages);
 
     // Find next assistant after tools
-    for (const toolMsg of toolMessages) {
+    toolLoop: for (const toolMsg of toolMessages) {
       // Stop if tool message has agentCouncil mode - its children belong to AgentCouncil
       if ((toolMsg.metadata as any)?.agentCouncil === true) {
         continue;
@@ -91,15 +91,50 @@ export class MessageCollector {
             allToolMessages,
             processedIds,
           );
-          return;
+          break toolLoop;
         } else if (nextMsg.role === 'assistant' && isSameAgent) {
           // Final assistant without tools (same agent)
           assistantChain.push(nextMsg);
-          return;
+          break toolLoop;
         }
         // If different agentId, don't add to chain - let it be processed separately
       }
     }
+
+    this.appendFollowupsParentedToRoot(assistantChain[0], allMessages, assistantChain);
+  }
+
+  /**
+   * Follow-up text is sometimes parented to the first tool-calling assistant
+   * instead of the last tool. The walker only follows tool → next assistant,
+   * so that reply would never join the group and the UI stays empty.
+   * Incident 2026-09-17 (agent inbox after knowledge-base reads).
+   */
+  appendFollowupsParentedToRoot(
+    rootAssistant: Message,
+    allMessages: Message[],
+    assistantChain: Message[],
+  ): void {
+    if (!rootAssistant) return;
+
+    const groupAgentId = assistantChain[0]?.agentId ?? rootAssistant.agentId;
+    const inChain = new Set(assistantChain.map((m) => m.id));
+    const followups = allMessages
+      .filter((m) => {
+        if (m.parentId !== rootAssistant.id) return false;
+        if (m.role !== 'assistant') return false;
+        if (m.tools && m.tools.length > 0) return false;
+        if (m.agentId !== groupAgentId) return false;
+        if (inChain.has(m.id)) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const ta = new Date(a.createdAt as any).getTime();
+        const tb = new Date(b.createdAt as any).getTime();
+        return ta - tb;
+      });
+
+    assistantChain.push(...followups);
   }
 
   /**
@@ -162,8 +197,21 @@ export class MessageCollector {
         if (nextMsg?.role === 'assistant' && nextMsg.agentId === agentId) {
           // Recursively collect this assistant and its descendants (same agent only)
           this.collectAssistantGroupMessages(nextMsg, nextChild, children, agentId);
-          return; // Only follow one path
+          break;
         }
+      }
+    }
+
+    // Follow-up text parented to this assistant (not to the last tool)
+    for (const childNode of idNode.children) {
+      const childMsg = this.messageMap.get(childNode.id);
+      if (
+        childMsg?.role === 'assistant' &&
+        childMsg.agentId === agentId &&
+        !(childMsg.tools && childMsg.tools.length > 0) &&
+        !children.some((c) => 'id' in c && c.id === childMsg.id)
+      ) {
+        children.push({ id: childMsg.id, type: 'message' });
       }
     }
   }
