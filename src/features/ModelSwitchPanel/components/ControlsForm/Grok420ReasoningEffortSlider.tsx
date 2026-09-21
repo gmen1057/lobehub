@@ -8,7 +8,7 @@ export type Grok420ReasoningEffortSliderProps = CreatedLevelSliderProps<Grok420R
 
 const Grok420ReasoningEffortSlider = createLevelSliderComponent<Grok420ReasoningEffort>({
   configKey: 'grok4_20ReasoningEffort',
-  defaultValue: 'medium',
+  defaultValue: 'high',
   levels: GROK4_20_REASONING_EFFORT_LEVELS,
   style: { minWidth: 200 },
 });
