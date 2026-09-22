@@ -365,6 +365,19 @@ const normalizeConversationId = (value: unknown): string | undefined => {
 export type ModelRuntimeConversationContext = {
   sessionId?: string | null;
   topicId?: string | null;
+  /**
+   * LobeChat `messages.id` of the assistant placeholder. Forwarded to the
+   * billing proxy so it can store the answer if the browser never does.
+   */
+  assistantMessageId?: string | null;
+};
+
+/** Chat message ids are nanoid-style. Reject anything else; do not truncate. */
+export const normalizeAssistantMessageId = (value: unknown): string | undefined => {
+  if (value === null || value === undefined) return undefined;
+  const s = String(value).trim();
+  if (!/^[\w-]{8,64}$/.test(s)) return undefined;
+  return s;
 };
 
 /**
@@ -393,7 +406,13 @@ export const initModelRuntimeWithUserPayload = (
 
   // Keep arckep-only fields out of provider SDK options (userId was already
   // filtered implicitly by SDKs; session/topic must not leak as client opts).
-  const { userId, sessionId: convSessionId, topicId: convTopicId, ...restParams } = params;
+  const {
+    userId,
+    sessionId: convSessionId,
+    topicId: convTopicId,
+    assistantMessageId: rawAssistantMessageId,
+    ...restParams
+  } = params;
 
   const resolvedParams = {
     ...getParamsFromPayload(runtimeProvider, payload),
@@ -416,8 +435,12 @@ export const initModelRuntimeWithUserPayload = (
     }
     const sessionId = normalizeConversationId(convSessionId);
     const topicId = normalizeConversationId(convTopicId);
+    const assistantMessageId = normalizeAssistantMessageId(rawAssistantMessageId);
     if (sessionId) headers['x-session-id'] = sessionId;
     if (topicId) headers['x-topic-id'] = topicId;
+    // Without this hop the browser header dies in the route and the proxy
+    // never learns which chat row to fill when the tab closes.
+    if (assistantMessageId) headers['x-assistant-message-id'] = assistantMessageId;
     resolvedParams.defaultHeaders = headers;
   }
 
@@ -478,6 +501,7 @@ export const initModelRuntimeFromDB = async (
       userId,
       sessionId: conversation?.sessionId,
       topicId: conversation?.topicId,
+      assistantMessageId: conversation?.assistantMessageId,
     },
     hooks,
   );

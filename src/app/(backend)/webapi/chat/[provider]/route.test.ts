@@ -12,6 +12,12 @@ import { POST } from './route';
 vi.mock('@/server/modules/ModelRuntime', () => ({
   initModelRuntimeFromDB: vi.fn(),
   createTraceOptions: vi.fn().mockReturnValue({}),
+  normalizeAssistantMessageId: (value: unknown) => {
+    if (value === null || value === undefined) return undefined;
+    const s = String(value).trim();
+    if (!/^[\w-]{8,64}$/.test(s)) return undefined;
+    return s;
+  },
 }));
 
 vi.mock('@/libs/arckep/validateToken', () => ({
@@ -79,7 +85,7 @@ describe('POST handler', () => {
         expect.anything(),
         expect.any(String),
         'test-provider',
-        { sessionId: undefined, topicId: undefined },
+        { sessionId: undefined, topicId: undefined, assistantMessageId: undefined },
       );
     });
 
@@ -109,7 +115,49 @@ describe('POST handler', () => {
         expect.anything(),
         expect.any(String),
         'test-provider',
-        { sessionId: 'inbox', topicId: 'tpc_abc' },
+        { sessionId: 'inbox', topicId: 'tpc_abc', assistantMessageId: undefined },
+      );
+    });
+
+    it('should forward a valid x-assistant-message-id and drop a bad one', async () => {
+      const mockParams = Promise.resolve({ provider: 'test-provider' });
+      const mockChatResponse = new Response(JSON.stringify({ success: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const mockRuntime: LobeRuntimeAI = {
+        baseURL: 'abc',
+        chat: vi.fn().mockResolvedValue(mockChatResponse),
+      };
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValue(new ModelRuntime(mockRuntime));
+
+      const good = new Request(new URL('https://test.com'), {
+        method: 'POST',
+        body: JSON.stringify({ model: 'test-model' }),
+        headers: { 'x-assistant-message-id': 'msg_VqfAoxBtmD01N7' },
+      });
+      await POST(good as unknown as Request, { params: mockParams });
+      expect(initModelRuntimeFromDB).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.any(String),
+        'test-provider',
+        {
+          sessionId: undefined,
+          topicId: undefined,
+          assistantMessageId: 'msg_VqfAoxBtmD01N7',
+        },
+      );
+
+      const bad = new Request(new URL('https://test.com'), {
+        method: 'POST',
+        body: JSON.stringify({ model: 'test-model' }),
+        headers: { 'x-assistant-message-id': 'not a message' },
+      });
+      await POST(bad as unknown as Request, { params: mockParams });
+      expect(initModelRuntimeFromDB).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.any(String),
+        'test-provider',
+        { sessionId: undefined, topicId: undefined, assistantMessageId: undefined },
       );
     });
 

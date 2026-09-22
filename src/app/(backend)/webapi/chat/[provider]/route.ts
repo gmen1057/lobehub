@@ -3,7 +3,11 @@ import { AGENT_RUNTIME_ERROR_SET } from '@lobechat/model-runtime';
 import { ChatErrorType } from '@lobechat/types';
 
 import { checkAuth } from '@/app/(backend)/middleware/auth';
-import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import {
+  createTraceOptions,
+  initModelRuntimeFromDB,
+  normalizeAssistantMessageId,
+} from '@/server/modules/ModelRuntime';
 import { type ChatStreamPayload } from '@/types/openai/chat';
 import { createErrorResponse } from '@/utils/errorResponse';
 import { getTracePayload } from '@/utils/trace';
@@ -21,6 +25,9 @@ export const POST = checkAuth(
       // Browser sends conversation ids (chat/index.ts); forward into billing proxy.
       const sessionId = req.headers.get('x-session-id') ?? undefined;
       const topicId = req.headers.get('x-topic-id') ?? undefined;
+      const assistantMessageId = normalizeAssistantMessageId(
+        req.headers.get('x-assistant-message-id'),
+      );
 
       let modelRuntime: ModelRuntime;
       if (createRuntime) {
@@ -31,6 +38,7 @@ export const POST = checkAuth(
         modelRuntime = await initModelRuntimeFromDB(serverDB, userId, provider, {
           sessionId,
           topicId,
+          assistantMessageId,
         });
       }
 

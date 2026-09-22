@@ -470,6 +470,38 @@ describe('initModelRuntimeWithUserPayload method', () => {
         'x-session-id': 'inbox',
         'x-topic-id': 'tpc_test123',
       });
+      expect(opts.defaultHeaders['x-assistant-message-id']).toBeUndefined();
+    });
+
+    it('arckep: forwards assistant message id to the billing proxy', async () => {
+      process.env.OPENAI_PROXY_URL = 'http://127.0.0.1:8202/api/billing-proxy/openai';
+      process.env.LOBECHAT_BACKEND_KEY = 'test-internal-key';
+
+      const runtime = await initModelRuntimeWithUserPayload(
+        ModelProvider.OpenAI,
+        { apiKey: 'sk-test' },
+        {
+          userId: 'user_abc',
+          assistantMessageId: 'msg_VqfAoxBtmD01N7',
+        },
+      );
+
+      const opts = (runtime['_runtime'] as any)._options as Record<string, any>;
+      expect(opts.defaultHeaders['x-assistant-message-id']).toBe('msg_VqfAoxBtmD01N7');
+    });
+
+    it('arckep: drops an assistant message id that is not a message key', async () => {
+      process.env.OPENAI_PROXY_URL = 'http://127.0.0.1:8202/api/billing-proxy/openai';
+      process.env.LOBECHAT_BACKEND_KEY = 'test-internal-key';
+
+      const runtime = await initModelRuntimeWithUserPayload(
+        ModelProvider.OpenAI,
+        { apiKey: 'sk-test' },
+        { userId: 'user_abc', assistantMessageId: '../etc/passwd' },
+      );
+
+      const opts = (runtime['_runtime'] as any)._options as Record<string, any>;
+      expect(opts.defaultHeaders['x-assistant-message-id']).toBeUndefined();
     });
 
     it('arckep: skips empty conversation ids and truncates long ones', async () => {
