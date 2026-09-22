@@ -15,7 +15,9 @@ import { ChatErrorType } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 
 import { messageService } from '@/services/message';
+import { isPlaceholderAnswer, scheduleSavedAnswerPull } from '@/services/message/pullSavedAnswer';
 import { type ChatStore } from '@/store/chat/store';
+import { messageMapKey } from '@/store/chat/utils/messageMapKey';
 import { type StoreSetter } from '@/store/types';
 
 import { dbMessageSelectors } from '../selectors';
@@ -148,7 +150,7 @@ export class MessageOptimisticUpdateActionImpl {
     },
     context?: OptimisticUpdateContext,
   ): Promise<void> => {
-    const { internal_dispatchMessage, refreshMessages, replaceMessages } = this.#get();
+    const { internal_dispatchMessage, replaceMessages } = this.#get();
 
     // Due to the async update method and refresh need about 100ms
     // we need to update the message content at the frontend to avoid the update flick
@@ -175,26 +177,57 @@ export class MessageOptimisticUpdateActionImpl {
 
     const ctx = this.#get().internal_getConversationContext(context);
 
-    const result = await messageService.updateMessage(
-      id,
-      {
-        content,
-        imageList: extra?.imageList,
-        metadata: extra?.metadata,
-        model: extra?.model,
-        provider: extra?.provider,
-        reasoning: extra?.reasoning,
-        search: extra?.search,
-        tools: extra?.tools,
-      },
-      ctx,
-    );
+    let result: Awaited<ReturnType<typeof messageService.updateMessage>> | undefined;
+    try {
+      result = await messageService.updateMessage(
+        id,
+        {
+          content,
+          imageList: extra?.imageList,
+          metadata: extra?.metadata,
+          model: extra?.model,
+          provider: extra?.provider,
+          reasoning: extra?.reasoning,
+          search: extra?.search,
+          tools: extra?.tools,
+        },
+        ctx,
+      );
+    } catch {
+      // The page lost the save. The server may still have the answer.
+      result = undefined;
+    }
 
     if (result && result.success && result.messages) {
       replaceMessages(result.messages, { action: 'optimisticUpdateMessageContent', context: ctx });
-    } else {
-      await refreshMessages();
+      return;
     }
+
+    if (!isPlaceholderAnswer(content)) return;
+
+    const mapKey = messageMapKey(ctx);
+    scheduleSavedAnswerPull({
+      apply: (server) => {
+        this.#get().internal_dispatchMessage(
+          {
+            id,
+            type: 'updateMessage',
+            value: {
+              content: server.content,
+              metadata: server.metadata,
+              reasoning: server.reasoning,
+            },
+          },
+          context,
+        );
+      },
+      load: () => messageService.getMessages(ctx),
+      localContent: () => {
+        const list = this.#get().dbMessagesMap[mapKey] || [];
+        return list.find((item) => item.id === id)?.content;
+      },
+      messageId: id,
+    });
   };
 
   optimisticUpdateMessageError = async (

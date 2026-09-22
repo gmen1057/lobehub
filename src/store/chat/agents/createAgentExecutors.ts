@@ -551,11 +551,13 @@ export const createAgentExecutors = (context: {
           { traceId, observationId, toolCalls, reasoning, grounding, usage, speed, type },
         ) => {
           if (traceId) {
-            messageService.updateMessage(
-              assistantMessageId,
-              { traceId, observationId: observationId ?? undefined },
-              { agentId, groupId, topicId },
-            );
+            void messageService
+              .updateMessage(
+                assistantMessageId,
+                { traceId, observationId: observationId ?? undefined },
+                { agentId, groupId, topicId },
+              )
+              .catch(() => undefined);
           }
 
           const result = await handler.handleFinish({
