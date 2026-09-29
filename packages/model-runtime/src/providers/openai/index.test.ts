@@ -273,6 +273,30 @@ describe('LobeOpenAI', () => {
       expect(createCall.temperature).toBeUndefined();
     });
 
+    it('uses Responses and valid effort for GPT-6.1 Sol tools', async () => {
+      const payload = {
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-6.1-sol',
+        temperature: 0.7,
+        reasoning_effort: 'none' as const,
+        tools: [
+          {
+            type: 'function' as const,
+            function: { name: 'weather', parameters: { type: 'object' } },
+          },
+        ],
+      };
+
+      await instance.chat(payload);
+
+      expect(instance['client'].responses.create).toHaveBeenCalled();
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.model).toBe('gpt-6.1-sol');
+      expect(createCall.temperature).toBeUndefined();
+      expect(createCall.reasoning.effort).toBe('medium');
+      expect(createCall.tools[0].name).toBe('weather');
+    });
+
     it('should use responses API for responsesAPIModels without enabledSearch', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

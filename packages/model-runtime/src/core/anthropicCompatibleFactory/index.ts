@@ -164,8 +164,7 @@ export const buildDefaultAnthropicPayload = async (
   }
 
   let postTools = buildAnthropicTools(tools, { enabledContextCaching }) as
-    | AnthropicTools[]
-    | undefined;
+    AnthropicTools[] | undefined;
 
   if (enabledSearch) {
     const webSearchTool = buildSearchTool();
@@ -181,6 +180,19 @@ export const buildDefaultAnthropicPayload = async (
       seenToolNames.add(name);
       return true;
     });
+  }
+
+  // Sonnet 5.5 uses adaptive thinking; legacy budgets and sampling are rejected.
+  if (model === 'claude-sonnet-5-5') {
+    return {
+      max_tokens: resolvedMaxTokens,
+      messages: postMessages,
+      model,
+      ...(effort ? { output_config: { effort } } : {}),
+      system: systemPrompts,
+      thinking: { type: 'adaptive' },
+      tools: postTools as Anthropic.MessageCreateParams['tools'],
+    } as Anthropic.MessageCreateParams;
   }
 
   if (!!thinking && (thinking.type === 'enabled' || thinking.type === 'adaptive')) {

@@ -2,7 +2,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createDefaultAnthropicClient } from './index';
+import { buildDefaultAnthropicPayload, createDefaultAnthropicClient } from './index';
 
 vi.mock('@anthropic-ai/sdk', () => {
   const MockAnthropic = vi.fn();
@@ -44,5 +44,22 @@ describe('createDefaultAnthropicClient', () => {
       'User-Agent': 'lobehub/1.0.0-test',
       'X-Custom': 'value',
     });
+  });
+});
+
+describe('Sonnet 5.5 payload', () => {
+  it('uses adaptive thinking and drops obsolete budgets and sampling', async () => {
+    const result = await buildDefaultAnthropicPayload({
+      model: 'claude-sonnet-5-5',
+      messages: [{ role: 'user', content: 'Hello' }],
+      thinking: { type: 'enabled', budget_tokens: 1024 },
+      temperature: 0.7,
+      top_p: 0.9,
+      effort: 'high',
+    });
+    expect(result.thinking).toEqual({ type: 'adaptive' });
+    expect(result.output_config).toEqual({ effort: 'high' });
+    expect(result.temperature).toBeUndefined();
+    expect(result.top_p).toBeUndefined();
   });
 });

@@ -188,7 +188,7 @@ export const params = {
           // Astra: no `none` / `minimal`. Docs: start at low.
           const effort = reasoning.effort || payload.reasoning_effort;
           if (!effort || effort === 'none' || effort === 'minimal') {
-            reasoning.effort = 'low';
+            reasoning.effort = model === 'gpt-6.1-sol' ? 'medium' : 'low';
           } else {
             reasoning.effort = effort;
           }
@@ -197,6 +197,8 @@ export const params = {
           ...rest,
           model,
           reasoning,
+          // The factory otherwise lets the stale top-level value override normalization.
+          ...(model === 'gpt-6.1-sol' && { reasoning_effort: undefined }),
           ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
           stream: payload.stream ?? true,
           tools: openaiTools as any,
