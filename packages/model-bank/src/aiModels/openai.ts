@@ -41,6 +41,63 @@ export const openaiChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 1_050_000,
+    description: 'GPT-6.1 Sol — сложные задачи, код и документы.',
+    displayName: 'GPT-6.1 Sol',
+    enabled: true,
+    id: 'gpt-6.1-sol',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        {
+          name: 'textInput',
+          lookup: {
+            prices: { '[0, 0.272]': 2, '[0.272, infinity]': 4 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textInput_cacheRead',
+          lookup: {
+            prices: { '[0, 0.272]': 0.1, '[0.272, infinity]': 0.2 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textInput_cacheWrite',
+          lookup: {
+            prices: { '[0, 0.272]': 2.5, '[0.272, infinity]': 5 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textOutput',
+          lookup: {
+            prices: { '[0, 0.272]': 10, '[0.272, infinity]': 15 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    settings: { extendParams: ['gpt6ReasoningEffort', 'textVerbosity'], searchImpl: 'params' },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
     description:
       'GPT-6 Astra is the OpenAI flagship for hard end-to-end work: coding, research, computer use, long documents. Image-in, text-out. reasoning.effort: low / medium / high / xhigh / max (no none).',
     displayName: 'GPT-6 Astra',

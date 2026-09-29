@@ -51,12 +51,14 @@ export const responsesAPIModels = new Set([
   'gpt-5.4-nano',
   'gpt-5.4-pro',
   'gpt-6-astra',
+  'gpt-6.1-sol',
 ]);
 
 /**
  * Regex patterns for models that support context caching (3.5+)
  */
 export const contextCachingModelPatterns: RegExp[] = [
+  /^claude-sonnet-5-5(?:-|$)/,
   // Claude 4.5 series - Anthropic API
   /^claude-(opus|sonnet|haiku)-4-5-/,
   // Claude 4 series - Anthropic API
@@ -80,6 +82,7 @@ export const isContextCachingModel = (model: string): boolean => {
  * Regex patterns for Claude models that support thinking with tools (3.7+)
  */
 export const thinkingWithToolClaudeModelPatterns: RegExp[] = [
+  /^claude-sonnet-5-5(?:-|$)/,
   // Claude 4.5 series - Anthropic API
   /^claude-(opus|sonnet|haiku)-4-5-/,
   // Claude 4 series - Anthropic API
@@ -121,6 +124,7 @@ export const hasTemperatureTopPConflict = (model: string): boolean => {
  * returns 400 "temperature is deprecated for this model".
  */
 export const temperatureDeprecatedModelPatterns: RegExp[] = [
+  /^claude-sonnet-5-5(?:-|$)/,
   // Claude Opus 4.7+ — Anthropic API
   /^claude-opus-4-7/,
   // OpenRouter format

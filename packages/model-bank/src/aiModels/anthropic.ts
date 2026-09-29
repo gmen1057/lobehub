@@ -10,6 +10,40 @@ const anthropicChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 1_000_000,
+    description: 'Claude Sonnet 5.5 — тексты, код и повседневные задачи.',
+    displayName: 'Claude Sonnet 5.5',
+    enabled: true,
+    id: 'claude-sonnet-5-5',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 10, strategy: 'fixed', unit: 'millionTokens' },
+        {
+          lookup: { prices: { '1h': 4, '5m': 2.5 }, pricingParams: ['ttl'] },
+          name: 'textInput_cacheWrite',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-09-28',
+    settings: {
+      extendParams: ['disableContextCaching', 'effort'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_000_000,
     description:
       'Claude Opus 4.7 — step-change improvement in agentic coding. New tokenizer uses 20-35% more tokens for the same text.',
     displayName: 'Claude Opus 4.7',
