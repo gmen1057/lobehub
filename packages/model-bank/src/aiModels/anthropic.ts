@@ -215,10 +215,74 @@ const anthropicChatModels: AIChatModelCard[] = [
       structuredOutput: true,
       vision: true,
     },
+    contextWindowTokens: 1_000_000,
+    description:
+      'Claude Haiku 5.5 — быстрый и дешёвый Claude для чата и повседневных задач. Промпт длиннее 100K токенов стоит в 5 раз дороже.',
+    displayName: 'Claude Haiku 5.5',
+    enabled: true,
+    id: 'claude-haiku-5-5',
+    maxOutput: 128_000,
+    pricing: {
+      // A prompt over 100K tokens (input + cache read + cache write) switches the WHOLE request to
+      // the long tier (x5). `tiered` picks the tier by totalInputTokens, so input/output/cache read
+      // follow it. Cache write is a `ttl` lookup and cannot also be tiered: it keeps the short-tier
+      // price (long tier would be $0.625 for 5m / $1 for 1h per million). The arckep billing proxy
+      // charges the real long tier server-side.
+      units: [
+        {
+          name: 'textInput_cacheRead',
+          strategy: 'tiered',
+          tiers: [
+            { rate: 0.01, upTo: 100_000 },
+            { rate: 0.05, upTo: 'infinity' },
+          ],
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textInput',
+          strategy: 'tiered',
+          tiers: [
+            { rate: 0.1, upTo: 100_000 },
+            { rate: 0.5, upTo: 'infinity' },
+          ],
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textOutput',
+          strategy: 'tiered',
+          tiers: [
+            { rate: 0.5, upTo: 100_000 },
+            { rate: 2.5, upTo: 'infinity' },
+          ],
+          unit: 'millionTokens',
+        },
+        {
+          lookup: { prices: { '1h': 0.2, '5m': 0.125 }, pricingParams: ['ttl'] },
+          name: 'textInput_cacheWrite',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-10-07',
+    settings: {
+      extendParams: ['disableContextCaching', 'effort'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
     contextWindowTokens: 200_000,
     description:
-      'Claude Haiku 4.5 is Anthropic’s fastest and smartest Haiku model, with lightning speed and extended reasoning.',
-    displayName: 'Claude Haiku 4.5',
+      'Claude Haiku 4.5 — предыдущий Haiku (legacy). Для новых задач берите Claude Haiku 5.5: он быстрее, дешевле и держит 1M контекста.',
+    displayName: 'Claude Haiku 4.5 (legacy)',
     enabled: true,
     id: 'claude-haiku-4-5-20251001',
     maxOutput: 64_000,
