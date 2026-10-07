@@ -67,6 +67,10 @@ const ControlsForm = memo<ControlsFormProps>(({ model: modelProp, provider: prov
   const screens = Grid.useBreakpoint();
   const isNarrow = !screens.sm;
 
+  // Without a stored choice the Haiku 5.5 payload sends effort "low" (buildDefaultAnthropicPayload),
+  // so the slider must not claim "high".
+  const effortDefault = /^claude-haiku-5-5(?:-|$)/.test(model ?? '') ? 'low' : undefined;
+
   const descWide = { display: 'inline-block', width: 300 } as const;
   const descNarrow = {
     display: 'block',
@@ -175,7 +179,7 @@ const ControlsForm = memo<ControlsFormProps>(({ model: modelProp, provider: prov
       },
     },
     {
-      children: <EffortSlider />,
+      children: <EffortSlider defaultValue={effortDefault} />,
       desc: isNarrow ? (
         <span style={descNarrow}>{t('extendParams.effort.desc')}</span>
       ) : (
