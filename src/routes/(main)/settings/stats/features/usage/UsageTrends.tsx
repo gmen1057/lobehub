@@ -3,7 +3,7 @@ import { Segmented, Skeleton } from '@lobehub/ui';
 import { memo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { usdToRub } from '@/const/arckepPricing';
+import { recordsSpendRub, spendToRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
 
@@ -32,15 +32,15 @@ const groupByType = (
   }, new Map<string, number>());
   const categories: string[] = Array.from(cate.keys());
   const formattedData = data.map((log) => {
-    // arckep: convert USD → RUB for display when charting spend
+    // arckep: convert USD → RUB for display when charting spend (OpenRouter +5.5%)
     const totalObj = {
       day: log.day,
-      total: type === 'spend' ? usdToRub(log.totalSpend || 0) : log.totalTokens,
+      total: type === 'spend' ? recordsSpendRub(log.records) : log.totalTokens,
     };
     const todayCate = new Map<string, number>(cate);
     for (const item of log.records) {
       const rawValue = type === 'spend' ? item.spend || 0 : item.totalTokens || 0;
-      const value = type === 'spend' ? usdToRub(rawValue) : rawValue;
+      const value = type === 'spend' ? spendToRub(rawValue, item) : rawValue;
       const key = groupBy === GroupBy.Model ? item.model : item.provider;
       let displayValue = (todayCate.get(key) || 0) + value;
       if (type === 'spend') {

@@ -6,7 +6,7 @@ import { memo, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import InlineTable from '@/components/InlineTable';
-import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
+import { ARCKEP_CURRENCY_SYMBOL, spendToRub } from '@/const/arckepPricing';
 import { parseAsInteger, useQueryParam } from '@/hooks/useQueryParam';
 import { useClientDataSWR } from '@/libs/swr';
 import { usageService } from '@/services/usage';
@@ -101,8 +101,8 @@ const UsageTable = memo<UsageChartProps>(({ dateStrings }) => {
     {
       dataIndex: 'spend',
       key: 'spend',
-      render: (value) => {
-        return `${formatNumber(usdToRub(value), 4)} ${ARCKEP_CURRENCY_SYMBOL}`;
+      render: (value, record) => {
+        return `${formatNumber(spendToRub(value, record), 4)} ${ARCKEP_CURRENCY_SYMBOL}`;
       },
       title: t('usage.table.spend'),
     },

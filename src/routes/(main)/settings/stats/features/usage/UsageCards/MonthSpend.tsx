@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
-import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
+import { ARCKEP_CURRENCY_SYMBOL, recordsSpendRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
 
@@ -20,12 +20,13 @@ const computeMonth = (
 } => {
   if (!data || data?.length === 0) return { calls: 0, spend: 0 };
 
-  const spendUsd = data.reduce((acc, log) => acc + (log.totalSpend || 0), 0);
+  // arckep: sum per request — OpenRouter requests carry the 5.5% fee
+  const spendRub = data.reduce((acc, log) => acc + recordsSpendRub(log.records), 0);
   const calls = data.reduce((acc, log) => acc + (log.records?.length ?? 0), 0);
 
   return {
     calls: formatNumber(calls),
-    spend: formatNumber(usdToRub(spendUsd)),
+    spend: formatNumber(spendRub),
   };
 };
 

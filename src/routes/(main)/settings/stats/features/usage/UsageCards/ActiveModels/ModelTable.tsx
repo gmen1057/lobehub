@@ -6,7 +6,7 @@ import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import InlineTable from '@/components/InlineTable';
-import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
+import { ARCKEP_CURRENCY_SYMBOL, spendToRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatPrice } from '@/utils/format';
 
@@ -43,13 +43,14 @@ const formatData = (
     .map(([key, logs]) => {
       // The logs here span multiple days and need to be summed
       // If the current groupBy is Model, logs should be grouped by Provider
+      // arckep: summed in RUB per request — OpenRouter requests carry the 5.5% fee
       const spend = logs.reduce((acc, log) => {
         const key = groupBy === GroupBy.Model ? log.provider : log.model;
-        acc.set(key, (acc.get(key) || 0) + log.spend);
+        acc.set(key, (acc.get(key) || 0) + spendToRub(log.spend || 0, log));
         return acc;
       }, new Map<string, number>());
 
-      const totalSpend = logs.reduce((total, log) => total + (log.spend || 0), 0);
+      const totalSpend = logs.reduce((total, log) => total + spendToRub(log.spend || 0, log), 0);
 
       const spendWithWeight = Array.from(
         spend.entries().map(([key, value]) => {
@@ -140,7 +141,7 @@ const ModelTable = memo<UsageChartProps>(({ data, isLoading, groupBy }) => {
                     dataIndex: 'spend',
                     key: 'spend',
                     render: (value) => {
-                      return `${formatPrice(usdToRub(value))} ${ARCKEP_CURRENCY_SYMBOL}`;
+                      return `${formatPrice(value)} ${ARCKEP_CURRENCY_SYMBOL}`;
                     },
                     title: t('usage.activeModels.table.spend'),
                   },

@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import Statistic from '@/components/Statistic';
 import StatisticCard from '@/components/StatisticCard';
 import TitleWithPercentage from '@/components/StatisticCard/TitleWithPercentage';
-import { ARCKEP_CURRENCY_SYMBOL, usdToRub } from '@/const/arckepPricing';
+import { ARCKEP_CURRENCY_SYMBOL, recordsSpendRub } from '@/const/arckepPricing';
 import { type UsageLog } from '@/types/usage/usageRecord';
 import { formatNumber } from '@/utils/format';
 
@@ -23,11 +23,11 @@ const computeSpend = (
 } => {
   if (!data || data?.length === 0) return { today: 0, todayRaw: 0, yesterday: 0, yesterdayRaw: 0 };
 
-  const todayUsd = data.find((log) => dayjs.utc(log.day).isToday())?.totalSpend ?? 0;
-  const yesterdayUsd = data.find((log) => dayjs.utc(log.day).isYesterday())?.totalSpend ?? 0;
-
-  const todayRub = usdToRub(todayUsd);
-  const yesterdayRub = usdToRub(yesterdayUsd);
+  // arckep: sum per request — OpenRouter requests carry the 5.5% fee
+  const todayRub = recordsSpendRub(data.find((log) => dayjs.utc(log.day).isToday())?.records);
+  const yesterdayRub = recordsSpendRub(
+    data.find((log) => dayjs.utc(log.day).isYesterday())?.records,
+  );
 
   return {
     today: formatNumber(todayRub),
