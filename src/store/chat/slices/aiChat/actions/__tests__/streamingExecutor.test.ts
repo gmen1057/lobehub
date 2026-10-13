@@ -849,6 +849,65 @@ describe('StreamingExecutor actions', () => {
       });
     });
 
+    it('arckep: does not pre-load heavy tools for regular agents, keeps them for builtin agents and picked tools', () => {
+      act(() => {
+        useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
+      });
+
+      const { result } = renderHook(() => useChatStore());
+      const userMessage = {
+        id: TEST_IDS.USER_MESSAGE_ID,
+        role: 'user',
+        content: TEST_CONTENT.USER_MESSAGE,
+        sessionId: TEST_IDS.SESSION_ID,
+        topicId: TEST_IDS.TOPIC_ID,
+      } as UIChatMessage;
+      const plugins = ['lobe-user-memory', 'arckep-sites', 'lobe-artifacts', 'mcp-arckep-wordstat'];
+      const generateToolsDetailed = vi
+        .fn()
+        .mockReturnValue({ enabledManifests: [], enabledToolIds: [], tools: [] });
+      vi.spyOn(toolEngineering, 'createAgentToolsEngine').mockReturnValue({
+        generateToolsDetailed,
+      } as any);
+
+      const run = (
+        isBuiltinAgent: boolean,
+        selectedTools?: { identifier: string; name: string }[],
+      ) => {
+        vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
+          agentConfig: { ...createMockAgentConfig(), plugins },
+          chatConfig: createMockChatConfig(),
+          isBuiltinAgent,
+          plugins,
+        });
+        result.current.internal_createAgentState({
+          messages: [userMessage],
+          parentMessageId: userMessage.id,
+          agentId: TEST_IDS.SESSION_ID,
+          topicId: TEST_IDS.TOPIC_ID,
+          ...(selectedTools && {
+            initialContext: { phase: 'init', initialContext: { selectedTools } },
+          }),
+        });
+        return generateToolsDetailed.mock.calls.at(-1)![0];
+      };
+
+      const regular = run(false);
+      expect(regular.toolIds).toEqual(['lobe-artifacts', 'mcp-arckep-wordstat']);
+      expect(regular.excludeDefaultToolIds).toEqual(
+        expect.arrayContaining(['lobe-user-memory', 'arckep-sites', 'lobe-message']),
+      );
+
+      const builtin = run(true);
+      expect(builtin.toolIds).toEqual(plugins);
+      expect(builtin.excludeDefaultToolIds).toBeUndefined();
+
+      const picked = run(false, [{ identifier: 'arckep-sites', name: 'Sites' }]);
+      expect(picked.toolIds).toEqual(['arckep-sites', 'lobe-artifacts', 'mcp-arckep-wordstat']);
+      expect(picked.excludeDefaultToolIds).not.toContain('arckep-sites');
+      expect(picked.excludeDefaultToolIds).toContain('lobe-user-memory');
+    });
+
     it('should merge selectedTools into generated tools when provided', () => {
       act(() => {
         useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });

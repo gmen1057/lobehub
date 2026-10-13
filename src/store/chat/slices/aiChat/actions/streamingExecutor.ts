@@ -8,7 +8,7 @@ import {
 import { AgentRuntime, computeStepContext, GeneralChatAgent } from '@lobechat/agent-runtime';
 import { createPathScopeAudit } from '@lobechat/builtin-tool-local-system';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
-import { manualModeExcludeToolIds } from '@lobechat/builtin-tools';
+import { arckepLazyToolIds, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
 import { isDesktop } from '@lobechat/const';
 import { generateToolsFromManifest, type ToolsEngine } from '@lobechat/context-engine';
 import {
@@ -191,13 +191,24 @@ export class StreamingExecutorActionImpl {
     const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
     const shouldSkipDefaultForBuiltin = isManualMode && agentConfig.isBuiltinAgent;
 
+    // arckep: heavy tools are not pre-loaded for regular agents; the model activates them from
+    // <available_tools> when needed (see arckepLazyToolIds). Tools picked for this message stay.
+    const lazyToolIds = agentConfig.isBuiltinAgent ? [] : arckepLazyToolIds;
+    const pickedToolIds = new Set(selectedToolIds || []);
+    const eagerToolIds = mergedToolIds?.filter(
+      (id) => pickedToolIds.has(id) || !lazyToolIds.includes(id),
+    );
+    const excludeDefaultToolIds = [
+      ...(isManualMode && !agentConfig.isBuiltinAgent ? manualModeExcludeToolIds : []),
+      ...lazyToolIds.filter((id) => !pickedToolIds.has(id)),
+    ];
+
     const toolsDetailed = toolsEngine.generateToolsDetailed({
-      excludeDefaultToolIds:
-        isManualMode && !agentConfig.isBuiltinAgent ? manualModeExcludeToolIds : undefined,
+      excludeDefaultToolIds: excludeDefaultToolIds.length > 0 ? excludeDefaultToolIds : undefined,
       model: agentConfigData.model,
       provider: agentConfigData.provider!,
       skipDefaultTools: disableTools || shouldSkipDefaultForBuiltin || undefined,
-      toolIds: mergedToolIds,
+      toolIds: eagerToolIds,
     });
 
     // --- Merge injected manifests (generic, caller-driven) ---

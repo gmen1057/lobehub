@@ -25,6 +25,9 @@ export type FileType = z.infer<typeof fileSchema>;
 
 const DEFAULT_S3_REGION = 'us-east-1';
 
+/** arckep: preview links are signed per hour window (stable URL -> provider prompt cache hits). */
+const PRESIGN_WINDOW_MS = 60 * 60 * 1000;
+
 export class S3 {
   private readonly client: S3Client;
 
@@ -155,8 +158,15 @@ export class S3 {
         : {}),
     });
 
+    // arckep: sign from the start of the current hour and keep the link valid one hour longer, so
+    // the same file gets the SAME URL for the whole hour. A fresh X-Amz-Date/Signature on every
+    // request changed the <files_info> block early in the prompt and broke provider prompt caching
+    // for everything after it (Langfuse 2026-10-13: 15 of 30 consecutive requests diverged there).
+    // Validity stays >= the configured value: (hour start + configured + 1h) - now >= configured.
+    const signingDate = new Date(Math.floor(Date.now() / PRESIGN_WINDOW_MS) * PRESIGN_WINDOW_MS);
     return getSignedUrl(this.client, command, {
-      expiresIn: expiresIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN,
+      expiresIn: (expiresIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN) + PRESIGN_WINDOW_MS / 1000,
+      signingDate,
     });
   }
 

@@ -390,8 +390,10 @@ describe('FileS3', () => {
         Bucket: 'test-bucket',
         Key: 'preview-file.jpg',
       });
+      // arckep: signed from the start of the hour, valid one hour longer (stable URL per hour)
       expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-        expiresIn: 7200,
+        expiresIn: 7200 + 3600,
+        signingDate: expect.any(Date),
       });
       expect(result).toBe('https://presigned-url.example.com');
     });
@@ -402,8 +404,33 @@ describe('FileS3', () => {
       await s3.createPreSignedUrlForPreview('preview-file.jpg', 1800);
 
       expect(mockGetSignedUrl).toHaveBeenCalledWith(expect.anything(), expect.anything(), {
-        expiresIn: 1800,
+        expiresIn: 1800 + 3600,
+        signingDate: expect.any(Date),
       });
+    });
+
+    it('signs every preview of the hour with the same date (stable URL for prompt caching)', async () => {
+      vi.useFakeTimers();
+      try {
+        const s3 = new FileS3();
+        vi.setSystemTime(new Date('2026-10-13T17:05:10Z'));
+        await s3.createPreSignedUrlForPreview('preview-file.jpg');
+        vi.setSystemTime(new Date('2026-10-13T17:59:59Z'));
+        await s3.createPreSignedUrlForPreview('preview-file.jpg');
+        vi.setSystemTime(new Date('2026-10-13T18:00:01Z'));
+        await s3.createPreSignedUrlForPreview('preview-file.jpg');
+
+        const dates = mockGetSignedUrl.mock.calls
+          .slice(-3)
+          .map((call: any[]) => (call[2].signingDate as Date).toISOString());
+        expect(dates).toEqual([
+          '2026-10-13T17:00:00.000Z',
+          '2026-10-13T17:00:00.000Z',
+          '2026-10-13T18:00:00.000Z',
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

@@ -47,7 +47,7 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
 // descriptions / UI hints — no need to repeat them in every system message.
 const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — сохрани через lobe-memory.
 
-Картинки в этом чате: если пользователь просит нарисовать / сгенерировать / отредактировать изображение — вызови tool generateImage (плагин arckep-sites) с подробным промптом на английском. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги. Студия arckep.ru/studio — только если нужны пакетная генерация, видео, avatar, multi-model UI.
+Картинки в этом чате: если пользователь просит нарисовать / сгенерировать / отредактировать изображение — подключи инструмент arckep-sites (activateTools) и вызови generateImage с подробным промптом на английском. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги. Студия arckep.ru/studio — только если нужны пакетная генерация, видео, avatar, multi-model UI.
 
 Файлы на перевод: не лей книгу в чат и не ищи навыки для PDF. Переведи в markdown (документы агента: один файл или 20–30 страниц на документ), в чате только короткий статус. Когда markdown готов — спроси, нужен ли PDF или другой формат, и тогда собери файл.`;
 
@@ -66,8 +66,11 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
   // teaches every model (gpt-5.5, Claude, Gemini, Grok) to wrap SVG/HTML/
   // React output in <lobeArtifact> tags so the artifacts portal renders them
   // safely. Without artifacts skill, models fall back to raw <img data:...>
-  // which markdown blocks for XSS reasons. Cost: ~1.5K extra prompt tokens
-  // per request (~0.83 RUB on gpt-5.5).
+  // which markdown blocks for XSS reasons.
+  // Measured 2026-10-13 (Gemini countTokens): memory tool ~8.0K tokens, arckep-sites ~4.6K,
+  // artifacts ~2.2K per request — not ~1.5K. Memory and arckep-sites are therefore in
+  // arckepLazyToolIds (@lobechat/builtin-tools): the web chat lists them in <available_tools>
+  // and the model activates them on demand; memory recall is injected either way.
   plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
   provider: DEFAULT_PROVIDER,
   systemRole: ARCKEP_DEFAULT_SYSTEM_ROLE,

@@ -68,6 +68,28 @@ export const manualModeExcludeToolIds = [
   SkillStoreManifest.identifier,
 ];
 
+/**
+ * arckep: heavy tools that the regular web chat does NOT pre-load, even when the agent has them
+ * enabled. Every request paid for their full schemas + system roles (Gemini countTokens,
+ * 2026-10-13: memory ~8.0K tokens, message ~5.4K, arckep-sites ~4.6K, cron ~2.3K, creds ~2.0K,
+ * arckep-bot ~2.0K, calculator ~3.3K, notebook ~1.3K); the median first message of a topic carried
+ * ~47K input tokens. They stay listed in <available_tools> and the model loads them on demand with
+ * lobe-activator `activateTools` (isExplicitActivation bypasses the enable rules). All of them are
+ * discoverable; page-agent and the builder tools are not, so they stay pre-loaded. Memory recall is
+ * injected by UserMemoryInjector regardless of the memory tool. Builtin agents, tools picked for the
+ * message and the server agent path (bots, cron) are untouched.
+ */
+export const arckepLazyToolIds = [
+  MemoryManifest.identifier,
+  MessageManifest.identifier,
+  ArckepSitesManifest.identifier,
+  CronManifest.identifier,
+  CredsManifest.identifier,
+  ArckepBotManifest.identifier,
+  CalculatorManifest.identifier,
+  NotebookManifest.identifier,
+];
+
 export const builtinTools: LobeBuiltinTool[] = [
   {
     discoverable: false,
