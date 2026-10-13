@@ -862,7 +862,14 @@ describe('StreamingExecutor actions', () => {
         sessionId: TEST_IDS.SESSION_ID,
         topicId: TEST_IDS.TOPIC_ID,
       } as UIChatMessage;
-      const plugins = ['lobe-user-memory', 'arckep-sites', 'lobe-artifacts', 'mcp-arckep-wordstat'];
+      const plugins = [
+        'lobe-user-memory',
+        'arckep-sites',
+        'lobe-artifacts',
+        'mcp-arckep-wordstat',
+        'lobe-page-agent',
+      ];
+      const currentDocId = vi.spyOn(pageAgentRuntime, 'getCurrentDocId').mockReturnValue(undefined);
       const generateToolsDetailed = vi
         .fn()
         .mockReturnValue({ enabledManifests: [], enabledToolIds: [], tools: [] });
@@ -906,6 +913,15 @@ describe('StreamingExecutor actions', () => {
       expect(picked.toolIds).toEqual(['arckep-sites', 'lobe-artifacts', 'mcp-arckep-wordstat']);
       expect(picked.excludeDefaultToolIds).not.toContain('arckep-sites');
       expect(picked.excludeDefaultToolIds).toContain('lobe-user-memory');
+
+      // the page editor tool stays only while a page is open in the editor
+      currentDocId.mockReturnValue('docs_open_page');
+      const pageOpen = run(false);
+      expect(pageOpen.toolIds).toEqual([
+        'lobe-artifacts',
+        'mcp-arckep-wordstat',
+        'lobe-page-agent',
+      ]);
     });
 
     it('should merge selectedTools into generated tools when provided', () => {

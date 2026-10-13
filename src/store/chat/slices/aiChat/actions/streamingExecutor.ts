@@ -193,7 +193,16 @@ export class StreamingExecutorActionImpl {
 
     // arckep: heavy tools are not pre-loaded for regular agents; the model activates them from
     // <available_tools> when needed (see arckepLazyToolIds). Tools picked for this message stay.
-    const lazyToolIds = agentConfig.isBuiltinAgent ? [] : arckepLazyToolIds;
+    // lobe-page-agent edits the page open in the page editor; with no page open every call fails
+    // ("Editor not initialized") and its ~5.4K-token schema is dead weight (0 calls in 90 days,
+    // 2026-10-13). It is not discoverable, so it is kept only while a page is open (the page editor
+    // sets the doc id on mount and clears it on unmount).
+    const lazyToolIds = agentConfig.isBuiltinAgent
+      ? []
+      : [
+          ...arckepLazyToolIds,
+          ...(pageAgentRuntime.getCurrentDocId() ? [] : [PageAgentIdentifier]),
+        ];
     const pickedToolIds = new Set(selectedToolIds || []);
     const eagerToolIds = mergedToolIds?.filter(
       (id) => pickedToolIds.has(id) || !lazyToolIds.includes(id),
