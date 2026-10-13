@@ -219,6 +219,31 @@ const openrouterChatModels: AIChatModelCard[] = [
     releasedAt: '2026-07-16',
     type: 'chat',
   },
+  // arckep: Meta Muse Wonder (preview; OpenRouter meta/muse-wonder, Meta is the only endpoint).
+  // Rates match image-studio chat_models: $4 in / $20 out / $0.20 cache read per 1M. Reasoning
+  // is mandatory (billing proxy turns effort "none" into "minimal" and keeps tool_choice "auto").
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576,
+    description:
+      'Muse Wonder — Meta preview reasoning model for agentic work, hard coding and long documents, 1M context, always thinks.',
+    displayName: 'Meta Muse Wonder',
+    enabled: true,
+    id: 'meta/muse-wonder',
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 4, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput_cacheRead', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 20, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-10-12',
+    type: 'chat',
+  },
   // arckep: Z.AI GLM 5.1 (paid, fallback rate)
   {
     contextWindowTokens: 202_752,
