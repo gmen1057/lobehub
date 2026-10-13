@@ -3,11 +3,9 @@
 import { Flexbox } from '@lobehub/ui';
 import { createStaticStyles } from 'antd-style';
 import { memo, useEffect, useMemo, useState } from 'react';
-import useSWR from 'swr';
 
 import { useChatStore } from '@/store/chat';
 import { operationSelectors } from '@/store/chat/selectors';
-import { useSessionStore } from '@/store/session';
 
 import { useConversationStore } from '../store';
 
@@ -38,17 +36,14 @@ const formatElapsed = (ms: number) => {
   return `${min}:${String(sec).padStart(2, '0')}`;
 };
 
-const fetchSpend = async (url: string) => {
-  const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`topic-spend ${res.status}`);
-  return (await res.json()) as { cost_rub: number | null; labeled: boolean };
-};
-
 const LINGER_MS = 8000;
+
+// arckep: the tray used to also show "N ₽ уже списано" (live topic spend); the owner asked to remove
+// the cost from the chat window on 2026-10-13. Spend stays in Image Studio billing and the
+// site auto-continue budget check (sitesAutoContinue.ts) still reads /api/arckep/topic-spend.
 
 const OpStatusTray = memo(() => {
   const context = useConversationStore((s) => s.context);
-  const sessionId = useSessionStore((s) => s.activeId);
   const isGenerating = useChatStore((s) =>
     operationSelectors.isAgentRuntimeRunningByContext(context)(s),
   );
@@ -85,17 +80,6 @@ const OpStatusTray = memo(() => {
     return () => window.clearInterval(id);
   }, [visible]);
 
-  const spendKey =
-    visible && sessionId && context.topicId
-      ? `/chat/api/arckep/topic-spend?session_id=${encodeURIComponent(sessionId)}&topic_id=${encodeURIComponent(context.topicId)}`
-      : null;
-
-  const { data, error } = useSWR(spendKey, fetchSpend, {
-    refreshInterval: 3000,
-    revalidateOnFocus: false,
-    shouldRetryOnError: false,
-  });
-
   const elapsed = useMemo(
     () => (startedAt ? formatElapsed(now - startedAt) : '0:00'),
     [now, startedAt],
@@ -103,18 +87,10 @@ const OpStatusTray = memo(() => {
 
   if (!visible) return null;
 
-  let costLabel = 'считаем ₽…';
-  if (error) costLabel = 'не удалось получить сумму';
-  else if (data && data.labeled === false) costLabel = 'нет данных по списаниям';
-  else if (data?.labeled && typeof data.cost_rub === 'number') {
-    costLabel = `${data.cost_rub.toFixed(2)} ₽ уже списано`;
-  }
-
   return (
     <Flexbox horizontal align="center" className={styles.container} gap={12}>
       <span className={styles.metric}>{elapsed}</span>
       {trayHint ? <span className={styles.metric}>{trayHint}</span> : null}
-      <span className={styles.metric}>{costLabel}</span>
     </Flexbox>
   );
 });
