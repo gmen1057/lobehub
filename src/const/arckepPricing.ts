@@ -22,6 +22,12 @@ export const ARCKEP_CURRENCY_SYMBOL = '₽';
  */
 export const ARCKEP_OPENROUTER_FEE = 1.055;
 
+/**
+ * Billing started charging the fee when image-studio PR #552 went live
+ * (backend deploy 2026-10-13 13:06:47 CEST). Older requests were charged without it.
+ */
+export const ARCKEP_OPENROUTER_FEE_FROM = Date.parse('2026-10-13T11:06:47Z');
+
 // Vendor prefixes that only go through OpenRouter (backend `OPENROUTER_PREFIXES`).
 const OPENROUTER_PREFIXES = new Set([
   'openrouter',
@@ -48,14 +54,25 @@ export const isOpenRouterRoute = (provider?: string | null, model?: string | nul
 export const usdToRub = (usd: number): number => usd * ARCKEP_RUB_PER_USD;
 
 interface SpendRecord {
+  createdAt?: Date | string | number | null;
   model?: string | null;
   provider?: string | null;
   spend?: number | null;
 }
 
-/** USD → RUB of one request, as charged: ×1.055 when it went through OpenRouter. */
+// A request without a date is treated as a current one.
+const chargedWithFee = (createdAt: SpendRecord['createdAt']): boolean => {
+  if (createdAt === null || createdAt === undefined) return true;
+  const at = new Date(createdAt).getTime();
+  return Number.isNaN(at) || at >= ARCKEP_OPENROUTER_FEE_FROM;
+};
+
+/** USD → RUB of one request, as charged: ×1.055 when it went through OpenRouter after the switch. */
 export const spendToRub = (usd: number, record: Omit<SpendRecord, 'spend'>): number =>
-  usdToRub(usd) * (isOpenRouterRoute(record.provider, record.model) ? ARCKEP_OPENROUTER_FEE : 1);
+  usdToRub(usd) *
+  (isOpenRouterRoute(record.provider, record.model) && chargedWithFee(record.createdAt)
+    ? ARCKEP_OPENROUTER_FEE
+    : 1);
 
 /** RUB total of several requests, each at its own route rate. */
 export const recordsSpendRub = (records?: SpendRecord[] | null): number =>
