@@ -16,10 +16,15 @@ export async function generateSitemaps() {
   // Generate dynamic sitemap list, including paginated sitemaps
   const staticSitemaps = sitemapModule.sitemapIndexs;
 
-  // Get page counts for types that need pagination
+  // Get page counts for types that need pagination.
+  // arckep: the market assistants sitemap is ~3000 static pages that each call the LobeHub
+  // market during `next build`. On 2026-10-13 (server load 13-19) every one of them passed
+  // Next's 60 s static-generation limit and failed the whole build. chat.arckep.ru is a
+  // login-gated app (the entry point is arckep.ru/chat), so these SEO pages are not used.
+  // Set SITEMAP_ASSISTANTS=1 at build time to generate them again.
   const [pluginPages, assistantPages, modelPages] = await Promise.all([
     sitemapModule.getPluginPageCount(),
-    sitemapModule.getAssistantPageCount(),
+    process.env.SITEMAP_ASSISTANTS === '1' ? sitemapModule.getAssistantPageCount() : 0,
     sitemapModule.getModelPageCount(),
   ]);
 
