@@ -849,7 +849,7 @@ describe('StreamingExecutor actions', () => {
       });
     });
 
-    it('arckep: does not pre-load heavy tools for regular agents, keeps them for builtin agents and picked tools', () => {
+    it('arckep: does not pre-load heavy tools for regular agents and inbox, keeps them for other builtin agents and picked tools', () => {
       act(() => {
         useChatStore.setState({ internal_execAgentRuntime: realExecAgentRuntime });
       });
@@ -880,12 +880,14 @@ describe('StreamingExecutor actions', () => {
       const run = (
         isBuiltinAgent: boolean,
         selectedTools?: { identifier: string; name: string }[],
+        slug?: string,
       ) => {
         vi.spyOn(agentConfigResolver, 'resolveAgentConfig').mockReturnValue({
           agentConfig: { ...createMockAgentConfig(), plugins },
           chatConfig: createMockChatConfig(),
           isBuiltinAgent,
           plugins,
+          slug,
         });
         result.current.internal_createAgentState({
           messages: [userMessage],
@@ -905,9 +907,16 @@ describe('StreamingExecutor actions', () => {
         expect.arrayContaining(['lobe-user-memory', 'arckep-sites', 'lobe-message']),
       );
 
-      const builtin = run(true);
+      const builtin = run(true, undefined, 'bot-configurator');
       expect(builtin.toolIds).toEqual(plugins);
       expect(builtin.excludeDefaultToolIds).toBeUndefined();
+
+      // inbox is builtin but it is the user's main chat: heavy tools load on demand there too
+      const inbox = run(true, undefined, 'inbox');
+      expect(inbox.toolIds).toEqual(['lobe-artifacts', 'mcp-arckep-wordstat']);
+      expect(inbox.excludeDefaultToolIds).toEqual(
+        expect.arrayContaining(['lobe-user-memory', 'arckep-sites', 'lobe-message']),
+      );
 
       const picked = run(false, [{ identifier: 'arckep-sites', name: 'Sites' }]);
       expect(picked.toolIds).toEqual(['arckep-sites', 'lobe-artifacts', 'mcp-arckep-wordstat']);

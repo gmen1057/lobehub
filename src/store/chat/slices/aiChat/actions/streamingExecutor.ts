@@ -6,6 +6,7 @@ import {
   type Usage,
 } from '@lobechat/agent-runtime';
 import { AgentRuntime, computeStepContext, GeneralChatAgent } from '@lobechat/agent-runtime';
+import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { createPathScopeAudit } from '@lobechat/builtin-tool-local-system';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import { arckepLazyToolIds, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
@@ -197,7 +198,11 @@ export class StreamingExecutorActionImpl {
     // ("Editor not initialized") and its ~5.4K-token schema is dead weight (0 calls in 90 days,
     // 2026-10-13). It is not discoverable, so it is kept only while a page is open (the page editor
     // sets the doc id on mount and clears it on unmount).
-    const lazyToolIds = agentConfig.isBuiltinAgent
+    // Builtin agents keep their precise tool set, except inbox: it is the user's main chat and runs
+    // the user's own plugins (owner's inbox still sent ~40K tokens per message before this).
+    const keepsOwnToolSet =
+      agentConfig.isBuiltinAgent && agentConfig.slug !== BUILTIN_AGENT_SLUGS.inbox;
+    const lazyToolIds = keepsOwnToolSet
       ? []
       : [
           ...arckepLazyToolIds,
