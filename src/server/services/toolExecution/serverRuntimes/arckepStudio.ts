@@ -63,6 +63,45 @@ export const backendErrorMessage = (status: number, text: string): string => {
   return `backend ${status}: ${text.slice(0, 200)}`;
 };
 
+// ── Tool arguments come from the model: only known fields, with types checked, go to the backend ──
+// (never `...params`: a model must not be able to add `user_id`, `session_id` or anything else).
+
+const clip = (value: unknown, max: number): string | undefined =>
+  typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : undefined;
+
+const flag = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
+
+const count = (value: unknown, min: number, max: number): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value)
+    ? Math.min(max, Math.max(min, Math.trunc(value)))
+    : undefined;
+
+const money = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+
+/** Undefined values are dropped by JSON.stringify, so only the fields the model really set are sent. */
+export const imageOptionsBody = (params: EstimateImageParams | undefined) => ({
+  aspect_ratio: clip(params?.aspect_ratio, 16),
+  model: clip(params?.model, 120),
+  num_images: count(params?.num_images, 1, 4),
+  quality: clip(params?.quality, 32),
+  resolution: clip(params?.resolution, 16),
+  thinking: flag(params?.thinking),
+});
+
+export const createImageBody = (params: CreateImageParams) => {
+  const prompt = typeof params?.prompt === 'string' ? params.prompt.trim() : '';
+  if (!prompt) throw new Error('createImage: prompt должен быть непустой строкой');
+  return { ...imageOptionsBody(params), max_cost_rub: money(params.max_cost_rub), prompt };
+};
+
+export const createSpeechBody = (params: CreateSpeechParams) => {
+  const body = clip(params?.text, 6000);
+  if (!body) throw new Error('createSpeech: text должен быть непустой строкой');
+  return { style: clip(params.style, 300), text: body, voice_id: clip(params.voice_id, 120) };
+};
+
 const callBackend = async (path: string, body: Record<string, unknown>, timeoutMs = 30_000) => {
   const token = getInternalToken();
   if (!token) throw new Error('Internal token not configured');
@@ -90,7 +129,7 @@ export const arckepStudioRuntime: ServerRuntimeRegistration = {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend(
           '/api/chat/studio-tool/create-image',
-          { ...params, topic_id: topicId, user_id: arckepId },
+          { ...createImageBody(params), topic_id: topicId, user_id: arckepId },
           IMAGE_TIMEOUT_MS,
         );
       },
@@ -98,14 +137,14 @@ export const arckepStudioRuntime: ServerRuntimeRegistration = {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend(
           '/api/chat/studio-tool/create-speech',
-          { ...params, topic_id: topicId, user_id: arckepId },
+          { ...createSpeechBody(params), topic_id: topicId, user_id: arckepId },
           SPEECH_TIMEOUT_MS,
         );
       },
       estimateImage: async (params: EstimateImageParams) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend('/api/chat/studio-tool/estimate-image', {
-          ...params,
+          ...imageOptionsBody(params),
           user_id: arckepId,
         });
       },
@@ -114,6 +153,9 @@ export const arckepStudioRuntime: ServerRuntimeRegistration = {
         return callBackend('/api/chat/studio-tool/get-balance', { user_id: arckepId });
       },
       getImage: async (generationId: number) => {
+        if (!Number.isInteger(generationId) || generationId < 1) {
+          throw new Error('getImage: generation_id должен быть положительным целым числом');
+        }
         const arckepId = await resolveArckepUserId(serverDB, userId);
         return callBackend('/api/chat/studio-tool/get-image', {
           generation_id: generationId,

@@ -5,7 +5,13 @@ import { RECOMMENDED_SKILLS } from '@lobechat/const';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ToolExecutionContext } from '../../types';
-import { arckepStudioRuntime, backendErrorMessage } from '../arckepStudio';
+import {
+  arckepStudioRuntime,
+  backendErrorMessage,
+  createImageBody,
+  createSpeechBody,
+  imageOptionsBody,
+} from '../arckepStudio';
 
 const BASE = 'http://127.0.0.1:8202';
 
@@ -288,6 +294,113 @@ describe('arckepStudioRuntime', () => {
         'http://studio.internal:9000/api/chat/studio-tool/get-balance',
       );
     });
+  });
+});
+
+/** What reaches the backend: JSON.stringify drops undefined fields (structuredClone would keep them). */
+// eslint-disable-next-line unicorn/prefer-structured-clone
+const onTheWire = (value: unknown) => JSON.parse(JSON.stringify(value));
+
+describe('arguments from the model', () => {
+  it('sends only known fields: no user_id, session_id or anything extra', () => {
+    const body = createImageBody({
+      prompt: ' a red cat ',
+      session_id: 's-1',
+      user_id: 7,
+      zzz: 1,
+    } as any);
+    expect(body).toEqual({
+      aspect_ratio: undefined,
+      max_cost_rub: undefined,
+      model: undefined,
+      num_images: undefined,
+      prompt: 'a red cat',
+      quality: undefined,
+      resolution: undefined,
+      thinking: undefined,
+    });
+    expect(Object.keys(onTheWire(body))).toEqual(['prompt']);
+  });
+
+  it('keeps well-typed options and clamps or drops the rest', () => {
+    expect(
+      onTheWire(
+        createImageBody({
+          aspect_ratio: '16:9',
+          max_cost_rub: 30,
+          model: 'runway-muse-image',
+          num_images: 99,
+          prompt: 'x',
+          quality: 'high',
+          resolution: '2K',
+          thinking: true,
+        }),
+      ),
+    ).toEqual({
+      aspect_ratio: '16:9',
+      max_cost_rub: 30,
+      model: 'runway-muse-image',
+      num_images: 4,
+      prompt: 'x',
+      quality: 'high',
+      resolution: '2K',
+      thinking: true,
+    });
+
+    const junk = onTheWire(
+      imageOptionsBody({
+        aspect_ratio: { evil: 1 },
+        model: ['a'],
+        num_images: '3',
+        quality: 5,
+        resolution: '',
+        thinking: 'yes',
+      } as any),
+    );
+    expect(junk).toEqual({});
+    expect(imageOptionsBody({ num_images: 0 }).num_images).toBe(1);
+    expect(imageOptionsBody({ num_images: 2.9 }).num_images).toBe(2);
+    expect(createImageBody({ max_cost_rub: -5, prompt: 'x' } as any).max_cost_rub).toBeUndefined();
+    expect(imageOptionsBody(undefined)).toBeDefined();
+  });
+
+  it('rejects a prompt or a text that is not a non-empty string', () => {
+    expect(() => createImageBody({ prompt: 5 } as any)).toThrow('prompt');
+    expect(() => createImageBody({ prompt: '  ' } as any)).toThrow('prompt');
+    expect(() => createSpeechBody({ text: ['a'] } as any)).toThrow('text');
+    expect(() => createSpeechBody({ text: '' } as any)).toThrow('text');
+    expect(
+      createSpeechBody({ extra: 1, style: 'тихо', text: 'Привет', user_id: 9 } as any),
+    ).toEqual({
+      style: 'тихо',
+      text: 'Привет',
+      voice_id: undefined,
+    });
+  });
+
+  it('never reaches the backend with a foreign user or a bad generation id', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(completedJob));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('LOBECHAT_BACKEND_KEY', 'secret-key');
+    try {
+      const rt = arckepStudioRuntime.factory(makeContext()) as any;
+      await rt.createSpeech({ text: 'Привет', user_id: 7, voice_id: 'Puck' } as any);
+      await rt.estimateImage({ model: 'm', session_id: 'evil', user_id: 7 } as any);
+      for (const call of fetchMock.mock.calls) {
+        const sent = JSON.parse(call[1].body);
+        expect(sent.user_id).toBe(42);
+        expect(sent).not.toHaveProperty('session_id');
+      }
+      fetchMock.mockClear();
+      for (const bad of [0, -1, 1.5, '7', null, undefined]) {
+        const out = await rt.getImage({ generation_id: bad });
+        expect(out.success).toBe(false);
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
   });
 });
 
