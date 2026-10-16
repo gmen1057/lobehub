@@ -2,6 +2,7 @@ import AgentGroupsRoutes from './agent-groups.route';
 import AgentsRoutes from './agents.route';
 import FileRoutes from './files.route';
 import KnowledgeBasesRoutes from './knowledge-bases.route';
+import MemoriesRoutes from './memories.route';
 import MessageTranslationsRoutes from './message-translations.route';
 import MessagesRoutes from './messages.route';
 import ModelsRoutes from './models.route';
@@ -17,6 +18,7 @@ export default {
   'agents': AgentsRoutes,
   'files': FileRoutes,
   'knowledge-bases': KnowledgeBasesRoutes,
+  'memories': MemoriesRoutes,
   'message-translations': MessageTranslationsRoutes,
   'messages': MessagesRoutes,
   'models': ModelsRoutes,
