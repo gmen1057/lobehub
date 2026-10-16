@@ -9,6 +9,13 @@ import { validateOIDCJWT } from '@/libs/oidc-provider/jwt';
 import { validateApiKeyFormat } from '@/utils/apiKey';
 import { extractBearerToken } from '@/utils/server/auth';
 
+import {
+  ARCKEP_USER_HEADER,
+  isArckepServiceBearer,
+  parseArckepUserId,
+  resolveArckepUser,
+} from '../helpers/arckepServiceAuth';
+
 // Create context logger namespace
 const log = debug('lobe-hono:auth-middleware');
 
@@ -66,8 +73,28 @@ export const userAuthMiddleware = async (c: Context, next: Next) => {
   let authType: string | null = null;
   let authData: any = null;
 
+  // arckep: служебный вход студии — ключ из окружения + X-Arckep-User-Id (план lobechat-engine-studio-chat, D13)
+  if (bearerToken && isArckepServiceBearer(bearerToken)) {
+    const studioUserId = parseArckepUserId(c.req.header(ARCKEP_USER_HEADER));
+    if (!studioUserId) {
+      log('arckep service key without valid %s header', ARCKEP_USER_HEADER);
+      throw new HTTPException(401, { message: 'X-Arckep-User-Id header required' });
+    }
+
+    const db = await getServerDB();
+    const resolvedUserId = await resolveArckepUser(db, studioUserId);
+    if (!resolvedUserId) {
+      log('arckep service auth: studio user %d could not be resolved', studioUserId);
+      throw new HTTPException(401, { message: 'arckep user could not be resolved' });
+    }
+
+    userId = resolvedUserId;
+    authType = 'arckep-service';
+    authData = { studioUserId };
+    log('arckep service auth successful, studio user %d -> %s', studioUserId, userId);
+  }
   // Try Bearer token authentication - check format first to determine type
-  if (bearerToken) {
+  else if (bearerToken) {
     log('Bearer token received: %s...', bearerToken.slice(0, 10));
 
     // Check if bearerToken matches API Key format (sk-lh-{16 alphanumeric chars})
