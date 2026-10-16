@@ -71,7 +71,9 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
   // artifacts ~2.2K per request — not ~1.5K. Memory and arckep-sites are therefore in
   // arckepLazyToolIds (@lobechat/builtin-tools): the web chat lists them in <available_tools>
   // and the model activates them on demand; memory recall is injected either way.
-  plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
+  // arckep-studio («Студия Arckep»: картинки, озвучка) is lazy too (arckepLazyToolIds): listed in
+  // <available_tools>, the model activates it on demand.
+  plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites', 'arckep-studio'],
   provider: DEFAULT_PROVIDER,
   systemRole: ARCKEP_DEFAULT_SYSTEM_ROLE,
   tts: DEFAUTT_AGENT_TTS_CONFIG,

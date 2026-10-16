@@ -22,6 +22,7 @@
     "@lobechat/builtin-tool-agent-management": "workspace:*",
     "@lobechat/builtin-tool-arckep-bot": "workspace:*",
     "@lobechat/builtin-tool-arckep-sites": "workspace:*",
+    "@lobechat/builtin-tool-arckep-studio": "workspace:*",
     "@lobechat/builtin-tool-brief": "workspace:*",
     "@lobechat/builtin-tool-calculator": "workspace:*",
     "@lobechat/builtin-tool-cloud-sandbox": "workspace:*",

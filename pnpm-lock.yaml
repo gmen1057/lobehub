@@ -156,6 +156,9 @@ importers:
       '@lobechat/builtin-tool-arckep-sites':
         specifier: workspace:*
         version: link:packages/builtin-tool-arckep-sites
+      '@lobechat/builtin-tool-arckep-studio':
+        specifier: workspace:*
+        version: link:packages/builtin-tool-arckep-studio
       '@lobechat/builtin-tool-brief':
         specifier: workspace:*
         version: link:packages/builtin-tool-brief
@@ -1285,6 +1288,12 @@ importers:
         specifier: workspace:*
         version: link:../types
 
+  packages/builtin-tool-arckep-studio:
+    devDependencies:
+      '@lobechat/types':
+        specifier: workspace:*
+        version: link:../types
+
   packages/builtin-tool-brief:
     devDependencies:
       '@lobechat/types':
@@ -1793,6 +1802,9 @@ importers:
       '@lobechat/builtin-tool-arckep-sites':
         specifier: workspace:*
         version: link:../builtin-tool-arckep-sites
+      '@lobechat/builtin-tool-arckep-studio':
+        specifier: workspace:*
+        version: link:../builtin-tool-arckep-studio
       '@lobechat/builtin-tool-brief':
         specifier: workspace:*
         version: link:../builtin-tool-brief
