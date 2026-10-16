@@ -7,10 +7,12 @@ import { requireAuth, userAuthMiddleware } from './auth';
 const findByEmail = vi.fn();
 const onConflictDoNothing = vi.fn(async () => undefined);
 const findByKey = vi.fn(async () => null);
+let accountRows: Array<{ password: string | null }> = [];
 
 vi.mock('@/database/core/db-adaptor', () => ({
   getServerDB: vi.fn(async () => ({
     insert: () => ({ values: () => ({ onConflictDoNothing }) }),
+    select: () => ({ from: () => ({ where: () => ({ limit: async () => accountRows }) }) }),
   })),
 }));
 vi.mock('@/database/models/user', () => ({
@@ -22,7 +24,18 @@ vi.mock('@/database/models/apiKey', () => ({
     updateLastUsed = vi.fn(async () => undefined);
   },
 }));
-vi.mock('@/database/schemas', () => ({ userRoles: {} }));
+vi.mock('drizzle-orm', () => ({
+  and: (...args: unknown[]) => args,
+  eq: (...args: unknown[]) => args,
+}));
+vi.mock('better-auth/crypto', () => ({
+  verifyPassword: async ({ hash, password }: { hash: string; password: string }) =>
+    hash === `hash:${password}`,
+}));
+vi.mock('@/database/schemas', () => ({
+  account: { password: 'password', providerId: 'provider_id', userId: 'user_id' },
+  userRoles: {},
+}));
 vi.mock('@/envs/auth', () => ({ authEnv: { ENABLE_OIDC: false } }));
 vi.mock('@/libs/oidc-provider/jwt', () => ({ validateOIDCJWT: vi.fn() }));
 vi.mock('@/utils/apiKey', () => ({
@@ -56,6 +69,7 @@ describe('arckep service auth', () => {
     process.env.ARCKEP_ENGINE_SERVICE_KEY = SERVICE_KEY;
     process.env.AUTH_SECRET = 'secret-for-tests-0123456789';
     process.env.PORT = '3403';
+    accountRows = [{ password: 'hash:arckep_bridge_4_secret-f' }];
   });
 
   afterEach(() => {
@@ -100,9 +114,25 @@ describe('arckep service auth', () => {
     expect(onConflictDoNothing).toHaveBeenCalledTimes(1);
   });
 
+  it('учётка с таким email заведена не bridge (чужой пароль) → 401', async () => {
+    accountRows = [{ password: 'hash:attacker-password' }];
+    findByEmail.mockResolvedValueOnce({ id: 'user_4' });
+    const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
+    expect(res.status).toBe(401);
+    expect(onConflictDoNothing).not.toHaveBeenCalled();
+  });
+
+  it('учётка без credential-пароля → 401', async () => {
+    accountRows = [];
+    findByEmail.mockResolvedValueOnce({ id: 'user_4' });
+    const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
+    expect(res.status).toBe(401);
+  });
+
   it('пользователя нет → sign-up как в bridge, затем userId', async () => {
     const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
+    accountRows = [{ password: 'hash:arckep_bridge_7_secret-f' }];
     findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'user_7' });
 
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '7' });

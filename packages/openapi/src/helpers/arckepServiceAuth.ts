@@ -1,9 +1,11 @@
 import { timingSafeEqual } from 'node:crypto';
 
+import { verifyPassword } from 'better-auth/crypto';
 import debug from 'debug';
+import { and, eq } from 'drizzle-orm';
 
 import { UserModel } from '@/database/models/user';
-import { userRoles } from '@/database/schemas';
+import { account, userRoles } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 
 /**
@@ -13,6 +15,10 @@ import type { LobeChatDatabase } from '@/database/type';
  * `X-Arckep-User-Id: <id пользователя студии>`. Движок находит своего пользователя
  * `user{N}@arckep.ru`; если его нет — создаёт через Better Auth sign-up ровно так же,
  * как `/api/bridge`, и выдаёт роль `arckep_owner` (scripts/arckep/seed-rbac-owner.sql).
+ *
+ * Совпадения email недостаточно (кто-то мог заранее зарегистрировать `user4@arckep.ru`):
+ * учётка принимается только если её пароль — производный пароль bridge. Проверка идёт по
+ * хэшу в `accounts` (provider `credential`), сессии Better Auth не создаются.
  *
  * Ключ намеренно не похож на API-ключ `sk-lh-…`; без переменной окружения код инертен.
  */
@@ -71,6 +77,22 @@ const defaultSignUp: ArckepSignUp = async ({ email, name, password }) => {
   if (!res.ok) throw new Error(`sign-up failed: ${res.status}`);
 };
 
+/** Учётка создана bridge/служебным входом: её credential-пароль равен производному паролю. */
+export const verifyArckepOwnership = async (
+  db: LobeChatDatabase,
+  userId: string,
+  password: string,
+): Promise<boolean> => {
+  const rows = await db
+    .select({ password: account.password })
+    .from(account)
+    .where(and(eq(account.userId, userId), eq(account.providerId, 'credential')))
+    .limit(1);
+  const hash = rows[0]?.password;
+  if (!hash) return false;
+  return verifyPassword({ hash, password });
+};
+
 export const ensureArckepOwnerRole = async (
   db: LobeChatDatabase,
   userId: string,
@@ -95,15 +117,12 @@ export const resolveArckepUser = async (
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.userId;
 
   const email = arckepEmailFor(studioUserId);
+  const password = arckepBridgePasswordFor(studioUserId);
   let user = await UserModel.findByEmail(db, email);
 
   if (!user) {
     try {
-      await signUp({
-        email,
-        name: `User ${studioUserId}`,
-        password: arckepBridgePasswordFor(studioUserId),
-      });
+      await signUp({ email, name: `User ${studioUserId}`, password });
     } catch (error) {
       log('sign-up for studio user %d failed: %O', studioUserId, error);
       return null;
@@ -113,6 +132,12 @@ export const resolveArckepUser = async (
       log('studio user %d still missing after sign-up', studioUserId);
       return null;
     }
+  }
+
+  if (!(await verifyArckepOwnership(db, user.id, password))) {
+    // Учётка с таким email есть, но заведена не bridge — чужая регистрация, не доверяем.
+    log('studio user %d: account %s is not bridge-owned, refusing', studioUserId, user.id);
+    return null;
   }
 
   try {
