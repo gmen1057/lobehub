@@ -775,10 +775,22 @@ export class ResponsesService extends BaseService {
           type: 'response.incomplete' as const,
         };
       } else {
+        // arckep: при ошибке модели (например, отказ биллинг-прокси) клиенту нужен текст ошибки,
+        // а не пустой ответ со status=failed (план lobechat-engine-studio-chat, Phase 2).
+        const stateError = finalState?.status === 'error' ? finalState?.error : undefined;
+        const stateErrorMessage =
+          stateError?.error?.message || stateError?.message || stateError?.errorType;
+
         yield {
           response: {
             ...response,
             completed_at: Math.floor(Date.now() / 1000),
+            error: stateError
+              ? {
+                  code: 'model_error' as const,
+                  message: String(stateErrorMessage || 'Model execution failed'),
+                }
+              : null,
             output: fullOutput.output,
             output_text: fullOutput.outputText || accumulatedText,
             status: (finalState?.status === 'error' ? 'failed' : 'completed') as any,
