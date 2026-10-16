@@ -88,7 +88,10 @@ export class AgentService extends BaseService {
           description: request.description || null,
           id: idGenerator('agents'),
           model: request.model || null,
+          openingMessage: request.openingMessage || null,
+          openingQuestions: request.openingQuestions ?? [],
           params: request.params ?? {},
+          plugins: request.plugins ?? [],
           provider: request.provider || null,
           slug: randomSlug(4), // Auto-generated slug
           systemRole: request.systemRole || null,
@@ -149,6 +152,11 @@ export class AgentService extends BaseService {
         if (request.chatConfig !== undefined) updateData.chatConfig = request.chatConfig ?? null;
         if (request.description !== undefined) updateData.description = request.description ?? null;
         if (request.model !== undefined) updateData.model = request.model ?? null;
+        if (request.openingMessage !== undefined)
+          updateData.openingMessage = request.openingMessage ?? null;
+        if (request.openingQuestions !== undefined)
+          updateData.openingQuestions = request.openingQuestions ?? [];
+        if (request.plugins !== undefined) updateData.plugins = request.plugins ?? [];
         if (request.provider !== undefined) updateData.provider = request.provider ?? null;
         if (request.systemRole !== undefined) updateData.systemRole = request.systemRole ?? null;
         if (request.title !== undefined) updateData.title = request.title;

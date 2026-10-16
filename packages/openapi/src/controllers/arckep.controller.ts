@@ -1,5 +1,6 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
 import { LayersEnum } from '@lobechat/types';
+import { and, eq } from 'drizzle-orm';
 import type { Context } from 'hono';
 
 import { AgentModel } from '@/database/models/agent';
@@ -12,6 +13,7 @@ import {
   UserMemoryPreferenceModel,
 } from '@/database/models/userMemory';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
+import { agents, knowledgeBases } from '@/database/schemas';
 import { getServerGlobalConfig } from '@/server/globalConfig';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
 import type { ProviderConfig } from '@/types/user/settings';
@@ -146,6 +148,76 @@ export class ArckepController extends BaseController {
       }
 
       return this.success(c, { id, layer }, 'memory deleted');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * GET /api/v1/agents/:id/knowledge-bases — базы знаний, привязанные к помощнику.
+   */
+  async getAgentKnowledgeBases(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const agentId = c.req.param('id');
+      const knowledge = await new AgentModel(db, userId).getAgentAssignedKnowledge(agentId);
+      return this.success(c, knowledge, 'agent knowledge');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * POST /api/v1/agents/:id/knowledge-bases { knowledgeBaseId, enabled? } — привязать базу знаний.
+   * Помощник и база должны принадлежать пользователю (проверяется по userId в запросах модели).
+   */
+  async linkAgentKnowledgeBase(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const agentId = c.req.param('id');
+      const body = await c.req.json<{ enabled?: boolean; knowledgeBaseId?: string }>();
+      const knowledgeBaseId = body?.knowledgeBaseId;
+      if (!knowledgeBaseId) return this.error(c, 'knowledgeBaseId is required', 400);
+
+      const agentModel = new AgentModel(db, userId);
+      const [agent] = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, agentId), eq(agents.userId, userId)))
+        .limit(1);
+      if (!agent) return this.error(c, 'Agent not found', 404);
+      const [kb] = await db
+        .select({ id: knowledgeBases.id })
+        .from(knowledgeBases)
+        .where(and(eq(knowledgeBases.id, knowledgeBaseId), eq(knowledgeBases.userId, userId)))
+        .limit(1);
+      if (!kb) return this.error(c, 'Knowledge base not found', 404);
+
+      await agentModel.deleteAgentKnowledgeBase(agentId, knowledgeBaseId);
+      await agentModel.createAgentKnowledgeBase(agentId, knowledgeBaseId, body?.enabled ?? true);
+      return this.success(
+        c,
+        { agentId, enabled: body?.enabled ?? true, knowledgeBaseId },
+        'linked',
+      );
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * DELETE /api/v1/agents/:id/knowledge-bases/:kbId — отвязать базу знаний.
+   */
+  async unlinkAgentKnowledgeBase(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const agentId = c.req.param('id');
+      const knowledgeBaseId = c.req.param('kbId');
+      await new AgentModel(db, userId).deleteAgentKnowledgeBase(agentId, knowledgeBaseId);
+      return this.success(c, { agentId, knowledgeBaseId }, 'unlinked');
     } catch (error) {
       return this.handleError(c, error);
     }

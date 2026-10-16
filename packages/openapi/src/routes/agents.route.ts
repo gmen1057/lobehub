@@ -73,6 +73,44 @@ AgentRoutes.get(
   },
 );
 
+// arckep: базы знаний помощника (Phase 4). Объявлены до '/:id', как и '/inbox'.
+AgentRoutes.get(
+  '/:id/knowledge-bases',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('AGENT_READ'),
+    'You do not have permission to view the Agent details',
+  ),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.getAgentKnowledgeBases(c);
+  },
+);
+AgentRoutes.post(
+  '/:id/knowledge-bases',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('AGENT_UPDATE'),
+    'You do not have permission to update Agent',
+  ),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.linkAgentKnowledgeBase(c);
+  },
+);
+AgentRoutes.delete(
+  '/:id/knowledge-bases/:kbId',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('AGENT_UPDATE'),
+    'You do not have permission to update Agent',
+  ),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.unlinkAgentKnowledgeBase(c);
+  },
+);
+
 /**
  * Get Agent details by ID
  * GET /api/v1/agents/:id

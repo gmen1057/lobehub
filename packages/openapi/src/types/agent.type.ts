@@ -46,7 +46,11 @@ export const CreateAgentRequestSchema = z.object({
     .nullish(),
   description: z.string().nullish(),
   model: z.string().nullish(),
+  // arckep: инструменты и приветствие помощника (план lobechat-engine-studio-chat, Phase 4)
+  openingMessage: z.string().nullish(),
+  openingQuestions: z.array(z.string()).nullish(),
   params: z.record(z.unknown()).nullish(),
+  plugins: z.array(z.string()).nullish(),
   provider: z.string().nullish(),
   systemRole: z.string().nullish(),
   title: z.string().min(1, '标题不能为空'),
