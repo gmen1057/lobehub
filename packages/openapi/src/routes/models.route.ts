@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { getAllScopePermissions } from '@/utils/rbac';
 
 import { ModelController } from '../controllers';
+import { ArckepController } from '../controllers/arckep.controller';
 import { requireAuth } from '../middleware';
 import { requireAnyPermission } from '../middleware/permission-check';
 import {
@@ -37,6 +38,17 @@ ModelRoutes.post(
   (c) => {
     const controller = new ModelController();
     return controller.handleCreateModel(c);
+  },
+);
+
+// arckep: GET /api/v1/models/runtime — включённые чат-модели движка (банк + *_MODEL_LIST + пользователь)
+ModelRoutes.get(
+  '/runtime',
+  requireAuth,
+  requireAnyPermission(getAllScopePermissions('AI_MODEL_READ'), '您没有权限查看模型列表'),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.getRuntimeModels(c);
   },
 );
 

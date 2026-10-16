@@ -4,6 +4,7 @@ import { Hono } from 'hono';
 import { getAllScopePermissions, getScopePermissions } from '@/utils/rbac';
 
 import { AgentController } from '../controllers/agent.controller';
+import { ArckepController } from '../controllers/arckep.controller';
 import { requireAuth } from '../middleware/auth';
 import { requireAnyPermission } from '../middleware/permission-check';
 import { PaginationQuerySchema } from '../types';
@@ -51,6 +52,24 @@ AgentRoutes.post(
   async (c) => {
     const controller = new AgentController();
     return await controller.createAgent(c);
+  },
+);
+
+/**
+ * arckep: помощник по умолчанию («Arckep Помощник»), создаётся при первом обращении.
+ * GET /api/v1/agents/inbox — объявлен до '/:id', иначе его перехватит параметр.
+ * Requires Agent read permission
+ */
+AgentRoutes.get(
+  '/inbox',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('AGENT_READ'),
+    'You do not have permission to view the Agent details',
+  ),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.getInboxAgent(c);
   },
 );
 
