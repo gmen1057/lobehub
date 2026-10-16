@@ -221,8 +221,11 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
       },
     },
     user: {
+      // arckep: смена почты закрыта — учётки заводит bridge как user{N}@arckep.ru, и по этой почте
+      // инструменты (сайты, боты, студия) находят пользователя студии и его баланс. Со сменой почты
+      // чужой N можно было занять заранее (план lobechat-engine-studio-chat, разбор безопасности 16.10).
       changeEmail: {
-        enabled: true,
+        enabled: false,
       },
       additionalFields: {
         username: {
