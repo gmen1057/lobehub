@@ -1,5 +1,6 @@
 import type { AgentState } from '@lobechat/agent-runtime';
 
+import { FileModel } from '@/database/models/file';
 import { InMemoryStreamEventManager } from '@/server/modules/AgentRuntime/InMemoryStreamEventManager';
 import type {
   StreamChunkData,
@@ -7,6 +8,7 @@ import type {
 } from '@/server/modules/AgentRuntime/StreamEventManager';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { AiAgentService } from '@/server/services/aiAgent';
+import { FileService } from '@/server/services/file';
 
 import { BaseService } from '../common/base.service';
 import type {
@@ -102,6 +104,46 @@ export class ResponsesService extends BaseService {
     }
 
     return '';
+  }
+
+  /**
+   * arckep: вложения последнего сообщения пользователя (input_image / input_file) → `files` для execAgent.
+   * Раньше движок брал из сообщения только input_text, и картинки с файлами до модели не доходили.
+   * input_image: https-адрес из нашего хранилища; input_file: file_id → запись файла пользователя → адрес.
+   */
+  private async extractAttachments(
+    input: string | InputItem[],
+  ): Promise<Array<{ mimeType?: string; name?: string; size?: number; url: string }>> {
+    if (typeof input === 'string') return [];
+    let content: unknown = null;
+    for (let i = input.length - 1; i >= 0; i--) {
+      const item = input[i];
+      if (item.type === 'message' && item.role === 'user') {
+        content = item.content;
+        break;
+      }
+    }
+    if (!Array.isArray(content)) return [];
+
+    const files: Array<{ mimeType?: string; name?: string; size?: number; url: string }> = [];
+    const fileModel = new FileModel(this.db, this.userId);
+    const fileService = new FileService(this.db, this.userId);
+    for (const part of content) {
+      if (part.type === 'input_image' && part.image_url?.startsWith('https://')) {
+        files.push({ name: 'image', url: part.image_url });
+      } else if (part.type === 'input_file' && part.file_id) {
+        // findById ищет только среди файлов этого пользователя: чужой file_id вернёт пусто.
+        const file = await fileModel.findById(part.file_id);
+        if (!file?.url) continue;
+        files.push({
+          mimeType: file.fileType ?? undefined,
+          name: file.name ?? undefined,
+          size: file.size ?? undefined,
+          url: await fileService.getFullFileUrl(file.url),
+        });
+      }
+    }
+    return files;
   }
 
   /**
@@ -292,11 +334,13 @@ export class ResponsesService extends BaseService {
       const additionalPluginIds = this.extractHostedToolIds(params.tools);
       const functionTools = this.extractFunctionTools(params.tools);
       const aiAgentService = new AiAgentService(this.db, this.userId);
+      const attachments = isResumeFlow ? [] : await this.extractAttachments(params.input);
       const execResult = await aiAgentService.execAgent({
         additionalPluginIds: additionalPluginIds.length > 0 ? additionalPluginIds : undefined,
         agentId: model,
         appContext: previousTopicId ? { topicId: previousTopicId } : undefined,
         autoStart: false,
+        files: attachments.length > 0 ? attachments : undefined,
         functionTools: functionTools.length > 0 ? functionTools : undefined,
         instructions,
         prompt,
@@ -390,11 +434,13 @@ export class ResponsesService extends BaseService {
       const additionalPluginIds = this.extractHostedToolIds(params.tools);
       const functionTools = this.extractFunctionTools(params.tools);
       const aiAgentService = new AiAgentService(this.db, this.userId);
+      const attachments = isResumeFlow ? [] : await this.extractAttachments(params.input);
       const execResult = await aiAgentService.execAgent({
         additionalPluginIds: additionalPluginIds.length > 0 ? additionalPluginIds : undefined,
         agentId: model,
         appContext: previousTopicId ? { topicId: previousTopicId } : undefined,
         autoStart: false,
+        files: attachments.length > 0 ? attachments : undefined,
         functionTools: functionTools.length > 0 ? functionTools : undefined,
         instructions,
         prompt,

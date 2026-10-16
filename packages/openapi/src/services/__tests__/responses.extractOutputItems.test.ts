@@ -10,6 +10,9 @@ vi.mock('@/server/modules/AgentRuntime/InMemoryStreamEventManager', () => ({
 vi.mock('@/server/modules/AgentRuntime/StreamEventManager', () => ({}));
 vi.mock('@/server/services/agentRuntime', () => ({ AgentRuntimeService: class {} }));
 vi.mock('@/server/services/aiAgent', () => ({ AiAgentService: class {} }));
+// arckep: extractAttachments тянет модель файлов и файловый сервис — здесь они не нужны
+vi.mock('@/database/models/file', () => ({ FileModel: class {} }));
+vi.mock('@/server/services/file', () => ({ FileService: class {} }));
 vi.mock('../../common/base.service', () => ({
   BaseService: class {
     db: any;
