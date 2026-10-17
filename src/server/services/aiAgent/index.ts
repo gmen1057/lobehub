@@ -26,6 +26,7 @@ import type {
 import { ThreadStatus, ThreadType } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 import debug from 'debug';
+import mime from 'mime';
 
 import { AgentModel } from '@/database/models/agent';
 import { AgentSkillModel } from '@/database/models/agentSkill';
@@ -51,10 +52,12 @@ import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { getAbortError, isAbortError, throwIfAborted } from '@/server/services/agentRuntime/abort';
 import { type AgentHook } from '@/server/services/agentRuntime/hooks/types';
 import { type StepLifecycleCallbacks } from '@/server/services/agentRuntime/types';
+import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
 import { MarketService } from '@/server/services/market';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
+import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
 import { ingestAttachment } from './ingestAttachment';
 
@@ -95,6 +98,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   botContext?: ChatTopicBotContext;
   /** Bot platform context for injecting platform capabilities (e.g. markdown support) */
   botPlatformContext?: any;
+  /** arckep: поля chatConfig помощника поверх сохранённых — на один вызов (поиск, рассуждения) */
+  chatConfigOverride?: Record<string, unknown>;
   /** Cron job ID that triggered this execution (if trigger is 'cron') */
   cronJobId?: string;
   /** Disable all tools (no plugins, no system manifests). Useful for eval/benchmark scenarios. */
@@ -103,10 +108,14 @@ interface InternalExecAgentParams extends ExecAgentParams {
   discordContext?: any;
   /** Eval context for injecting environment prompts into system message */
   evalContext?: EvalContext;
+  /** arckep: инструменты помощника, выключенные на этот вызов */
+  excludePluginIds?: string[];
   /** External files to upload to S3 and attach to the user message */
   files?: Array<{
     /** Pre-downloaded buffer (from adapter/platform layer) */
     buffer?: Buffer;
+    /** arckep: уже загруженный файл пользователя (REST) — без повторной загрузки в S3 */
+    fileId?: string;
     mimeType?: string;
     name?: string;
     size?: number;
@@ -121,6 +130,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   initialStepCount?: number;
   /** Maximum steps for the agent operation */
   maxSteps?: number;
+  /** arckep: параметры вызова модели (temperature, top_p) поверх params помощника — на один вызов */
+  paramsOverride?: Record<string, unknown>;
   /** Parent message ID to continue from. Only takes effect when resume is true */
   parentMessageId?: string;
   queueRetries?: number;
@@ -193,6 +204,23 @@ export class AiAgentService {
   }
 
   /**
+   * arckep (план chat-next-redesign, E1): разобрать документ (PDF, Word, текст) сразу после
+   * загрузки, чтобы его текст попал в `documents` и дальше — в контекст модели
+   * (`fileList[].content`, процессор MessageContent). Браузерный чат делает это при загрузке;
+   * серверный путь раньше не разбирал, и документы до модели не доходили. Ошибка разбора не
+   * останавливает отправку — файл просто уйдёт без текста, как раньше.
+   */
+  private async parseDocumentQuietly(fileId: string, mimeType: string | undefined): Promise<void> {
+    if (mimeType && isChunkingUnsupported(mimeType)) return;
+    try {
+      await new DocumentService(this.db, this.userId).parseFile(fileId);
+      log('execAgent: parsed document %s', fileId);
+    } catch (error) {
+      log('execAgent: failed to parse document %s: %O', fileId, error);
+    }
+  }
+
+  /**
    * Execute agent with just a prompt
    *
    * This is a simplified API that requires agent identifier (id or slug) and prompt.
@@ -224,6 +252,9 @@ export class AiAgentService {
       instructions,
       model: modelOverride,
       provider: providerOverride,
+      chatConfigOverride,
+      excludePluginIds,
+      paramsOverride,
       stream,
       title,
       trigger,
@@ -295,6 +326,13 @@ export class AiAgentService {
     // Apply per-call model/provider overrides (e.g. from task.config)
     if (modelOverride) agentConfig.model = modelOverride;
     if (providerOverride) agentConfig.provider = providerOverride;
+    // arckep (chat-next-redesign, E1): настройки одного вызова поверх помощника (REST `/responses`)
+    if (chatConfigOverride && Object.keys(chatConfigOverride).length > 0) {
+      agentConfig.chatConfig = { ...agentConfig.chatConfig, ...chatConfigOverride } as any;
+    }
+    if (paramsOverride && Object.keys(paramsOverride).length > 0) {
+      agentConfig.params = { ...agentConfig.params, ...paramsOverride } as any;
+    }
 
     log(
       'execAgent: got agent config for %s (id: %s), model: %s, provider: %s',
@@ -462,7 +500,14 @@ export class AiAgentService {
     // These are needed outside the tools block (for agent management context, skill engine, etc.)
     let lobehubSkillManifests: LobeToolManifest[] = [];
     let klavisManifests: LobeToolManifest[] = [];
-    let agentPlugins: string[] = [...(agentConfig?.plugins ?? []), ...(additionalPluginIds || [])];
+    // arckep (chat-next-redesign, E1): инструменты, выключенные на этот вызов, убираются и из
+    // набора помощника, и из итогового списка для движка инструментов
+    const excludedPluginIds = new Set(excludePluginIds ?? []);
+    const dropExcluded = (ids: string[]) => ids.filter((id) => !excludedPluginIds.has(id));
+    let agentPlugins: string[] = dropExcluded([
+      ...(agentConfig?.plugins ?? []),
+      ...(additionalPluginIds || []),
+    ]);
 
     // model-bank is needed both for tool support check and model metadata
     const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
@@ -581,13 +626,13 @@ export class AiAgentService {
       });
 
       // 5f. Generate tools and manifest map
-      const pluginIds = [
+      const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),
         ...(additionalPluginIds || []),
         LocalSystemManifest.identifier,
         RemoteDeviceManifest.identifier,
         ...(isBotConversation ? [MessageToolIdentifier] : []),
-      ];
+      ]);
       log('execAgent: agent configured plugins: %O', pluginIds);
 
       const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
@@ -852,7 +897,21 @@ export class AiAgentService {
       for (const file of files) {
         await throwIfExecutionAborted('file upload');
 
+        const mimeType = file.mimeType || (file.name ? mime.getType(file.name) : null) || undefined;
         try {
+          // arckep (chat-next-redesign, E1): файл пользователя из REST — без повторной загрузки
+          if (file.fileId) {
+            fileIds.push(file.fileId);
+            if (mimeType?.startsWith('image/') && mimeType !== 'image/svg+xml') {
+              if (file.url) {
+                imageList.push({ alt: file.name || 'image', id: file.fileId, url: file.url });
+              }
+            } else {
+              await this.parseDocumentQuietly(file.fileId, mimeType);
+            }
+            continue;
+          }
+
           const result = await ingestAttachment(file, fileService, this.userId);
           fileIds.push(result.fileId);
 
@@ -862,6 +921,8 @@ export class AiAgentService {
               id: result.fileId,
               url: result.resolvedUrl,
             });
+          } else {
+            await this.parseDocumentQuietly(result.fileId, mimeType);
           }
         } catch (error) {
           log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);

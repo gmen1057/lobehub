@@ -61,6 +61,7 @@ describe('ResponsesService.extractAttachments (arckep)', () => {
     expect(files).toEqual([
       { name: 'image', url: 'https://s3.example/img.png' },
       {
+        fileId: 'file_1',
         mimeType: 'application/pdf',
         name: 'договор.pdf',
         size: 1234,

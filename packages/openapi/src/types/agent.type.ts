@@ -40,7 +40,9 @@ export const CreateAgentRequestSchema = z.object({
       reasoningBudgetToken: z.number().nullish(),
       reasoningEffort: z.enum(['low', 'medium', 'high']).nullish(),
       searchFCModel: z.string().nullish(),
-      searchMode: z.enum(['disabled', 'enabled']).nullish(),
+      // arckep (chat-next-redesign, E1): слова движка `off|on|auto`; старые `disabled|enabled`
+      // принимаются и переводятся при записи (services/chatConfig.ts)
+      searchMode: z.enum(['disabled', 'enabled', 'off', 'on', 'auto']).nullish(),
       useModelBuiltinSearch: z.boolean().nullish(),
     })
     .nullish(),

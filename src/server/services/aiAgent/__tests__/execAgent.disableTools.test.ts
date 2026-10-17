@@ -171,7 +171,8 @@ describe('AiAgentService.execAgent - disableTools', () => {
 
     // All tool discovery steps should be called
     expect(mockPluginQuery).toHaveBeenCalledTimes(1);
-    expect(mockGetLobehubSkillManifests).toHaveBeenCalledTimes(1);
+    // arckep: магазин навыков LobeHub не опрашивается без доверенного клиента или MARKET_API_KEY
+    expect(mockGetLobehubSkillManifests).toHaveBeenCalledTimes(0);
     expect(mockGetKlavisManifests).toHaveBeenCalledTimes(1);
     expect(mockCreateServerAgentToolsEngine).toHaveBeenCalledTimes(1);
   });

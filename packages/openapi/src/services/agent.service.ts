@@ -17,6 +17,7 @@ import type {
   GetAgentsRequest,
   UpdateAgentRequest,
 } from '../types/agent.type';
+import { mergeChatConfig, normalizeChatConfig } from './chatConfig';
 
 /**
  * Agent service implementation class
@@ -83,7 +84,9 @@ export class AgentService extends BaseService {
         const newAgentData: NewAgent = {
           accessedAt: new Date(),
           avatar: request.avatar || null,
-          chatConfig: request.chatConfig || null,
+          chatConfig: (normalizeChatConfig(
+            request.chatConfig as Record<string, unknown> | null | undefined,
+          ) || null) as NewAgent['chatConfig'],
           createdAt: new Date(),
           description: request.description || null,
           id: idGenerator('agents'),
@@ -149,7 +152,12 @@ export class AgentService extends BaseService {
         const updateData: Record<string, unknown> = { updatedAt: new Date() };
 
         if (request.avatar !== undefined) updateData.avatar = request.avatar ?? null;
-        if (request.chatConfig !== undefined) updateData.chatConfig = request.chatConfig ?? null;
+        // arckep (chat-next-redesign, E1): PATCH chatConfig — частичная правка поверх сохранённого
+        if (request.chatConfig !== undefined)
+          updateData.chatConfig = mergeChatConfig(
+            existingAgent.chatConfig as Record<string, unknown> | null | undefined,
+            request.chatConfig as Record<string, unknown> | null | undefined,
+          );
         if (request.description !== undefined) updateData.description = request.description ?? null;
         if (request.model !== undefined) updateData.model = request.model ?? null;
         if (request.openingMessage !== undefined)

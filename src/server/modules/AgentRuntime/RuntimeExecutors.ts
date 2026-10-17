@@ -53,6 +53,7 @@ import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
+import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:streaming-executors');
@@ -135,8 +136,7 @@ const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
  */
 export const resolveServerEnabledSearch = async (
   agentConfig:
-    | { chatConfig?: { searchMode?: string; useModelBuiltinSearch?: boolean } }
-    | undefined,
+    { chatConfig?: { searchMode?: string; useModelBuiltinSearch?: boolean } } | undefined,
   model: string | undefined,
   provider: string | undefined,
 ): Promise<boolean> => {
@@ -566,7 +566,11 @@ export const createRuntimeExecutors = (
       // arckep: встроенный поиск модели в серверном контуре (REST-движок студии, боты, cron).
       // Клиентский чат включает его через getSearchConfig; здесь те же правила.
       const enabledSearch = await resolveServerEnabledSearch(agentConfig, model, provider);
+      // arckep (chat-next-redesign, E1): температура помощника и параметры рассуждений — как в
+      // браузерном чате; раньше серверный вызов их не передавал вовсе.
+      const modelParams = await resolveServerModelParams(agentConfig, model, provider);
       const chatPayload = {
+        ...modelParams,
         messages: processedMessages,
         model,
         stream,

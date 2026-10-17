@@ -2,6 +2,7 @@ import type { AgentState } from '@lobechat/agent-runtime';
 
 import { FileModel } from '@/database/models/file';
 import { InMemoryStreamEventManager } from '@/server/modules/AgentRuntime/InMemoryStreamEventManager';
+import { applyEffortToChatConfig } from '@/server/modules/AgentRuntime/serverModelParams';
 import type {
   StreamChunkData,
   StreamEvent,
@@ -21,6 +22,46 @@ import type {
   ResponseUsage,
   Tool,
 } from '../types/responses.type';
+
+/**
+ * arckep (план chat-next-redesign, E1): настройки одного запроса поверх помощника.
+ * `model_override`/`provider_override` — модель на одно сообщение; `reasoning.effort` — «думать
+ * дольше» (раскладывается по полям chatConfig, серверный резолвер выберет нужное для модели);
+ * `search` — режим встроенного поиска; `temperature`/`top_p` — параметры вызова;
+ * `disabled_tools` — инструменты помощника, выключенные на этот запрос.
+ */
+export interface ExecOverrides {
+  chatConfigOverride?: Record<string, unknown>;
+  excludePluginIds?: string[];
+  model?: string;
+  paramsOverride?: Record<string, unknown>;
+  provider?: string;
+}
+
+export const buildExecOverrides = (params: CreateResponseRequest): ExecOverrides => {
+  const out: ExecOverrides = {};
+  if (params.model_override) out.model = params.model_override;
+  if (params.provider_override) out.provider = params.provider_override;
+
+  let chatConfig: Record<string, unknown> = {};
+  if (params.reasoning?.effort) {
+    chatConfig = applyEffortToChatConfig(chatConfig, params.reasoning.effort) as Record<
+      string,
+      unknown
+    >;
+  }
+  if (params.search) chatConfig.searchMode = params.search;
+  if (Object.keys(chatConfig).length > 0) out.chatConfigOverride = chatConfig;
+
+  const callParams: Record<string, unknown> = {};
+  if (typeof params.temperature === 'number') callParams.temperature = params.temperature;
+  if (typeof params.top_p === 'number') callParams.top_p = params.top_p;
+  if (Object.keys(callParams).length > 0) out.paramsOverride = callParams;
+
+  const disabled = (params.disabled_tools ?? []).filter(Boolean);
+  if (disabled.length > 0) out.excludePluginIds = disabled;
+  return out;
+};
 
 /**
  * Response API Service
@@ -126,7 +167,9 @@ export class ResponsesService extends BaseService {
    */
   private async extractAttachments(
     input: string | InputItem[],
-  ): Promise<Array<{ mimeType?: string; name?: string; size?: number; url: string }>> {
+  ): Promise<
+    Array<{ fileId?: string; mimeType?: string; name?: string; size?: number; url: string }>
+  > {
     if (typeof input === 'string') return [];
     let content: unknown = null;
     for (let i = input.length - 1; i >= 0; i--) {
@@ -138,7 +181,13 @@ export class ResponsesService extends BaseService {
     }
     if (!Array.isArray(content)) return [];
 
-    const files: Array<{ mimeType?: string; name?: string; size?: number; url: string }> = [];
+    const files: Array<{
+      fileId?: string;
+      mimeType?: string;
+      name?: string;
+      size?: number;
+      url: string;
+    }> = [];
     const fileModel = new FileModel(this.db, this.userId);
     const fileService = new FileService(this.db, this.userId);
     for (const part of content) {
@@ -149,6 +198,7 @@ export class ResponsesService extends BaseService {
         const file = await fileModel.findById(part.file_id);
         if (!file?.url) continue;
         files.push({
+          fileId: part.file_id,
           mimeType: file.fileType ?? undefined,
           name: file.name ?? undefined,
           size: file.size ?? undefined,
@@ -349,6 +399,7 @@ export class ResponsesService extends BaseService {
       const aiAgentService = new AiAgentService(this.db, this.userId);
       const attachments = isResumeFlow ? [] : await this.extractAttachments(params.input);
       const execResult = await aiAgentService.execAgent({
+        ...buildExecOverrides(params),
         additionalPluginIds: additionalPluginIds.length > 0 ? additionalPluginIds : undefined,
         agentId: model,
         appContext: previousTopicId ? { topicId: previousTopicId } : undefined,
@@ -448,6 +499,7 @@ export class ResponsesService extends BaseService {
       const aiAgentService = new AiAgentService(this.db, this.userId);
       const attachments = isResumeFlow ? [] : await this.extractAttachments(params.input);
       const execResult = await aiAgentService.execAgent({
+        ...buildExecOverrides(params),
         additionalPluginIds: additionalPluginIds.length > 0 ? additionalPluginIds : undefined,
         agentId: model,
         appContext: previousTopicId ? { topicId: previousTopicId } : undefined,
@@ -734,8 +786,15 @@ export class ResponsesService extends BaseService {
                 }
               }
             } else if (chunk.chunkType === 'reasoning' && chunk.reasoning) {
-              // Emit reasoning as text delta (within a text message)
-              yield* startTextMessage(seq);
+              // arckep (chat-next-redesign, E1): рассуждения — отдельным событием, не в тексте
+              // ответа (раньше здесь только открывался текстовый item, а текст рассуждений терялся)
+              yield {
+                delta: chunk.reasoning,
+                item_id: `rs_${responseId}`,
+                output_index: currentOutputIndex,
+                sequence_number: seq.n++,
+                type: 'response.reasoning_text.delta' as const,
+              };
             }
           } else if (event.type === 'tool_end') {
             // Finalize any remaining active tool calls before emitting tool output

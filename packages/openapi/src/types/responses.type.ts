@@ -114,8 +114,14 @@ export const FunctionToolSchema = z.object({
 });
 export type FunctionTool = z.infer<typeof FunctionToolSchema>;
 
+// arckep (chat-next-redesign, E1): любой id инструмента движка — встроенные `lobe-*`, студийные
+// `arckep-*`, MCP-подключения; `function` остаётся за FunctionToolSchema
 export const HostedToolSchema = z.object({
-  type: z.string().startsWith('lobe-'),
+  type: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(/^(?!function$)[\w.:/-]+$/),
 });
 export type HostedTool = z.infer<typeof HostedToolSchema>;
 
@@ -139,11 +145,7 @@ export interface ResponseUsage {
 // ==================== Error Types ====================
 
 export type ResponseErrorCode =
-  | 'server_error'
-  | 'invalid_request_error'
-  | 'not_found'
-  | 'model_error'
-  | 'rate_limit_error';
+  'server_error' | 'invalid_request_error' | 'not_found' | 'model_error' | 'rate_limit_error';
 
 export interface ResponseError {
   code: ResponseErrorCode;
@@ -172,14 +174,21 @@ export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>;
 
 export const CreateResponseRequestSchema = z
   .object({
+    // arckep (chat-next-redesign, E1): инструменты помощника, выключенные на этот запрос
+    disabled_tools: z.array(z.string()).nullish(),
     input: z.union([z.string(), z.array(InputItemSchema)]),
     instructions: z.string().nullish(),
     max_output_tokens: z.number().int().positive().nullish(),
     metadata: z.record(z.string()).nullish(),
     model: z.string(),
+    // arckep: модель и провайдер на одно сообщение; помощник (`model`) не меняется
+    model_override: z.string().nullish(),
     parallel_tool_calls: z.boolean().nullish(),
     previous_response_id: z.string().nullish(),
+    provider_override: z.string().nullish(),
     reasoning: ReasoningConfigSchema.nullish(),
+    // arckep: режим встроенного поиска модели на этот запрос
+    search: z.enum(['off', 'on', 'auto']).nullish(),
     stream: z.boolean().nullish(),
     temperature: z.number().min(0).max(2).nullish(),
     tool_choice: z
@@ -253,7 +262,9 @@ export type ResponseStreamEventType =
   | 'response.function_call_arguments.done'
   // Reasoning events
   | 'response.reasoning_summary_text.delta'
-  | 'response.reasoning_summary_text.done';
+  | 'response.reasoning_summary_text.done'
+  // arckep (chat-next-redesign, E1): рассуждения модели потоком, отдельно от текста ответа
+  | 'response.reasoning_text.delta';
 
 export interface BaseStreamEvent {
   sequence_number: number;
@@ -359,6 +370,13 @@ export interface ReasoningSummaryTextDoneEvent extends BaseStreamEvent {
   type: 'response.reasoning_summary_text.done';
 }
 
+export interface ReasoningTextDeltaEvent extends BaseStreamEvent {
+  delta: string;
+  item_id: string;
+  output_index: number;
+  type: 'response.reasoning_text.delta';
+}
+
 export type ResponseStreamEvent =
   | ContentPartAddedEvent
   | ContentPartDoneEvent
@@ -370,6 +388,7 @@ export type ResponseStreamEvent =
   | OutputTextDoneEvent
   | ReasoningSummaryTextDeltaEvent
   | ReasoningSummaryTextDoneEvent
+  | ReasoningTextDeltaEvent
   | ResponseCompletedEvent
   | ResponseCreatedEvent
   | ResponseFailedEvent
