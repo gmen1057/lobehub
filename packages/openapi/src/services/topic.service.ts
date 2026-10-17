@@ -236,9 +236,36 @@ export class TopicService extends BaseService {
         whereConditions.push(eq(topics.userId, permissionResult.condition.userId));
       }
 
+      // arckep (chat-next-redesign, E1): перенос переписки в другого помощника. Списки тем ищут
+      // по sessionId помощника (agentsToSessions), поэтому одного agentId в строке темы мало:
+      // без sessionId тема пропадала бы из обоих списков. agentId: null — вернуть в «без проекта».
+      const changes: Record<string, unknown> = { ...payload };
+      if ('agentId' in payload) {
+        if (payload.agentId) {
+          const [relation] = await this.db
+            .select({ sessionId: agentsToSessions.sessionId })
+            .from(agentsToSessions)
+            .where(eq(agentsToSessions.agentId, payload.agentId))
+            .limit(1);
+          if (!relation?.sessionId) {
+            throw this.createNotFoundError('Agent not found');
+          }
+          const sessionPermission = await this.resolveOperationPermission('TOPIC_CREATE', {
+            targetSessionId: relation.sessionId,
+          });
+          if (!sessionPermission.isPermitted) {
+            throw this.createAuthorizationError(sessionPermission.message || '无权更新该话题');
+          }
+          changes.sessionId = relation.sessionId;
+        } else {
+          changes.agentId = null;
+          changes.sessionId = null;
+        }
+      }
+
       const [updatedTopic] = await this.db
         .update(topics)
-        .set(payload)
+        .set(changes)
         .where(and(...whereConditions))
         .returning();
 
