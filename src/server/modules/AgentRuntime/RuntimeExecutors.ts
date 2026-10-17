@@ -29,7 +29,7 @@ import {
   ToolResolver,
 } from '@lobechat/context-engine';
 import { parse } from '@lobechat/conversation-flow';
-import { consumeStreamUntilDone } from '@lobechat/model-runtime';
+import { type ChatStreamPayload, consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { chainCompressContext } from '@lobechat/prompts';
 import { type ChatToolPayload, type MessageToolCall, type UIChatMessage } from '@lobechat/types';
 import { serializePartsForStorage } from '@lobechat/utils';
@@ -571,7 +571,7 @@ export const createRuntimeExecutors = (
       const modelParams = await resolveServerModelParams(agentConfig, model, provider);
       log(`[${operationLogId}] model params: %o`, modelParams);
       const chatPayload = {
-        ...modelParams,
+        ...(modelParams as unknown as Partial<ChatStreamPayload>),
         messages: processedMessages,
         model,
         stream,

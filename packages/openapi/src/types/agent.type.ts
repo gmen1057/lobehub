@@ -15,7 +15,11 @@ export interface CreateAgentRequest {
   chatConfig?: LobeAgentChatConfig;
   description?: string;
   model?: string;
+  // arckep: поля, которые принимает схема (фаза 4 плана lobechat-engine-studio-chat)
+  openingMessage?: string | null;
+  openingQuestions?: string[] | null;
   params?: Record<string, unknown>;
+  plugins?: string[] | null;
   provider?: string;
   systemRole?: string;
   title: string;

@@ -85,7 +85,7 @@ export class AgentService extends BaseService {
           accessedAt: new Date(),
           avatar: request.avatar || null,
           chatConfig: (normalizeChatConfig(
-            request.chatConfig as Record<string, unknown> | null | undefined,
+            request.chatConfig as unknown as Record<string, unknown> | null | undefined,
           ) || null) as NewAgent['chatConfig'],
           createdAt: new Date(),
           description: request.description || null,
@@ -156,7 +156,7 @@ export class AgentService extends BaseService {
         if (request.chatConfig !== undefined)
           updateData.chatConfig = mergeChatConfig(
             existingAgent.chatConfig as Record<string, unknown> | null | undefined,
-            request.chatConfig as Record<string, unknown> | null | undefined,
+            request.chatConfig as unknown as Record<string, unknown> | null | undefined,
           );
         if (request.description !== undefined) updateData.description = request.description ?? null;
         if (request.model !== undefined) updateData.model = request.model ?? null;
