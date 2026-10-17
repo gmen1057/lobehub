@@ -1410,4 +1410,39 @@ describe('AgentRuntimeService', () => {
       expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
     });
   });
+  // arckep (chat-next-redesign, E2): остановка по теме — кнопка «стоп» в студии
+  describe('interruptTopicOperations', () => {
+    it('прерывает незавершённые операции темы текущего пользователя и пропускает чужие', async () => {
+      mockCoordinator.getActiveOperations.mockResolvedValue([
+        'op_1_agt_a_tpc_target_x1',
+        'op_2_agt_a_tpc_other_x2',
+        'op_3_agt_b_tpc_target_x3',
+        'op_4_agt_b_tpc_target_x4',
+      ]);
+      mockCoordinator.getOperationMetadata.mockImplementation(async (id: string) => ({
+        userId: id === 'op_3_agt_b_tpc_target_x3' ? 'someone-else' : mockUserId,
+      }));
+      mockCoordinator.loadAgentState.mockImplementation(async (id: string) => ({
+        operationId: id,
+        status: id === 'op_4_agt_b_tpc_target_x4' ? 'done' : 'running',
+        stepCount: 1,
+      }));
+      mockCoordinator.saveAgentState.mockResolvedValue(undefined);
+
+      const count = await service.interruptTopicOperations('tpc_target');
+
+      expect(count).toBe(1);
+      expect(mockCoordinator.saveAgentState).toHaveBeenCalledTimes(1);
+      expect(mockCoordinator.saveAgentState).toHaveBeenCalledWith(
+        'op_1_agt_a_tpc_target_x1',
+        expect.objectContaining({ status: 'interrupted' }),
+      );
+    });
+
+    it('пустая тема — ничего не делает', async () => {
+      mockCoordinator.getActiveOperations.mockResolvedValue(['op_1_agt_a_tpc_x_x1']);
+      expect(await service.interruptTopicOperations('')).toBe(0);
+      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
+    });
+  });
 });

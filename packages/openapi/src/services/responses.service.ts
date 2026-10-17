@@ -86,6 +86,21 @@ export class ResponsesService extends BaseService {
   }
 
   /**
+   * arckep (chat-next-redesign, E2): остановить ответ. Id ответа кодирует тему, у темы может
+   * быть незавершённая операция — она помечается прерванной и остановится на границе шага.
+   */
+  async cancelResponse(responseId: string): Promise<{ cancelled: number; id: string }> {
+    const topicId = this.extractTopicIdFromResponseId(responseId);
+    if (!topicId) return { cancelled: 0, id: responseId };
+    const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
+      queueService: null,
+    });
+    const cancelled = await agentRuntimeService.interruptTopicOperations(topicId);
+    this.log('info', 'Response cancel requested', { cancelled, responseId, topicId });
+    return { cancelled, id: responseId };
+  }
+
+  /**
    * Extract hosted builtin tool identifiers from tools array
    */
   private extractHostedToolIds(tools?: Tool[] | null): string[] {

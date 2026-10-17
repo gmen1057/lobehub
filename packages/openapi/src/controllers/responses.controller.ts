@@ -32,6 +32,19 @@ export class ResponsesController extends BaseController {
     }
   }
 
+  /** POST /api/v1/responses/:id/cancel — arckep: остановить ответ (chat-next-redesign, E2). */
+  async cancelResponse(c: Context): Promise<Response> {
+    try {
+      const { id } = this.getParams<{ id: string }>(c);
+      const userId = this.getUserId(c);
+      const db = await this.getDatabase();
+      const service = new ResponsesService(db, userId);
+      return c.json(await service.cancelResponse(id));
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
   private handleStreamingResponse(
     c: Context,
     service: ResponsesService,

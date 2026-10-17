@@ -207,6 +207,24 @@ export class AgentRuntimeService {
     return true;
   }
 
+  /**
+   * arckep (chat-next-redesign, E2): остановить все незавершённые операции темы текущего
+   * пользователя (кнопка «стоп» в студии). Id операции содержит тему: `op_<ts>_<agent>_<topic>_<rand>`.
+   * Остановка срабатывает на границе шага: идущий вызов модели дорабатывает до конца.
+   */
+  async interruptTopicOperations(topicId: string): Promise<number> {
+    if (!topicId) return 0;
+    const marker = `_${topicId}_`;
+    let interrupted = 0;
+    for (const operationId of await this.coordinator.getActiveOperations()) {
+      if (!operationId.includes(marker)) continue;
+      const metadata = await this.coordinator.getOperationMetadata(operationId);
+      if (metadata?.userId && metadata.userId !== this.userId) continue;
+      if (await this.interruptOperation(operationId)) interrupted += 1;
+    }
+    return interrupted;
+  }
+
   // ==================== Operation Management ====================
 
   /**
@@ -590,8 +608,7 @@ export class AgentRuntimeService {
       let content: string | undefined;
       let reasoning: string | undefined;
       let toolsCalling:
-        | Array<{ apiName: string; arguments?: string; identifier: string }>
-        | undefined;
+        Array<{ apiName: string; arguments?: string; identifier: string }> | undefined;
       let toolsResult:
         | Array<{ apiName: string; identifier: string; isSuccess?: boolean; output?: string }>
         | undefined;
@@ -647,8 +664,7 @@ export class AgentRuntimeService {
       } else {
         // Check for done event first (finish step with no next context)
         const doneEvent = stepResult.events?.find((e) => e.type === 'done') as
-          | { reason?: string; reasonDetail?: string; type: 'done' }
-          | undefined;
+          { reason?: string; reasonDetail?: string; type: 'done' } | undefined;
 
         if (doneEvent) {
           stepSummary = `[done] reason=${doneEvent.reason ?? 'unknown'}`;
@@ -660,8 +676,7 @@ export class AgentRuntimeService {
 
           // Use parsed ChatToolPayload from payload (has identifier + apiName)
           const payloadToolsCalling = (stepResult.nextContext?.payload as any)?.toolsCalling as
-            | Array<{ apiName: string; arguments: string; identifier: string }>
-            | undefined;
+            Array<{ apiName: string; arguments: string; identifier: string }> | undefined;
           const hasToolCalls = Array.isArray(payloadToolsCalling) && payloadToolsCalling.length > 0;
 
           if (hasToolCalls) {
@@ -1494,8 +1509,7 @@ export class AgentRuntimeService {
               activeDeviceId,
               devicePlatform: msg.pluginState?.metadata?.devicePlatform as string | undefined,
               deviceSystemInfo: msg.pluginState?.metadata?.deviceSystemInfo as
-                | Record<string, string>
-                | undefined,
+                Record<string, string> | undefined,
             };
           }
         },

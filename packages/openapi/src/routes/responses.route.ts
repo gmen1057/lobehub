@@ -1,5 +1,6 @@
 import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
+import { z } from 'zod';
 
 import { ResponsesController } from '../controllers/responses.controller';
 import { requireAuth } from '../middleware/auth';
@@ -18,6 +19,17 @@ ResponsesRoutes.post(
   async (c) => {
     const controller = new ResponsesController();
     return await controller.createResponse(c);
+  },
+);
+
+// arckep (chat-next-redesign, E2): остановка ответа
+ResponsesRoutes.post(
+  '/:id/cancel',
+  requireAuth,
+  zValidator('param', z.object({ id: z.string().regex(/^[\w-]{1,160}$/) })),
+  async (c) => {
+    const controller = new ResponsesController();
+    return await controller.cancelResponse(c);
   },
 );
 

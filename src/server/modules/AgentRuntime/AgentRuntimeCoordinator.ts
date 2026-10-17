@@ -143,6 +143,11 @@ export class AgentRuntimeCoordinator {
     return this.stateManager.loadAgentState(operationId);
   }
 
+  /** arckep (chat-next-redesign, E2): id операций, у которых ещё есть состояние (для остановки по теме). */
+  async getActiveOperations(): Promise<string[]> {
+    return this.stateManager.getActiveOperations();
+  }
+
   /**
    * Get operation metadata
    */

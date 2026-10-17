@@ -19,6 +19,7 @@ import { AgentService as ServerAgentService } from '@/server/services/agent';
 import type { ProviderConfig } from '@/types/user/settings';
 
 import { BaseController } from '../common/base.controller';
+import { PluginService } from '../services/plugin.service';
 
 /**
  * arckep: маршруты REST, которых не хватает студийному экрану
@@ -41,10 +42,103 @@ export class ArckepController extends BaseController {
         await new ServerAgentService(db, userId).createInbox();
       }
 
-      const agent = await new AgentModel(db, userId).getBuiltinAgent(INBOX_SESSION_ID);
+      const agentModel = new AgentModel(db, userId);
+      const agent = await agentModel.getBuiltinAgent(INBOX_SESSION_ID);
       if (!agent) return this.error(c, 'Inbox agent not found', 404);
+      if (!existing) {
+        // arckep (chat-next-redesign, E2): новый пользователь получает подключения каталога
+        // и набор инструментов помощника по умолчанию — раньше это делали только SQL-скрипты
+        // разом для всех, и новые пользователи оставались ни с чем.
+        try {
+          await new PluginService(db, userId).installCatalog();
+          if (!Array.isArray(agent.plugins) || agent.plugins.length === 0) {
+            await agentModel.update(agent.id, { plugins: ArckepController.defaultInboxPlugins() });
+          }
+        } catch (error) {
+          console.error('[arckep] default plugins for new user failed:', error);
+        }
+      }
 
       return this.success(c, agent, 'inbox agent');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  // ---------------------------------------------------------------- подключения (E2)
+
+  /** Подключения по умолчанию для нового помощника «Arckep Помощник» (ARCKEP_DEFAULT_INBOX_PLUGINS). */
+  static defaultInboxPlugins(): string[] {
+    const raw = process.env.ARCKEP_DEFAULT_INBOX_PLUGINS;
+    const list = (raw ?? 'lobe-user-memory,lobe-artifacts,arckep-studio,mcp-arckep-wordstat')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    return [...new Set(list)];
+  }
+
+  /** GET /api/v1/plugins — установленные подключения пользователя. */
+  async listPlugins(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const plugins = await new PluginService(db, userId).listInstalled();
+      return this.success(c, { plugins, total: plugins.length }, 'installed plugins');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /** GET /api/v1/plugins/catalog — доступные коннекторы с отметкой, установлен ли. */
+  async pluginCatalog(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const plugins = await new PluginService(db, userId).catalog();
+      return this.success(c, { plugins, total: plugins.length }, 'plugin catalog');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /** POST /api/v1/plugins/:identifier/install */
+  async installPlugin(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const { identifier } = this.getParams<{ identifier: string }>(c);
+      const plugin = await new PluginService(db, userId).install(identifier);
+      if (!plugin) return this.error(c, 'Plugin not found in catalog', 404);
+      return this.success(c, plugin, 'plugin installed');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /** PATCH /api/v1/plugins/:identifier — настройки подключения. */
+  async updatePluginSettings(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const { identifier } = this.getParams<{ identifier: string }>(c);
+      const { settings } = await this.getBody<{ settings: Record<string, unknown> }>(c);
+      const plugin = await new PluginService(db, userId).updateSettings(identifier, settings);
+      if (!plugin) return this.error(c, 'Plugin not installed', 404);
+      return this.success(c, plugin, 'plugin settings updated');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /** DELETE /api/v1/plugins/:identifier */
+  async uninstallPlugin(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const { identifier } = this.getParams<{ identifier: string }>(c);
+      const removed = await new PluginService(db, userId).uninstall(identifier);
+      if (!removed) return this.error(c, 'Plugin not installed', 404);
+      return this.success(c, { identifier }, 'plugin removed');
     } catch (error) {
       return this.handleError(c, error);
     }

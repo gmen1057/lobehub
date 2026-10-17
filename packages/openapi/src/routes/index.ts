@@ -7,6 +7,7 @@ import MessageTranslationsRoutes from './message-translations.route';
 import MessagesRoutes from './messages.route';
 import ModelsRoutes from './models.route';
 import PermissionsRoutes from './permissions.route';
+import PluginsRoutes from './plugins.route';
 import ProvidersRoutes from './providers.route';
 import ResponsesRoutes from './responses.route';
 import RolesRoutes from './roles.route';
@@ -23,6 +24,7 @@ export default {
   'messages': MessagesRoutes,
   'models': ModelsRoutes,
   'permissions': PermissionsRoutes,
+  'plugins': PluginsRoutes,
   'providers': ProvidersRoutes,
   'responses': ResponsesRoutes,
   'roles': RolesRoutes,
