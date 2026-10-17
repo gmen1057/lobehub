@@ -53,6 +53,8 @@ export interface TopicUpdateRequest {
 }
 
 export const TopicUpdateRequestSchema = z.object({
+  // arckep (chat-next-redesign, E1): перенос переписки в другого помощника; null — «без проекта»
+  agentId: z.string().nullable().optional(),
   favorite: z.boolean().optional(),
   historySummary: z.string().optional(),
   metadata: z

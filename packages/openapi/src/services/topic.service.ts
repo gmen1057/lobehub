@@ -1,6 +1,7 @@
-import { and, count, desc, eq, ilike, isNull, notInArray } from 'drizzle-orm';
+import { INBOX_SESSION_ID } from '@lobechat/const';
+import { and, count, desc, eq, ilike, isNull, notInArray, or } from 'drizzle-orm';
 
-import { agentsToSessions, messages, topics, users } from '@/database/schemas';
+import { agents, agentsToSessions, messages, topics, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { idGenerator } from '@/database/utils/idGenerator';
 
@@ -45,24 +46,34 @@ export class TopicService extends BaseService {
       if (request.groupId) {
         conditions.push(eq(topics.groupId, request.groupId));
       } else if (request.agentId) {
-        // Reverse-lookup sessionId from agentId, then filter by sessionId
+        // arckep (chat-next-redesign, E1): темы из REST/execAgent несут agentId без sessionId
+        // (помощник без сессии), темы из интерфейса — sessionId помощника. Ищем по обоим;
+        // раньше темы нового экрана не попадали ни в один список.
         const [relation] = await this.db
           .select({ sessionId: agentsToSessions.sessionId })
           .from(agentsToSessions)
           .where(eq(agentsToSessions.agentId, request.agentId))
           .limit(1);
 
-        if (relation) {
-          conditions.push(eq(topics.sessionId, relation.sessionId));
-        } else {
-          // No session found for agentId, return empty directly
-          return { topics: [], total: 0 };
-        }
+        conditions.push(
+          relation?.sessionId
+            ? or(eq(topics.agentId, request.agentId), eq(topics.sessionId, relation.sessionId))!
+            : eq(topics.agentId, request.agentId),
+        );
       } else if (request.isInbox) {
-        // inbox: sessionId is null, groupId is null, and agentId is null
+        // inbox: без сессии и группы; agentId пуст (интерфейс) или равен помощнику по умолчанию (REST)
         conditions.push(isNull(topics.sessionId));
         conditions.push(isNull(topics.groupId));
-        conditions.push(isNull(topics.agentId));
+        const [inboxAgent] = await this.db
+          .select({ id: agents.id })
+          .from(agents)
+          .where(and(eq(agents.userId, this.userId), eq(agents.slug, INBOX_SESSION_ID)))
+          .limit(1);
+        conditions.push(
+          inboxAgent
+            ? or(isNull(topics.agentId), eq(topics.agentId, inboxAgent.id))!
+            : isNull(topics.agentId),
+        );
       }
 
       // Exclude topics with specified trigger sources
@@ -242,21 +253,22 @@ export class TopicService extends BaseService {
       const changes: Record<string, unknown> = { ...payload };
       if ('agentId' in payload) {
         if (payload.agentId) {
+          const [agent] = await this.db
+            .select({ id: agents.id })
+            .from(agents)
+            .where(and(eq(agents.id, payload.agentId), eq(agents.userId, this.userId)))
+            .limit(1);
+          if (!agent) {
+            throw this.createNotFoundError('Agent not found');
+          }
+          // Помощники из интерфейса привязаны к сессии (agentsToSessions), помощники из REST — нет:
+          // у их тем sessionId пуст, а привязка идёт по agentId.
           const [relation] = await this.db
             .select({ sessionId: agentsToSessions.sessionId })
             .from(agentsToSessions)
             .where(eq(agentsToSessions.agentId, payload.agentId))
             .limit(1);
-          if (!relation?.sessionId) {
-            throw this.createNotFoundError('Agent not found');
-          }
-          const sessionPermission = await this.resolveOperationPermission('TOPIC_CREATE', {
-            targetSessionId: relation.sessionId,
-          });
-          if (!sessionPermission.isPermitted) {
-            throw this.createAuthorizationError(sessionPermission.message || '无权更新该话题');
-          }
-          changes.sessionId = relation.sessionId;
+          changes.sessionId = relation?.sessionId ?? null;
         } else {
           changes.agentId = null;
           changes.sessionId = null;
