@@ -46,6 +46,8 @@ export const TopicCreateRequestSchema = z.object({
 });
 
 export interface TopicUpdateRequest {
+  /** arckep: перенос в другого помощника; null — «без проекта» */
+  agentId?: string | null;
   favorite?: boolean;
   historySummary?: string;
   metadata?: ChatTopicMetadata;
