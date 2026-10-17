@@ -126,6 +126,40 @@ const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
   }
 };
 
+/**
+ * arckep (17.10.2026): встроенный поиск провайдера для серверных прогонов (REST-движок студии,
+ * боты, cron). Повторяет src/helpers/getSearchConfig.ts: searchMode агента не 'off',
+ * useModelBuiltinSearch ?? true, и либо провайдер объявляет settings.searchMode, либо модель —
+ * abilities.search / settings.searchImpl. Раньше серверный контур поиск не включал вовсе, и модель
+ * уходила в «skills/runCommand» (curl), который ждёт подтверждения человеком.
+ */
+export const resolveServerEnabledSearch = async (
+  agentConfig:
+    | { chatConfig?: { searchMode?: string; useModelBuiltinSearch?: boolean } }
+    | undefined,
+  model: string | undefined,
+  provider: string | undefined,
+): Promise<boolean> => {
+  if (!model || !provider) return false;
+  const chatConfig = agentConfig?.chatConfig;
+  if ((chatConfig?.searchMode ?? 'auto') === 'off') return false;
+  if (!(chatConfig?.useModelBuiltinSearch ?? true)) return false;
+  try {
+    const bank: any = await import('model-bank');
+    const providerCard = (bank.DEFAULT_MODEL_PROVIDER_LIST ?? []).find(
+      (item: any) => item.id === provider,
+    );
+    if (providerCard?.settings?.searchMode) return true;
+    const modelCard = (bank.LOBE_DEFAULT_MODEL_LIST ?? []).find(
+      (item: any) => item.id === model && item.providerId === provider,
+    );
+    return !!(modelCard?.abilities?.search || modelCard?.settings?.searchImpl);
+  } catch {
+    // Нет справочника моделей (например, подменён в тестах) — без поиска, как раньше.
+    return false;
+  }
+};
+
 const executeToolWithRetry = async (
   execute: () => Promise<ToolExecutionResultResponse>,
   params: {
@@ -529,7 +563,16 @@ export const createRuntimeExecutors = (
 
       // Construct ChatStreamPayload
       const stream = ctx.stream ?? true;
-      const chatPayload = { messages: processedMessages, model, stream, tools };
+      // arckep: встроенный поиск модели в серверном контуре (REST-движок студии, боты, cron).
+      // Клиентский чат включает его через getSearchConfig; здесь те же правила.
+      const enabledSearch = await resolveServerEnabledSearch(agentConfig, model, provider);
+      const chatPayload = {
+        messages: processedMessages,
+        model,
+        stream,
+        tools,
+        ...(enabledSearch ? { enabledSearch: true } : {}),
+      };
 
       // Buffer: accumulate text and reasoning, send every 50ms
       const BUFFER_INTERVAL = 50;

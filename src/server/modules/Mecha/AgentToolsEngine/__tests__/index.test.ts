@@ -4,6 +4,8 @@ import { KnowledgeBaseManifest } from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
+import { SkillStoreManifest } from '@lobechat/builtin-tool-skill-store';
+import { SkillsManifest } from '@lobechat/builtin-tool-skills';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { builtinTools } from '@lobechat/builtin-tools';
 import { ToolsEngine } from '@lobechat/context-engine';
@@ -170,6 +172,34 @@ describe('createServerAgentToolsEngine', () => {
 
     // LocalSystem should be filtered out (disabled) on server
     expect(result.enabledToolIds).not.toContain(LocalSystemManifest.identifier);
+  });
+
+  it('arckep: keeps skills and skill store always-on unless headless mode is set', () => {
+    const context = createMockContext();
+    const build = () =>
+      createServerAgentToolsEngine(context, {
+        agentConfig: { plugins: [] },
+        model: 'gpt-4',
+        provider: 'openai',
+      }).generateToolsDetailed({ toolIds: [], model: 'gpt-4', provider: 'openai' });
+
+    const before = process.env.ARCKEP_HEADLESS_TOOLS;
+    try {
+      delete process.env.ARCKEP_HEADLESS_TOOLS;
+      const regular = build();
+      expect(regular.enabledToolIds).toContain(SkillsManifest.identifier);
+      expect(regular.enabledToolIds).toContain(SkillStoreManifest.identifier);
+
+      process.env.ARCKEP_HEADLESS_TOOLS = '1';
+      const headless = build();
+      expect(headless.enabledToolIds).not.toContain(SkillsManifest.identifier);
+      expect(headless.enabledToolIds).not.toContain(SkillStoreManifest.identifier);
+      // the activator stays: it loads heavy tools on demand (arckepLazyToolIds)
+      expect(headless.enabledToolIds).toContain('lobe-activator');
+    } finally {
+      if (before === undefined) delete process.env.ARCKEP_HEADLESS_TOOLS;
+      else process.env.ARCKEP_HEADLESS_TOOLS = before;
+    }
   });
 
   it('should not enable WebBrowsing when search mode is on (arckep: no app search backend)', () => {

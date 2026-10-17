@@ -32,6 +32,19 @@ import type {
  */
 export class ResponsesService extends BaseService {
   /**
+   * arckep (17.10.2026): причина незавершённого ответа для REST-клиента. Движок останавливается
+   * без результата, когда инструмент должен выполнить клиент (client_tool_execution) или нужно
+   * подтверждение человеком (waiting_for_human); в режиме без интерфейса подтвердить некому,
+   * и раньше это выглядело как completed с пустым текстом.
+   */
+  private resolveIncompleteReason(state: AgentState | undefined): string | undefined {
+    if (!state) return undefined;
+    if (state.status === 'interrupted') return state.interruption?.reason ?? 'interrupted';
+    if (state.status === 'waiting_for_human') return 'human_approval_required';
+    return undefined;
+  }
+
+  /**
    * Extract hosted builtin tool identifiers from tools array
    */
   private extractHostedToolIds(tools?: Tool[] | null): string[] {
@@ -364,15 +377,14 @@ export class ResponsesService extends BaseService {
       const { output, outputText } = this.extractOutputItems(finalState, responseId);
       const usage = this.extractUsage(finalState);
 
-      const isClientToolInterrupt =
-        finalState.status === 'interrupted' &&
-        finalState.interruption?.reason === 'client_tool_execution';
+      const incompleteReason = this.resolveIncompleteReason(finalState);
+      const isClientToolInterrupt = !!incompleteReason;
 
       return this.buildResponseObject({
         completedAt: isClientToolInterrupt ? null : Math.floor(Date.now() / 1000),
         createdAt,
         id: responseId,
-        incompleteDetails: isClientToolInterrupt ? { reason: 'client_tool_execution' } : undefined,
+        incompleteDetails: incompleteReason ? { reason: incompleteReason } : undefined,
         output,
         outputText,
         params,
@@ -796,16 +808,15 @@ export class ResponsesService extends BaseService {
         : { output: [], outputText: accumulatedText };
 
       // Determine if agent was interrupted for client tool execution
-      const isClientToolInterrupt =
-        finalState?.status === 'interrupted' &&
-        finalState?.interruption?.reason === 'client_tool_execution';
+      const incompleteReason = this.resolveIncompleteReason(finalState);
+      const isClientToolInterrupt = !!incompleteReason;
 
       if (isClientToolInterrupt) {
         yield {
           response: {
             ...response,
             completed_at: null,
-            incomplete_details: { reason: 'client_tool_execution' },
+            incomplete_details: { reason: incompleteReason },
             output: fullOutput.output,
             output_text: fullOutput.outputText || accumulatedText,
             status: 'incomplete' as any,

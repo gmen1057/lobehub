@@ -16,6 +16,8 @@ import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MemoryManifest } from '@lobechat/builtin-tool-memory';
 import { MessageManifest } from '@lobechat/builtin-tool-message';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
+import { SkillStoreManifest } from '@lobechat/builtin-tool-skill-store';
+import { SkillsManifest } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { alwaysOnToolIds, builtinTools, defaultToolIds } from '@lobechat/builtin-tools';
@@ -88,6 +90,18 @@ export const createServerToolsEngine = (
  * @param params - Agent config and model info
  * @returns ToolsEngine instance configured for the agent
  */
+/**
+ * arckep (17.10.2026): движок без интерфейса (ARCKEP_HEADLESS_TOOLS=1 в .env копии) не навязывает
+ * помощникам «skills» и магазин навыков: их команды ждут подтверждения человеком или песочницы,
+ * которых в REST-режиме нет, и модель уходит в них вместо встроенного поиска. Активатор остаётся:
+ * он подгружает тяжёлые инструменты по требованию (arckepLazyToolIds).
+ */
+const ARCKEP_HEADLESS_HIDDEN_TOOL_IDS = new Set<string>([
+  SkillsManifest.identifier,
+  SkillStoreManifest.identifier,
+]);
+export const isArckepHeadlessTools = () => process.env.ARCKEP_HEADLESS_TOOLS === '1';
+
 export const createServerAgentToolsEngine = (
   context: ServerAgentToolsContext,
   params: ServerCreateAgentToolsEngineParams,
@@ -136,7 +150,12 @@ export const createServerAgentToolsEngine = (
         // User-selected plugins
         ...Object.fromEntries((agentConfig.plugins ?? []).map((id) => [id, true])),
         // Always-on builtin tools
-        ...Object.fromEntries(alwaysOnToolIds.map((id) => [id, true])),
+        ...Object.fromEntries(
+          alwaysOnToolIds.map((id) => [
+            id,
+            !(isArckepHeadlessTools() && ARCKEP_HEADLESS_HIDDEN_TOOL_IDS.has(id)),
+          ]),
+        ),
         // System-level rules (may override user selection for specific tools)
         [CloudSandboxManifest.identifier]: runtimeMode === 'cloud',
         [KnowledgeBaseManifest.identifier]: true,

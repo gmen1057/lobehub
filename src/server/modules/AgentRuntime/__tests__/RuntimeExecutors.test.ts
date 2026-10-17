@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
-import { createRuntimeExecutors, type RuntimeExecutorContext } from '../RuntimeExecutors';
+import { createRuntimeExecutors, type RuntimeExecutorContext, resolveServerEnabledSearch } from '../RuntimeExecutors';
 
 const mockCreateCompressionGroup = vi.fn();
 const mockFinalizeCompression = vi.fn();
@@ -46,7 +46,18 @@ vi.mock('@lobechat/model-runtime', () => ({
 
 // model-bank is a TypeScript source file that cannot be dynamically imported in vitest
 vi.mock('model-bank', () => ({
+  DEFAULT_MODEL_PROVIDER_LIST: [
+    { id: 'google', settings: { searchMode: 'params' } },
+    { id: 'openai', settings: { searchMode: 'params' } },
+    { id: 'openrouter', settings: { searchMode: 'params' } },
+    { id: 'test-provider', settings: {} },
+  ],
   LOBE_DEFAULT_MODEL_LIST: [
+    {
+      abilities: { functionCall: true, search: true, vision: true },
+      id: 'gemini-3.6-flash',
+      providerId: 'google',
+    },
     {
       abilities: { functionCall: true, video: false, vision: true },
       id: 'gpt-4',
@@ -3252,5 +3263,30 @@ describe('RuntimeExecutors', () => {
         vi.useRealTimers();
       }
     });
+  });
+});
+
+describe('resolveServerEnabledSearch (arckep: native search for server runs)', () => {
+  it('is off when the agent search mode is off or builtin search is declined', async () => {
+    expect(
+      await resolveServerEnabledSearch({ chatConfig: { searchMode: 'off' } }, 'gemini-3.6-flash', 'google'),
+    ).toBe(false);
+    expect(
+      await resolveServerEnabledSearch(
+        { chatConfig: { useModelBuiltinSearch: false } },
+        'gemini-3.6-flash',
+        'google',
+      ),
+    ).toBe(false);
+    expect(await resolveServerEnabledSearch(undefined, undefined, 'google')).toBe(false);
+  });
+
+  it('is on for providers with native search (google, openai, openrouter) by default', async () => {
+    expect(await resolveServerEnabledSearch(undefined, 'gemini-3.6-flash', 'google')).toBe(true);
+    expect(await resolveServerEnabledSearch({ chatConfig: {} }, 'openrouter/auto', 'openrouter')).toBe(true);
+  });
+
+  it('is off for a provider and model without native search', async () => {
+    expect(await resolveServerEnabledSearch(undefined, 'no-such-model', 'no-such-provider')).toBe(false);
   });
 });
