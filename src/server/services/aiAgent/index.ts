@@ -210,13 +210,18 @@ export class AiAgentService {
    * серверный путь раньше не разбирал, и документы до модели не доходили. Ошибка разбора не
    * останавливает отправку — файл просто уйдёт без текста, как раньше.
    */
-  private async parseDocumentQuietly(fileId: string, mimeType: string | undefined): Promise<void> {
-    if (mimeType && isChunkingUnsupported(mimeType)) return;
+  private async parseDocumentQuietly(
+    fileId: string,
+    mimeType: string | undefined,
+  ): Promise<string | undefined> {
+    if (mimeType && isChunkingUnsupported(mimeType)) return undefined;
     try {
-      await new DocumentService(this.db, this.userId).parseFile(fileId);
-      log('execAgent: parsed document %s', fileId);
+      const document = await new DocumentService(this.db, this.userId).parseFile(fileId);
+      log('execAgent: parsed document %s (%d chars)', fileId, document?.content?.length ?? 0);
+      return document?.content ?? undefined;
     } catch (error) {
       log('execAgent: failed to parse document %s: %O', fileId, error);
+      return undefined;
     }
   }
 
@@ -889,10 +894,23 @@ export class AiAgentService {
     // 12. Upload external files to S3 and collect file IDs
     let fileIds: string[] | undefined;
     let imageList: Array<{ alt: string; id: string; url: string }> | undefined;
+    // arckep (chat-next-redesign, E1): документы текущего сообщения с текстом — для MessageContent
+    // (история берёт их из базы через documents, а текущее сообщение собирается здесь в памяти)
+    let fileList:
+      | Array<{
+          content?: string;
+          fileType: string;
+          id: string;
+          name: string;
+          size: number;
+          url: string;
+        }>
+      | undefined;
 
     if (files && files.length > 0) {
       fileIds = [];
       imageList = [];
+      fileList = [];
 
       for (const file of files) {
         await throwIfExecutionAborted('file upload');
@@ -907,7 +925,14 @@ export class AiAgentService {
                 imageList.push({ alt: file.name || 'image', id: file.fileId, url: file.url });
               }
             } else {
-              await this.parseDocumentQuietly(file.fileId, mimeType);
+              fileList.push({
+                content: await this.parseDocumentQuietly(file.fileId, mimeType),
+                fileType: mimeType ?? 'application/octet-stream',
+                id: file.fileId,
+                name: file.name || 'file',
+                size: file.size ?? 0,
+                url: file.url ?? '',
+              });
             }
             continue;
           }
@@ -922,7 +947,14 @@ export class AiAgentService {
               url: result.resolvedUrl,
             });
           } else {
-            await this.parseDocumentQuietly(result.fileId, mimeType);
+            fileList.push({
+              content: await this.parseDocumentQuietly(result.fileId, mimeType),
+              fileType: mimeType ?? 'application/octet-stream',
+              id: result.fileId,
+              name: file.name || 'file',
+              size: file.size ?? 0,
+              url: result.resolvedUrl || file.url || '',
+            });
           }
         } catch (error) {
           log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
@@ -933,6 +965,7 @@ export class AiAgentService {
         log('execAgent: uploaded %d files to S3', fileIds.length);
       }
       if (imageList.length === 0) imageList = undefined;
+      if (fileList.length === 0) fileList = undefined;
     }
 
     await throwIfExecutionAborted('message creation');
@@ -969,7 +1002,7 @@ export class AiAgentService {
     assistantMessageRef.current = assistantMessageRecord.id;
 
     // Create user message object for processing (include imageList for vision models)
-    const userMessage = { content: prompt, imageList, role: 'user' as const };
+    const userMessage = { content: prompt, fileList, imageList, role: 'user' as const };
 
     // Combine history messages with user message
     const allMessages = resume ? historyMessages : [...historyMessages, userMessage];

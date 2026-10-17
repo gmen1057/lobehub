@@ -569,6 +569,7 @@ export const createRuntimeExecutors = (
       // arckep (chat-next-redesign, E1): температура помощника и параметры рассуждений — как в
       // браузерном чате; раньше серверный вызов их не передавал вовсе.
       const modelParams = await resolveServerModelParams(agentConfig, model, provider);
+      log(`[${operationLogId}] model params: %o`, modelParams);
       const chatPayload = {
         ...modelParams,
         messages: processedMessages,

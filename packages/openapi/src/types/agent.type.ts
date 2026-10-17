@@ -27,7 +27,8 @@ export const CreateAgentRequestSchema = z.object({
   avatar: z.string().nullish(),
   chatConfig: z
     .object({
-      autoCreateTopicThreshold: z.number(),
+      // arckep: необязательно — иначе частичный PATCH chatConfig (например, только searchMode) падал на валидации
+      autoCreateTopicThreshold: z.number().nullish(),
       disableContextCaching: z.boolean().nullish(),
       displayMode: z.enum(['chat', 'docs']).nullish(),
       enableAutoCreateTopic: z.boolean().nullish(),

@@ -157,7 +157,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
       operationId: 'op-123',
       success: true,
     });
-    mockParseFile.mockResolvedValue({ id: 'doc-1' });
+    mockParseFile.mockResolvedValue({ content: 'Kod proverki: ARCKEP-7731', id: 'doc-1' });
     mockGetAgentConfig.mockResolvedValue(agentConfig());
     service = new AiAgentService({} as any, userId);
   });
@@ -233,9 +233,22 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(mockParseFile).toHaveBeenCalledTimes(1);
     expect(mockParseFile).toHaveBeenCalledWith('file-pdf');
 
+    // текст документа попадает в fileList текущего сообщения (история берёт его из базы)
+    const { initialMessages } = mockCreateOperation.mock.calls[0][0];
+    const current = initialMessages.at(-1);
+    expect(current.fileList).toEqual([
+      {
+        content: 'Kod proverki: ARCKEP-7731',
+        fileType: 'application/pdf',
+        id: 'file-pdf',
+        name: 'договор.pdf',
+        size: 0,
+        url: 'https://s3/doc.pdf',
+      },
+    ]);
+
     const userMessage = mockMessageCreate.mock.calls.find((call) => call[0].role === 'user')![0];
     expect(userMessage.files).toEqual(['file-pdf', 'file-png']);
-    const { initialMessages } = mockCreateOperation.mock.calls[0][0];
     const withImages = (initialMessages ?? []).find((m: any) => m.imageList?.length);
     expect(withImages?.imageList).toEqual([
       { alt: 'фото.png', id: 'file-png', url: 'https://s3/photo.png' },
