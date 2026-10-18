@@ -9,7 +9,11 @@ import { AgentRuntime, computeStepContext, GeneralChatAgent } from '@lobechat/ag
 import { BUILTIN_AGENT_SLUGS } from '@lobechat/builtin-agents';
 import { createPathScopeAudit } from '@lobechat/builtin-tool-local-system';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
-import { arckepLazyToolIds, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
+import {
+  ARCKEP_STUDIO_CONNECTOR_PREFIX,
+  arckepLazyToolIds,
+  manualModeExcludeToolIds,
+} from '@lobechat/builtin-tools';
 import { isDesktop } from '@lobechat/const';
 import { generateToolsFromManifest, type ToolsEngine } from '@lobechat/context-engine';
 import {
@@ -206,6 +210,8 @@ export class StreamingExecutorActionImpl {
       ? []
       : [
           ...arckepLazyToolIds,
+          // подключения студии mcp-arckep-studio-* (F6) — тоже по требованию
+          ...(mergedToolIds ?? []).filter((id) => id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX)),
           ...(pageAgentRuntime.getCurrentDocId() ? [] : [PageAgentIdentifier]),
         ];
     const pickedToolIds = new Set(selectedToolIds || []);

@@ -212,6 +212,23 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(generateArgs.excludeDefaultToolIds).toContain('arckep-studio');
   });
 
+  it('подключения студии mcp-arckep-studio-* (F6) тоже откладываются до activateTools', async () => {
+    mockGetAgentConfig.mockResolvedValue({
+      ...agentConfig(),
+      plugins: ['mcp-arckep-studio-images', 'mcp-arckep-wordstat', 'lobe-artifacts'],
+    });
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Нарисуй кота' });
+
+    const toolsEngine = vi.mocked(createServerAgentToolsEngine).mock.results[0].value;
+    const generateArgs = toolsEngine.generateToolsDetailed.mock.calls[0][0];
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
+    expect(generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-studio-images');
+    // обычные подключения (Wordstat) и артефакты — сразу, как и раньше
+    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    expect(generateArgs.toolIds).toContain('lobe-artifacts');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-wordstat');
+  });
+
   it('вложение по fileId: без повторной загрузки, документ разбирается, картинка идёт в imageList', async () => {
     await service.execAgent({
       agentId: 'agent-1',

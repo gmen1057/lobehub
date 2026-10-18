@@ -92,6 +92,17 @@ export const arckepLazyToolIds = [
   NotebookManifest.identifier,
 ];
 
+/**
+ * arckep (план chat-next-redesign, F6, 18.10.2026): подключения чата студии `mcp-arckep-studio-*`
+ * (image-studio, mcp_service/chat_connectors.py) — инструменты публичного MCP Arckep по областям
+ * (картинки, видео, Higgsfield, 3D, озвучка, презентации, другие модели, баланс). Их манифесты —
+ * до 18 тыс. символов у Higgsfield — грузятся так же по требованию: в <available_tools> одна строка на
+ * область, схемы приходят после activateTools. Заменяют встроенный arckep-studio.
+ */
+export const ARCKEP_STUDIO_CONNECTOR_PREFIX = 'mcp-arckep-studio-';
+export const isArckepLazyToolId = (id: string): boolean =>
+  arckepLazyToolIds.includes(id) || id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX);
+
 export const builtinTools: LobeBuiltinTool[] = [
   {
     discoverable: false,

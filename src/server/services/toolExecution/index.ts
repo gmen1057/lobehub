@@ -1,3 +1,4 @@
+import { ARCKEP_STUDIO_CONNECTOR_PREFIX } from '@lobechat/builtin-tools';
 import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
@@ -21,6 +22,12 @@ import {
 } from './types';
 
 const log = debug('lobe-server:tool-execution-service');
+
+/**
+ * Куда ходят подключения студии mcp-arckep-studio-* (F6): публичный MCP Arckep на этой же машине
+ * (служба image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения.
+ */
+const ARCKEP_STUDIO_MCP_URL = process.env.ARCKEP_STUDIO_MCP_URL || 'http://127.0.0.1:8422/mcp';
 
 interface ToolExecutionServiceDeps {
   builtinToolsExecutor: BuiltinToolsExecutor;
@@ -165,46 +172,69 @@ export class ToolExecutionService {
     // Только сетевые подключения: для stdio настройки человека стали бы окружением подпроцесса на
     // сервере (LD_PRELOAD, NODE_OPTIONS, PATH…) — этого не делаем, у студии все подключения по http.
     if (mcpParams?.type !== 'http' && mcpParams?.type !== 'sse') return mcpParams;
+    // Подключения студии mcp-arckep-studio-* (план chat-next-redesign, F6; решение владельца 18.10.2026 —
+    // без ключей у людей): доверенный путь к MCP Arckep. Вместо ключа человека — служебный токен студии
+    // (ARCKEP_INTERNAL_TOKEN, иначе LOBECHAT_BACKEND_KEY = INTERNAL_API_KEY студии) и номер человека;
+    // API работает от его имени по скрытому ключу «Чат Arckep». Настройки такого подключения не читаются:
+    // человеку в нём нечего заполнять, а чужие заголовки в доверенный запрос не нужны.
+    const trusted = identifier.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX);
+    const settings: Record<string, string> = {};
+    let arckepUserId: number | null = null;
     try {
-      const plugin = await new PluginModel(context.serverDB, context.userId).findById(identifier);
-      const raw = (plugin?.settings ?? {}) as Record<string, unknown>;
-      const settings: Record<string, string> = {};
-      for (const [key, value] of Object.entries(raw)) {
-        // Заголовки шлюза X-MCP-*: имя — только латиница, цифры, дефис и подчёркивание; значение — одна
-        // строка без управляющих символов; служебные заголовки транспорта не переопределяются.
-        if (!/^X-[\w-]{1,60}$/i.test(key)) continue;
-        if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
-        if (value === undefined || value === null || value === '') continue;
-        const text = String(value)
-          .replaceAll(/[\r\n\0]/g, '')
-          .slice(0, 2000);
-        if (text) settings[key] = text;
+      if (!trusted) {
+        const plugin = await new PluginModel(context.serverDB, context.userId).findById(identifier);
+        const raw = (plugin?.settings ?? {}) as Record<string, unknown>;
+        for (const [key, value] of Object.entries(raw)) {
+          // Заголовки шлюза X-MCP-*: имя — только латиница, цифры, дефис и подчёркивание; значение — одна
+          // строка без управляющих символов; служебные заголовки транспорта не переопределяются.
+          if (!/^X-[\w-]{1,60}$/i.test(key)) continue;
+          if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
+          if (value === undefined || value === null || value === '') continue;
+          const text = String(value)
+            .replaceAll(/[\r\n\0]/g, '')
+            .slice(0, 2000);
+          if (text) settings[key] = text;
+        }
       }
-      let arckepUserId: number | null = null;
       try {
         const { resolveArckepUserId } = await import('./serverRuntimes/arckepStudio');
         arckepUserId = await resolveArckepUserId(context.serverDB, context.userId);
       } catch {
         arckepUserId = null; // аккаунт не из студии — шлюз получит запрос без номера человека
       }
-      log(
-        'MCP connection %s: %d setting(s), arckep user %s',
-        identifier,
-        Object.keys(settings).length,
-        arckepUserId ?? '-',
-      );
-      return {
-        ...mcpParams,
-        headers: {
-          ...mcpParams.headers,
-          ...settings,
-          ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
-        },
-      };
     } catch (error) {
       log('MCP connection settings lookup failed for %s: %O', identifier, error);
-      return mcpParams;
+      if (!trusted) return mcpParams;
     }
+    if (trusted) {
+      const token = process.env.ARCKEP_INTERNAL_TOKEN || process.env.LOBECHAT_BACKEND_KEY;
+      // Ошибка уходит модели текстом (executeMCPTool), а не в API без доступа: там был бы голый 401.
+      if (!token) throw new Error('Подключение студии не настроено: нет служебного токена');
+      if (!arckepUserId) throw new Error('Подключение студии доступно только аккаунтам студии Arckep');
+      log('MCP connection %s: trusted, arckep user %s', identifier, arckepUserId);
+      // Адрес и заголовки — только серверные: манифест (в том числе свой плагин человека с таким же
+      // префиксом) не решает, куда уйдёт служебный токен. Номер человека тоже выведен сервером, так что
+      // чужой манифест с этим префиксом даёт ровно то же, что подключение из каталога.
+      return {
+        headers: { 'Authorization': `Bearer ${token}`, 'X-Arckep-User': String(arckepUserId) },
+        type: 'http',
+        url: ARCKEP_STUDIO_MCP_URL,
+      };
+    }
+    log(
+      'MCP connection %s: %d setting(s), arckep user %s',
+      identifier,
+      Object.keys(settings).length,
+      arckepUserId ?? '-',
+    );
+    return {
+      ...mcpParams,
+      headers: {
+        ...mcpParams.headers,
+        ...settings,
+        ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
+      },
+    };
   }
 
   private async executeMCPTool(

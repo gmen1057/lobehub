@@ -10,7 +10,12 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
-import { arckepLazyToolIds, builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
+import {
+  ARCKEP_STUDIO_CONNECTOR_PREFIX,
+  arckepLazyToolIds,
+  builtinTools,
+  manualModeExcludeToolIds,
+} from '@lobechat/builtin-tools';
 import { LOADING_FLAT } from '@lobechat/const';
 import type { LobeToolManifest, ToolSource } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
@@ -650,11 +655,15 @@ export class AiAgentService {
         ? [PageAgentIdentifier]
         : [PageAgentIdentifier, MessageToolIdentifier, CronManifest.identifier];
       const pickedToolIds = new Set(additionalPluginIds || []);
+      // Подключения студии mcp-arckep-studio-* (F6) — по требованию, как и встроенные тяжёлые инструменты.
       const lazyToolIds = keepsOwnToolSet
         ? []
-        : arckepLazyToolIds.filter(
-            (id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id),
-          );
+        : [
+            ...arckepLazyToolIds,
+            ...(agentConfig.plugins || []).filter((id) =>
+              id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX),
+            ),
+          ].filter((id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id));
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),

@@ -47,7 +47,7 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
 // descriptions / UI hints — no need to repeat them in every system message.
 const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — сохрани через lobe-memory.
 
-Картинки в этом чате и для сайтов: если пользователь просит нарисовать / сгенерировать / отредактировать изображение — подключи инструмент arckep-studio (activateTools), сначала estimateImage, затем createImage с подробным промптом на английском; результат попадает в его «Историю» на arckep.ru. У «Мои сайты» своего генератора картинок нет — фото для сайта тоже делает arckep-studio. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги. Студия arckep.ru/studio — только если нужны пакетная генерация, видео, avatar, multi-model UI.
+Картинки, видео, 3D, озвучка и презентации делаются прямо здесь подключениями «Студия» (mcp-arckep-studio-images, -video, -higgsfield, -3d, -speech, -presentations): подключи нужное через activateTools, сначала estimate_* и цена, затем create_* с подробным промптом на английском; результат появляется в чате карточкой и в «Истории» на arckep.ru, статус опрашивать не нужно. У «Мои сайты» своего генератора картинок нет — фото для сайта тоже делает mcp-arckep-studio-images. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги.
 
 Файлы на перевод: не лей книгу в чат и не ищи навыки для PDF. Переведи в markdown (документы агента: один файл или 20–30 страниц на документ), в чате только короткий статус. Когда markdown готов — спроси, нужен ли PDF или другой формат, и тогда собери файл.`;
 
@@ -71,9 +71,10 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
   // artifacts ~2.2K per request — not ~1.5K. Memory and arckep-sites are therefore in
   // arckepLazyToolIds (@lobechat/builtin-tools): the web chat lists them in <available_tools>
   // and the model activates them on demand; memory recall is injected either way.
-  // arckep-studio («Студия Arckep»: картинки, озвучка) is lazy too (arckepLazyToolIds): listed in
-  // <available_tools>, the model activates it on demand.
-  plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites', 'arckep-studio'],
+  // Подключения студии mcp-arckep-studio-* (F6, 18.10.2026) заменили встроенный arckep-studio; они
+  // устанавливаются из каталога (user_installed_plugins) и тоже грузятся по требованию. В умолчаниях
+  // помощника их нет: новый помощник получает их через installCatalog / defaultInboxPlugins (openapi).
+  plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
   provider: DEFAULT_PROVIDER,
   systemRole: ARCKEP_DEFAULT_SYSTEM_ROLE,
   tts: DEFAUTT_AGENT_TTS_CONFIG,

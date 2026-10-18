@@ -70,7 +70,23 @@ export class ArckepController extends BaseController {
   /** Подключения по умолчанию для нового помощника «Arckep Помощник» (ARCKEP_DEFAULT_INBOX_PLUGINS). */
   static defaultInboxPlugins(): string[] {
     const raw = process.env.ARCKEP_DEFAULT_INBOX_PLUGINS;
-    const list = (raw ?? 'lobe-user-memory,lobe-artifacts,arckep-studio,mcp-arckep-wordstat')
+    // Подключения студии mcp-arckep-studio-* (F6) — вместо встроенного arckep-studio; грузятся по требованию.
+    const list = (
+      raw ??
+      [
+        'lobe-user-memory',
+        'lobe-artifacts',
+        'mcp-arckep-wordstat',
+        'mcp-arckep-studio-images',
+        'mcp-arckep-studio-video',
+        'mcp-arckep-studio-higgsfield',
+        'mcp-arckep-studio-3d',
+        'mcp-arckep-studio-speech',
+        'mcp-arckep-studio-presentations',
+        'mcp-arckep-studio-models',
+        'mcp-arckep-studio-account',
+      ].join(',')
+    )
       .split(',')
       .map((item) => item.trim())
       .filter(Boolean);
