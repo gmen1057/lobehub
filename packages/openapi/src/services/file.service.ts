@@ -690,6 +690,23 @@ export class FileUploadService extends BaseService {
               name: existingUserFile.name,
             });
 
+            // arckep (план chat-next-redesign, хвост F2): тот же файл загружают в базу знаний повторно —
+            // раньше запись возвращалась без привязки, и файл в базе молча не появлялся.
+            if (options.knowledgeBaseId) {
+              await this.db
+                .insert(knowledgeBaseFiles)
+                .values({
+                  fileId: existingUserFile.id,
+                  knowledgeBaseId: options.knowledgeBaseId,
+                  userId: this.userId,
+                })
+                .onConflictDoNothing();
+              this.log('info', 'Existing public file linked to knowledge base', {
+                fileId: existingUserFile.id,
+                knowledgeBaseId: options.knowledgeBaseId,
+              });
+            }
+
             // If sessionId is provided (supports agentId resolution), create file-session association
             if (resolvedSessionId) {
               await this.createFileSessionRelation(existingUserFile.id, resolvedSessionId);
