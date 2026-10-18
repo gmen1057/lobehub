@@ -77,37 +77,6 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Generate a real image via ArcKep (Nano Banana 2 / Pro) and return a permanent URL. USE THIS whenever the user asks to draw, generate, create, or edit an image in chat — avatars, product shots, covers, illustrations, social posts — NOT only for landing pages. Do NOT switch the chat model to Nano Banana / gemini-*-image; call this tool instead (fixed per-image price, no full chat history billed). For landing HTML, insert the URL into <img src> or CSS. Prefer quality="standard" (Banana 2); quality="high" (Banana Pro) only when the user asks for premium fidelity or hero/main product. Charges RUB; always tell the user the cost from the tool result.',
-      name: ArckepSitesApiName.generateImage,
-      parameters: {
-        additionalProperties: false,
-        properties: {
-          aspect_ratio: {
-            default: 'landscape',
-            description:
-              'Image aspect ratio. landscape (default, 16:9) for hero/banner; portrait (9:16) for mobile/stories/profile; square (1:1) for avatars/logos/icons.',
-            enum: ['landscape', 'portrait', 'square'],
-            type: 'string',
-          },
-          prompt: {
-            description:
-              'Vivid, detailed image description in English. Include subject, style, lighting, mood. Example: "modern SPA reception desk with soft lighting, minimalist interior, photorealistic".',
-            type: 'string',
-          },
-          quality: {
-            default: 'standard',
-            description:
-              'standard (default) — faster, cheaper (Nano Banana 2); high — premium fidelity (Nano Banana Pro), only when user asks premium or for hero/product.',
-            enum: ['high', 'standard'],
-            type: 'string',
-          },
-        },
-        required: ['prompt'],
-        type: 'object',
-      },
-    },
-    {
-      description:
         "Get a design brief (art direction) BEFORE building a NEW landing page: palette, fonts, layout structure, imagery direction, style-specific bans. Free, no charge. Pass business — a short description of what the site is for («кофейня», «репетитор по математике») — for a better style match. Pass style_id ONLY when the user already picked a style (from the /sites picker or from the alternatives you offered). The server guarantees the style differs from the user's recent sites. Do NOT call it for edits of an existing site.",
       name: ArckepSitesApiName.getDesignBrief,
       parameters: {
@@ -151,6 +120,8 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
   identifier: ArckepSitesIdentifier,
   meta: {
     avatar: '🌐',
+    description:
+      'Мои сайты: создать, править и опубликовать сайт пользователя (страницы, стили, публикация). Картинки — только внутри собираемого сайта; картинки по просьбе в чате делает «Студия Arckep».',
     title: 'Мои сайты (ArcKep)',
   },
   systemRole: systemPrompt,

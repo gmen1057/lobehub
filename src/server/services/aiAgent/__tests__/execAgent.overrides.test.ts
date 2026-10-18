@@ -206,7 +206,10 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     const generateArgs = toolsEngine.generateToolsDetailed.mock.calls[0][0];
     expect(generateArgs.toolIds).not.toContain('arckep-sites');
     expect(generateArgs.toolIds).not.toContain('lobe-artifacts');
-    expect(generateArgs.toolIds).toContain('arckep-studio');
+    // «Студия» — тяжёлый инструмент (arckepLazyToolIds): в первый шаг не грузится, а перечисляется для
+    // подключения по требованию; её не выкинули, а отложили.
+    expect(generateArgs.toolIds).not.toContain('arckep-studio');
+    expect(generateArgs.excludeDefaultToolIds).toContain('arckep-studio');
   });
 
   it('вложение по fileId: без повторной загрузки, документ разбирается, картинка идёт в imageList', async () => {

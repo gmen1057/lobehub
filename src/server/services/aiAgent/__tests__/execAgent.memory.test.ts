@@ -50,6 +50,18 @@ const createTestContext = () => ({
 const hasMemoryTools = (tools: Array<{ name?: string; function?: { name: string } }>) =>
   tools?.some((t) => (t.name || t.function?.name)?.includes('lobe-user-memory'));
 
+/**
+ * arckep (18.10.2026): инструмент памяти подгружается по требованию (arckepLazyToolIds) — при включённой
+ * памяти он не в tools первого шага, а в списке <available_tools> системной части; при выключенной —
+ * нигде.
+ */
+const memoryOffered = (args: { tools?: any[]; instructions?: unknown; input?: unknown }) => {
+  if (hasMemoryTools(args.tools ?? [])) return true;
+  const text = JSON.stringify([args.instructions ?? '', args.input ?? '']);
+  // строка списка: <tool identifier="lobe-user-memory" …> (packages/prompts/src/prompts/toolDiscovery)
+  return /<tool identifier=\\"lobe-user-memory\\"/.test(text);
+};
+
 const setUserMemorySettings = async (enabled: boolean) => {
   // Try update first, then insert if no row exists
   const result = await serverDB
@@ -104,7 +116,7 @@ describe('execAgent - memory enabled priority', () => {
     await waitForOperationComplete(inMemoryAgentStateManager, result.operationId);
 
     const callArgs = mockResponsesCreate.mock.calls[0][0] as { tools?: any[] };
-    expect(hasMemoryTools(callArgs.tools ?? [])).toBe(false);
+    expect(memoryOffered(callArgs)).toBe(false);
   });
 
   it('should enable memory tools when agent config sets memory.enabled = true, even if user disables it', async () => {
@@ -116,7 +128,7 @@ describe('execAgent - memory enabled priority', () => {
     await waitForOperationComplete(inMemoryAgentStateManager, result.operationId);
 
     const callArgs = mockResponsesCreate.mock.calls[0][0] as { tools?: any[] };
-    expect(hasMemoryTools(callArgs.tools ?? [])).toBe(true);
+    expect(memoryOffered(callArgs)).toBe(true);
   });
 
   it('should fallback to user setting when agent has no memory config', async () => {
@@ -128,7 +140,7 @@ describe('execAgent - memory enabled priority', () => {
     await waitForOperationComplete(inMemoryAgentStateManager, result.operationId);
 
     const callArgs = mockResponsesCreate.mock.calls[0][0] as { tools?: any[] };
-    expect(hasMemoryTools(callArgs.tools ?? [])).toBe(false);
+    expect(memoryOffered(callArgs)).toBe(false);
   });
 
   it('should enable memory by default when neither agent nor user configures it', async () => {
@@ -139,6 +151,6 @@ describe('execAgent - memory enabled priority', () => {
     await waitForOperationComplete(inMemoryAgentStateManager, result.operationId);
 
     const callArgs = mockResponsesCreate.mock.calls[0][0] as { tools?: any[] };
-    expect(hasMemoryTools(callArgs.tools ?? [])).toBe(true);
+    expect(memoryOffered(callArgs)).toBe(true);
   });
 });

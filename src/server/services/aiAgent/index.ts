@@ -1,14 +1,16 @@
 import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
+import { CronManifest } from '@lobechat/builtin-tool-cron';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MessageToolIdentifier } from '@lobechat/builtin-tool-message';
+import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
 import {
   type DeviceAttachment,
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
-import { builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
+import { arckepLazyToolIds, builtinTools, manualModeExcludeToolIds } from '@lobechat/builtin-tools';
 import { LOADING_FLAT } from '@lobechat/const';
 import type { LobeToolManifest, ToolSource } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
@@ -631,32 +633,73 @@ export class AiAgentService {
       });
 
       // 5f. Generate tools and manifest map
+      //
+      // arckep (план chat-next-redesign, F5, 18.10.2026): в серверном пути, как и в браузерном чате
+      // (streamingExecutor.ts, arckepLazyToolIds), тяжёлые инструменты не грузятся с первого шага —
+      // они только перечислены в <available_tools>, и модель подключает их activateTools (разбор
+      // docs/external/chat-next-tools-review-2026-10-18.md: 28 тыс. токенов описаний на каждом шаге).
+      // Инструменты, выбранные на сообщение (additionalPluginIds), включаются сразу. lobe-page-agent без
+      // открытой страницы бесполезен — в серверном пути его нет; lobe-message и lobe-cron — только у ботов.
+      // Боты и встроенные помощники (кроме inbox) сохраняют свой набор, как в браузере.
+      const keepsOwnToolSet =
+        isBotConversation ||
+        (Boolean(agentConfig.slug) &&
+          (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(agentConfig.slug!) &&
+          agentConfig.slug !== BUILTIN_AGENT_SLUGS.inbox);
+      const restHiddenToolIds = isBotConversation
+        ? [PageAgentIdentifier]
+        : [PageAgentIdentifier, MessageToolIdentifier, CronManifest.identifier];
+      const pickedToolIds = new Set(additionalPluginIds || []);
+      const lazyToolIds = keepsOwnToolSet
+        ? []
+        : arckepLazyToolIds.filter(
+            (id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id),
+          );
+
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),
         ...(additionalPluginIds || []),
         LocalSystemManifest.identifier,
         RemoteDeviceManifest.identifier,
         ...(isBotConversation ? [MessageToolIdentifier] : []),
-      ]);
+      ]).filter((id) => !restHiddenToolIds.includes(id));
       log('execAgent: agent configured plugins: %O', pluginIds);
 
       const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
+      const eagerToolIds = pluginIds.filter((id) => !lazyToolIds.includes(id));
+      const excludeDefaultToolIds = [
+        ...(isManualMode ? manualModeExcludeToolIds : []),
+        ...lazyToolIds,
+        ...restHiddenToolIds,
+      ];
 
       toolsResult = toolsEngine.generateToolsDetailed({
-        excludeDefaultToolIds: isManualMode ? manualModeExcludeToolIds : undefined,
+        excludeDefaultToolIds: excludeDefaultToolIds.length > 0 ? excludeDefaultToolIds : undefined,
         model,
         provider,
-        toolIds: pluginIds,
+        toolIds: eagerToolIds,
       });
 
       tools = toolsResult.tools;
 
-      log('execAgent: enabled tool ids: %O', toolsResult.enabledToolIds);
+      log('execAgent: enabled tool ids: %O (lazy: %O)', toolsResult.enabledToolIds, lazyToolIds);
 
       const enabledManifests = toolsResult.enabledManifests ?? [];
       enabledManifests.forEach((manifest) => {
         toolManifestMap[manifest.identifier] = manifest;
       });
+
+      // Ленивые инструменты — в карту манифестов: активатор перечисляет их в <available_tools> и
+      // подключает по activateTools; в tools первого шага их нет. Инструмент памяти при выключенной
+      // памяти не предлагается вовсе (как и раньше, когда он не попадал в tools).
+      if (typeof toolsEngine.getPluginManifest === 'function') {
+        for (const id of lazyToolIds) {
+          if (toolManifestMap[id]) continue;
+          if (id === 'lobe-user-memory' && !globalMemoryEnabled) continue;
+          const manifest = toolsEngine.getPluginManifest(id);
+          if (manifest) toolManifestMap[id] = manifest;
+        }
+      }
 
       for (const manifest of lobehubSkillManifests) {
         toolSourceMap[manifest.identifier] = 'lobehubSkill';

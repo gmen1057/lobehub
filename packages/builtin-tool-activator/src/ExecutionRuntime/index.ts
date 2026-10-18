@@ -83,19 +83,16 @@ export class ActivatorExecutionRuntime {
       // Build response content
       const parts: string[] = [];
 
+      // arckep (18.10.2026): инструкция плагина (systemRole) и описания функций сюда не копируются —
+      // после подключения они приходят модели в системной части и схемах функций, а копия в ответе
+      // оставалась в переписке и оплачивалась в каждом следующем сообщении (16 тыс. знаков у «Мои сайты»).
       if (activatedTools.length > 0) {
-        parts.push('Successfully activated tools:');
+        parts.push(
+          'Activated tools (their functions are now available as native function calls — call them directly, their instructions are in your system context):',
+        );
         for (const manifest of manifests) {
-          parts.push(`\n## ${manifest.name} (${manifest.identifier})`);
-          if (manifest.systemRole) {
-            parts.push(manifest.systemRole);
-          }
-          if (manifest.apiDescriptions.length > 0) {
-            parts.push('\nAvailable APIs:');
-            for (const api of manifest.apiDescriptions) {
-              parts.push(`- **${api.name}**: ${api.description}`);
-            }
-          }
+          const names = manifest.apiDescriptions.map((api) => api.name).join(', ');
+          parts.push(`- ${manifest.name} (${manifest.identifier})${names ? `: ${names}` : ''}`);
         }
       }
 

@@ -28,7 +28,7 @@ const SPEECH_TIMEOUT_MS = 250_000;
  * accounts with email `user{arckepId}@arckep.ru` (see api/bridge/route.ts) —
  * that suffix is the canonical mapping. The model never supplies a user.
  */
-const resolveArckepUserId = async (serverDB: any, lobeUserId: string): Promise<number> => {
+export const resolveArckepUserId = async (serverDB: any, lobeUserId: string): Promise<number> => {
   const rows = await serverDB
     .select({ email: users.email })
     .from(users)

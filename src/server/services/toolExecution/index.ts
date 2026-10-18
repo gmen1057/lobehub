@@ -2,6 +2,7 @@ import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
 
+import { PluginModel } from '@/database/models/plugin';
 import { type CloudMCPParams, type ToolCallContent } from '@/libs/mcp';
 import { contentBlocksToString } from '@/server/services/mcp/contentProcessor';
 import {
@@ -146,6 +147,60 @@ export class ToolExecutionService {
     }
   }
 
+  /**
+   * arckep (план chat-next-redesign, F5, 18.10.2026). Браузерный путь (src/services/mcp.ts) подмешивает
+   * данные доступа подключения (settings: X-MCP-Host, пароль и т. д.) в заголовки http-подключения или
+   * окружение stdio, а серверный брал только manifest.mcpParams — из нового чата PostgreSQL, MySQL,
+   * ClickHouse, amoCRM и Bitrix24 отвечали «не указан хост». Шлюз коннекторов узнаёт человека по
+   * X-Arckep-User (как в браузерной песочнице, routers/tools/market.ts): квоты Wordstat и E2B — по людям.
+   * Значения настроек в журнал не пишутся.
+   */
+  private async withUserConnectionParams(
+    identifier: string,
+    mcpParams: any,
+    context: ToolExecutionContext,
+  ): Promise<any> {
+    if (!context.serverDB || !context.userId) return mcpParams;
+    if (mcpParams?.type !== 'http' && mcpParams?.type !== 'sse' && mcpParams?.type !== 'stdio') {
+      return mcpParams;
+    }
+    try {
+      const plugin = await new PluginModel(context.serverDB, context.userId).findById(identifier);
+      const raw = (plugin?.settings ?? {}) as Record<string, unknown>;
+      const settings: Record<string, string> = {};
+      for (const [key, value] of Object.entries(raw)) {
+        if (value !== undefined && value !== null && value !== '') settings[key] = String(value);
+      }
+      let arckepUserId: number | null = null;
+      try {
+        const { resolveArckepUserId } = await import('./serverRuntimes/arckepStudio');
+        arckepUserId = await resolveArckepUserId(context.serverDB, context.userId);
+      } catch {
+        arckepUserId = null; // аккаунт не из студии — шлюз получит запрос без номера человека
+      }
+      log(
+        'MCP connection %s: %d setting(s), arckep user %s',
+        identifier,
+        Object.keys(settings).length,
+        arckepUserId ?? '-',
+      );
+      if (mcpParams.type === 'stdio') {
+        return { ...mcpParams, env: { ...mcpParams.env, ...settings } };
+      }
+      return {
+        ...mcpParams,
+        headers: {
+          ...mcpParams.headers,
+          ...settings,
+          ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
+        },
+      };
+    } catch (error) {
+      log('MCP connection settings lookup failed for %s: %O', identifier, error);
+      return mcpParams;
+    }
+  }
+
   private async executeMCPTool(
     payload: ChatToolPayload,
     context: ToolExecutionContext,
@@ -198,7 +253,7 @@ export class ToolExecutionService {
       // For stdio/http/sse types, use standard MCP service
       const result = await this.mcpService.callTool({
         argsStr: args,
-        clientParams: mcpParams,
+        clientParams: await this.withUserConnectionParams(identifier, mcpParams, context),
         toolName: apiName,
       });
 
