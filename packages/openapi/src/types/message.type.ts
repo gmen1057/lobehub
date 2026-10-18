@@ -84,6 +84,15 @@ export const SearchMessagesByKeywordRequestSchema = z.object({
   offset: z.number().min(0).nullish().default(0),
 });
 
+/** arckep: GET /messages/search — те же поля, но из строки запроса (числа приходят строками). */
+export const MessagesSearchQuerySchema = z.object({
+  keyword: z.string().trim().min(1, '搜索关键词不能为空').max(200),
+  limit: z.coerce.number().min(1).max(100).default(20),
+  offset: z.coerce.number().min(0).default(0),
+});
+
+export type MessagesSearchQuery = z.infer<typeof MessagesSearchQuerySchema>;
+
 // ==================== Message CRUD Types ====================
 
 export interface MessagesCreateRequest {

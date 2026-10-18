@@ -13,6 +13,7 @@ import {
   MessagesCreateWithReplyRequestSchema,
   MessagesDeleteBatchRequestSchema,
   MessagesListQuerySchema,
+  MessagesSearchQuerySchema,
 } from '../types/message.type';
 
 // Messages-related routes
@@ -45,6 +46,21 @@ MessageRoutes.get(
   (c) => {
     const controller = new MessageController();
     return controller.handleGetMessages(c);
+  },
+);
+
+// GET /api/v1/messages/search - arckep: search own messages by keyword, with topic (requires message read permission)
+MessageRoutes.get(
+  '/search',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('MESSAGE_READ'),
+    'You do not have permission to read messages',
+  ),
+  zValidator('query', MessagesSearchQuerySchema),
+  (c) => {
+    const controller = new MessageController();
+    return controller.handleSearchMessages(c);
   },
 );
 

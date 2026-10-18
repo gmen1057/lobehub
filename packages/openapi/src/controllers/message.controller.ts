@@ -7,6 +7,7 @@ import type {
   MessagesCreateRequest,
   MessagesDeleteBatchRequest,
   MessagesListQuery,
+  MessagesSearchQuery,
 } from '../types/message.type';
 
 export class MessageController extends BaseController {
@@ -51,6 +52,27 @@ export class MessageController extends BaseController {
       const result = await messageService.getMessages(request);
 
       return this.success(c, result, '获取消息列表成功');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * arckep (план chat-next-redesign, поиск по содержанию чатов): сообщения пользователя по подстроке
+   * вместе с темой — для панели чата студии.
+   * GET /api/v1/messages/search
+   * Query: { keyword: string, limit?: number, offset?: number }
+   */
+  async handleSearchMessages(c: Context) {
+    try {
+      const userId = this.getUserId(c)!;
+      const request = this.getQuery<MessagesSearchQuery>(c);
+
+      const db = await this.getDatabase();
+      const messageService = new MessageService(db, userId);
+      const result = await messageService.searchMessagesByKeyword(request);
+
+      return this.success(c, result, '搜索消息成功');
     } catch (error) {
       return this.handleError(c, error);
     }
