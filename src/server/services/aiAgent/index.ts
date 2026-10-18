@@ -656,14 +656,14 @@ export class AiAgentService {
         : [PageAgentIdentifier, MessageToolIdentifier, CronManifest.identifier];
       const pickedToolIds = new Set(additionalPluginIds || []);
       // Подключения студии mcp-arckep-studio-* (F6) — по требованию, как и встроенные тяжёлые инструменты.
-      const lazyToolIds = keepsOwnToolSet
-        ? []
-        : [
-            ...arckepLazyToolIds,
-            ...(agentConfig.plugins || []).filter((id) =>
-              id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX),
-            ),
-          ].filter((id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id));
+      // Подключения студии откладываются и у ботов (F7, 19.10): их 51 инструмент сразу — это десятки тысяч
+      // токенов на каждое сообщение, а помощник по умолчанию с ботом — тот же, что и в чате студии.
+      const studioConnectorIds = (agentConfig.plugins || []).filter((id) =>
+        id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX),
+      );
+      const lazyToolIds = (
+        keepsOwnToolSet ? studioConnectorIds : [...arckepLazyToolIds, ...studioConnectorIds]
+      ).filter((id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id));
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),

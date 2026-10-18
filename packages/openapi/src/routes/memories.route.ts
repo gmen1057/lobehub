@@ -23,6 +23,26 @@ export const MemoryDeleteQuerySchema = z.object({
   layer: z.enum(['activity', 'context', 'experience', 'identity', 'preference']),
 });
 
+export const MemorySettingsSchema = z.object({ enabled: z.boolean() });
+
+// arckep (F7): память для всего аккаунта — объявлено до '/:id', иначе «settings» прочтётся как номер записи.
+// GET /api/v1/memories/settings
+MemoriesRoutes.get('/settings', requireAuth, async (c) => {
+  const controller = new ArckepController();
+  return await controller.getMemorySettings(c);
+});
+
+// PATCH /api/v1/memories/settings  { enabled: boolean }
+MemoriesRoutes.patch(
+  '/settings',
+  requireAuth,
+  zValidator('json', MemorySettingsSchema),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.updateMemorySettings(c);
+  },
+);
+
 // GET /api/v1/memories?layer=&page=&pageSize=&q=
 MemoriesRoutes.get('/', requireAuth, zValidator('query', MemoriesListQuerySchema), async (c) => {
   const controller = new ArckepController();

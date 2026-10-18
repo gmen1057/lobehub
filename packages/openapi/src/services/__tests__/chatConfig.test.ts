@@ -27,6 +27,15 @@ describe('mergeChatConfig (arckep: PATCH поверх сохранённого)'
     ).toEqual({ historyCount: 8, searchMode: 'off' });
   });
 
+  it('память помощника (F7): правило пишется и снимается null, не трогая остальное', () => {
+    const withRule = mergeChatConfig({ searchMode: 'auto' }, { memory: { enabled: false } });
+    expect(withRule).toEqual({ memory: { enabled: false }, searchMode: 'auto' });
+    expect(mergeChatConfig(withRule, { memory: null })).toEqual({
+      memory: null,
+      searchMode: 'auto',
+    });
+  });
+
   it('явный null сбрасывает настройки целиком', () => {
     expect(mergeChatConfig({ historyCount: 8 }, null)).toBeNull();
   });

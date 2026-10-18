@@ -5,6 +5,7 @@ import type { Context } from 'hono';
 
 import { AgentModel } from '@/database/models/agent';
 import { SessionModel } from '@/database/models/session';
+import { UserModel } from '@/database/models/user';
 import {
   UserMemoryActivityModel,
   UserMemoryContextModel,
@@ -215,6 +216,40 @@ export class ArckepController extends BaseController {
       });
 
       return this.success(c, result, 'memories');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * GET /api/v1/memories/settings — память между чатами для всего аккаунта (F7, 19.10).
+   * Это `userSettings.memory.enabled` движка: его читает execAgent, когда у помощника нет своего правила;
+   * не задано — включена.
+   */
+  async getMemorySettings(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const settings = await new UserModel(db, this.getUserId(c)!).getUserSettings();
+      const memory = settings?.memory as { enabled?: boolean } | null | undefined;
+      return this.success(c, { enabled: memory?.enabled !== false }, 'memory settings');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * PATCH /api/v1/memories/settings — включить или выключить память для аккаунта; остальные поля
+   * `memory` (effort) не трогаются.
+   */
+  async updateMemorySettings(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const { enabled } = await this.getBody<{ enabled: boolean }>(c);
+      const userModel = new UserModel(db, this.getUserId(c)!);
+      const settings = await userModel.getUserSettings();
+      const current = (settings?.memory as Record<string, unknown> | null | undefined) ?? {};
+      await userModel.updateSetting({ memory: { ...current, enabled } });
+      return this.success(c, { enabled }, 'memory settings updated');
     } catch (error) {
       return this.handleError(c, error);
     }

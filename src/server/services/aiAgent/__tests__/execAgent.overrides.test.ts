@@ -229,6 +229,27 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-wordstat');
   });
 
+  it('у бота подключения студии тоже по требованию, а свои инструменты — сразу (F7)', async () => {
+    mockGetAgentConfig.mockResolvedValue({
+      ...agentConfig(),
+      plugins: ['mcp-arckep-studio-images', 'mcp-arckep-wordstat', 'arckep-studio'],
+    });
+    await service.execAgent({
+      agentId: 'agent-1',
+      botContext: { botProviderId: 'bot-1', endUserRef: 'tg:1', platform: 'telegram' } as any,
+      prompt: 'Нарисуй кота',
+    });
+
+    const toolsEngine = vi.mocked(createServerAgentToolsEngine).mock.results[0].value;
+    const generateArgs = toolsEngine.generateToolsDetailed.mock.calls[0][0];
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
+    expect(generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-studio-images');
+    // набор бота не трогаем: старая «Студия» и Wordstat грузятся с первого шага, как раньше
+    expect(generateArgs.toolIds).toContain('arckep-studio');
+    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    expect(generateArgs.excludeDefaultToolIds ?? []).not.toContain('arckep-studio');
+  });
+
   it('вложение по fileId: без повторной загрузки, документ разбирается, картинка идёт в imageList', async () => {
     await service.execAgent({
       agentId: 'agent-1',

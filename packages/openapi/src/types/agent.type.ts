@@ -42,6 +42,9 @@ export const CreateAgentRequestSchema = z.object({
       enableReasoning: z.boolean().nullish(),
       enableReasoningEffort: z.boolean().nullish(),
       historyCount: z.number().nullish(),
+      // arckep (chat-next-redesign, F7): память между чатами у помощника — `{enabled}`; `null` снимает
+      // правило, и помощник живёт по настройке аккаунта (без этого ключа zod молча выкидывал поле)
+      memory: z.object({ enabled: z.boolean().nullish() }).nullish(),
       reasoningBudgetToken: z.number().nullish(),
       reasoningEffort: z.enum(['low', 'medium', 'high']).nullish(),
       searchFCModel: z.string().nullish(),
