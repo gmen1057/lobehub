@@ -1,7 +1,6 @@
 import type { AgentState } from '@lobechat/agent-runtime';
 
 import { FileModel } from '@/database/models/file';
-import { InMemoryStreamEventManager } from '@/server/modules/AgentRuntime/InMemoryStreamEventManager';
 import { applyEffortToChatConfig } from '@/server/modules/AgentRuntime/serverModelParams';
 import type {
   StreamChunkData,
@@ -22,6 +21,7 @@ import type {
   ResponseUsage,
   Tool,
 } from '../types/responses.type';
+import { type HubOperation, responsesStreamHub } from './responsesStreamHub';
 
 /**
  * arckep (план chat-next-redesign, E1): настройки одного запроса поверх помощника.
@@ -61,6 +61,22 @@ export const buildExecOverrides = (params: CreateResponseRequest): ExecOverrides
   const disabled = (params.disabled_tools ?? []).filter(Boolean);
   if (disabled.length > 0) out.excludePluginIds = disabled;
   return out;
+};
+
+/** arckep (F8): состояние ответа темы для REST (`GET /responses/:id`). */
+export interface ResponseStatusInfo {
+  created_at: number;
+  id: string;
+  operation_id: string;
+  /** Историю можно отдать с начала (не переполнилась). */
+  resumable: boolean;
+  status: 'completed' | 'failed' | 'in_progress' | 'incomplete';
+}
+
+const notFound = (message: string): Error => {
+  const error = new Error(message);
+  error.name = 'NotFoundError';
+  return error;
 };
 
 /**
@@ -486,6 +502,7 @@ export class ResponsesService extends BaseService {
    */
   async *createStreamingResponse(
     params: CreateResponseRequest,
+    signal?: AbortSignal,
   ): AsyncGenerator<ResponseStreamEvent> {
     const createdAt = Math.floor(Date.now() / 1000);
     let sequenceNumber = 0;
@@ -552,55 +569,159 @@ export class ResponsesService extends BaseService {
         type: 'response.in_progress' as const,
       };
 
-      // 2. Create AgentRuntimeService with custom stream manager for event subscription
-      const streamEventManager = new InMemoryStreamEventManager();
+      // 2. arckep (F8): ответ регистрируется в общем реестре и считается в фоне — он не зависит
+      // от этого соединения. Обрыв связи или переход в другую переписку ответ не останавливают;
+      // остановка — только явный cancel (кнопка «Стоп»). Клиент, вернувшийся в переписку,
+      // переподключается через resumeStreamingResponse и получает историю с начала.
+      const op = responsesStreamHub.register({
+        operationId,
+        params,
+        responseId,
+        topicId: execResult.topicId ?? responseId,
+        userId: this.userId,
+      });
       const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
         queueService: null,
-        streamEventManager,
+        streamEventManager: responsesStreamHub,
+      });
+      void agentRuntimeService.executeSync(operationId).then(
+        (state) => responsesStreamHub.markDone(operationId, state),
+        (err) => {
+          this.log('error', 'Streaming execution failed', { error: err, responseId });
+          responsesStreamHub.markDone(operationId, { status: 'error' } as AgentState);
+        },
+      );
+
+      // 3. События ответа — из реестра, тем же путём, что и при переподключении
+      yield* this.streamOperationEvents(op, response, sequenceNumber, signal);
+    } catch (error) {
+      const errorResponseId = this.generateResponseId();
+      this.log('error', 'Streaming response failed', { error, responseId: errorResponseId });
+
+      const errorResponse = this.buildResponseObject({
+        createdAt,
+        error: {
+          code: 'server_error',
+          message: error instanceof Error ? error.message : 'Unknown error',
+        },
+        id: errorResponseId,
+        output: [],
+        outputText: '',
+        params,
+        status: 'failed',
       });
 
-      // 3. Setup async event queue to bridge push events → pull-based generator
-      const eventQueue: StreamEvent[] = [];
-      let resolveWaiting: (() => void) | null = null;
-      let executionDone = false;
+      yield {
+        response: errorResponse,
+        sequence_number: sequenceNumber,
+        type: 'response.failed' as const,
+      };
+    }
+  }
 
-      const unsubscribe = streamEventManager.subscribe(operationId, (events) => {
+  /**
+   * arckep (F8): переподключиться к ответу темы — история событий с начала и живой хвост.
+   * Нет ответа (не было, вычищен через FINISHED_TTL_MS после конца или история переполнилась) —
+   * NotFoundError (404). Завершённый, но ещё не вычищенный ответ отдаётся целиком и сразу закрывается.
+   */
+  async *resumeStreamingResponse(
+    topicId: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ResponseStreamEvent> {
+    const op = this.findOperation(topicId);
+    if (!op) throw notFound(`No response is running for ${topicId}`);
+    if (op.truncated) throw notFound(`Response history for ${topicId} is too long to resume`);
+    const response = this.buildResponseObject({
+      createdAt: op.createdAt,
+      id: op.responseId,
+      output: [],
+      outputText: '',
+      params: op.params,
+      status: 'in_progress',
+    });
+    let sequenceNumber = 0;
+    yield { response, sequence_number: sequenceNumber++, type: 'response.created' as const };
+    yield { response, sequence_number: sequenceNumber++, type: 'response.in_progress' as const };
+    yield* this.streamOperationEvents(op, response, sequenceNumber, signal);
+  }
+
+  /** arckep (F8): состояние ответа темы; null — ответа нет или он уже вычищен из реестра. */
+  getResponseStatus(topicId: string): ResponseStatusInfo | null {
+    const op = this.findOperation(topicId);
+    if (!op) return null;
+    let status: ResponseStatusInfo['status'] = 'in_progress';
+    if (op.done) {
+      if (op.finalState?.status === 'error') status = 'failed';
+      else if (this.resolveIncompleteReason(op.finalState)) status = 'incomplete';
+      else status = 'completed';
+    }
+    return {
+      created_at: op.createdAt,
+      id: op.responseId,
+      operation_id: op.operationId,
+      resumable: !op.truncated,
+      status,
+    };
+  }
+
+  /** arckep (F8): темы этого человека, в которых ответ ещё идёт. */
+  listRunningTopics(): string[] {
+    return responsesStreamHub.runningTopics(this.userId);
+  }
+
+  private findOperation(topicId: string): HubOperation | undefined {
+    if (!topicId) return undefined;
+    return responsesStreamHub.findByTopic(this.userId, topicId);
+  }
+
+  /**
+   * arckep (F8): события ответа из реестра — одинаково для отправки и для переподключения.
+   * Сначала уже накопленная история, дальше живые события; конец — по markDone реестра.
+   * `signal` — обрыв соединения клиента: отписываемся и выходим, сам ответ идёт дальше.
+   */
+  private async *streamOperationEvents(
+    op: HubOperation,
+    response: ResponseObject,
+    sequenceNumber: number,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ResponseStreamEvent> {
+    const responseId = op.responseId;
+    const eventQueue: StreamEvent[] = [];
+    let resolveWaiting: (() => void) | null = null;
+    let executionDone = false;
+    const wake = () => {
+      if (resolveWaiting) {
+        resolveWaiting();
+        resolveWaiting = null;
+      }
+    };
+    const attachment = responsesStreamHub.attach(op.operationId, {
+      onDone: () => {
+        executionDone = true;
+        wake();
+      },
+      onEvents: (events) => {
         eventQueue.push(...events);
-        if (resolveWaiting) {
-          resolveWaiting();
-          resolveWaiting = null;
+        wake();
+      },
+    });
+    eventQueue.push(...attachment.history);
+    executionDone = attachment.done;
+    const onAbort = () => {
+      attachment.unsubscribe();
+      wake();
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const waitForEvents = (): Promise<void> =>
+      new Promise((resolve) => {
+        if (eventQueue.length > 0 || executionDone || signal?.aborted) {
+          resolve();
+        } else {
+          resolveWaiting = resolve;
         }
       });
 
-      // Helper to wait for next event batch
-      const waitForEvents = (): Promise<void> =>
-        new Promise((resolve) => {
-          if (eventQueue.length > 0 || executionDone) {
-            resolve();
-          } else {
-            resolveWaiting = resolve;
-          }
-        });
-
-      // 4. Start execution in background
-      let finalState: AgentState | undefined;
-      const executionPromise = agentRuntimeService
-        .executeSync(operationId)
-        .then((state) => {
-          finalState = state;
-        })
-        .catch((err) => {
-          finalState = { status: 'error' } as AgentState;
-          this.log('error', 'Streaming execution failed', { error: err, responseId });
-        })
-        .finally(() => {
-          executionDone = true;
-          if (resolveWaiting) {
-            resolveWaiting();
-            resolveWaiting = null;
-          }
-        });
-
+    try {
       // 5. Process stream events and emit output items
       let accumulatedText = '';
       let currentOutputIndex = 0;
@@ -711,6 +832,7 @@ export class ResponsesService extends BaseService {
 
       while (!executionDone || eventQueue.length > 0) {
         await waitForEvents();
+        if (signal?.aborted) return;
 
         while (eventQueue.length > 0) {
           const event = eventQueue.shift()!;
@@ -863,9 +985,8 @@ export class ResponsesService extends BaseService {
       yield* finishTextMessage(seq, accumulatedText);
       sequenceNumber = seq.n;
 
-      // 6. Wait for execution to fully complete
-      await executionPromise;
-      unsubscribe();
+      if (signal?.aborted) return;
+      const finalState = op.finalState;
 
       // If no text came through streaming, extract from final state
       if (!accumulatedText && finalState) {
@@ -937,28 +1058,9 @@ export class ResponsesService extends BaseService {
           type: 'response.completed' as const,
         };
       }
-    } catch (error) {
-      const errorResponseId = this.generateResponseId();
-      this.log('error', 'Streaming response failed', { error, responseId: errorResponseId });
-
-      const errorResponse = this.buildResponseObject({
-        createdAt,
-        error: {
-          code: 'server_error',
-          message: error instanceof Error ? error.message : 'Unknown error',
-        },
-        id: errorResponseId,
-        output: [],
-        outputText: '',
-        params,
-        status: 'failed',
-      });
-
-      yield {
-        response: errorResponse,
-        sequence_number: sequenceNumber,
-        type: 'response.failed' as const,
-      };
+    } finally {
+      attachment.unsubscribe();
+      signal?.removeEventListener('abort', onAbort);
     }
   }
 
