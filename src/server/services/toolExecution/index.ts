@@ -153,7 +153,8 @@ export class ToolExecutionService {
    * окружение stdio, а серверный брал только manifest.mcpParams — из нового чата PostgreSQL, MySQL,
    * ClickHouse, amoCRM и Bitrix24 отвечали «не указан хост». Шлюз коннекторов узнаёт человека по
    * X-Arckep-User (как в браузерной песочнице, routers/tools/market.ts): квоты Wordstat и E2B — по людям.
-   * Значения настроек в журнал не пишутся.
+   * Значения настроек в журнал не пишутся. Для stdio-подключений настройки не подмешиваются (это было бы
+   * окружение подпроцесса на сервере), для http — только заголовки X-* без управляющих символов.
    */
   private async withUserConnectionParams(
     identifier: string,
@@ -161,15 +162,23 @@ export class ToolExecutionService {
     context: ToolExecutionContext,
   ): Promise<any> {
     if (!context.serverDB || !context.userId) return mcpParams;
-    if (mcpParams?.type !== 'http' && mcpParams?.type !== 'sse' && mcpParams?.type !== 'stdio') {
-      return mcpParams;
-    }
+    // Только сетевые подключения: для stdio настройки человека стали бы окружением подпроцесса на
+    // сервере (LD_PRELOAD, NODE_OPTIONS, PATH…) — этого не делаем, у студии все подключения по http.
+    if (mcpParams?.type !== 'http' && mcpParams?.type !== 'sse') return mcpParams;
     try {
       const plugin = await new PluginModel(context.serverDB, context.userId).findById(identifier);
       const raw = (plugin?.settings ?? {}) as Record<string, unknown>;
       const settings: Record<string, string> = {};
       for (const [key, value] of Object.entries(raw)) {
-        if (value !== undefined && value !== null && value !== '') settings[key] = String(value);
+        // Заголовки шлюза X-MCP-*: имя — только латиница, цифры, дефис и подчёркивание; значение — одна
+        // строка без управляющих символов; служебные заголовки транспорта не переопределяются.
+        if (!/^X-[\w-]{1,60}$/i.test(key)) continue;
+        if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
+        if (value === undefined || value === null || value === '') continue;
+        const text = String(value)
+          .replaceAll(/[\r\n\0]/g, '')
+          .slice(0, 2000);
+        if (text) settings[key] = text;
       }
       let arckepUserId: number | null = null;
       try {
@@ -184,9 +193,6 @@ export class ToolExecutionService {
         Object.keys(settings).length,
         arckepUserId ?? '-',
       );
-      if (mcpParams.type === 'stdio') {
-        return { ...mcpParams, env: { ...mcpParams.env, ...settings } };
-      }
       return {
         ...mcpParams,
         headers: {
