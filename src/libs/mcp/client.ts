@@ -27,6 +27,15 @@ const MCP_TOOL_TIMEOUT = (() => {
   const val = Number(process.env.MCP_TOOL_TIMEOUT);
   return Number.isFinite(val) && val > 0 ? val : 60_000;
 })();
+// arckep (studio chat F9): the studio connectors hold a call until a picture / video / deck is ready — minutes —
+// and send an MCP progress notification every ~20 s while they wait. Every notification renews MCP_TOOL_TIMEOUT
+// (so a server that goes silent still fails within it); the whole call is capped by MCP_TOOL_MAX_TOTAL_TIMEOUT
+// (ms, default 35 min: above the connectors' own 30 min ceiling). Servers that send no progress keep the plain
+// MCP_TOOL_TIMEOUT.
+const MCP_TOOL_MAX_TOTAL_TIMEOUT = (() => {
+  const val = Number(process.env.MCP_TOOL_MAX_TOTAL_TIMEOUT);
+  return Number.isFinite(val) && val > 0 ? val : 35 * 60_000;
+})();
 
 /**
  * Pre-check stdio command to capture detailed error information
@@ -379,6 +388,10 @@ export class MCPClient {
   async callTool(toolName: string, args: any): Promise<ToolCallResult> {
     log('Calling tool: %s with args: %O, timeout: %O', toolName, args, MCP_TOOL_TIMEOUT);
     const result = await this.mcp.callTool({ arguments: args, name: toolName }, undefined, {
+      maxTotalTimeout: MCP_TOOL_MAX_TOTAL_TIMEOUT,
+      // a handler makes the SDK send a progress token, without which the server cannot report progress
+      onprogress: (progress) => log('Tool %s progress: %O', toolName, progress),
+      resetTimeoutOnProgress: true,
       timeout: MCP_TOOL_TIMEOUT,
     });
     log('Tool call result: %O', result);
