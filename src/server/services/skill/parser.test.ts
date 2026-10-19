@@ -767,4 +767,42 @@ Content from file`;
       );
     });
   });
+
+  describe('корневая папка архива GitHub (arckep, 19.10.2026)', () => {
+    const FULL_HASH = '3f2c1a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a';
+    const skillMd = `---\nname: Pdf Forms\ndescription: d\n---\nbody`;
+    const make = (root: string, skillDir = 'skills/pdf') =>
+      createZip({
+        [`${root}/README.md`]: new TextEncoder().encode('# repo'),
+        [`${root}/${skillDir}/SKILL.md`]: new TextEncoder().encode(skillMd),
+        [`${root}/${skillDir}/scripts/run.py`]: new TextEncoder().encode('print(1)'),
+      });
+
+    // archive/<ref>.zip: ветка → repo-<ветка>, тег → repo-<тег без v>, хеш → repo-<полный хеш>
+    it.each([
+      ['ветка', 'skills-main'],
+      ['ветка со слэшем', 'skills-feature-new-ui'],
+      ['тег (без v)', 'skills-1.2.0'],
+      ['полный хеш коммита', `skills-${FULL_HASH}`],
+    ])('%s: навык находится по basePath при любом имени корневой папки', async (_, root) => {
+      const data = await make(root);
+      const parsed = await parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/pdf' });
+      expect(parsed.manifest.name).toBe('Pdf Forms');
+      expect([...parsed.resources.keys()]).toEqual(['scripts/run.py']);
+    });
+
+    it('спецзнаки в basePath не ломают поиск и не падают выражением', async () => {
+      const data = await make('skills-main', 'skills/a+b.c');
+      // запасной путь поиска (корень не определён по первой записи) тоже работает с экранированием
+      const parsed = await parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/a+b.c' });
+      expect(parsed.manifest.name).toBe('Pdf Forms');
+
+      await expect(
+        parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/(oops' }),
+      ).rejects.toThrow('SKILL.md not found');
+      await expect(
+        parser.parseZipPackage(Buffer.from(data), { basePath: '(a+)+$' }),
+      ).rejects.toThrow('SKILL.md not found');
+    });
+  });
 });

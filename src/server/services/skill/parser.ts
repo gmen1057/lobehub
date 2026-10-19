@@ -231,9 +231,12 @@ export class SkillParser {
       }
 
       // Fallback: try to find SKILL.md that contains the basePath
-      const basePathPattern = new RegExp(
-        `^[^/]+/${basePath.replaceAll(/^\/|\/$/g, '')}/SKILL\\.md$`,
-      );
+      // arckep: basePath приходит из ссылки человека — спецзнаки экранируются (иначе битое выражение или
+      // ReDoS на путях из чужого репозитория).
+      const escapedBasePath = basePath
+        .replaceAll(/^\/|\/$/g, '')
+        .replaceAll(/[$()*+.?[\\\]^{|}]/g, String.raw`\$&`);
+      const basePathPattern = new RegExp(`^[^/]+/${escapedBasePath}/SKILL\\.md$`);
       const matchWithBasePath = allPaths.find((path) => basePathPattern.test(path));
 
       if (matchWithBasePath) {
