@@ -8,7 +8,7 @@ export const systemPrompt = `You can look up connections the person may need: ex
 <after_searching>
 - The chat shows the person a "Connect ..." card for every found item. The person connects it with the button and enters keys and links themselves. You cannot connect anything.
 - Never ask the person for keys, tokens, passwords or links in the chat, and never offer to store them. Tell them which card to press.
-- Say in one or two sentences what each item gives them. Items marked "paid" run in a sandbox that costs the person about 0.2 RUB per minute: say so.
+- Say in one or two sentences what each item gives them. Items marked "paid" run in a sandbox that costs the person about 0.25 RUB per minute: say so.
 - After they connect it, the new tools appear in <available_tools>: activate them from there. If nothing fits, say so honestly; do not invent connections.
 </after_searching>
 `;
