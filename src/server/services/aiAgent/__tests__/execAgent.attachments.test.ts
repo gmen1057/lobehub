@@ -6,6 +6,8 @@ import { AiAgentService } from '../index';
 // arckep (19.10.2026): вложения для модели со зрением. Длинная картинка приходит кусками — все куски сообщению
 // по порядку, с подписью; PDF: текстовый слой остаётся, а страницы картинками добавляются, если у модели есть
 // зрение; без зрения (и при выключателе или сбое) — только текст, как раньше.
+// Список вложений (metadata.attachments): адреса ОРИГИНАЛОВ для модели; вшитые в PDF картинки — файлами человека,
+// не сообщению.
 
 const {
   mockCreateOperation,
@@ -14,19 +16,28 @@ const {
   mockIngestAttachment,
   mockParseFile,
   mockRenderPdfPages,
+  mockExtractPdfImages,
   mockFileFindById,
+  mockFileFindByKey,
   mockGetFileByteArray,
   mockUploadFromBuffer,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
+  mockExtractPdfImages: vi.fn(),
   mockFileFindById: vi.fn(),
+  mockFileFindByKey: vi.fn(),
   mockGetFileByteArray: vi.fn(),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockParseFile: vi.fn(),
   mockRenderPdfPages: vi.fn(),
   mockUploadFromBuffer: vi.fn(),
+}));
+
+// адрес приложения, как на проде: оригиналы вложений получают https://arckep.ru/chat/f/<id>/
+vi.mock('@/envs/app', () => ({
+  appEnv: { APP_URL: 'https://arckep.ru/chat' },
 }));
 
 vi.mock('@/libs/trusted-client', () => ({
@@ -96,6 +107,10 @@ vi.mock('@/server/services/klavis', () => ({
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn().mockImplementation(() => ({
     getFileByteArray: mockGetFileByteArray,
+    // как настоящий: ключ — путь адреса без начального «/» (в адресе имя закодировано)
+    getKeyFromFullUrl: vi
+      .fn()
+      .mockImplementation((url: string) => Promise.resolve(new URL(url).pathname.slice(1))),
     getFullFileUrl: vi
       .fn()
       .mockImplementation((key: string) => Promise.resolve(`https://s3/${key}`)),
@@ -104,11 +119,17 @@ vi.mock('@/server/services/file', () => ({
 }));
 
 vi.mock('@/database/models/file', () => ({
-  FileModel: vi.fn().mockImplementation(() => ({ findById: mockFileFindById })),
+  FileModel: vi
+    .fn()
+    .mockImplementation(() => ({ findById: mockFileFindById, findByKey: mockFileFindByKey })),
 }));
 
 vi.mock('../pdfPages', () => ({
   renderPdfPages: mockRenderPdfPages,
+}));
+
+vi.mock('../pdfImages', () => ({
+  extractPdfImages: mockExtractPdfImages,
 }));
 
 vi.mock('@/server/services/document', () => ({
@@ -187,12 +208,18 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
     await service.execAgent({ agentId: 'agent-1', files, prompt: 'Сделай письмо по шаблону' });
     const messageArgs = mockMessageCreate.mock.calls.find((call) => call[0].role === 'user')![0];
     const { initialMessages } = mockCreateOperation.mock.calls[0][0];
-    return { fileIds: messageArgs.files as string[], messageArgs, initialMessages };
+    return {
+      attachments: messageArgs.metadata?.attachments as any[] | undefined,
+      fileIds: messageArgs.files as string[],
+      initialMessages,
+      messageArgs,
+    };
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     delete process.env.ARCKEP_PDF_PAGE_IMAGES;
+    delete process.env.ARCKEP_PDF_EMBEDDED_IMAGES;
     pageCounter = 0;
     mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
     mockCreateOperation.mockResolvedValue({
@@ -209,6 +236,8 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       key: pathname,
     }));
     mockRenderPdfPages.mockResolvedValue({ images: [], pageCount: 0, renderedPages: 0 });
+    mockExtractPdfImages.mockResolvedValue([]);
+    mockFileFindByKey.mockResolvedValue(undefined);
     service = new AiAgentService({} as any, userId);
   });
 
@@ -348,15 +377,27 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       expect(initialMessages.at(-1).imageList).toBeUndefined();
       expect(initialMessages.at(-1).fileList).toHaveLength(1);
       expect(mockRenderPdfPages).not.toHaveBeenCalled();
-      expect(mockGetFileByteArray).not.toHaveBeenCalled();
+      // вшитые картинки ищутся и без зрения (они нужны для HTML), но ничего не найдено — ничего не загружается
+      expect(mockExtractPdfImages).toHaveBeenCalledTimes(1);
       expect(mockUploadFromBuffer).not.toHaveBeenCalled();
     });
 
-    it('выключатель ARCKEP_PDF_PAGE_IMAGES=0: только текст', async () => {
+    it('выключатель ARCKEP_PDF_PAGE_IMAGES=0: страниц нет, вшитые картинки ищутся', async () => {
       process.env.ARCKEP_PDF_PAGE_IMAGES = '0';
       const { fileIds } = await runWith([pdfFile]);
       expect(fileIds).toEqual(['pdf_1']);
       expect(mockRenderPdfPages).not.toHaveBeenCalled();
+      expect(mockExtractPdfImages).toHaveBeenCalledTimes(1);
+    });
+
+    it('оба выключателя: PDF из хранилища вообще не читается', async () => {
+      process.env.ARCKEP_PDF_PAGE_IMAGES = '0';
+      process.env.ARCKEP_PDF_EMBEDDED_IMAGES = '0';
+      const { fileIds } = await runWith([pdfFile]);
+      expect(fileIds).toEqual(['pdf_1']);
+      expect(mockGetFileByteArray).not.toHaveBeenCalled();
+      expect(mockRenderPdfPages).not.toHaveBeenCalled();
+      expect(mockExtractPdfImages).not.toHaveBeenCalled();
     });
 
     it('не нарисовалось (нет poppler, повреждённый файл) или сбой хранилища — только текст, отправка не падает', async () => {
@@ -414,6 +455,324 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       ]);
       expect(fileIds).toEqual(['doc_1']);
       expect(mockRenderPdfPages).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('список вложений для модели (metadata.attachments)', () => {
+    const addr = (id: string) => `https://arckep.ru/chat/f/${id}/`;
+
+    const slicedLayout = {
+      fileId: 'img_1',
+      images: Array.from({ length: 8 }, (_, i) => ({
+        fileId: `img_${i + 1}`,
+        height: 2048,
+        index: i + 1,
+        key: `files/u/letter.part-${i + 1}`,
+        mimeType: 'image/png',
+        name: `image.part-0${i + 1}-of-08.png`,
+        resolvedUrl: `https://s3/part-${i + 1}`,
+        total: 8,
+        width: 1536,
+      })),
+      isImage: true,
+      key: 'files/u/x',
+      resolvedUrl: 'https://s3/part-1',
+      source: { height: 23_050, width: 2512 },
+      unchanged: false,
+    };
+
+    it('картинка по адресу файла человека: в списке одна строка — оригинал с размерами исходной, куски идут сообщению', async () => {
+      mockIngestAttachment.mockResolvedValue(slicedLayout);
+      // в адресе имя закодировано, в базе — как есть
+      mockFileFindByKey.mockImplementation(async (key: string) =>
+        key === 'files/user-1/макет.jpg'
+          ? { fileType: 'image/jpeg', id: 'orig_1', name: 'макет.jpg' }
+          : undefined,
+      );
+
+      const { attachments, fileIds, initialMessages } = await runWith([
+        {
+          name: 'image',
+          url: 'https://s3/files/user-1/%D0%BC%D0%B0%D0%BA%D0%B5%D1%82.jpg?X-Amz-Signature=abc',
+        },
+      ]);
+
+      expect(attachments).toEqual([
+        {
+          height: 23_050,
+          mime: 'image/jpeg',
+          name: 'макет.jpg',
+          url: addr('orig_1'),
+          width: 2512,
+        },
+      ]);
+      // оригинал не прикрепляется — модель получает 8 кусков, как и раньше
+      expect(fileIds).toHaveLength(8);
+      expect(fileIds).not.toContain('orig_1');
+      // тот же список — в сообщении, которое видит модель на этом шаге
+      expect(initialMessages.at(-1).metadata).toEqual({ attachments });
+    });
+
+    it('внешняя картинка без сохранённого оригинала, ужатая: в списке сохранённые куски с пометкой «копия»', async () => {
+      mockIngestAttachment.mockResolvedValue(slicedLayout);
+
+      const { attachments } = await runWith([
+        { mimeType: 'image/png', name: 'letter.png', url: 'https://x.example/letter.png' },
+      ]);
+
+      expect(attachments).toHaveLength(8);
+      expect(attachments![0]).toEqual({
+        height: 2048,
+        mime: 'image/png',
+        name: 'image.part-01-of-08.png',
+        note: 'копия, оригинал не сохранён',
+        url: addr('img_1'),
+        width: 1536,
+      });
+      expect(attachments![7].url).toBe(addr('img_8'));
+    });
+
+    it('внешняя картинка без изменений: сохранённая копия — те же байты, она и есть оригинал', async () => {
+      mockIngestAttachment.mockResolvedValue({
+        fileId: 'img_9',
+        images: [
+          {
+            fileId: 'img_9',
+            height: 900,
+            index: 1,
+            key: 'files/u/photo.jpg',
+            mimeType: 'image/jpeg',
+            name: 'photo.jpg',
+            resolvedUrl: 'https://s3/photo',
+            total: 1,
+            width: 1200,
+          },
+        ],
+        isImage: true,
+        key: 'files/u/photo.jpg',
+        resolvedUrl: 'https://s3/photo',
+        source: { height: 900, width: 1200 },
+        unchanged: true,
+      });
+
+      const { attachments } = await runWith([
+        { mimeType: 'image/jpeg', name: 'photo.jpg', url: 'https://x.example/photo.jpg' },
+      ]);
+
+      expect(attachments).toEqual([
+        { height: 900, mime: 'image/jpeg', name: 'photo.jpg', url: addr('img_9'), width: 1200 },
+      ]);
+    });
+
+    it('файлы из REST (fileId): адрес по id файла — картинка, PDF и docx, в порядке отправки', async () => {
+      const { attachments, fileIds } = await runWith([
+        { fileId: 'f_img', mimeType: 'image/png', name: 'logo.png', url: 'https://s3/logo.png' },
+        {
+          fileId: 'f_pdf',
+          mimeType: 'application/pdf',
+          name: 'tmpl.pdf',
+          url: 'https://s3/files/user-1/tmpl.pdf',
+        },
+        {
+          fileId: 'f_doc',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          name: 'a.docx',
+          url: 'https://s3/a.docx',
+        },
+      ]);
+
+      expect(fileIds).toEqual(['f_img', 'f_pdf', 'f_doc']);
+      expect(attachments).toEqual([
+        { mime: 'image/png', name: 'logo.png', url: addr('f_img') },
+        { mime: 'application/pdf', name: 'tmpl.pdf', url: addr('f_pdf') },
+        {
+          mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          name: 'a.docx',
+          url: addr('f_doc'),
+        },
+      ]);
+    });
+
+    it('без вложений metadata не пишется', async () => {
+      mockGetAgentConfig.mockResolvedValue(agent());
+      await service.execAgent({ agentId: 'agent-1', prompt: 'Привет' });
+
+      const messageArgs = mockMessageCreate.mock.calls.find((call) => call[0].role === 'user')![0];
+      expect(messageArgs.metadata).toBeUndefined();
+      const { initialMessages } = mockCreateOperation.mock.calls[0][0];
+      expect(initialMessages.at(-1).metadata).toBeUndefined();
+    });
+
+    it('вложение, которое не удалось принять, в список не попадает', async () => {
+      mockIngestAttachment.mockRejectedValue(new Error('fetch failed'));
+      const { attachments } = await runWith([
+        { mimeType: 'image/png', name: 'a.png', url: 'https://x.example/a.png' },
+      ]);
+      expect(attachments).toBeUndefined();
+    });
+  });
+
+  describe('вшитые картинки PDF', () => {
+    const addr = (id: string) => `https://arckep.ru/chat/f/${id}/`;
+    const pdfFile = {
+      fileId: 'pdf_1',
+      mimeType: 'application/pdf',
+      name: 'tmpl.pdf',
+      size: 2_000_000,
+      url: 'https://s3/files/user-1/tmpl.pdf',
+    };
+    const embedded = (index: number, page: number, mimeType = 'image/png') => ({
+      buffer: Buffer.from(`img-${index}`),
+      hasAlpha: mimeType === 'image/png',
+      height: 400 + index,
+      index,
+      mimeType,
+      page,
+      width: 800 + index,
+    });
+
+    it('сохраняются файлами человека, к сообщению не прикрепляются, идут в список: номер, страница, размер, адрес', async () => {
+      mockExtractPdfImages.mockResolvedValue([
+        embedded(1, 1),
+        embedded(2, 1, 'image/jpeg'),
+        embedded(3, 2),
+      ]);
+
+      const { attachments, fileIds, initialMessages } = await runWith([pdfFile], 'text-only');
+
+      // сообщению — только сам PDF
+      expect(fileIds).toEqual(['pdf_1']);
+      expect(initialMessages.at(-1).imageList).toBeUndefined();
+      // загружено три файла: PNG с альфой и исходный JPEG
+      expect(mockUploadFromBuffer.mock.calls.map((call) => call[1])).toEqual([
+        'image/png',
+        'image/jpeg',
+        'image/png',
+      ]);
+      expect(mockUploadFromBuffer.mock.calls[0][2]).toMatch(
+        /^files\/user-1\/.+\/tmpl\.pdf\.image-01\.p1\.png$/,
+      );
+      expect(mockUploadFromBuffer.mock.calls[1][2]).toMatch(/\.image-02\.p1\.jpg$/);
+      expect(mockUploadFromBuffer.mock.calls[2][2]).toMatch(/\.image-03\.p2\.png$/);
+
+      expect(attachments).toEqual([
+        { mime: 'application/pdf', name: 'tmpl.pdf', url: addr('pdf_1') },
+        {
+          height: 401,
+          mime: 'image/png',
+          name: 'картинка 1 из tmpl.pdf',
+          note: 'стр. 1',
+          url: addr('page_file_1'),
+          width: 801,
+        },
+        {
+          height: 402,
+          mime: 'image/jpeg',
+          name: 'картинка 2 из tmpl.pdf',
+          note: 'стр. 1',
+          url: addr('page_file_2'),
+          width: 802,
+        },
+        {
+          height: 403,
+          mime: 'image/png',
+          name: 'картинка 3 из tmpl.pdf',
+          note: 'стр. 2',
+          url: addr('page_file_3'),
+          width: 803,
+        },
+      ]);
+    });
+
+    it('модель со зрением: страницы идут сообщению, вшитые картинки — только в список', async () => {
+      mockRenderPdfPages.mockResolvedValue({
+        images: [pageImage(1)],
+        pageCount: 1,
+        renderedPages: 1,
+      });
+      mockExtractPdfImages.mockResolvedValue([embedded(1, 1)]);
+
+      const { attachments, fileIds, initialMessages } = await runWith([pdfFile]);
+
+      // PDF и страница — оба загрузки, страница первой (загружена раньше вшитой картинки)
+      expect(fileIds).toEqual(['pdf_1', 'page_file_1']);
+      expect(initialMessages.at(-1).imageList).toHaveLength(1);
+      expect(attachments!.map((item) => item.url)).toEqual([addr('pdf_1'), addr('page_file_2')]);
+      // PDF читается из хранилища один раз на обе задачи
+      expect(mockGetFileByteArray).toHaveBeenCalledTimes(1);
+    });
+
+    it('PDF через ingest (бот, внешняя ссылка): список содержит и сам файл, и его картинки', async () => {
+      mockIngestAttachment.mockResolvedValue({
+        fileId: 'pdf_2',
+        images: [],
+        isImage: false,
+        key: 'files/user-1/from-url.pdf',
+        resolvedUrl: '',
+        unchanged: true,
+      });
+      mockExtractPdfImages.mockResolvedValue([embedded(1, 3)]);
+
+      const { attachments, fileIds } = await runWith([
+        { mimeType: 'application/pdf', name: 'from-url.pdf', url: 'https://x/from-url.pdf' },
+      ]);
+
+      expect(fileIds).toEqual(['pdf_2']);
+      expect(attachments).toEqual([
+        { mime: 'application/pdf', name: 'from-url.pdf', url: addr('pdf_2') },
+        expect.objectContaining({
+          name: 'картинка 1 из from-url.pdf',
+          note: 'стр. 3',
+          url: addr('page_file_1'),
+        }),
+      ]);
+    });
+
+    it('выключатель ARCKEP_PDF_EMBEDDED_IMAGES=0: картинки не ищутся, страницы рисуются', async () => {
+      process.env.ARCKEP_PDF_EMBEDDED_IMAGES = '0';
+      mockRenderPdfPages.mockResolvedValue({
+        images: [pageImage(1)],
+        pageCount: 1,
+        renderedPages: 1,
+      });
+
+      const { attachments, fileIds } = await runWith([pdfFile]);
+
+      expect(mockExtractPdfImages).not.toHaveBeenCalled();
+      expect(fileIds).toEqual(['pdf_1', 'page_file_1']);
+      expect(attachments).toEqual([
+        { mime: 'application/pdf', name: 'tmpl.pdf', url: addr('pdf_1') },
+      ]);
+    });
+
+    it('сбой вшитых картинок не отменяет страницы, сбой страниц — вшитые картинки', async () => {
+      mockExtractPdfImages.mockRejectedValue(new Error('pdfimages crashed'));
+      mockRenderPdfPages.mockResolvedValue({
+        images: [pageImage(1)],
+        pageCount: 1,
+        renderedPages: 1,
+      });
+      let result = await runWith([pdfFile]);
+      expect(result.fileIds).toEqual(['pdf_1', 'page_file_1']);
+      expect(result.attachments).toHaveLength(1);
+
+      vi.clearAllMocks();
+      pageCounter = 0;
+      mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+      mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+      mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
+      mockFileFindById.mockResolvedValue({ url: 'files/user-1/tmpl.pdf' });
+      mockGetFileByteArray.mockResolvedValue(new Uint8Array([1]));
+      mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => ({
+        fileId: `page_file_${++pageCounter}`,
+        key: pathname,
+      }));
+      mockRenderPdfPages.mockRejectedValue(new Error('pdftoppm crashed'));
+      mockExtractPdfImages.mockResolvedValue([embedded(1, 1)]);
+      result = await runWith([pdfFile]);
+      expect(result.fileIds).toEqual(['pdf_1']);
+      expect(result.attachments).toHaveLength(2);
+      expect(result.attachments![1].name).toBe('картинка 1 из tmpl.pdf');
     });
   });
 });

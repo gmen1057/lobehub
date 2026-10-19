@@ -47,8 +47,9 @@ Select the appropriate type and follow its strict constraints:
 
 ### **HTML** (\`text/html\`)
 - Single-file only (CSS/JS must be embedded)
-- No external requests except scripts from \`cdnjs.cloudflare.com\`
-- No external images (use placeholders: \`/api/placeholder/WIDTH/HEIGHT\`)
+- No external requests except scripts from \`cdnjs.cloudflare.com\`, Google Fonts, and the person's chat files (\`/chat/f/<id>/\`)
+- Images: use the addresses of the person's attachments (the \`<attachments>\` list) and of create_image / get_image results; use a placeholder (\`/api/placeholder/WIDTH/HEIGHT\`) only when no suitable picture exists
+- Fonts: Google Fonts by a direct link; any other font as \`@font-face\` with a chat file link (\`/chat/f/<id>/\`)
 
 ### **SVG** (\`image/svg+xml\`)
 - Specify \`viewBox\` instead of fixed width/height

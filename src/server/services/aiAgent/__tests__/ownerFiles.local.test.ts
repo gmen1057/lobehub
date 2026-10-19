@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import { prepareImageForModel } from '../imageSlicing';
+import { extractPdfImages } from '../pdfImages';
 import { renderPdfPages } from '../pdfPages';
 
 // arckep (19.10.2026): настоящие файлы владельца (макет письма JPEG 2512×23050 и PDF 603×5532 пт). Лежат в
@@ -31,5 +32,13 @@ describe.runIf(existsSync(PDF))('PDF владельца 603×5532 пт', () => {
     expect(result.images.every((image) => image.width === 1536 && image.height === 2048)).toBe(
       true,
     );
+  }, 120_000);
+
+  it('13 вшитых картинок, все с мягкой маской → PNG с альфой, мелочи и дублей нет', async () => {
+    const images = await extractPdfImages(readFileSync(PDF));
+    expect(images).toHaveLength(13);
+    expect(images.every((image) => image.hasAlpha && image.mimeType === 'image/png')).toBe(true);
+    expect(images.every((image) => Math.min(image.width, image.height) >= 48)).toBe(true);
+    expect(images.map((image) => image.index)).toEqual(Array.from({ length: 13 }, (_, i) => i + 1));
   }, 120_000);
 });

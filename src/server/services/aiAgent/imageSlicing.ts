@@ -118,6 +118,8 @@ export interface PreparedImages {
   parts: PreparedImage[];
   /** Картинка резалась на куски (parts.length > 1) */
   sliced: boolean;
+  /** Размер исходной картинки в точках (с учётом поворота); неизвестен у нечитаемого файла */
+  source?: { height: number; width: number };
   /** Исходная картинка не менялась */
   unchanged: boolean;
 }
@@ -194,7 +196,12 @@ export const prepareImageForModel = async (
       height <= IMAGE_SINGLE_MAX_HEIGHT &&
       buffer.length <= singleBytes
     ) {
-      return { parts: [{ buffer, height, mimeType, width }], sliced: false, unchanged: true };
+      return {
+        parts: [{ buffer, height, mimeType, width }],
+        sliced: false,
+        source: { height, width },
+        unchanged: true,
+      };
     }
 
     const base = () =>
@@ -236,6 +243,7 @@ export const prepareImageForModel = async (
       return {
         parts: [{ ...result, height: out.height ?? plan.height, width: out.width ?? plan.width }],
         sliced: false,
+        source: { height, width },
         unchanged: false,
       };
     }
@@ -267,7 +275,7 @@ export const prepareImageForModel = async (
       info.width,
       info.height,
     );
-    return { parts, sliced: true, unchanged: false };
+    return { parts, sliced: true, source: { height, width }, unchanged: false };
   } catch (error) {
     log('image preparation failed, using the original: %s', error);
     return {

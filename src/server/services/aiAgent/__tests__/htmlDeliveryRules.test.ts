@@ -1,0 +1,75 @@
+import { builtinSkills } from '@lobechat/builtin-skills';
+import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
+import { describe, expect, it } from 'vitest';
+
+// arckep (19.10.2026): как модель отдаёт готовую HTML-страницу. Правила в системном промпте помощника (картинки из
+// вложений, шрифты) не должны спорить с навыком Artifacts: он подключается в тот же запрос.
+
+const systemRole = DEFAULT_AGENT_CONFIG.systemRole ?? '';
+const artifactsSkill = builtinSkills.find((skill) => skill.identifier === 'lobe-artifacts')!;
+const skill = artifactsSkill.content;
+
+/** Раздел HTML навыка: от «### **HTML**» до следующего раздела. */
+const htmlSection = skill.slice(skill.indexOf('### **HTML**'), skill.indexOf('### **SVG**'));
+
+describe('системный промпт помощника: готовые страницы', () => {
+  it('HTML-страница, письмо, лендинг, SVG — всегда в <lobeArtifact>, не блоком кода', () => {
+    expect(systemRole).toContain('<lobeArtifact type="text/html"');
+    expect(systemRole).toMatch(/HTML page, email, landing page or SVG/);
+    expect(systemRole).toMatch(/never into a code block/);
+    // отдельный SVG — тип навыка
+    expect(systemRole).toContain('image/svg+xml');
+  });
+
+  it('картинки в HTML: адреса из <attachments> и результатов create_image / get_image, заглушка только без подходящей', () => {
+    expect(systemRole).toContain('<attachments>');
+    expect(systemRole).toContain('create_image');
+    expect(systemRole).toContain('get_image');
+    expect(systemRole).toMatch(/placeholder only when no suitable picture exists/);
+  });
+
+  it('шрифты: Google Fonts по прямой ссылке; другой шрифт — песочница, файл чата /chat/f/…, @font-face', () => {
+    expect(systemRole).toMatch(/Google Fonts by a direct link/);
+    expect(systemRole).toContain('sandbox');
+    expect(systemRole).toContain('/chat/f/');
+    expect(systemRole).toContain('@font-face');
+  });
+
+  it('прежние правила на месте: студия, видео с оценкой, перевод файлов', () => {
+    expect(systemRole).toContain('mcp-arckep-studio-images');
+    expect(systemRole).toContain('mcp-arckep-studio-video');
+    expect(systemRole).toContain('Файлы на перевод');
+  });
+});
+
+describe('навык Artifacts не спорит с системным промптом', () => {
+  it('навык найден и содержит раздел HTML', () => {
+    expect(artifactsSkill).toBeDefined();
+    expect(htmlSection).toContain('text/html');
+  });
+
+  it('HTML: больше нет запрета на внешние картинки — разрешены адреса вложений и результатов', () => {
+    expect(htmlSection).not.toMatch(/No external images/);
+    expect(htmlSection).toContain('<attachments>');
+    expect(htmlSection).toContain('create_image / get_image');
+  });
+
+  it('HTML: заглушка /api/placeholder остаётся, но только если подходящей картинки нет', () => {
+    expect(htmlSection).toContain('/api/placeholder/WIDTH/HEIGHT');
+    expect(htmlSection).toMatch(/only when no suitable picture exists/);
+  });
+
+  it('HTML: Google Fonts и файлы чата разрешены, остальное по-прежнему только cdnjs', () => {
+    expect(htmlSection).toContain('cdnjs.cloudflare.com');
+    expect(htmlSection).toContain('Google Fonts');
+    expect(htmlSection).toContain('/chat/f/<id>/');
+    expect(htmlSection).toContain('@font-face');
+  });
+
+  it('SVG и React: правила не тронуты', () => {
+    const svg = skill.slice(skill.indexOf('### **SVG**'), skill.indexOf('### **React**'));
+    expect(svg).toContain('viewBox');
+    const react = skill.slice(skill.indexOf('### **React**'), skill.indexOf('## Step C'));
+    expect(react).toMatch(/No external images \(use placeholders/);
+  });
+});

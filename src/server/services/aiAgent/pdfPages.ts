@@ -1,4 +1,3 @@
-import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +11,7 @@ import {
   planImageSlices,
   prepareImageForModel,
 } from './imageSlicing';
+import { popplerBin as bin, runPoppler as run } from './popplerRunner';
 
 const log = debug('lobe-server:pdf-pages');
 
@@ -74,49 +74,6 @@ interface PageSize {
   height: number;
   width: number;
 }
-
-const bin = (name: 'pdfinfo' | 'pdftoppm') =>
-  (name === 'pdfinfo' ? process.env.PDFINFO_BIN : process.env.PDFTOPPM_BIN) || name;
-
-/** Предел памяти (виртуальной) одной программы poppler, МБ; `ARCKEP_PDF_MEMORY_MB`, 0 — без предела. */
-const memoryLimitBytes = () => {
-  const mb = Number(process.env.ARCKEP_PDF_MEMORY_MB ?? 2048);
-  return Number.isFinite(mb) && mb > 0 ? Math.round(mb * 1024 * 1024) : 0;
-};
-
-const exec = (file: string, args: string[], timeout: number): Promise<string> =>
-  new Promise((resolve, reject) => {
-    const child = execFile(file, args, { maxBuffer: 4 * 1024 * 1024, timeout }, (error, stdout) =>
-      error ? reject(error) : resolve(stdout),
-    );
-    // Не мешаем остальным службам на хосте: низкий приоритет
-    try {
-      if (child.pid) os.setPriority(child.pid, 10);
-    } catch {
-      // приоритет не обязателен
-    }
-  });
-
-/**
- * Запуск poppler с пределами: память (prlimit --as) и время процессора. Чужой PDF с огромной страницей или
- * «бомбой» упирается в предел и падает, а не съедает память хоста. Нет prlimit на хосте — запуск без него.
- */
-const run = async (file: string, args: string[], timeout: number): Promise<string> => {
-  const memory = memoryLimitBytes();
-  if (memory > 0) {
-    try {
-      return await exec(
-        'prlimit',
-        [`--as=${memory}`, `--cpu=${Math.ceil(timeout / 1000) + 5}`, '--', file, ...args],
-        timeout,
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      log('prlimit is not available, running without memory limit');
-    }
-  }
-  return exec(file, args, timeout);
-};
 
 /** Число страниц и размеры первых `limit` страниц (пункты) из вывода `pdfinfo -f 1 -l N`. */
 export const parsePdfInfo = (

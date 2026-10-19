@@ -521,6 +521,65 @@ describe('FileModel', () => {
     });
   });
 
+  // arckep (19.10.2026): оригинал присланной картинки находится по ключу в хранилище
+  describe('findByKey', () => {
+    it('finds the file of the user by its storage key', async () => {
+      const { id } = await fileModel.create({
+        name: 'макет.jpg',
+        url: 'files/u/abc/макет.jpg',
+        size: 100,
+        fileType: 'image/jpeg',
+      });
+
+      const file = await fileModel.findByKey('files/u/abc/макет.jpg');
+      expect(file).toMatchObject({ id, name: 'макет.jpg', fileType: 'image/jpeg', userId });
+    });
+
+    it('does not find files of other users', async () => {
+      await new FileModel(serverDB, 'user2').create({
+        name: 'чужой.jpg',
+        url: 'files/u2/чужой.jpg',
+        size: 1,
+        fileType: 'image/jpeg',
+      });
+
+      expect(await fileModel.findByKey('files/u2/чужой.jpg')).toBeUndefined();
+    });
+
+    it('returns undefined for an unknown key and an empty key', async () => {
+      await fileModel.create({
+        name: 'a.png',
+        url: 'files/u/a.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+
+      expect(await fileModel.findByKey('files/u/other.png')).toBeUndefined();
+      expect(await fileModel.findByKey('')).toBeUndefined();
+    });
+
+    it('takes the newest record when several records share the key', async () => {
+      const first = await fileModel.create({
+        name: 'old.png',
+        url: 'files/u/same.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+      await serverDB
+        .update(files)
+        .set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+        .where(eq(files.id, first.id));
+      const second = await fileModel.create({
+        name: 'new.png',
+        url: 'files/u/same.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+
+      expect((await fileModel.findByKey('files/u/same.png'))?.id).toBe(second.id);
+    });
+  });
+
   it('should update a file', async () => {
     const { id } = await fileModel.create({
       name: 'test-file.txt',

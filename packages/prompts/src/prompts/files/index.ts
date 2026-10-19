@@ -1,9 +1,11 @@
 import type { ChatFileItem, ChatImageItem, ChatVideoItem } from '@lobechat/types';
 
+import { type AttachmentRef, attachmentsPrompts } from './attachments';
 import { filePrompts } from './file';
 import { imagesPrompts } from './image';
 import { videosPrompts } from './video';
 
+export { type AttachmentRef, attachmentsPrompts } from './attachments';
 export type { FileReadOptions, FileReadPage } from './context';
 export {
   FILE_CONTEXT_CHARS,
@@ -17,6 +19,7 @@ export type { KnowledgeBaseInfo, PromptKnowledgeOptions } from './knowledgeBase'
 export { promptAgentKnowledge } from './knowledgeBase';
 
 export const filesPrompts = ({
+  attachments,
   imageList,
   fileList,
   videoList,
@@ -24,6 +27,11 @@ export const filesPrompts = ({
   fileBudget,
 }: {
   addUrl?: boolean;
+  /**
+   * arckep: список вложений с устойчивыми адресами оригиналов (attachments.ts). Он есть — адреса копий
+   * (длинные подписанные ссылки) в <image>/<file> не повторяются: это сотни токенов на каждую картинку.
+   */
+  attachments?: AttachmentRef[];
   fileBudget?: number;
   fileList?: ChatFileItem[];
   imageList?: ChatImageItem[];
@@ -35,10 +43,15 @@ export const filesPrompts = ({
 
   if (!hasImages && !hasFiles && !hasVideos) return '';
 
+  const hasAttachments = (attachments || []).length > 0;
+  // адреса копий не повторяются, когда есть список вложений с адресами оригиналов
+  const copyUrls = addUrl && !hasAttachments;
+
   const contentParts = [
-    hasImages ? imagesPrompts(imageList!, addUrl) : '',
-    hasFiles ? filePrompts(fileList!, addUrl, fileBudget) : '',
+    hasImages ? imagesPrompts(imageList!, copyUrls) : '',
+    hasFiles ? filePrompts(fileList!, copyUrls, fileBudget) : '',
     hasVideos ? videosPrompts(videoList!, addUrl) : '',
+    attachmentsPrompts(attachments),
   ].filter(Boolean);
 
   const prompt = `<!-- SYSTEM CONTEXT (NOT PART OF USER QUERY) -->

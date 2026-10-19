@@ -51,6 +51,12 @@ describe('ingestAttachment — картинки', () => {
       const meta = await sharp(call[0]).metadata();
       expect([meta.width, meta.height]).toEqual([1536, 2048]);
     }
+    // для списка вложений: размер исходной картинки и признак «сохранённое — не оригинал»; размеры кусков в точках
+    expect(result.source).toEqual({ height: 23_050, width: 2512 });
+    expect(result.unchanged).toBe(false);
+    expect(result.images.every((image) => image.width === 1536 && image.height === 2048)).toBe(
+      true,
+    );
     // прежние поля — первый кусок
     expect(result.fileId).toBe(result.images[0].fileId);
     expect(result.key).toBe(result.images[0].key);
@@ -63,7 +69,16 @@ describe('ingestAttachment — картинки', () => {
     const result = await ingest({ buffer: photo, mimeType: 'image/jpeg', name: 'photo.jpg' });
 
     expect(result.images).toHaveLength(1);
-    expect(result.images[0]).toMatchObject({ index: 1, name: 'photo.jpg', total: 1 });
+    expect(result.images[0]).toMatchObject({
+      height: 800,
+      index: 1,
+      name: 'photo.jpg',
+      total: 1,
+      width: 1200,
+    });
+    // сохранён оригинал: байты те же, размер исходной известен
+    expect(result.unchanged).toBe(true);
+    expect(result.source).toEqual({ height: 800, width: 1200 });
     expect(fileService.uploadFromBuffer).toHaveBeenCalledTimes(1);
     const [buffer, mime, pathname] = fileService.uploadFromBuffer.mock.calls[0];
     expect(buffer).toBe(photo);
@@ -79,6 +94,10 @@ describe('ingestAttachment — картинки', () => {
     expect(mime).toBe('image/png');
     const meta = await sharp(buffer).metadata();
     expect([meta.width, meta.height]).toEqual([1536, 1152]);
+    // сохранена ужатая копия, не оригинал; размер исходной (4000×3000) известен — его увидит модель в списке
+    expect(result.unchanged).toBe(false);
+    expect(result.source).toEqual({ height: 3000, width: 4000 });
+    expect(result.images[0]).toMatchObject({ height: 1152, width: 1536 });
   });
 
   it('экран телефона 1170×2532 — один файл, не режется', async () => {
@@ -117,6 +136,9 @@ describe('ingestAttachment — не картинки', () => {
     expect(result.isImage).toBe(false);
     expect(result.images).toEqual([]);
     expect(result.resolvedUrl).toBe('');
+    // не картинка: сохранён сам файл, размера нет
+    expect(result.unchanged).toBe(true);
+    expect(result.source).toBeUndefined();
     expect(result.fileId).toBe('file_1');
     expect(fileService.uploadFromBuffer.mock.calls[0][1]).toBe('application/pdf');
     expect(fileService.getFullFileUrl).not.toHaveBeenCalled();

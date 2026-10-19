@@ -309,6 +309,21 @@ export class FileModel {
     });
   };
 
+  /**
+   * arckep: запись файла человека по ключу в хранилище (`files.url`). Нужна, чтобы по присланному адресу
+   * картинки найти её оригинал в файлах человека; чужие файлы не находятся. Одинаковый ключ у нескольких
+   * записей — свежайшая.
+   */
+  findByKey = async (key: string) => {
+    const [row] = await this.db
+      .select()
+      .from(files)
+      .where(and(eq(files.url, key), eq(files.userId, this.userId)))
+      .orderBy(desc(files.createdAt))
+      .limit(1);
+    return row;
+  };
+
   countFilesByHash = async (hash: string) => {
     const result = await this.db
       .select({

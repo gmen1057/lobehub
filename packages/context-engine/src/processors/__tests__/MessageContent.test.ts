@@ -253,6 +253,89 @@ describe('MessageContentProcessor', () => {
       expect(content[0].text).toContain('Hello');
     });
 
+    // arckep (19.10.2026): адреса оригиналов вложений лежат в metadata.attachments user-сообщения
+    it('should render attachments from message metadata as <attachments> without touching the user text', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        model: 'gpt-4',
+        provider: 'openai',
+        isCanUseVision: mockIsCanUseVision,
+        fileContext: { enabled: true },
+      });
+
+      const messages: UIChatMessage[] = [
+        {
+          id: 'test',
+          role: 'user',
+          content: 'Сделай письмо',
+          imageList: [
+            {
+              id: 'img1',
+              url: 'http://example.com/part-1?X-Amz-Signature=abcdef',
+              alt: 'макет.jpg',
+            },
+          ],
+          metadata: {
+            attachments: [
+              {
+                height: 23_050,
+                mime: 'image/jpeg',
+                name: 'макет.jpg',
+                url: 'https://arckep.ru/chat/f/orig_1/',
+                width: 2512,
+              },
+            ],
+          },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ];
+
+      const result = await processor.process(createContext(messages));
+
+      const content = result.messages[0].content as any[];
+      expect(content[0].text).toContain('<attachments>');
+      expect(content[0].text).toContain(
+        '- макет.jpg · image/jpeg · 2512×23050 px · https://arckep.ru/chat/f/orig_1/',
+      );
+      // адрес копии с подписью в тексте не повторяется
+      expect(content[0].text).not.toContain('X-Amz-Signature');
+      // текст человека на месте
+      expect(content[0].text).toContain('Сделай письмо');
+    });
+
+    it('should not render <attachments> when metadata has none or has a wrong shape', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        model: 'gpt-4',
+        provider: 'openai',
+        isCanUseVision: mockIsCanUseVision,
+        fileContext: { enabled: true },
+      });
+
+      for (const metadata of [undefined, {}, { attachments: [] }, { attachments: 'oops' }]) {
+        const result = await processor.process(
+          createContext([
+            {
+              id: 'test',
+              role: 'user',
+              content: 'Hello',
+              imageList: [{ id: 'img1', url: 'http://example.com/image.jpg', alt: 'a.png' }],
+              metadata,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            } as UIChatMessage,
+          ]),
+        );
+        const content = result.messages[0].content as any[];
+        expect(content[0].text).not.toContain('<attachments>');
+        // адрес копии на месте, как раньше
+        expect(content[0].text).toContain('http://example.com/image.jpg');
+      }
+    });
+
     it('should not add file context when disabled', async () => {
       mockIsCanUseVision.mockReturnValue(false);
 

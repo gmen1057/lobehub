@@ -27,6 +27,8 @@ export interface AttachmentSource {
 /** Один файл-картинка, отданный модели (картинка целиком или один её кусок). */
 export interface IngestedImage {
   fileId: string;
+  /** Размер этого файла в точках; 0 — неизвестен */
+  height: number;
   /** Номер куска с 1; у цельной картинки — 1 */
   index: number;
   key: string;
@@ -35,6 +37,7 @@ export interface IngestedImage {
   resolvedUrl: string;
   /** Сколько кусков всего; у цельной картинки — 1 */
   total: number;
+  width: number;
 }
 
 export interface IngestResult {
@@ -48,6 +51,10 @@ export interface IngestResult {
   isImage: boolean;
   key: string;
   resolvedUrl: string;
+  /** Размер исходной картинки в точках (до сжатия и резки); есть у картинок, которые удалось прочитать */
+  source?: { height: number; width: number };
+  /** Сохранённый файл — исходные байты (картинка не сжималась и не резалась; прочие файлы — всегда) */
+  unchanged: boolean;
 }
 
 // --------------- Public API ---------------
@@ -117,12 +124,14 @@ export async function ingestAttachment(
       );
       images.push({
         fileId,
+        height: part.height,
         index,
         key,
         mimeType: part.mimeType,
         name,
         resolvedUrl: await fileService.getFullFileUrl(key),
         total,
+        width: part.width,
       });
     }
 
@@ -133,6 +142,8 @@ export async function ingestAttachment(
       isImage: true,
       key: first.key,
       resolvedUrl: first.resolvedUrl,
+      source: prepared.source,
+      unchanged: prepared.unchanged,
     };
   }
 
@@ -143,5 +154,5 @@ export async function ingestAttachment(
     `${folder}/${baseName}`,
   );
 
-  return { fileId, images: [], isImage: false, key, resolvedUrl: '' };
+  return { fileId, images: [], isImage: false, key, resolvedUrl: '', unchanged: true };
 }

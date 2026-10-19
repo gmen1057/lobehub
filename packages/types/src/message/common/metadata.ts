@@ -96,7 +96,24 @@ export const EmojiReactionSchema = z.object({
   users: z.array(z.string()),
 });
 
+/**
+ * arckep (19.10.2026): вложение сообщения человека для модели — имя, тип, размер картинки в точках и устойчивый
+ * адрес ОРИГИНАЛА (`https://arckep.ru/chat/f/<id>/`). Лежит в `metadata.attachments` user-сообщения: так список живёт
+ * в истории между шагами и ходами и не попадает в текст, который видит человек.
+ */
+export const MessageAttachmentRefSchema = z.object({
+  height: z.number().optional(),
+  mime: z.string().optional(),
+  name: z.string(),
+  note: z.string().optional(),
+  url: z.string(),
+  width: z.number().optional(),
+});
+
+export type MessageAttachmentRef = z.infer<typeof MessageAttachmentRefSchema>;
+
 export const MessageMetadataSchema = ModelUsageSchema.merge(ModelPerformanceSchema).extend({
+  attachments: z.array(MessageAttachmentRefSchema).optional(),
   collapsed: z.boolean().optional(),
   inspectExpanded: z.boolean().optional(),
   isMultimodal: z.boolean().optional(),
@@ -137,6 +154,8 @@ export interface ModelPerformance {
 export interface MessageMetadata extends ModelUsage, ModelPerformance {
   activeBranchIndex?: number;
   activeColumn?: boolean;
+  /** arckep: оригиналы вложений user-сообщения с адресами для модели (см. MessageAttachmentRefSchema) */
+  attachments?: MessageAttachmentRef[];
   /**
    * Message collapse state
    * true: collapsed, false/undefined: expanded
