@@ -1,5 +1,6 @@
+import { systemPromptHeadless } from '@lobechat/builtin-tool-activator';
 import type * as ModelBankModule from 'model-bank';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 
@@ -215,7 +216,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
   it('подключения студии mcp-arckep-studio-* (F6) тоже откладываются до activateTools', async () => {
     mockGetAgentConfig.mockResolvedValue({
       ...agentConfig(),
-      plugins: ['mcp-arckep-studio-images', 'mcp-arckep-wordstat', 'lobe-artifacts'],
+      plugins: ['mcp-arckep-studio-images', 'mcp-arckep-e2b-sandbox', 'lobe-artifacts'],
     });
     await service.execAgent({ agentId: 'agent-1', prompt: 'Нарисуй кота' });
 
@@ -223,10 +224,10 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     const generateArgs = toolsEngine.generateToolsDetailed.mock.calls[0][0];
     expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
     expect(generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-studio-images');
-    // обычные подключения (Wordstat) и артефакты — сразу, как и раньше
-    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    // песочница E2B (исключение из ленивых подключений MCP, 19.10) и артефакты — сразу, как и раньше
+    expect(generateArgs.toolIds).toContain('mcp-arckep-e2b-sandbox');
     expect(generateArgs.toolIds).toContain('lobe-artifacts');
-    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-wordstat');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-e2b-sandbox');
   });
 
   it('у бота подключения студии тоже по требованию, а свои инструменты — сразу (F7)', async () => {
@@ -335,5 +336,235 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     });
 
     expect(mockParseFile).not.toHaveBeenCalled();
+  });
+});
+
+// arckep (19.10.2026): меньше постоянной нагрузки в первом шаге серверного пути — подключения MCP
+// (кроме E2B), база знаний и ссылки на темы по требованию, прежняя «Студия» скрыта при подключениях,
+// промпт активатора без магазина навыков в режиме без интерфейса.
+describe('AiAgentService.execAgent — arckep: облегчённая загрузка инструментов', () => {
+  let service: AiAgentService;
+
+  const FULL_ACTIVATOR_ROLE = 'FULL ACTIVATOR PROMPT: activate lobe-skill-store first';
+
+  const manifest = (identifier: string, extra: Record<string, unknown> = {}) => ({
+    api: [],
+    identifier,
+    meta: { title: identifier },
+    type: 'builtin',
+    ...extra,
+  });
+
+  const baseConfig = (overrides: Record<string, unknown> = {}) => ({
+    chatConfig: { historyCount: 8 },
+    id: 'agent-1',
+    knowledgeBases: [],
+    model: 'gpt-4',
+    params: {},
+    plugins: [],
+    provider: 'openai',
+    slug: 'my-agent',
+    systemRole: 'You are a helpful assistant.',
+    ...overrides,
+  });
+
+  /** Движок с настоящим getPluginManifest: ленивые манифесты попадают в карту операции. */
+  const run = async (
+    config: Record<string, unknown>,
+    params: Record<string, unknown> = {},
+  ): Promise<{ generateArgs: any; manifestIds: string[]; toolSet: any }> => {
+    const engine = {
+      generateToolsDetailed: vi.fn().mockReturnValue({
+        enabledManifests: [manifest('lobe-activator', { systemRole: FULL_ACTIVATOR_ROLE })],
+        enabledToolIds: ['lobe-activator'],
+        tools: [],
+      }),
+      getEnabledPluginManifests: vi.fn().mockReturnValue(new Map()),
+      getPluginManifest: vi.fn((id: string) => manifest(id)),
+    };
+    vi.mocked(createServerAgentToolsEngine).mockReturnValueOnce(engine as any);
+    mockGetAgentConfig.mockResolvedValue(baseConfig(config));
+
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Hello', ...params });
+
+    const { toolSet } = mockCreateOperation.mock.calls[0][0];
+    return {
+      generateArgs: engine.generateToolsDetailed.mock.calls[0][0],
+      manifestIds: Object.keys(toolSet.manifestMap),
+      toolSet,
+    };
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+    mockCreateOperation.mockResolvedValue({
+      autoStarted: true,
+      messageId: 'queue-msg-1',
+      operationId: 'op-123',
+      success: true,
+    });
+    service = new AiAgentService({} as any, 'test-user-id');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('подключения MCP — по требованию, кроме E2B: он остаётся сразу', async () => {
+    const { generateArgs, manifestIds } = await run({
+      plugins: [
+        'mcp-arckep-wordstat',
+        'mcp-arckep-e2b-sandbox',
+        'mcp-arckep-studio-images',
+        'lobe-artifacts',
+      ],
+    });
+
+    expect(generateArgs.toolIds).toContain('mcp-arckep-e2b-sandbox');
+    expect(generateArgs.toolIds).toContain('lobe-artifacts');
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-wordstat');
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
+    expect(generateArgs.excludeDefaultToolIds).toEqual(
+      expect.arrayContaining(['mcp-arckep-wordstat', 'mcp-arckep-studio-images']),
+    );
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-e2b-sandbox');
+    // ленивые перечисляются в <available_tools>: их манифесты лежат в карте операции
+    expect(manifestIds).toEqual(
+      expect.arrayContaining(['mcp-arckep-wordstat', 'mcp-arckep-studio-images']),
+    );
+  });
+
+  it('инструмент, выбранный на сообщение, подключается сразу даже если он MCP', async () => {
+    const { generateArgs, manifestIds } = await run(
+      { plugins: ['mcp-arckep-wordstat'] },
+      { additionalPluginIds: ['mcp-arckep-wordstat'] },
+    );
+
+    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-wordstat');
+    expect(manifestIds).not.toContain('mcp-arckep-wordstat');
+  });
+
+  it('набор бота не облегчается: MCP, база знаний и ссылки на темы — как раньше', async () => {
+    const { generateArgs } = await run(
+      { plugins: ['mcp-arckep-wordstat', 'mcp-arckep-studio-images'] },
+      { botContext: { botProviderId: 'bot-1', endUserRef: 'tg:1', platform: 'telegram' } as any },
+    );
+
+    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images'); // F7: подключения студии — по требованию
+    expect(generateArgs.excludeDefaultToolIds ?? []).not.toContain('lobe-knowledge-base');
+    expect(generateArgs.excludeDefaultToolIds ?? []).not.toContain('lobe-topic-reference');
+  });
+
+  it('в ручном режиме навыков (активатор выключен) MCP, база знаний и ссылки на темы остаются сразу', async () => {
+    const { generateArgs } = await run({
+      chatConfig: { skillActivateMode: 'manual' },
+      plugins: ['mcp-arckep-wordstat'],
+    });
+
+    expect(generateArgs.toolIds).toContain('mcp-arckep-wordstat');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-wordstat');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('lobe-knowledge-base');
+    expect(generateArgs.excludeDefaultToolIds).not.toContain('lobe-topic-reference');
+  });
+
+  it('база знаний: без включённых баз — по требованию, с включённой — сразу', async () => {
+    const without = await run({ knowledgeBases: [{ enabled: false, id: 'kb-off' }] });
+    expect(without.generateArgs.excludeDefaultToolIds).toContain('lobe-knowledge-base');
+    expect(without.manifestIds).toContain('lobe-knowledge-base');
+
+    vi.clearAllMocks();
+    mockCreateOperation.mockResolvedValue({
+      autoStarted: true,
+      operationId: 'op-2',
+      success: true,
+    });
+    mockMessageCreate.mockResolvedValue({ id: 'msg-2' });
+
+    const withKb = await run({ knowledgeBases: [{ enabled: true, id: 'kb-1' }] });
+    expect(withKb.generateArgs.excludeDefaultToolIds).not.toContain('lobe-knowledge-base');
+    expect(withKb.manifestIds).not.toContain('lobe-knowledge-base');
+  });
+
+  it('ссылки на темы: по требованию, а с <refer_topic> в сообщении — сразу', async () => {
+    const plain = await run({});
+    expect(plain.generateArgs.excludeDefaultToolIds).toContain('lobe-topic-reference');
+    expect(plain.manifestIds).toContain('lobe-topic-reference');
+
+    vi.clearAllMocks();
+    mockCreateOperation.mockResolvedValue({
+      autoStarted: true,
+      operationId: 'op-2',
+      success: true,
+    });
+    mockMessageCreate.mockResolvedValue({ id: 'msg-2' });
+
+    const referring = await run(
+      {},
+      { prompt: 'Что в <refer_topic name="План" id="topic-9"></refer_topic>?' },
+    );
+    expect(referring.generateArgs.excludeDefaultToolIds).not.toContain('lobe-topic-reference');
+    expect(referring.manifestIds).not.toContain('lobe-topic-reference');
+  });
+
+  it('прежняя «Студия» скрыта вовсе, если у помощника есть подключение студии', async () => {
+    const { generateArgs, manifestIds } = await run({
+      plugins: ['arckep-studio', 'mcp-arckep-studio-images'],
+    });
+
+    expect(generateArgs.toolIds).not.toContain('arckep-studio');
+    expect(generateArgs.excludeDefaultToolIds).toContain('arckep-studio');
+    expect(manifestIds).not.toContain('arckep-studio'); // и в списке <available_tools> её нет
+    expect(manifestIds).toContain('mcp-arckep-studio-images');
+  });
+
+  it('без подключений студии прежняя «Студия» остаётся запасным путём (в списке по требованию)', async () => {
+    const { generateArgs, manifestIds } = await run({ plugins: ['arckep-studio'] });
+
+    expect(generateArgs.toolIds).not.toContain('arckep-studio');
+    expect(manifestIds).toContain('arckep-studio');
+  });
+
+  it('прежняя «Студия», выбранная на сообщение, не прячется', async () => {
+    const { generateArgs } = await run(
+      { plugins: ['mcp-arckep-studio-images'] },
+      { additionalPluginIds: ['arckep-studio'] },
+    );
+
+    expect(generateArgs.toolIds).toContain('arckep-studio');
+  });
+
+  it('выключенное человеком на это сообщение не предлагается в списке', async () => {
+    const { manifestIds } = await run(
+      { plugins: ['mcp-arckep-studio-images', 'arckep-sites'] },
+      { excludePluginIds: ['arckep-sites', 'mcp-arckep-studio-images'] },
+    );
+
+    expect(manifestIds).not.toContain('arckep-sites');
+    expect(manifestIds).not.toContain('mcp-arckep-studio-images');
+    // остальные ленивые инструменты на месте
+    expect(manifestIds).toContain('lobe-notebook');
+  });
+
+  it('в режиме без интерфейса активатор получает промпт без магазина навыков', async () => {
+    vi.stubEnv('ARCKEP_HEADLESS_TOOLS', '1');
+
+    const { toolSet } = await run({});
+    const role = toolSet.manifestMap['lobe-activator'].systemRole as string;
+
+    expect(role).toBe(systemPromptHeadless);
+    expect(role).not.toContain('lobe-skill-store');
+    expect(role).not.toContain('SKILL-FIRST');
+    expect(role).not.toContain('Skill Marketplace');
+    // остальное в манифесте активатора не тронуто
+    expect(toolSet.manifestMap['lobe-activator'].identifier).toBe('lobe-activator');
+  });
+
+  it('вне режима без интерфейса промпт активатора остаётся как собрал движок инструментов', async () => {
+    const { toolSet } = await run({});
+
+    expect(toolSet.manifestMap['lobe-activator'].systemRole).toBe(FULL_ACTIVATOR_ROLE);
   });
 });

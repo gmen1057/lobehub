@@ -103,6 +103,18 @@ export const ARCKEP_STUDIO_CONNECTOR_PREFIX = 'mcp-arckep-studio-';
 export const isArckepLazyToolId = (id: string): boolean =>
   arckepLazyToolIds.includes(id) || id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX);
 
+/**
+ * arckep (19.10.2026, серверный путь): остальные подключения MCP человека (`mcp-*`) тоже грузятся по
+ * требованию — схемы их инструментов уходили в каждое сообщение. Статистика за 60 дней: Wordstat вызывали
+ * 1 раз (при этом он грузился сразу у 284 помощников). Исключение — песочница E2B: ею пользуются чаще
+ * (89 вызовов от 4 человек за те же 60 дней), поэтому она остаётся в первом шаге. Сюда же добавлять
+ * подключения, которые должны быть под рукой с первого сообщения.
+ */
+export const ARCKEP_MCP_CONNECTOR_PREFIX = 'mcp-';
+export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = ['mcp-arckep-e2b-sandbox'];
+export const isArckepLazyMcpConnectorId = (id: string): boolean =>
+  id.startsWith(ARCKEP_MCP_CONNECTOR_PREFIX) && !ARCKEP_EAGER_MCP_TOOL_IDS.includes(id);
+
 export const builtinTools: LobeBuiltinTool[] = [
   {
     discoverable: false,

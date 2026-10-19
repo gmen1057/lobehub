@@ -1,7 +1,10 @@
 import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
+import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin-tool-activator';
+import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
+import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MessageToolIdentifier } from '@lobechat/builtin-tool-message';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
@@ -10,10 +13,12 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
+import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
   arckepLazyToolIds,
   builtinTools,
+  isArckepLazyMcpConnectorId,
   manualModeExcludeToolIds,
 } from '@lobechat/builtin-tools';
 import { LOADING_FLAT } from '@lobechat/const';
@@ -51,6 +56,7 @@ import {
   type EvalContext,
   type ServerAgentToolsContext,
 } from '@/server/modules/Mecha';
+import { isArckepHeadlessTools } from '@/server/modules/Mecha/AgentToolsEngine';
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
 import { AgentService } from '@/server/services/agent';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -661,9 +667,46 @@ export class AiAgentService {
       const studioConnectorIds = (agentConfig.plugins || []).filter((id) =>
         id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX),
       );
-      const lazyToolIds = (
-        keepsOwnToolSet ? studioConnectorIds : [...arckepLazyToolIds, ...studioConnectorIds]
-      ).filter((id) => !pickedToolIds.has(id) && !restHiddenToolIds.includes(id));
+      // arckep (19.10.2026, постоянная нагрузка): к ленивым прибавляются остальные подключения MCP человека
+      // (кроме E2B — ARCKEP_EAGER_MCP_TOOL_IDS), а база знаний и ссылки на темы — только по делу.
+      // Статистика за 60 дней: Wordstat вызывали 1 раз (грузился сразу у 284 помощников), ссылки на темы —
+      // 2 раза; без включённых баз знаний KB-инструмент впустую занимал первый шаг. Боты и встроенные
+      // помощники (keepsOwnToolSet) сохраняют свой набор, как и раньше. В ручном режиме навыков активатор
+      // выключен — подключить отложенное нечем, поэтому новые категории остаются в первом шаге.
+      const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
+      const defersLightweight = !keepsOwnToolSet && !isManualMode;
+      const lazyMcpConnectorIds = defersLightweight
+        ? (agentConfig.plugins || []).filter(isArckepLazyMcpConnectorId)
+        : [];
+      const lazyOnDemandToolIds = defersLightweight
+        ? [
+            ...(hasEnabledKnowledgeBases ? [] : [KnowledgeBaseIdentifier]),
+            ...(hasTopicReference ? [] : [TopicReferenceIdentifier]),
+          ]
+        : [];
+      // Прежняя встроенная «Студия» (arckep-studio) заменена подключениями mcp-arckep-studio-*: если они
+      // у помощника есть, старую не предлагаем вовсе — иначе у модели два набора инструментов для картинок
+      // и устаревший estimateImage → createImage. Без подключений остаётся запасным путём.
+      const hideLegacyStudio =
+        !keepsOwnToolSet &&
+        studioConnectorIds.length > 0 &&
+        !pickedToolIds.has(ArckepStudioIdentifier);
+      const hiddenToolIds = [
+        ...restHiddenToolIds,
+        ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
+      ];
+      const lazyToolIds = [
+        ...new Set(
+          keepsOwnToolSet
+            ? studioConnectorIds
+            : [
+                ...arckepLazyToolIds,
+                ...studioConnectorIds,
+                ...lazyMcpConnectorIds,
+                ...lazyOnDemandToolIds,
+              ],
+        ),
+      ].filter((id) => !pickedToolIds.has(id) && !hiddenToolIds.includes(id));
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),
@@ -671,15 +714,14 @@ export class AiAgentService {
         LocalSystemManifest.identifier,
         RemoteDeviceManifest.identifier,
         ...(isBotConversation ? [MessageToolIdentifier] : []),
-      ]).filter((id) => !restHiddenToolIds.includes(id));
+      ]).filter((id) => !hiddenToolIds.includes(id));
       log('execAgent: agent configured plugins: %O', pluginIds);
 
-      const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
       const eagerToolIds = pluginIds.filter((id) => !lazyToolIds.includes(id));
       const excludeDefaultToolIds = [
         ...(isManualMode ? manualModeExcludeToolIds : []),
         ...lazyToolIds,
-        ...restHiddenToolIds,
+        ...hiddenToolIds,
       ];
 
       toolsResult = toolsEngine.generateToolsDetailed({
@@ -704,6 +746,8 @@ export class AiAgentService {
       if (typeof toolsEngine.getPluginManifest === 'function') {
         for (const id of lazyToolIds) {
           if (toolManifestMap[id]) continue;
+          // выключенное человеком на это сообщение не предлагается и не возвращается из истории темы
+          if (excludedPluginIds.has(id)) continue;
           if (id === 'lobe-user-memory' && !globalMemoryEnabled) continue;
           const manifest = toolsEngine.getPluginManifest(id);
           if (manifest) toolManifestMap[id] = manifest;
@@ -758,6 +802,17 @@ export class AiAgentService {
       toolManifestMap[RemoteDeviceManifest.identifier] = {
         ...toolManifestMap[RemoteDeviceManifest.identifier],
         systemRole: generateSystemPrompt(onlineDevices),
+      };
+    }
+
+    // arckep (19.10.2026): в движке без интерфейса (ARCKEP_HEADLESS_TOOLS=1) магазина навыков нет —
+    // промпт активатора без блока skill_store_discovery и строк SKILL-FIRST / «search the Skill
+    // Marketplace first», иначе модель просит подключить скрытый lobe-skill-store. Браузерный путь
+    // собирает манифесты сам и этого не касается.
+    if (isArckepHeadlessTools() && toolManifestMap[LobeActivatorIdentifier]) {
+      toolManifestMap[LobeActivatorIdentifier] = {
+        ...toolManifestMap[LobeActivatorIdentifier],
+        systemRole: systemPromptHeadless,
       };
     }
 
