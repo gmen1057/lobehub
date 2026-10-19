@@ -67,29 +67,39 @@ describe('activator systemPromptHeadless — no skill store', () => {
   });
 });
 
-// решение владельца 19.10.2026: цену картинки показывает карточка результата
+// решение владельца 19.10.2026: оценка цены и подтверждение — только у видео; всё остальное — сразу create_*
 describe.each([
   ['full', systemPrompt],
   ['headless', systemPromptHeadless],
-])('activator prompt (%s) — pictures', (_name, prompt) => {
-  it('draws with mcp-arckep-studio-images: create_image right away, default model', () => {
+])('activator prompt (%s) — price rules', (_name, prompt) => {
+  it('draws pictures with mcp-arckep-studio-images: create_image right away, no estimate', () => {
     expect(prompt).toContain('mcp-arckep-studio-images');
-    expect(prompt).toContain('call `create_image` right away');
+    expect(prompt).toContain('`create_*` right away');
     expect(prompt).toContain('default model');
-    expect(prompt).toContain('result card');
+    expect(prompt).toContain('no estimate, no confirmation');
+    expect(prompt).toContain('`create_image` right away, no estimate');
+    expect(prompt).toContain('(with its price)');
   });
 
-  it('asks estimate_image only for a named model, several pictures, 4K or the price; above 20 ₽ — confirm', () => {
-    expect(prompt).toContain('`estimate_image` first only if');
-    expect(prompt).toContain('named a specific model');
-    expect(prompt).toContain('several pictures');
-    expect(prompt).toContain('4K');
-    expect(prompt).toContain('asks the price');
-    expect(prompt).toContain('above 20 ₽, ask for confirmation');
+  it('estimate_* for pictures, 3D, speech and decks only when the user asks the price', () => {
+    expect(prompt).toContain('Pictures, 3D, speech, decks');
+    expect(prompt).toContain('`estimate_*` only if the user asks the price');
   });
 
-  it('has no mandatory estimate_image → create_image chain and no legacy arckep-studio', () => {
-    expect(prompt).not.toMatch(/estimate_image\)?\s*(→|->)\s*create_image/);
+  it('video and Higgsfield are the only exception: estimate first, above 20 ₽ confirm', () => {
+    expect(prompt).toContain('is the only exception');
+    expect(prompt).toContain('mcp-arckep-studio-video');
+    expect(prompt).toContain('mcp-arckep-studio-higgsfield');
+    expect(prompt).toContain('`estimate_video`');
+    expect(prompt).toContain('above 20 ₽ ask for confirmation');
+  });
+
+  it('has no picture-specific estimate conditions, no estimate chain and no legacy arckep-studio', () => {
+    expect(prompt).not.toContain('estimate_image');
+    expect(prompt).not.toContain('named a specific model');
+    expect(prompt).not.toContain('several pictures');
+    expect(prompt).not.toContain('best quality');
+    expect(prompt).not.toMatch(/estimate_\w+\)?\s*(→|->)\s*create_/);
     expect(prompt).not.toMatch(/arckep-studio(?!-)/);
     expect(prompt).not.toContain('createImage');
     expect(prompt).not.toContain('estimateImage');

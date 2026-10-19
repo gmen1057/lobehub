@@ -80,12 +80,12 @@ const credentialsBlock = `<credentials_management>
 Activate \`lobe-creds\` FIRST whenever the task needs authentication, API keys, OAuth, tokens or environment variables (including secrets for sandbox code). Never ask users to paste API keys into the chat. Its full instructions load with the tool.
 </credentials_management>`;
 
-// Картинки (решение владельца 19.10.2026): цену показывает карточка готовой картинки, отдельный шаг
-// «узнать цену» не нужен; estimate_image — только в перечисленных случаях, дороже 20 ₽ — подтверждение.
+// Решение владельца 19.10.2026: оценка цены и подтверждение — только у видео (video и Higgsfield).
+// Картинки, 3D, озвучка и презентации — сразу create_*; цену готового результата показывает его карточка.
 const onDemandToolsBlock = `<on_demand_tools>
 Heavy tools are not pre-loaded — activate them from \`<available_tools>\` when the task needs them:
-- Studio connections (one per area, all on demand): draw or edit a picture → \`mcp-arckep-studio-images\`; make a video → \`mcp-arckep-studio-video\` (Higgsfield models: \`mcp-arckep-studio-higgsfield\`); a 3D model → \`mcp-arckep-studio-3d\`; voice text → \`mcp-arckep-studio-speech\`; a PowerPoint deck → \`mcp-arckep-studio-presentations\`; the user explicitly wants another chat model or a typed decision → \`mcp-arckep-studio-models\`; balance or spend → \`mcp-arckep-studio-account\`. create_* returns a job and the user's chat shows the result as a card when it is ready — do not poll it.
-- Pictures: activate \`mcp-arckep-studio-images\` and call \`create_image\` right away with a detailed English prompt and the default model; the price of a finished picture is on its result card. Call \`estimate_image\` first only if the user named a specific model, wants several pictures, 4K or "best quality", or asks the price — and if the estimate is above 20 ₽, ask for confirmation before creating. For video, 3D, speech and decks quote the price first (estimate_*).
+- Studio connections (one per area, all on demand): draw or edit a picture → \`mcp-arckep-studio-images\`; make a video → \`mcp-arckep-studio-video\` (Higgsfield models: \`mcp-arckep-studio-higgsfield\`); a 3D model → \`mcp-arckep-studio-3d\`; voice text → \`mcp-arckep-studio-speech\`; a PowerPoint deck → \`mcp-arckep-studio-presentations\`; the user explicitly wants another chat model or a typed decision → \`mcp-arckep-studio-models\`; balance or spend → \`mcp-arckep-studio-account\`. create_* returns a job and the user's chat shows the result as a card (with its price) when it is ready — do not poll it.
+- Pictures, 3D, speech, decks: activate the connection and call \`create_*\` right away with a detailed prompt (English for pictures) and the default model — no estimate, no confirmation; \`estimate_*\` only if the user asks the price. Video (\`mcp-arckep-studio-video\`, \`mcp-arckep-studio-higgsfield\`) is the only exception: \`estimate_video\` / \`estimate_higgsfield_*\` first, and above 20 ₽ ask for confirmation before \`create_*\`.
 - Build, edit or publish a website or dashboard → activate \`arckep-sites\`. Photos for the site are also made by \`mcp-arckep-studio-images\` (create_image) — the site tools have no image generator of their own.
 - Activate only identifiers that appear in \`<available_tools>\`. Never guess or compose identifiers (there is no \`mcp-arckep-generate-image\`): if nothing fits, answer without tools.
 - "Remember / forget this", the user asks what you know about them, or they share a lasting preference or fact about themselves worth keeping for future chats → activate \`lobe-user-memory\` and save it. Saved memories are already in your context; you do not need the tool just to use them.
@@ -101,7 +101,7 @@ ${
     ? ''
     : '- **SKILL-FIRST: Any mention of skills, SKILL.md, GitHub skill links, or LobeHub marketplace → activate `lobe-skill-store` FIRST, no exceptions.** (Does not apply to attached-file translation.)\n'
 }- **CREDS-FIRST: Any need for authentication, API keys, OAuth, tokens, or env variables → activate \`lobe-creds\` FIRST to manage credentials securely.**
-- **IMAGES: every picture — in chat or for a site — is drawn by \`mcp-arckep-studio-images\`: activate it, then \`create_image\` right away; \`estimate_image\` only in the cases listed in \`<on_demand_tools>\`. SITES: activate \`arckep-sites\` before any site tool.**
+- **IMAGES: every picture — in chat or for a site — is drawn by \`mcp-arckep-studio-images\`: activate it, then \`create_image\` right away, no estimate. SITES: activate \`arckep-sites\` before any site tool.**
 - Check the \`<available_tools>\` list before activating tools${
   headless
     ? ''
