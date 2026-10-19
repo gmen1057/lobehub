@@ -2,6 +2,8 @@ export enum TraceNameMap {
   ConnectivityChecker = 'Connectivity Checker',
   Conversation = 'Conversation',
   EmojiPicker = 'Emoji Picker',
+  /** arckep: вызов модели серверной операцией движка (чат студии, REST /responses, боты) */
+  EngineChat = 'Engine Chat',
   FetchPluginAPI = 'Fetch Plugin API',
   LanguageDetect = 'Language Detect',
   SearchIntentRecognition = 'Search Intent Recognition',

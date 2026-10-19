@@ -54,6 +54,7 @@ import { nanoid } from '@/utils/uuid';
 
 import { resolveServerEnabledSearch } from './arckepSearch';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
+import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
 
@@ -703,9 +704,21 @@ export const createRuntimeExecutors = (
             tools?.length ?? 0,
           );
 
+          // arckep (19.10.2026): трасса Langfuse, как в браузерном пути (ENABLE_LANGFUSE=1); её колбэки
+          // добавляются к колбэкам ниже, ошибка трассы ответ не ломает
+          const engineTrace = createEngineTraceCallbacks(
+            chatPayload as unknown as ChatStreamPayload,
+            {
+              provider,
+              sessionId: state.metadata?.sessionId,
+              topicId: state.metadata?.topicId ?? ctx.topicId,
+              userId: ctx.userId,
+            },
+          );
+
           // Call model-runtime chat
           const response = await modelRuntime.chat(chatPayload, {
-            callback: {
+            callback: withEngineTrace(engineTrace, {
               onCompletion: async (data) => {
                 // Capture usage (may or may not include cost)
                 if (data.usage) {
@@ -870,7 +883,7 @@ export const createRuntimeExecutors = (
                   });
                 }
               },
-            },
+            }),
             metadata: {
               operationId,
               topicId: state.metadata?.topicId,

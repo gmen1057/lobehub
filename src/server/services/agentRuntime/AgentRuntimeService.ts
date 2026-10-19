@@ -21,6 +21,7 @@ import { ToolExecutionService } from '@/server/services/toolExecution';
 import { BuiltinToolsExecutor } from '@/server/services/toolExecution/builtin';
 
 import { isAbortError, throwIfAborted } from './abort';
+import { seedActivatedStepToolsFromHistory } from './activatedToolsFromHistory';
 import { hookDispatcher } from './hooks';
 import {
   type AgentExecutionParams,
@@ -281,8 +282,25 @@ export class AgentRuntimeService {
           : 'none',
       );
 
+      // arckep (19.10.2026): инструменты, уже подключённые активатором в этой теме, остаются
+      // подключёнными — как в браузерном чате. Без этого каждое новое сообщение темы заново тратило
+      // платный шаг activateTools на полной переписке (и промах кэша из-за смены списка функций).
+      const seededActivatedTools = seedActivatedStepToolsFromHistory(
+        initialMessages as any[],
+        operationToolSet,
+      );
+      if (seededActivatedTools.length > 0) {
+        log(
+          '[%s] seeded %d activated tools from history: %o',
+          operationId,
+          seededActivatedTools.length,
+          seededActivatedTools.map((tool) => tool.id),
+        );
+      }
+
       // Initialize operation state - create state before saving
       const initialState = {
+        ...(seededActivatedTools.length > 0 && { activatedStepTools: seededActivatedTools }),
         createdAt: new Date().toISOString(),
         // Store initialContext for executeSync to use
         initialContext,
