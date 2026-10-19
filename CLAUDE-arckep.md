@@ -78,4 +78,20 @@ curl -sS -o /dev/null -w "%{http_code}" https://chat.arckep.ru/_spa/assets/$(ls 
 - Отвергли: вечный skip (длинный чат упрётся в лимит) и тот же порог 50% (петля суммаризаций).
 - Почему: свежее сжатие почти всегда около нижнего порога; одна tool-выдача не должна запускать второй проход.
 
+## Навыки в движке без интерфейса (ARCKEP_HEADLESS_TOOLS=1, 19.10.2026)
+
+- **Список навыков** (`<available_skills>`): LobeHub и Task скрыты (`src/helpers/skillFilters.ts`), Artifacts и наши SEO-навыки (`seo-demand`, `content-articles`, `yandex-direct-guide`, `packages/builtin-skills`) остаются; описание в списке режется до ~200 знаков по границе слова, подвал называет `activateSkill` (lobe-activator).
+- **Инструменты навыков** (`lobe-skills`: readReference, runCommand, execScript, exportFile) не в постоянной части запроса и не в `<available_tools>`. `activateSkill` подключает их, если у навыка есть справочники или скрипты (`state.activatedTools` → `activatedStepTools`, `serverRuntimes/skillTools.ts`). Манифест — `SkillsManifestHeadless`: без подтверждения человеком, `execScript` принимает `skill`.
+- **Куда идут команды:** в песочницу E2B человека через шлюз коннекторов (`src/server/services/skillSandbox`, `execute_code` / `read_file`, заголовки `X-Arckep-User` + `X-Arckep-Topic`). Без номера человека в студии (`userNNN@arckep.ru`) песочница не работает. `exportFile` кладёт файл в хранилище (`files/skills/exports/<дата>/<тема>/…`), запись в `files` — владелец человек; модель получает `fileId` и строку `ARCKEP_FILE {json}`. Адрес `/f/<id>` людям недоступен (nginx не отдаёт его движку), экран берёт файл через `GET /files/<id>/url`.
+- **«Мои навыки»:** инструмент `arckep-skills` (saveSkillFromText / FromUrl / FromFile) — по требованию через активатор; REST `/api/v1/skills` (GET список и карточка, POST из текста, POST /import по ссылке или fileId, DELETE). Один сервис `src/server/services/skill/userSkills.ts`. Ссылки только https через ssrf-safe-fetch, файл до 10 МБ, предел распаковки zip, не больше 100 навыков, помощник — не больше 10 сохранений в час, метка `savedVia` в шапке навыка.
+
+## Решения
+
+- Вопрос: имя навыка занято — ошибка или обновление?
+- Взяли: ошибка CONFLICT с подсказкой; обновление только при явном `replace=true` и только для навыка, созданного из текста. Импортированные по ссылке заменить нельзя.
+- Отвергли: тихая замена (помощник мог бы затереть навык человека) и «всегда ошибка» (правка своего навыка требовала бы удаления).
+- Почему: помощник сохраняет без подтверждения (решение владельца 19.10), поэтому замена должна быть явным шагом.
+- Вопрос: «выключенный» навык (вкл/выкл на экране)?
+- Взяли: не делали — в `agent_skills` такого поля нет, PATCH не объявлен. Для вкл/выкл нужна колонка или настройка пользователя и фильтр в `execAgent` и `activateSkill`.
+
 Подробности по AI-tooling, codegraph и общей карте проектов — в `/root/CLAUDE.md`.

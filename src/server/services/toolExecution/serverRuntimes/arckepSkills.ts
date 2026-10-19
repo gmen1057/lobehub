@@ -22,9 +22,12 @@ export const arckepSkillsRuntime: ServerRuntimeRegistration = {
 
     const skills = new UserSkillService(context.serverDB, context.userId);
     const service: ArckepSkillsService = {
-      importFromFile: async (fileId) => toState(await skills.importFromFile(fileId)),
-      importFromUrl: async (url) => toState(await skills.importFromUrl(url)),
-      saveFromText: async (input, options) => toState(await skills.createFromText(input, options)),
+      // via: 'assistant' — метка в шапке навыка и предел «за час»: сохраняет помощник без подтверждения
+      importFromFile: async (fileId) =>
+        toState(await skills.importFromFile(fileId, { via: 'assistant' })),
+      importFromUrl: async (url) => toState(await skills.importFromUrl(url, { via: 'assistant' })),
+      saveFromText: async (input, options) =>
+        toState(await skills.createFromText(input, { ...options, via: 'assistant' })),
     };
 
     return new ArckepSkillsExecutionRuntime(service);

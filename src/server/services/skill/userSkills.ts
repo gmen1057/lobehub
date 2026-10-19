@@ -31,6 +31,12 @@ const log = debug('lobe-server:user-skills');
  */
 
 export const MAX_USER_SKILLS = 100;
+/**
+ * Сколько навыков помощник может добавить или заменить за час. Он сохраняет без подтверждения (решение
+ * владельца 19.10.2026), а текст из чужого документа или страницы мог бы подсунуть ему «сохрани навык»:
+ * предел и метка `savedVia` в шапке навыка ограничивают ущерб и показывают на экране, что добавил не человек.
+ */
+export const MAX_ASSISTANT_SAVES_PER_HOUR = 10;
 export const MAX_SKILL_NAME_LENGTH = 100;
 export const MAX_SKILL_DESCRIPTION_LENGTH = 1024;
 export const MAX_SKILL_CONTENT_LENGTH = 200_000;
@@ -67,6 +73,13 @@ export class UserSkillError extends Error {
 
 export type SkillSaveStatus = 'created' | 'unchanged' | 'updated';
 
+/** Кто сохранил: помощник по просьбе в чате или человек на экране «Мои навыки». */
+export type SkillSavedVia = 'assistant' | 'screen';
+
+export interface SkillSaveOptions {
+  via?: SkillSavedVia;
+}
+
 /** Карточка сохранённого навыка: то, что нужно экрану для «Навык добавлен». */
 export interface SkillCard {
   description: string;
@@ -88,6 +101,8 @@ export interface SkillSummary extends SkillCard {
   /** Удалить можно только навыки человека */
   deletable: boolean;
   hasResources: boolean;
+  /** Кто сохранил последним; null — навык добавлен до появления метки или встроенный */
+  savedVia: SkillSavedVia | null;
   sourceUrl: string | null;
   updatedAt: string | null;
   version: string | null;
@@ -119,7 +134,14 @@ export interface UserSkillServiceDeps {
   resourceService?: Pick<SkillResourceService, 'storeResources'>;
   skillModel?: Pick<
     AgentSkillModel,
-    'create' | 'delete' | 'findAll' | 'findAllWithResources' | 'findById' | 'findByName' | 'replace'
+    | 'create'
+    | 'delete'
+    | 'findAll'
+    | 'findAllWithResources'
+    | 'findById'
+    | 'findByName'
+    | 'replace'
+    | 'update'
   >;
 }
 
@@ -174,6 +196,7 @@ export class UserSkillService {
       id: skill.identifier,
       identifier: skill.identifier,
       name: skill.name,
+      savedVia: null,
       source: 'builtin',
       sourceUrl: null,
       updatedAt: null,
@@ -223,7 +246,7 @@ export class UserSkillService {
    */
   async createFromText(
     input: SkillTextInput,
-    options: { replace?: boolean } = {},
+    options: { replace?: boolean } & SkillSaveOptions = {},
   ): Promise<SkillSaveResult> {
     const { content, description, files, name } = this.validateText(input);
 
@@ -248,10 +271,10 @@ export class UserSkillService {
         'CONFLICT',
       );
     }
-    if (!existing) await this.ensureRoom();
+    await this.ensureRoom(options.via, { replacing: !!existing });
 
     const resources = await this.storeFiles(files);
-    const manifest = { description, name };
+    const manifest = { description, name, ...(options.via ? { savedVia: options.via } : {}) };
 
     try {
       if (existing) {
@@ -283,7 +306,7 @@ export class UserSkillService {
   }
 
   /** Навык по ссылке: SKILL.md, репозиторий или папка GitHub, zip. Только https. */
-  async importFromUrl(url: string): Promise<SkillSaveResult> {
+  async importFromUrl(url: string, options: SkillSaveOptions = {}): Promise<SkillSaveResult> {
     let parsed: URL;
     try {
       parsed = new URL(url.trim());
@@ -294,12 +317,12 @@ export class UserSkillService {
       throw new UserSkillError('Принимаются только ссылки https://', 'INVALID');
     }
 
-    await this.ensureRoom();
-    return this.runImport(() => this.importer.importFromUrl({ url: parsed.href }));
+    await this.ensureRoom(options.via);
+    return this.runImport(() => this.importer.importFromUrl({ url: parsed.href }), options.via);
   }
 
   /** Навык из файла, который человек приложил в чат: zip с SKILL.md или сам SKILL.md. */
-  async importFromFile(fileId: string): Promise<SkillSaveResult> {
+  async importFromFile(fileId: string, options: SkillSaveOptions = {}): Promise<SkillSaveResult> {
     // findById ищет среди файлов этого человека: чужой номер вернёт пусто
     const file = await this.fileModel.findById(fileId);
     if (!file)
@@ -315,10 +338,10 @@ export class UserSkillService {
     const name = (file.name ?? '').toLowerCase();
     const type = (file.fileType ?? '').toLowerCase();
 
-    await this.ensureRoom();
+    await this.ensureRoom(options.via);
 
     if (name.endsWith('.zip') || type.includes('zip')) {
-      return this.runImport(() => this.importer.importFromZip({ zipFileId: fileId }));
+      return this.runImport(() => this.importer.importFromZip({ zipFileId: fileId }), options.via);
     }
 
     if (/\.(?:md|markdown|txt)$/.test(name) || type.startsWith('text/')) {
@@ -336,11 +359,14 @@ export class UserSkillService {
             )
           : translated;
       }
-      return this.createFromText({
-        content: parsed.content,
-        description: parsed.manifest.description,
-        name: parsed.manifest.name,
-      });
+      return this.createFromText(
+        {
+          content: parsed.content,
+          description: parsed.manifest.description,
+          name: parsed.manifest.name,
+        },
+        { via: options.via },
+      );
     }
 
     throw new UserSkillError('Нужен zip-архив с файлом SKILL.md или сам файл SKILL.md.', 'INVALID');
@@ -354,8 +380,9 @@ export class UserSkillService {
     const skill = await this.skillModel.findById(id);
     if (!skill) throw new UserSkillError('Навык не найден.', 'NOT_FOUND');
 
-    const { success } = await this.skillModel.delete(id);
-    if (!success) throw new UserSkillError('Навык не найден.', 'NOT_FOUND');
+    // Существование проверено выше; счётчик затронутых строк у разных драйверов базы разный, на него не
+    // полагаемся: повторное удаление безвредно.
+    await this.skillModel.delete(id);
     return { id };
   }
 
@@ -375,13 +402,21 @@ export class UserSkillService {
     skill: SkillListItem,
     resources?: Record<string, SkillResourceMeta> | null,
   ): SkillSummary {
-    const manifest = (skill.manifest ?? {}) as { sourceUrl?: unknown; version?: unknown };
+    const manifest = (skill.manifest ?? {}) as {
+      savedVia?: unknown;
+      sourceUrl?: unknown;
+      version?: unknown;
+    };
     return {
       ...this.toCard(skill),
       avatar: null,
       createdAt: toIso(skill.createdAt),
       deletable: true,
       hasResources: Object.keys(resources ?? {}).length > 0 || !!skill.zipFileHash,
+      savedVia:
+        manifest.savedVia === 'assistant' || manifest.savedVia === 'screen'
+          ? manifest.savedVia
+          : null,
       sourceUrl: typeof manifest.sourceUrl === 'string' ? manifest.sourceUrl : null,
       updatedAt: toIso(skill.updatedAt),
       version: typeof manifest.version === 'string' ? manifest.version : null,
@@ -395,13 +430,32 @@ export class UserSkillService {
     );
   }
 
-  private async ensureRoom() {
-    const { total } = await this.skillModel.findAll();
-    if (total >= MAX_USER_SKILLS) {
+  /**
+   * Место под навык: общий предел числа навыков (новый навык, не замена) и предел «за час» для помощника.
+   */
+  private async ensureRoom(via?: SkillSavedVia, options: { replacing?: boolean } = {}) {
+    const { data, total } = await this.skillModel.findAll();
+
+    if (!options.replacing && total >= MAX_USER_SKILLS) {
       throw new UserSkillError(
         `У вас уже ${MAX_USER_SKILLS} навыков — это предел. Удалите ненужные в «Мои навыки».`,
         'LIMIT',
       );
+    }
+
+    if (via === 'assistant') {
+      const hourAgo = Date.now() - 60 * 60 * 1000;
+      const recent = data.filter(
+        (skill) =>
+          (skill.manifest as { savedVia?: unknown } | undefined)?.savedVia === 'assistant' &&
+          new Date(skill.updatedAt).getTime() > hourAgo,
+      ).length;
+      if (recent >= MAX_ASSISTANT_SAVES_PER_HOUR) {
+        throw new UserSkillError(
+          `Помощник уже сохранил ${MAX_ASSISTANT_SAVES_PER_HOUR} навыков за последний час — это предел. Подождите или добавьте навык сами на экране «Мои навыки».`,
+          'LIMIT',
+        );
+      }
     }
   }
 
@@ -486,9 +540,18 @@ export class UserSkillService {
   }
 
   /** Импорт с переводом ошибок импортёра в понятные человеку. */
-  private async runImport(run: () => Promise<SkillImportResult>): Promise<SkillSaveResult> {
+  private async runImport(
+    run: () => Promise<SkillImportResult>,
+    via?: SkillSavedVia,
+  ): Promise<SkillSaveResult> {
     try {
       const result = await run();
+      // Метка «кто сохранил» — в шапке навыка (update сливает manifest вглубь, остальное не трогает).
+      if (via && result.status !== 'unchanged') {
+        await this.skillModel.update(result.skill.id, {
+          manifest: { savedVia: via } as unknown as SkillItem['manifest'],
+        });
+      }
       return { skill: this.toCard(result.skill), status: result.status };
     } catch (error) {
       throw this.translateImportError(error);

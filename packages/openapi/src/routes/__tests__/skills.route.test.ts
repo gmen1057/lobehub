@@ -109,14 +109,14 @@ describe('POST /skills (из текста)', () => {
 
     expect(response.status).toBe(200);
     expect((await response.json()).data).toEqual({ skill: card, status: 'created' });
-    expect(service.createFromText).toHaveBeenCalledWith(body);
+    expect(service.createFromText).toHaveBeenCalledWith(body, { via: 'screen' });
   });
 
   it('файлы-приложения принимаются', async () => {
     service.createFromText.mockResolvedValue({ skill: card, status: 'created' });
     const files = [{ content: 'print(1)', path: 'scripts/run.py' }];
     await request('POST', '', { ...body, files });
-    expect(service.createFromText).toHaveBeenCalledWith({ ...body, files });
+    expect(service.createFromText).toHaveBeenCalledWith({ ...body, files }, { via: 'screen' });
   });
 
   it('имя занято — 409 с русским текстом сервиса', async () => {
@@ -158,7 +158,7 @@ describe('POST /skills/import', () => {
     service.importFromUrl.mockResolvedValue({ skill: card, status: 'created' });
     const response = await request('POST', '/import', { url: 'https://github.com/a/b' });
     expect(response.status).toBe(200);
-    expect(service.importFromUrl).toHaveBeenCalledWith('https://github.com/a/b');
+    expect(service.importFromUrl).toHaveBeenCalledWith('https://github.com/a/b', { via: 'screen' });
     expect(service.importFromFile).not.toHaveBeenCalled();
   });
 
@@ -166,7 +166,7 @@ describe('POST /skills/import', () => {
     service.importFromFile.mockResolvedValue({ skill: card, status: 'created' });
     const response = await request('POST', '/import', { fileId: 'file_1' });
     expect(response.status).toBe(200);
-    expect(service.importFromFile).toHaveBeenCalledWith('file_1');
+    expect(service.importFromFile).toHaveBeenCalledWith('file_1', { via: 'screen' });
     expect(service.importFromUrl).not.toHaveBeenCalled();
   });
 

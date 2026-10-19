@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { SkillImportError, SkillManifestError, SkillParseError } from './errors';
 import { SkillParser } from './parser';
 import {
+  MAX_ASSISTANT_SAVES_PER_HOUR,
   MAX_USER_SKILLS,
   UserSkillError,
   UserSkillService,
@@ -39,6 +40,7 @@ const make = (overrides: Partial<UserSkillServiceDeps> = {}) => {
     findById: vi.fn(async (_id: string) => undefined as any),
     findByName: vi.fn(async (_name: string) => undefined as any),
     replace: vi.fn(async (_id: string, data: any) => row({ ...data })),
+    update: vi.fn(async (_id: string, data: any) => row({ ...data })),
   };
   const importer = {
     importFromUrl: vi.fn(async () => ({
@@ -509,5 +511,135 @@ describe('list / get / remove', () => {
     const other = await service.remove('skill_other').catch((e) => e);
     expect(other.code).toBe('NOT_FOUND');
     expect(skillModel.delete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('кто сохранил: метка savedVia и предел для помощника (arckep, 19.10.2026)', () => {
+  const recent = (n: number, savedVia: string, minutesAgo = 5) =>
+    Array.from({ length: n }, (_, i) =>
+      row({
+        id: `skill_r${i}`,
+        manifest: { description: 'd', name: `R${i}`, savedVia },
+        name: `R${i}`,
+        updatedAt: new Date(Date.now() - minutesAgo * 60_000),
+      }),
+    );
+
+  it('текстовый навык несёт метку в шапке и показывает её в списке', async () => {
+    const { service, skillModel } = make();
+    await service.createFromText(text, { via: 'assistant' });
+    expect(skillModel.create.mock.calls[0][0].manifest).toEqual({
+      description: 'Делает отчёт',
+      name: 'Отчёт',
+      savedVia: 'assistant',
+    });
+
+    skillModel.findAllWithResources.mockResolvedValue([
+      row({ manifest: { savedVia: 'assistant' } }),
+      row({ id: 'skill_2', manifest: { savedVia: 'screen' }, name: 'B' }),
+      row({ id: 'skill_3', manifest: {}, name: 'C' }),
+    ]);
+    const { skills } = await service.list();
+    const byName = Object.fromEntries(skills.map((skill) => [skill.name, skill.savedVia]));
+    expect(byName).toMatchObject({ B: 'screen', C: null, Отчёт: 'assistant' });
+  });
+
+  it('без via метки нет (старое поведение)', async () => {
+    const { service, skillModel } = make();
+    await service.createFromText(text);
+    expect(skillModel.create.mock.calls[0][0].manifest).toEqual({
+      description: 'Делает отчёт',
+      name: 'Отчёт',
+    });
+  });
+
+  it('помощник: больше 10 сохранений за час — LIMIT, у человека на экране предела нет', async () => {
+    const { service, skillModel } = make();
+    skillModel.findAll.mockResolvedValue({
+      data: recent(MAX_ASSISTANT_SAVES_PER_HOUR, 'assistant'),
+      total: MAX_ASSISTANT_SAVES_PER_HOUR,
+    } as any);
+
+    const error = await service.createFromText(text, { via: 'assistant' }).catch((e) => e);
+    expect(error.code).toBe('LIMIT');
+    expect(error.message).toContain('за последний час');
+    expect(skillModel.create).not.toHaveBeenCalled();
+
+    expect((await service.createFromText(text, { via: 'screen' })).status).toBe('created');
+  });
+
+  it('старые сохранения (больше часа назад) и чужие метки не считаются', async () => {
+    const { service, skillModel } = make();
+    skillModel.findAll.mockResolvedValue({
+      data: [...recent(6, 'assistant', 120), ...recent(6, 'screen')],
+      total: 12,
+    } as any);
+    expect((await service.createFromText(text, { via: 'assistant' })).status).toBe('created');
+  });
+
+  it('предел действует и на ссылки и файлы, замена тоже считается', async () => {
+    const full = { data: recent(MAX_ASSISTANT_SAVES_PER_HOUR, 'assistant'), total: 10 } as any;
+
+    const url = make();
+    url.skillModel.findAll.mockResolvedValue(full);
+    expect(
+      (
+        await url.service
+          .importFromUrl('https://example.com/SKILL.md', { via: 'assistant' })
+          .catch((e) => e)
+      ).code,
+    ).toBe('LIMIT');
+    expect(url.importer.importFromUrl).not.toHaveBeenCalled();
+
+    const replace = make();
+    replace.skillModel.findAll.mockResolvedValue(full);
+    replace.skillModel.findByName.mockResolvedValue(row());
+    expect(
+      (
+        await replace.service
+          .createFromText(text, { replace: true, via: 'assistant' })
+          .catch((e) => e)
+      ).code,
+    ).toBe('LIMIT');
+  });
+
+  it('замена при заполненном общем пределе числа навыков работает (новых навыков она не добавляет)', async () => {
+    const { service, skillModel } = make();
+    skillModel.findAll.mockResolvedValue({ data: [], total: MAX_USER_SKILLS });
+    skillModel.findByName.mockResolvedValue(row());
+    expect((await service.createFromText(text, { replace: true })).status).toBe('updated');
+  });
+
+  it('импорт по ссылке с via ставит метку на созданный навык, неизменённый не трогает', async () => {
+    const created = make();
+    await created.service.importFromUrl('https://github.com/a/b', { via: 'assistant' });
+    expect(created.skillModel.update).toHaveBeenCalledWith('skill_url', {
+      manifest: { savedVia: 'assistant' },
+    });
+
+    const same = make();
+    same.importer.importFromUrl.mockResolvedValue({
+      skill: row({ id: 'skill_url' }),
+      status: 'unchanged',
+    } as any);
+    await same.service.importFromUrl('https://github.com/a/b', { via: 'assistant' });
+    expect(same.skillModel.update).not.toHaveBeenCalled();
+
+    const noVia = make();
+    await noVia.service.importFromUrl('https://github.com/a/b');
+    expect(noVia.skillModel.update).not.toHaveBeenCalled();
+  });
+
+  it('SKILL.md из файла несёт via дальше в createFromText', async () => {
+    const { fileModel, fileService, service, skillModel } = make();
+    fileModel.findById.mockResolvedValue({
+      fileType: 'text/markdown',
+      name: 'SKILL.md',
+      size: 10,
+      url: 'k',
+    });
+    fileService.getFileContent.mockResolvedValue('---\nname: Из файла\ndescription: d\n---\nТекст');
+    await service.importFromFile('file_9', { via: 'assistant' });
+    expect(skillModel.create.mock.calls[0][0].manifest).toMatchObject({ savedVia: 'assistant' });
   });
 });

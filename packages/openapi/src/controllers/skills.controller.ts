@@ -49,7 +49,7 @@ export class SkillsController extends BaseController {
   async createSkill(c: Context): Promise<Response> {
     try {
       const body = await this.getBody<SkillTextInput>(c);
-      const result = await (await this.service(c)).createFromText(body);
+      const result = await (await this.service(c)).createFromText(body, { via: 'screen' });
       return this.success(c, result, 'skill created');
     } catch (error) {
       return this.fail(c, error);
@@ -62,8 +62,8 @@ export class SkillsController extends BaseController {
       const body = await this.getBody<{ fileId?: string; url?: string }>(c);
       const service = await this.service(c);
       const result = body.url
-        ? await service.importFromUrl(body.url)
-        : await service.importFromFile(body.fileId!);
+        ? await service.importFromUrl(body.url, { via: 'screen' })
+        : await service.importFromFile(body.fileId!, { via: 'screen' });
       return this.success(c, result, 'skill imported');
     } catch (error) {
       return this.fail(c, error);
