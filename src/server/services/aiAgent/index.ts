@@ -33,6 +33,7 @@ import type {
   ExecGroupAgentResult,
   ExecSubAgentTaskParams,
   ExecSubAgentTaskResult,
+  MessageAttachmentRef,
   UserInterventionConfig,
 } from '@lobechat/types';
 import { ThreadStatus, ThreadType } from '@lobechat/types';
@@ -44,12 +45,14 @@ import { AgentModel } from '@/database/models/agent';
 import { AgentCronJobModel } from '@/database/models/agentCronJob';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { AiModelModel } from '@/database/models/aiModel';
+import { FileModel } from '@/database/models/file';
 import { MessageModel } from '@/database/models/message';
 import { PluginModel } from '@/database/models/plugin';
 import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { appEnv } from '@/envs/app';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import {
@@ -80,9 +83,66 @@ import { MarketService } from '@/server/services/market';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
-import { ingestAttachment } from './ingestAttachment';
+import { ingestAttachment, type IngestedImage } from './ingestAttachment';
+import {
+  isPdfMime,
+  PDF_PAGES_PENDING_NOTE,
+  PDF_PREP_VERSION,
+  pdfPrepareOptions,
+  PdfPrepareService,
+  type PdfPrepImage,
+  type PdfPrepPage,
+  type PdfPrepRecord,
+} from './pdfPrepare';
 
 const log = debug('lobe-server:ai-agent-service');
+
+/** Адрес файла человека для модели и HTML-предпросмотра (nginx отдаёт /chat/f/ движку: 302 в хранилище). */
+const fileAddress = (fileId: string) => `${appEnv.APP_URL}/f/${fileId}/`;
+
+/**
+ * Подпись картинки для модели (идёт в <image name="…"> блока <files_info>). У кусков — что картинка резалась
+ * сверху вниз и сколько частей, чтобы модель читала их подряд, а не как отдельные изображения.
+ */
+const imagePartAlt = (name: string, image: Pick<IngestedImage, 'index' | 'total'>) =>
+  image.total === 1
+    ? name
+    : `${name} — часть ${image.index} из ${image.total} (изображение разрезано на ${image.total} частей сверху вниз, читай по порядку)`;
+
+/** Что нужно знать, чтобы разобрать PDF вложения (processPdf). */
+interface PdfJob {
+  fileId: string;
+  fileService: FileService;
+  model: string;
+  name: string;
+  provider: string;
+}
+
+/** Вшитая картинка PDF → строка списка вложений. */
+const embeddedImageRef = (pdfName: string, image: PdfPrepImage): MessageAttachmentRef => ({
+  height: image.height,
+  mime: image.mime,
+  name: `картинка ${image.index} из ${pdfName}`,
+  note: `стр. ${image.page}`,
+  url: fileAddress(image.fileId),
+  width: image.width,
+});
+
+const pdfPageAlt = (
+  name: string,
+  image: { index: number; page: number; total: number },
+  pageCount: number,
+  renderedPages: number,
+) => {
+  const page = `${name} — страница ${image.page} из ${pageCount}`;
+  const more =
+    renderedPages < pageCount && image.page === renderedPages
+      ? `; нарисованы только первые ${renderedPages} стр., остальное — в тексте файла`
+      : '';
+  return image.total === 1
+    ? `${page}${more}`
+    : `${page}, часть ${image.index} из ${image.total} (страница разрезана на ${image.total} частей сверху вниз, читай по порядку)${more}`;
+};
 
 /**
  * Format error for storage in thread metadata
@@ -222,6 +282,179 @@ export class AiAgentService {
     this.agentRuntimeService = new AgentRuntimeService(db, userId, options?.runtimeOptions);
     this.marketService = new MarketService({ userInfo: { userId } });
     this.klavisService = new KlavisService({ db, userId });
+  }
+
+  /**
+   * arckep (19.10.2026): есть ли у модели зрение — та же проверка, что при вызове модели
+   * (RuntimeExecutors, isCanUseVision): встроенный список моделей, неизвестная модель — со зрением.
+   */
+  private async modelHasVision(model: string, provider: string): Promise<boolean> {
+    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
+    const info = LOBE_DEFAULT_MODEL_LIST.find(
+      (item) => item.id === model && item.providerId === provider,
+    );
+    return info?.abilities?.vision ?? true;
+  }
+
+  /**
+   * arckep (19.10.2026): вложение PDF → (а) страницы картинками для модели со зрением (до 10 страниц, не больше
+   * 16 картинок, высокие страницы режутся на куски — pdfPages.ts): они прикрепляются к сообщению рядом с самим
+   * PDF, текстовый слой (documents) остаётся как был; (б) вшитые в PDF картинки файлами человека (pdfImages.ts):
+   * к сообщению не прикрепляются, а попадают в список вложений с адресами — модель вставляет их в HTML.
+   *
+   * Рисует не этот метод: страницы и картинки готовятся в фоне при загрузке файла (pdfPrepare.ts), результат лежит
+   * в записи файла. Здесь — забрать готовое, подождав не дольше ARCKEP_PDF_PREPARE_WAIT_MS (5 с); не успело —
+   * `pending`: модель получает только текстовый слой с пометкой «страницы ещё рисуются», без ошибки.
+   * Выключатели: ARCKEP_PDF_PAGE_IMAGES=0 и ARCKEP_PDF_EMBEDDED_IMAGES=0. Любая неудача — пусто (только текст).
+   */
+  private async processPdf(options: PdfJob): Promise<{
+    images: MessageAttachmentRef[];
+    pages: Array<{ alt: string; id: string; url: string }>;
+    pending: boolean;
+  }> {
+    const { fileId, fileService, model, name, provider } = options;
+    const result: Awaited<ReturnType<AiAgentService['processPdf']>> = {
+      images: [],
+      pages: [],
+      pending: false,
+    };
+    const settings = pdfPrepareOptions();
+    if (!settings.pageImages && !settings.embeddedImages) return result;
+
+    try {
+      const withVision = settings.pageImages && (await this.modelHasVision(model, provider));
+      if (!withVision && !settings.embeddedImages) return result;
+
+      const { pending, record } = await PdfPrepareService.forUser(this.db, this.userId).waitFor(
+        fileId,
+        settings.waitMs,
+      );
+      // страницы нужны только модели со зрением: ей и говорим, что они ещё рисуются
+      result.pending = pending && withVision && !record?.pages;
+      if (!record) return result;
+
+      if (withVision) result.pages = await this.pdfPageImages(fileService, name, record);
+      if (settings.embeddedImages) {
+        result.images = (record.images ?? []).map((image) => embeddedImageRef(name, image));
+      }
+    } catch (error) {
+      log('execAgent: pdf processing failed for %s: %O', name, error);
+    }
+
+    return result;
+  }
+
+  /** Страницы подготовленного PDF → картинки сообщения (подпись, адрес копии). */
+  private async pdfPageImages(
+    fileService: FileService,
+    name: string,
+    record: PdfPrepRecord,
+  ): Promise<Array<{ alt: string; id: string; url: string }>> {
+    const pages: Array<{ alt: string; id: string; url: string }> = [];
+    for (const page of record.pages ?? ([] as PdfPrepPage[])) {
+      pages.push({
+        alt: pdfPageAlt(name, page, record.pageCount ?? 0, record.renderedPages ?? 0),
+        id: page.fileId,
+        url: await fileService.getFullFileUrl(page.key),
+      });
+    }
+    return pages;
+  }
+
+  /**
+   * arckep (19.10.2026): история подхватывает подготовленное позже. Если страницы PDF дорисовались уже после
+   * того, как сообщение с файлом ушло к модели (она получила только текст), то на следующем ходе они берутся из
+   * записи файла — в память, без записи в базу: к картинкам сообщения добавляются страницы, из пометки на строке
+   * PDF убирается «ещё рисуются», в список добавляются вшитые картинки. Ничего не готово или сбой — история
+   * остаётся как была.
+   */
+  private async enrichHistoryWithPdf(
+    historyMessages: any[],
+    model: string,
+    provider: string,
+    fileService: FileService,
+  ) {
+    const settings = pdfPrepareOptions();
+    if (!settings.pageImages && !settings.embeddedImages) return;
+
+    const pdfIds = new Set<string>();
+    for (const message of historyMessages) {
+      if (message.role !== 'user') continue;
+      for (const file of message.fileList ?? []) {
+        if (isPdfMime(file.fileType, file.name)) pdfIds.add(file.id);
+      }
+    }
+    if (pdfIds.size === 0) return;
+
+    const records = await PdfPrepareService.forUser(this.db, this.userId).peek([...pdfIds]);
+    if (records.size === 0) return;
+    const withVision = settings.pageImages && (await this.modelHasVision(model, provider));
+
+    for (const message of historyMessages) {
+      if (message.role !== 'user') continue;
+      for (const file of message.fileList ?? []) {
+        const record = records.get(file.id);
+        if (!record || record.version !== PDF_PREP_VERSION) continue;
+
+        // страницы: у сообщения их нет совсем (рисовались позже) — добавляем все
+        const have = new Set((message.imageList ?? []).map((image: { id: string }) => image.id));
+        const pages = record.pages ?? [];
+        if (withVision && pages.length > 0 && pages.every((page) => !have.has(page.fileId))) {
+          message.imageList = [
+            ...(message.imageList ?? []),
+            ...(await this.pdfPageImages(fileService, file.name, record)),
+          ];
+        }
+
+        // список вложений: пометка «ещё рисуются» снимается, вшитые картинки добавляются
+        const attachments = message.metadata?.attachments;
+        if (Array.isArray(attachments)) {
+          const address = fileAddress(file.id);
+          const known = new Set(attachments.map((item: MessageAttachmentRef) => item.url));
+          const added = settings.embeddedImages
+            ? (record.images ?? [])
+                .map((image) => embeddedImageRef(file.name, image))
+                .filter((item) => !known.has(item.url))
+            : [];
+          const pagesReady = record.status === 'done' || pages.length > 0;
+          message.metadata = {
+            ...message.metadata,
+            attachments: [
+              ...attachments.map((item: MessageAttachmentRef) =>
+                pagesReady && item.url === address && item.note === PDF_PAGES_PENDING_NOTE
+                  ? { ...item, note: undefined }
+                  : item,
+              ),
+              ...added,
+            ],
+          };
+        }
+      }
+    }
+  }
+
+  /**
+   * arckep (19.10.2026): запись файла человека по адресу из хранилища (картинка пришла ссылкой на файл,
+   * который человек уже загрузил): так находим оригинал, чей устойчивый адрес /chat/f/<id>/ получит модель.
+   * Чужие файлы и внешние адреса не находятся.
+   */
+  private async findOwnFileByUrl(
+    fileService: FileService,
+    url: string | undefined,
+  ): Promise<{ fileType?: string; id: string; name?: string } | undefined> {
+    if (!url) return undefined;
+    try {
+      const key = await fileService.getKeyFromFullUrl(url);
+      if (!key) return undefined;
+      const model = new FileModel(this.db, this.userId);
+      // в адресе ключ может быть закодирован (кириллица в имени), в базе он без кодирования
+      const row = (await model.findByKey(key)) ?? (await model.findByKey(decodeURIComponent(key)));
+      return row
+        ? { fileType: row.fileType ?? undefined, id: row.id, name: row.name ?? undefined }
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1088,6 +1321,13 @@ export class AiAgentService {
 
     await throwIfExecutionAborted('message history loading');
 
+    // arckep (19.10.2026): страницы и картинки PDF, подготовленные уже после отправки старого сообщения
+    try {
+      await this.enrichHistoryWithPdf(historyMessages, model, provider, fileService);
+    } catch (error) {
+      log('execAgent: history pdf enrichment failed: %O', error);
+    }
+
     // 12. Upload external files to S3 and collect file IDs
     let fileIds: string[] | undefined;
     let imageList: Array<{ alt: string; id: string; url: string }> | undefined;
@@ -1103,6 +1343,23 @@ export class AiAgentService {
           url: string;
         }>
       | undefined;
+    // arckep (19.10.2026): оригиналы вложений с устойчивыми адресами — модель вставляет их в HTML-предпросмотр
+    // или качает в песочнице. Сохраняется в metadata user-сообщения (живёт в истории), в текст человека не попадает.
+    const attachmentRefs: MessageAttachmentRef[] = [];
+
+    // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений;
+    // строка самого PDF получает пометку, если страницы ещё рисуются
+    const attachPdf = async (pdf: PdfJob, ref: MessageAttachmentRef) => {
+      const processed = await this.processPdf(pdf);
+      for (const page of processed.pages) {
+        fileIds!.push(page.id);
+        imageList!.push(page);
+      }
+      attachmentRefs.push(
+        processed.pending ? { ...ref, note: PDF_PAGES_PENDING_NOTE } : ref,
+        ...processed.images,
+      );
+    };
 
     if (files && files.length > 0) {
       fileIds = [];
@@ -1117,9 +1374,11 @@ export class AiAgentService {
           // arckep (chat-next-redesign, E1): файл пользователя из REST — без повторной загрузки
           if (file.fileId) {
             fileIds.push(file.fileId);
+            const name = file.name || (mimeType?.startsWith('image/') ? 'image' : 'file');
             if (mimeType?.startsWith('image/') && mimeType !== 'image/svg+xml') {
               if (file.url) {
                 imageList.push({ alt: file.name || 'image', id: file.fileId, url: file.url });
+                attachmentRefs.push({ mime: mimeType, name, url: fileAddress(file.fileId) });
               }
             } else {
               fileList.push({
@@ -1130,20 +1389,85 @@ export class AiAgentService {
                 size: file.size ?? 0,
                 url: file.url ?? '',
               });
+              const ref = { mime: mimeType, name, url: fileAddress(file.fileId) };
+              if (mimeType === 'application/pdf') {
+                await attachPdf(
+                  {
+                    fileId: file.fileId,
+                    fileService,
+                    model,
+                    name: file.name || 'file.pdf',
+                    provider,
+                  },
+                  ref,
+                );
+              } else {
+                attachmentRefs.push(ref);
+              }
             }
             continue;
           }
 
           const result = await ingestAttachment(file, fileService, this.userId);
-          fileIds.push(result.fileId);
 
           if (result.isImage) {
-            imageList.push({
-              alt: file.name || 'image',
-              id: result.fileId,
-              url: result.resolvedUrl,
-            });
+            // Длинная картинка пришла кусками (imageSlicing.ts): все куски сообщению, по порядку сверху вниз
+            const parts = result.images?.length
+              ? result.images
+              : [
+                  {
+                    fileId: result.fileId,
+                    height: 0,
+                    index: 1,
+                    mimeType: mimeType ?? 'image/png',
+                    name: file.name || 'image',
+                    resolvedUrl: result.resolvedUrl,
+                    total: 1,
+                    width: 0,
+                  },
+                ];
+            for (const image of parts) {
+              fileIds.push(image.fileId);
+              imageList.push({
+                alt: imagePartAlt(file.name || 'image', image),
+                id: image.fileId,
+                url: image.resolvedUrl,
+              });
+            }
+
+            // В списке — ОРИГИНАЛ: файл человека по присланному адресу; нет такого, а сохранённая копия — те же байты,
+            // тогда она сама; иначе (внешняя картинка, ужатая или разрезанная) — сохранённые куски с пометкой «копия»
+            const own = await this.findOwnFileByUrl(fileService, file.url);
+            if (own) {
+              attachmentRefs.push({
+                height: result.source?.height,
+                mime: own.fileType ?? mimeType,
+                name: own.name || file.name || 'image',
+                url: fileAddress(own.id),
+                width: result.source?.width,
+              });
+            } else if (result.unchanged) {
+              attachmentRefs.push({
+                height: result.source?.height,
+                mime: mimeType,
+                name: file.name || 'image',
+                url: fileAddress(result.fileId),
+                width: result.source?.width,
+              });
+            } else {
+              for (const image of parts) {
+                attachmentRefs.push({
+                  height: image.height || undefined,
+                  mime: image.mimeType,
+                  name: image.name,
+                  note: 'копия, оригинал не сохранён',
+                  url: fileAddress(image.fileId),
+                  width: image.width || undefined,
+                });
+              }
+            }
           } else {
+            fileIds.push(result.fileId);
             fileList.push({
               content: await this.parseDocumentQuietly(result.fileId, mimeType),
               fileType: mimeType ?? 'application/octet-stream',
@@ -1152,6 +1476,25 @@ export class AiAgentService {
               size: file.size ?? 0,
               url: result.resolvedUrl || file.url || '',
             });
+            const ref = {
+              mime: mimeType,
+              name: file.name || 'file',
+              url: fileAddress(result.fileId),
+            };
+            if (mimeType === 'application/pdf') {
+              await attachPdf(
+                {
+                  fileId: result.fileId,
+                  fileService,
+                  model,
+                  name: file.name || 'file.pdf',
+                  provider,
+                },
+                ref,
+              );
+            } else {
+              attachmentRefs.push(ref);
+            }
           }
         } catch (error) {
           log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
@@ -1175,6 +1518,7 @@ export class AiAgentService {
           agentId: resolvedAgentId,
           content: prompt,
           files: fileIds,
+          metadata: attachmentRefs.length > 0 ? { attachments: attachmentRefs } : undefined,
           role: 'user',
           threadId: appContext?.threadId ?? undefined,
           topicId,
@@ -1199,7 +1543,13 @@ export class AiAgentService {
     assistantMessageRef.current = assistantMessageRecord.id;
 
     // Create user message object for processing (include imageList for vision models)
-    const userMessage = { content: prompt, fileList, imageList, role: 'user' as const };
+    const userMessage = {
+      content: prompt,
+      fileList,
+      imageList,
+      metadata: attachmentRefs.length > 0 ? { attachments: attachmentRefs } : undefined,
+      role: 'user' as const,
+    };
 
     // Combine history messages with user message
     const allMessages = resume ? historyMessages : [...historyMessages, userMessage];

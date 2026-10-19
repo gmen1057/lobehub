@@ -374,6 +374,36 @@ describe('MessageModel Create Tests', () => {
         expect(messageFiles[1].fileId).toBe('file2');
       });
 
+      // arckep (19.10.2026): список вложений для модели живёт в metadata user-сообщения и возвращается при чтении
+      it('should keep metadata.attachments of a user message and return it from query', async () => {
+        const attachments = [
+          {
+            height: 23_050,
+            mime: 'image/jpeg',
+            name: 'макет.jpg',
+            url: 'https://arckep.ru/chat/f/orig_1/',
+            width: 2512,
+          },
+        ];
+
+        const result = await messageModel.create({
+          role: 'user',
+          content: 'сделай письмо',
+          files: ['f1'],
+          metadata: { attachments },
+          sessionId: '1',
+        });
+
+        const dbResult = await serverDB.select().from(messages).where(eq(messages.id, result.id));
+        expect(dbResult[0].metadata).toEqual({ attachments });
+
+        const queried = await messageModel.query({ sessionId: '1' });
+        const user = queried.find((message) => message.id === result.id)!;
+        expect(user.metadata?.attachments).toEqual(attachments);
+        // текст человека не тронут
+        expect(user.content).toBe('сделай письмо');
+      });
+
       it('should create a message with custom timestamps', async () => {
         const customCreatedAt = '2022-05-15T10:30:00Z';
         const customUpdatedAt = '2022-05-16T11:45:00Z';

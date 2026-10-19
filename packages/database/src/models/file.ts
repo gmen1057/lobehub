@@ -1,6 +1,19 @@
 import type { QueryFileListParams } from '@lobechat/types';
 import { FilesTabs, SortType } from '@lobechat/types';
-import { and, asc, count, desc, eq, ilike, inArray, like, notExists, or, sum } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  count,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  like,
+  notExists,
+  or,
+  sql,
+  sum,
+} from 'drizzle-orm';
 import type { PgTransaction } from 'drizzle-orm/pg-core';
 
 import type { FileItem, NewFile, NewGlobalFile } from '../schemas';
@@ -307,6 +320,35 @@ export class FileModel {
     return database.query.files.findFirst({
       where: and(eq(files.id, id), eq(files.userId, this.userId)),
     });
+  };
+
+  /**
+   * arckep: запись файла человека по ключу в хранилище (`files.url`). Нужна, чтобы по присланному адресу
+   * картинки найти её оригинал в файлах человека; чужие файлы не находятся. Одинаковый ключ у нескольких
+   * записей — свежайшая.
+   */
+  findByKey = async (key: string) => {
+    const [row] = await this.db
+      .select()
+      .from(files)
+      .where(and(eq(files.url, key), eq(files.userId, this.userId)))
+      .orderBy(desc(files.createdAt))
+      .limit(1);
+    return row;
+  };
+
+  /**
+   * arckep: дописать ключи в files.metadata, не затирая остальные (jsonb `||`: атомарно, без чтения). Нужно
+   * фоновой подготовке PDF (страницы и вшитые картинки лежат в metadata.pdfPrep записи файла). Чужой файл не
+   * меняется.
+   */
+  mergeMetadata = async (id: string, patch: Record<string, unknown>) => {
+    await this.db
+      .update(files)
+      .set({
+        metadata: sql`COALESCE(${files.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`,
+      })
+      .where(and(eq(files.id, id), eq(files.userId, this.userId)));
   };
 
   countFilesByHash = async (hash: string) => {

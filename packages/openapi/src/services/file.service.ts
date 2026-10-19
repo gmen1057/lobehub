@@ -716,6 +716,7 @@ export class FileUploadService extends BaseService {
               });
             }
 
+            this.startPdfPrepare(existingUserFile.id, file, options);
             return await this.getFileDetail(existingUserFile.id);
           } else {
             // File exists in global table but user has no record, create user file record
@@ -757,6 +758,7 @@ export class FileUploadService extends BaseService {
               url: existingFileCheck.url,
             });
 
+            this.startPdfPrepare(createResult.id, file, options);
             return await this.getFileDetail(createResult.id);
           }
         }
@@ -795,10 +797,30 @@ export class FileUploadService extends BaseService {
         });
       }
 
+      this.startPdfPrepare(createResult.id, file, options);
       return await this.getFileDetail(createResult.id);
     } catch (error) {
       this.handleServiceError(error, '上传文件');
     }
+  }
+
+  /**
+   * arckep (19.10.2026): PDF, загруженный для чата, начинает готовиться сразу: пока человек пишет сообщение, в
+   * фоне рисуются страницы и достаются вшитые картинки (aiAgent/pdfPrepare.ts), execAgent потом забирает готовое
+   * (без 11–19 с ожидания на тяжёлом PDF). Ничего не ждём; сбой на загрузку не влияет. Документы базы знаний и
+   * не-PDF не готовятся; выключатель — ARCKEP_PDF_PREPARE_ON_UPLOAD=0.
+   */
+  private startPdfPrepare(fileId: string, file: File, options: PublicFileUploadRequest) {
+    void import('@/server/services/aiAgent/pdfPrepare')
+      .then(({ schedulePdfPrepare }) =>
+        schedulePdfPrepare(this.db, this.userId, {
+          id: fileId,
+          knowledgeBaseId: options.knowledgeBaseId,
+          mime: file.type,
+          name: file.name,
+        }),
+      )
+      .catch((error) => this.log('warn', 'PDF preparation was not scheduled', { error, fileId }));
   }
 
   /**

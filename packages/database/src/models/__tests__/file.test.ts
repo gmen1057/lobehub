@@ -521,6 +521,123 @@ describe('FileModel', () => {
     });
   });
 
+  // arckep (19.10.2026): оригинал присланной картинки находится по ключу в хранилище
+  describe('findByKey', () => {
+    it('finds the file of the user by its storage key', async () => {
+      const { id } = await fileModel.create({
+        name: 'макет.jpg',
+        url: 'files/u/abc/макет.jpg',
+        size: 100,
+        fileType: 'image/jpeg',
+      });
+
+      const file = await fileModel.findByKey('files/u/abc/макет.jpg');
+      expect(file).toMatchObject({ id, name: 'макет.jpg', fileType: 'image/jpeg', userId });
+    });
+
+    it('does not find files of other users', async () => {
+      await new FileModel(serverDB, 'user2').create({
+        name: 'чужой.jpg',
+        url: 'files/u2/чужой.jpg',
+        size: 1,
+        fileType: 'image/jpeg',
+      });
+
+      expect(await fileModel.findByKey('files/u2/чужой.jpg')).toBeUndefined();
+    });
+
+    it('returns undefined for an unknown key and an empty key', async () => {
+      await fileModel.create({
+        name: 'a.png',
+        url: 'files/u/a.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+
+      expect(await fileModel.findByKey('files/u/other.png')).toBeUndefined();
+      expect(await fileModel.findByKey('')).toBeUndefined();
+    });
+
+    it('takes the newest record when several records share the key', async () => {
+      const first = await fileModel.create({
+        name: 'old.png',
+        url: 'files/u/same.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+      await serverDB
+        .update(files)
+        .set({ createdAt: new Date('2026-01-01T00:00:00Z') })
+        .where(eq(files.id, first.id));
+      const second = await fileModel.create({
+        name: 'new.png',
+        url: 'files/u/same.png',
+        size: 1,
+        fileType: 'image/png',
+      });
+
+      expect((await fileModel.findByKey('files/u/same.png'))?.id).toBe(second.id);
+    });
+  });
+
+  describe('mergeMetadata', () => {
+    it('adds keys without touching the existing ones, repeated merges replace only their own key', async () => {
+      const { id } = await fileModel.create({
+        name: 'a.pdf',
+        url: 'files/u/a.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+        metadata: {
+          dirname: 'files/u',
+          filename: 'a.pdf',
+          path: 'files/u/a.pdf',
+          date: '2026-10-19',
+        },
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'processing', version: 1 } });
+      await fileModel.mergeMetadata(id, {
+        pdfPrep: { status: 'done', version: 1, images: [1, 2] },
+      });
+
+      const file = await fileModel.findById(id);
+      expect(file?.metadata).toEqual({
+        date: '2026-10-19',
+        dirname: 'files/u',
+        filename: 'a.pdf',
+        path: 'files/u/a.pdf',
+        pdfPrep: { images: [1, 2], status: 'done', version: 1 },
+      });
+    });
+
+    it('works on a file with empty metadata', async () => {
+      const { id } = await fileModel.create({
+        name: 'b.pdf',
+        url: 'files/u/b.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'done' } });
+
+      expect((await fileModel.findById(id))?.metadata).toEqual({ pdfPrep: { status: 'done' } });
+    });
+
+    it('does not change files of other users', async () => {
+      const other = new FileModel(serverDB, 'user2');
+      const { id } = await other.create({
+        name: 'c.pdf',
+        url: 'files/u2/c.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'done' } });
+
+      expect((await other.findById(id))?.metadata ?? null).toBeNull();
+    });
+  });
+
   it('should update a file', async () => {
     const { id } = await fileModel.create({
       name: 'test-file.txt',

@@ -196,6 +196,10 @@ export class MessageContentProcessor extends BaseProcessor {
     if ((hasFiles || hasImages || hasVideos) && this.config.fileContext?.enabled) {
       const filesContext = filesPrompts({
         addUrl: this.config.fileContext.includeFileUrl ?? true,
+        // arckep (19.10.2026): адреса оригиналов вложений — execAgent кладёт их в metadata сообщения
+        attachments: Array.isArray(message.metadata?.attachments)
+          ? message.metadata.attachments
+          : undefined,
         fileList,
         fileBudget: fileBudget.remaining,
         imageList: message.imageList || [],
