@@ -3380,6 +3380,97 @@ describe('RuntimeExecutors', () => {
       }
     });
 
+    // arckep (19.10.2026): прокси студии отвечает на нехватку денег HTTP 402; раньше call_llm повторял
+    // такой запрос 6 раз с паузами (~30 с). Теперь — одна попытка, ошибка с прежним текстом уходит человеку.
+    describe('нехватка баланса (402)', () => {
+      const BALANCE_MESSAGE =
+        'Недостаточно средств на балансе. Пополните баланс: https://arckep.ru/settings#balance';
+      // форма, в которой её отдают openai-совместимые провайдеры и Anthropic: тело в error, статуса нет
+      const balanceError = () => ({
+        endpoint: 'https://api.arckep.ru',
+        error: { code: 'billing_error', message: BALANCE_MESSAGE, type: 'insufficient_balance' },
+        errorType: 'ProviderBizError',
+        provider: 'openai',
+      });
+
+      const callLlm = (mockChat: ReturnType<typeof vi.fn>) => {
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+        const executors = createRuntimeExecutors(ctx);
+        return executors.call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Hello', role: 'user' }],
+              model: 'gpt-4',
+              parentMessageId: 'parent-msg-123',
+              provider: 'openai',
+              tools: [],
+            },
+            type: 'call_llm' as const,
+          },
+          createMockState(),
+        );
+      };
+
+      const publishedTypes = () =>
+        mockStreamManager.publishStreamEvent.mock.calls.map(
+          ([, event]: [string, { type: string }]) => event.type,
+        );
+
+      it('одна попытка без повторов и пауз, ошибка уходит дальше тем же объектом', async () => {
+        const error = balanceError();
+        const mockChat = vi.fn().mockRejectedValue(error);
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(callLlm(mockChat)).rejects.toBe(error);
+
+        expect(mockChat).toHaveBeenCalledTimes(1);
+        expect(publishedTypes()).not.toContain('stream_retry');
+        errorSpy.mockRestore();
+      });
+
+      it('человеку уходит прежний текст про пополнение баланса', async () => {
+        const mockChat = vi.fn().mockRejectedValue(balanceError());
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(callLlm(mockChat)).rejects.toBeDefined();
+
+        const errorEvent = mockStreamManager.publishStreamEvent.mock.calls.find(
+          ([, event]: [string, { type: string }]) => event.type === 'error',
+        )?.[1];
+        expect(errorEvent.data).toMatchObject({ error: BALANCE_MESSAGE, phase: 'llm_execution' });
+        errorSpy.mockRestore();
+      });
+
+      it('сам HTTP-статус 402 без текста тоже останавливает повторы', async () => {
+        const mockChat = vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error('402 Payment Required'), { status: 402 }));
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(callLlm(mockChat)).rejects.toThrow('402 Payment Required');
+
+        expect(mockChat).toHaveBeenCalledTimes(1);
+        errorSpy.mockRestore();
+      });
+
+      it('402 в потоке (ошибка пришла событием после начала ответа) тоже не повторяется', async () => {
+        const mockChat = vi.fn().mockImplementation(async (_payload: any, options: any) => {
+          await options.callback.onError?.({
+            message: BALANCE_MESSAGE,
+            type: 'insufficient_balance',
+          });
+          return new Response('done');
+        });
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+        await expect(callLlm(mockChat)).rejects.toThrow(BALANCE_MESSAGE);
+
+        expect(mockChat).toHaveBeenCalledTimes(1);
+        expect(publishedTypes()).not.toContain('stream_retry');
+        errorSpy.mockRestore();
+      });
+    });
+
     it('should not retry llm execution after operation is interrupted', async () => {
       const mockChat = vi.fn().mockRejectedValue(new Error('network timeout'));
       vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
