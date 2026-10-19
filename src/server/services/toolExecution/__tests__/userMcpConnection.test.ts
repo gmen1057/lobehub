@@ -214,6 +214,23 @@ describe('executeTool: свои подключения и защита MCP-кл�
     expect(callTool.mock.calls[0][0].toolName).toBe('ping');
   });
 
+  it('шлюз: «Сервер запускается, повторите через минуту» — текст модели, без автоповтора инструмента', async () => {
+    const message = 'MCP error -32000: Сервер запускается, повторите через минуту';
+    // ошибка протокола — ответ-текст (success true: иначе сработал бы повтор)
+    callTool.mockResolvedValueOnce({ content: message, error: new Error(message), state: { content: [] }, success: false });
+    const asText = await run(UMCP, { type: 'http', url: GATEWAY });
+    expect(asText.content).toContain('Сервер запускается');
+    expect(asText.error?.kind).not.toBe('retry');
+
+    // исключение клиента MCP — ошибка инструмента с кодом MCP_EXECUTION_ERROR: «replan», не «retry»
+    callTool.mockRejectedValueOnce(new Error('Сервер запускается, повторите через минуту'));
+    const thrown = await run(UMCP, { type: 'http', url: GATEWAY });
+    expect(thrown.success).toBe(false);
+    expect(thrown.content).toBe('Сервер запускается, повторите через минуту');
+    expect(thrown.error.kind).toBe('replan');
+    expect(callTool).toHaveBeenCalledTimes(2);
+  });
+
   it('umcp-* с манифестом stdio или cloud отклоняется до любого запуска', async () => {
     for (const mcpParams of [
       { args: [], command: 'rm', type: 'stdio' },

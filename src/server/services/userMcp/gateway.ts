@@ -40,6 +40,8 @@ export interface UserMcpHeadersInput {
   /** Номер человека в студии — выводит сервер, не клиент */
   arckepUserId: number;
   identifier: string;
+  /** Обновление списка инструментов (refresh): шлюз держит `tools/list` в кэше 10 минут, с этим заголовком — читает заново */
+  refresh?: boolean;
   sealed: string;
   /** Номер темы — только своей */
   topicId?: string;
@@ -56,6 +58,7 @@ export const buildUserMcpHeaders = (input: UserMcpHeadersInput): Record<string, 
     'X-Arckep-User': String(input.arckepUserId),
     'X-Arckep-User-Mcp-Config': clean(input.sealed),
     'X-Arckep-User-Mcp-Id': clean(input.identifier),
+    ...(input.refresh ? { 'X-Arckep-User-Mcp-Refresh': '1' } : {}),
     ...(input.topicId ? { 'X-Arckep-Topic': clean(input.topicId) } : {}),
   };
 };
@@ -73,11 +76,14 @@ interface RpcError {
 }
 
 const PASSTHROUGH_STATUSES = new Set([400, 402, 404, 409, 422, 429]);
+// 503 — только когда шлюз сам подсказал его в `error.data.status` («Сервер запускается, повторите через минуту»);
+// голый HTTP 503 (шлюз лежит, nginx) остаётся 502.
+const HINTED_STATUSES = new Set([...PASSTHROUGH_STATUSES, 503]);
 
 /** Статус, который шлюз подсказал сам: `error.data.status` (например 402 — нет денег). */
 const hintedStatus = (error: RpcError): number | undefined => {
   const hinted = Number(error.data?.status ?? error.data?.httpStatus);
-  return Number.isInteger(hinted) && PASSTHROUGH_STATUSES.has(hinted) ? hinted : undefined;
+  return Number.isInteger(hinted) && HINTED_STATUSES.has(hinted) ? hinted : undefined;
 };
 
 const statusForRpcError = (error: RpcError): number => {
@@ -243,19 +249,16 @@ export const listUserMcpTools = async (options: ListUserMcpToolsOptions): Promis
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok) {
       let message: string;
-      let status = response.status;
+      // на HTTP-ошибке верим коду ответа (4xx из списка проходят, остальное — 502), если шлюз не подсказал статус сам
+      let status = PASSTHROUGH_STATUSES.has(response.status) ? response.status : 502;
       try {
         const body = parseRpcBody(text, contentType, id!);
         message = errorText(body?.error, '');
-        // на HTTP-ошибке верим коду ответа, если шлюз не подсказал статус сам
         status = (body?.error && hintedStatus(body.error)) || status;
       } catch {
         message = text.slice(0, 300);
       }
-      throw new UserMcpGatewayError(
-        message || 'Шлюз подключений отклонил запрос',
-        PASSTHROUGH_STATUSES.has(status) ? status : 502,
-      );
+      throw new UserMcpGatewayError(message || 'Шлюз подключений отклонил запрос', status);
     }
 
     const body = parseRpcBody(text, contentType, id!);

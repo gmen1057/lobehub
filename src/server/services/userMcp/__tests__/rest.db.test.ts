@@ -259,7 +259,12 @@ describe('REST своих подключений', () => {
         tools: ['create_page'],
       });
       expect(mockList).toHaveBeenLastCalledWith({
-        headers: expect.objectContaining({ 'X-Arckep-User-Mcp-Config': SEALED, 'X-Arckep-User-Mcp-Id': ID }),
+        headers: expect.objectContaining({
+          'X-Arckep-User-Mcp-Config': SEALED,
+          'X-Arckep-User-Mcp-Id': ID,
+          // шлюз держит список в кэше 10 минут: при обновлении просим читать заново
+          'X-Arckep-User-Mcp-Refresh': '1',
+        }),
       });
       expect(((await rows())[0].manifest as any).api.map((api: any) => api.name)).toEqual(['create_page']);
       expect((await rows())[0].customParams).toMatchObject({ arckepUserMcp: { sealed: SEALED } });

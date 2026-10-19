@@ -208,7 +208,8 @@ export class PluginService {
       );
     }
     const tools = await listUserMcpTools({
-      headers: buildUserMcpHeaders({ arckepUserId, identifier, sealed }),
+      // refresh: шлюз держит tools/list в кэше 10 минут и без заголовка вернул бы старый список
+      headers: buildUserMcpHeaders({ arckepUserId, identifier, refresh: true, sealed }),
     });
     if (tools.length === 0) {
       throw new UserMcpGatewayError('Сервер не отдал ни одного подходящего инструмента', 422);

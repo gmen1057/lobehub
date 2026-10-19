@@ -60,6 +60,15 @@ describe('buildUserMcpHeaders', () => {
     ).toBe('tpc_1');
   });
 
+  it('refresh добавляет X-Arckep-User-Mcp-Refresh: 1; без него заголовка нет', () => {
+    expect(headers['X-Arckep-User-Mcp-Refresh']).toBeUndefined();
+    expect(
+      buildUserMcpHeaders({ arckepUserId: 15, identifier: 'umcp-abcdefghijkl', refresh: true, sealed: SEALED })[
+        'X-Arckep-User-Mcp-Refresh'
+      ],
+    ).toBe('1');
+  });
+
   it('переводы строк в значениях вырезаются (внедрение заголовков)', () => {
     const evil = buildUserMcpHeaders({
       arckepUserId: 1,
@@ -185,6 +194,20 @@ describe('listUserMcpTools', () => {
     }).catch((e) => e);
     expect(other.message).toBe('Адрес внутренней сети запрещён');
     expect(other.status).toBe(502);
+  });
+
+  it('«Сервер запускается» — статус 503 проходит только по подсказке шлюза; голый HTTP 503 — 502', async () => {
+    const hinted = gatewayFetch({
+      initialize: (body) =>
+        json({ error: { code: -32_000, data: { status: 503 }, message: 'Сервер запускается, повторите через минуту' }, id: body.id }),
+    }).fn;
+    const starting = await listUserMcpTools({ fetchImpl: hinted, headers }).catch((e) => e);
+    expect([starting.message, starting.status]).toEqual(['Сервер запускается, повторите через минуту', 503]);
+
+    const bare = gatewayFetch({
+      initialize: () => new Response('Service Unavailable', { headers: { 'content-type': 'text/plain' }, status: 503 }),
+    }).fn;
+    expect((await listUserMcpTools({ fetchImpl: bare, headers }).catch((e) => e)).status).toBe(502);
   });
 
   it('HTTP-ошибка шлюза: 4xx из списка проходит, 401/403/5xx — 502; текст берётся из тела', async () => {
