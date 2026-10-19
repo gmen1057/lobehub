@@ -75,6 +75,7 @@ import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
 import { ingestAttachment } from './ingestAttachment';
+import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
 
@@ -238,6 +239,22 @@ export class AiAgentService {
       log('execAgent: failed to parse document %s: %O', fileId, error);
       return undefined;
     }
+  }
+
+  /**
+   * arckep (19.10.2026): тема от клиента должна быть этого человека, иначе TopicNotFoundError (HTTP 404
+   * «Тема не найдена»). См. topicAccess.ts. Публичный: ResponsesService проверяет тему до начала потока.
+   */
+  async assertTopicAccess(
+    topicId: string,
+    options: { allowMissing?: boolean } = {},
+  ): Promise<void> {
+    await assertTopicAccess({
+      allowMissing: options.allowMissing,
+      topicId,
+      topicModel: this.topicModel,
+      userId: this.userId,
+    });
   }
 
   /**
@@ -466,6 +483,12 @@ export class AiAgentService {
         cronJobId || 'none',
       );
     } else {
+      // arckep (19.10.2026): тема от клиента должна быть этого человека (чужая или несуществующая — 404
+      // «Тема не найдена», сообщения не пишутся). Боты берут номер из состояния ветки и сами лечат удалённую
+      // тему по внешнему ключу — им несуществующая тема проходит как раньше, чужая не проходит.
+      await this.assertTopicAccess(topicId, {
+        allowMissing: Boolean(botContext || botPlatformContext || discordContext),
+      });
       log('execAgent: reusing existing topic %s', topicId);
     }
 
