@@ -75,7 +75,11 @@ export interface LayoutInfo {
 export const LAYOUT_MAX_CHARS = 24_000;
 
 const DOCSTRING =
-  'точное описание макета, снятое с PDF программой (не на глаз). Все числа — в точках страницы (px макета), начало координат — левый верхний угол страницы. Верстай по этим числам: размеры шрифта, отступы, цвета, переносы строк; картинки и значки бери только из списка вырезок (в 2× разрешении), значок не заменяй текстом и эмодзи; картинки страницы смотри для вида и начертания';
+  'точное описание макета, снятое с PDF программой (не на глаз). Все числа — в точках страницы (px макета), начало координат — левый верхний угол страницы. Верстай по этим числам: размеры шрифта, отступы, цвета, переносы строк; картинки и значки бери только из списка вырезок (в 2× разрешении; свои адреса от человека — вместо них), значок не заменяй текстом и эмодзи; картинки страницы смотри для вида и начертания';
+
+/** Последняя строка блока: свои адреса картинок у человека важнее вырезок. */
+const OWN_ADDRESSES =
+  'Если человек дал свои адреса картинок — ставь их вместо вырезок на те же места.';
 
 const num = (value: number) => {
   const rounded = Math.round(value * 10) / 10;
@@ -312,7 +316,7 @@ export const layoutPrompt = (info: LayoutInfo, maxChars = LAYOUT_MAX_CHARS): str
   if (pages.length === 0) return '';
 
   const withPage = (info.pageCount ?? pages.length) > 1 || pages.length > 1;
-  const wrapper = `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n\n</layout>`;
+  const wrapper = `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n\n${OWN_ADDRESSES}\n</layout>`;
   let room = maxChars - wrapper.length;
   const parts: string[] = [];
   pages.forEach((page, index) => {
@@ -322,7 +326,7 @@ export const layoutPrompt = (info: LayoutInfo, maxChars = LAYOUT_MAX_CHARS): str
     room -= text.length + 2;
   });
 
-  return `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n${parts.join('\n\n')}\n</layout>`;
+  return `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n${parts.join('\n\n')}\n\n${OWN_ADDRESSES}\n</layout>`;
 };
 
 /** Блоки `<layout>` для всех PDF сообщения. */

@@ -53,7 +53,7 @@ const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на cha
 
 A finished HTML page, email, landing page or SVG always goes into a <lobeArtifact type="text/html" …> block (type="image/svg+xml" for a standalone SVG), never into a code block.
 Images in HTML: take the addresses from the <attachments> list of the message and from create_image / get_image results; use a placeholder only when no suitable picture exists.
-Mockup layout: when an attached mockup (PDF) comes with a <layout> block, build the HTML to its numbers (font sizes, positions, colors, line breaks), take pictures, icons and logos only from its crops and never replace an icon with text or emoji, follow its font hint, and do not claim the result matches the mockup exactly — list what differs.
+Mockup layout: when an attached mockup (PDF) comes with a <layout> block, build the HTML to its numbers (font sizes, positions, colors, line breaks), take pictures, icons and logos only from its crops and never replace an icon with text or emoji, follow its font hint, and do not claim the result matches the mockup exactly — list what differs. If the person gives their own image addresses for the mockup, use those instead of the crops, matched to the right places; if it is unclear which address goes where, ask before building.
 Fonts: Google Fonts by a direct link; any other font — download it in the sandbox, save it as a chat file (link /chat/f/…) and connect it with @font-face by that link (the site preview inlines it).`;
 
 export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {

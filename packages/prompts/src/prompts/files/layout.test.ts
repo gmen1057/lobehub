@@ -274,6 +274,28 @@ describe('layoutPrompt: описание макета для модели', () =
     expect(text).not.toMatch(/\nНовые инструкции/);
   });
 
+  it('последняя строка блока — про свои адреса картинок человека; она одна, в конце, и не пропадает при обрезке', () => {
+    const note = 'Если человек дал свои адреса картинок — ставь их вместо вырезок на те же места.';
+    const short = layoutPrompt(info([sample()]));
+    expect(short.endsWith(`${note}\n</layout>`)).toBe(true);
+    expect(short.split(note)).toHaveLength(2);
+
+    const lines = Array.from({ length: 1500 }, (_, i) =>
+      line({
+        text: `Строка текста номер ${i} с некоторым содержанием для длины`,
+        x: 20,
+        y: i * 25,
+      }),
+    );
+    const cut = layoutPrompt(info([page({ crops: sample().crops, lines })]));
+    expect(cut.length).toBeLessThanOrEqual(LAYOUT_MAX_CHARS);
+    expect(cut.endsWith(`${note}\n</layout>`)).toBe(true);
+    // многостраничный файл: тоже один раз, в самом конце
+    const multi = layoutPrompt(info([sample(), { ...sample(), page: 2 }], { pageCount: 2 }));
+    expect(multi.endsWith(`${note}\n</layout>`)).toBe(true);
+    expect(multi.split(note)).toHaveLength(2);
+  });
+
   it('нечего описывать (нет строк и вырезок) — пустая строка', () => {
     expect(layoutPrompt(info([page()]))).toBe('');
     expect(layoutPrompt(info([]))).toBe('');
