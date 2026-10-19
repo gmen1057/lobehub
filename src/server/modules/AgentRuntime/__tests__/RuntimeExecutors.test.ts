@@ -37,6 +37,15 @@ vi.mock('@/server/services/file', () => ({
   })),
 }));
 
+// arckep (19.10.2026): подписанная ссылка на картинку результата инструмента (см. toolResultImageUrl.test.ts)
+const mockResolveToolImage = vi.fn(
+  async ({ fileId }: { fileId?: string }) => fileId && `https://s3.example/signed/${fileId}?sig=1`,
+);
+
+vi.mock('@/server/modules/Mecha/ContextEngineering/toolResultImageUrl', () => ({
+  createToolImageUrlResolver: vi.fn(() => mockResolveToolImage),
+}));
+
 vi.mock('@/envs/file', () => ({
   fileEnv: {
     NEXT_PUBLIC_S3_FILE_PATH: 'files',
@@ -1023,6 +1032,84 @@ describe('RuntimeExecutors', () => {
         expect(hasForceFinishMessage).toBe(true);
       });
 
+      describe('картинки из результатов инструментов (arckep, 19.10.2026)', () => {
+        const toolTurn = (extraTool: Record<string, unknown> = {}) => [
+          { content: 'Покажи кадр', role: 'user' },
+          {
+            content: '',
+            role: 'assistant',
+            tool_calls: [
+              {
+                function: { arguments: '{}', name: 'mcp-figma____get_screenshot____mcp' },
+                id: 'call-1',
+                type: 'function',
+              },
+            ],
+          },
+          {
+            content: 'Frame 1:2\n\n![](https://arckep.ru/chat/f/file-1)',
+            pluginState: {
+              content: [
+                {
+                  data: 'https://arckep.ru/chat/f/file-1',
+                  fileId: 'file-1',
+                  mimeType: 'image/png',
+                  type: 'image',
+                },
+              ],
+            },
+            role: 'tool',
+            tool_call_id: 'call-1',
+            ...extraTool,
+          },
+        ];
+
+        const run = async (model: string, provider: string, context = ctx) => {
+          const executors = createRuntimeExecutors({
+            ...context,
+            agentConfig: { plugins: [], systemRole: 'test' },
+          });
+          await executors.call_llm!(
+            {
+              payload: { messages: toolTurn(), model, provider },
+              type: 'call_llm' as const,
+            },
+            createMockState(),
+          );
+          return mockChat.mock.calls.at(-1)![0].messages as any[];
+        };
+
+        it('модель со зрением: после tool-сообщения идёт user-сообщение с подписанной ссылкой на картинку', async () => {
+          const messages = await run('gpt-4', 'openai');
+
+          expect(messages.slice(-3).map((m) => m.role)).toEqual(['assistant', 'tool', 'user']);
+          expect(messages.at(-2).content).toContain('![](https://arckep.ru/chat/f/file-1)');
+          expect(messages.at(-1).content.at(-1)).toEqual({
+            image_url: { detail: 'auto', url: 'https://s3.example/signed/file-1?sig=1' },
+            type: 'image_url',
+          });
+          expect(mockResolveToolImage).toHaveBeenCalledWith(
+            expect.objectContaining({ fileId: 'file-1' }),
+          );
+        });
+
+        it('модель без зрения: ничего не добавляется', async () => {
+          // no-tools-model: vision=false, functionCall=false — tool-сообщение станет user-сообщением,
+          // картинок среди частей быть не должно
+          const messages = await run('no-tools-model', 'test-provider');
+
+          expect(JSON.stringify(messages)).not.toContain('image_url');
+          expect(mockResolveToolImage).not.toHaveBeenCalled();
+        });
+
+        it('без пользователя или базы картинки не передаются', async () => {
+          const messages = await run('gpt-4', 'openai', { ...ctx, userId: undefined });
+
+          expect(messages.at(-1).role).toBe('tool');
+          expect(mockResolveToolImage).not.toHaveBeenCalled();
+        });
+      });
+
       it('should pass evalContext to serverMessagesEngine', async () => {
         const evalContext = { expectedOutput: 'test answer', evalMode: true };
         const ctxWithEval: RuntimeExecutorContext = {
@@ -1734,6 +1821,85 @@ describe('RuntimeExecutors', () => {
           tool_call_id: 'tool-call-1',
         }),
       );
+    });
+
+    describe('картинки в состоянии одиночного вызова (arckep, 19.10.2026)', () => {
+      const toolPayload = {
+        payload: {
+          parentMessageId: 'assistant-msg-123',
+          toolCalling: {
+            apiName: 'get_screenshot',
+            arguments: '{}',
+            id: 'tool-call-1',
+            identifier: 'mcp-figma',
+            type: 'mcp' as const,
+          },
+        },
+        type: 'call_tool' as const,
+      };
+
+      it('в сообщение состояния кладутся только блоки-картинки (url + fileId), а не весь state инструмента', async () => {
+        mockToolExecutionService.executeTool.mockResolvedValue({
+          content: 'Frame\n\n![](https://arckep.ru/chat/f/file-1)',
+          executionTime: 5,
+          state: {
+            content: [
+              { text: 'Frame', type: 'text' },
+              {
+                data: 'https://arckep.ru/chat/f/file-1',
+                fileId: 'file-1',
+                mimeType: 'image/png',
+                type: 'image',
+              },
+              { text: 'x'.repeat(5000), type: 'text' },
+            ],
+            isError: false,
+          },
+          success: true,
+        });
+        const executors = createRuntimeExecutors(ctx);
+
+        const result = await executors.call_tool!(toolPayload, createMockState());
+
+        const toolMessage = result.newState.messages.at(-1) as any;
+        expect(toolMessage).toEqual({
+          content: 'Frame\n\n![](https://arckep.ru/chat/f/file-1)',
+          pluginState: {
+            content: [
+              {
+                data: 'https://arckep.ru/chat/f/file-1',
+                fileId: 'file-1',
+                mimeType: 'image/png',
+                type: 'image',
+              },
+            ],
+          },
+          role: 'tool',
+          tool_call_id: 'tool-call-1',
+        });
+        // В базу уходит полный state как был
+        expect(mockMessageModel.create).toHaveBeenCalledWith(
+          expect.objectContaining({ pluginState: expect.objectContaining({ isError: false }) }),
+        );
+      });
+
+      it('результат без картинок: сообщение состояния как раньше, без pluginState', async () => {
+        mockToolExecutionService.executeTool.mockResolvedValue({
+          content: 'plain',
+          executionTime: 5,
+          state: { content: [{ text: 'plain', type: 'text' }] },
+          success: true,
+        });
+        const executors = createRuntimeExecutors(ctx);
+
+        const result = await executors.call_tool!(toolPayload, createMockState());
+
+        expect(result.newState.messages.at(-1)).toEqual({
+          content: 'plain',
+          role: 'tool',
+          tool_call_id: 'tool-call-1',
+        });
+      });
     });
 
     it('should include all required fields when creating tool message', async () => {

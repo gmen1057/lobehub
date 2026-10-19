@@ -2,7 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type ToolCallContent } from '@/libs/mcp';
 
-import { contentBlocksToString, processContentBlocks } from './contentProcessor';
+import {
+  contentBlocksToString,
+  processContentBlocks,
+  replaceMediaBlocksWithText,
+} from './contentProcessor';
 
 describe('contentProcessor', () => {
   describe('contentBlocksToString', () => {
@@ -167,6 +171,115 @@ describe('contentProcessor', () => {
         'UEsDBBQAAAAI',
         expect.stringContaining('Kadguru_KP.docx'),
       );
+    });
+
+    it('keeps the file record id on uploaded media (the chat engine builds a signed link from it)', async () => {
+      mockFileService.uploadBase64.mockResolvedValue({
+        url: 'https://example.com/f/uploaded-img',
+        fileId: 'file-1',
+        key: 'mcp/images/2025-01-01/abc.png',
+      });
+
+      const [image] = await processContentBlocks(
+        [{ type: 'image', data: 'iVBORw0KGgoAAAANSUhEUg==', mimeType: 'image/png' }],
+        mockFileService,
+      );
+
+      expect(image).toEqual({
+        type: 'image',
+        data: 'https://example.com/f/uploaded-img',
+        fileId: 'file-1',
+        mimeType: 'image/png',
+      });
+      expect(JSON.stringify(image)).not.toContain('iVBORw0KGgo');
+    });
+
+    it('turns "image/svg+xml" / "image/jpeg; charset" into a plain file extension', async () => {
+      mockFileService.uploadBase64.mockResolvedValue({ url: 'u', fileId: 'f', key: 'k' });
+
+      await processContentBlocks(
+        [
+          { type: 'image', data: 'AAAA', mimeType: 'image/svg+xml' },
+          { type: 'image', data: 'AAAA', mimeType: 'image/jpeg; charset=binary' },
+          { type: 'image', data: 'AAAA', mimeType: '' },
+        ],
+        mockFileService,
+      );
+
+      const paths = mockFileService.uploadBase64.mock.calls.map((call: any[]) => call[1] as string);
+      expect(paths[0]).toMatch(/\.svg$/);
+      expect(paths[1]).toMatch(/\.jpeg$/);
+      expect(paths[2]).toMatch(/\.png$/);
+    });
+
+    it('throws on upload failure by default (browser path behaviour is unchanged)', async () => {
+      mockFileService.uploadBase64.mockRejectedValue(new Error('S3 is down'));
+
+      await expect(
+        processContentBlocks(
+          [{ type: 'image', data: 'AAAA', mimeType: 'image/png' }],
+          mockFileService,
+        ),
+      ).rejects.toThrow('S3 is down');
+    });
+
+    it('degradeOnError: a failed image becomes a text note, other blocks survive, no base64 is left', async () => {
+      mockFileService.uploadBase64.mockRejectedValue(new Error('S3 is down'));
+
+      const result = await processContentBlocks(
+        [
+          { type: 'text', text: 'Frame' },
+          { type: 'image', data: 'iVBORw0KGgoAAAANSUhEUg==', mimeType: 'image/png' },
+          { type: 'audio', data: 'SUQzBAAAAAAA', mimeType: 'audio/mp3' },
+        ],
+        mockFileService,
+        { degradeOnError: true },
+      );
+
+      expect(result).toEqual([
+        { type: 'text', text: 'Frame' },
+        { type: 'text', text: '[картинка не сохранена: S3 is down]' },
+        { type: 'text', text: '[аудио не сохранено: S3 is down]' },
+      ]);
+    });
+
+    it('degradeOnError: a failed JSON file payload is replaced too (the whole file must not stay in the text)', async () => {
+      mockFileService.uploadBase64.mockRejectedValue(new Error('quota'));
+
+      const result = await processContentBlocks(
+        [
+          {
+            type: 'text',
+            text: JSON.stringify({ success: true, filename: 'a.docx', content_base64: 'UEsDBBQ=' }),
+          },
+        ],
+        mockFileService,
+        { degradeOnError: true },
+      );
+
+      expect(result).toEqual([{ type: 'text', text: '[файл не сохранён: quota]' }]);
+    });
+
+    it('replaceMediaBlocksWithText: media become notes, text and resources are untouched', () => {
+      const resource = {
+        type: 'resource',
+        resource: { uri: 'file:///a', text: 'x' },
+      } as ToolCallContent;
+
+      expect(
+        replaceMediaBlocksWithText(
+          [
+            { type: 'text', text: 'hello' },
+            { type: 'image', data: 'AAAA', mimeType: 'image/png' },
+            resource,
+          ],
+          'нет пользователя или хранилища',
+        ),
+      ).toEqual([
+        { type: 'text', text: 'hello' },
+        { type: 'text', text: '[картинка не сохранена: нет пользователя или хранилища]' },
+        resource,
+      ]);
     });
 
     it('should produce correct string when combined with contentBlocksToString', async () => {

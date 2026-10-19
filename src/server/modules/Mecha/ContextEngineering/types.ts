@@ -11,6 +11,7 @@ import type {
   LobeToolManifest,
   SkillMeta,
   ToolDiscoveryConfig,
+  ToolResultImage,
   TopicReferenceItem,
   UserMemoryData,
 } from '@lobechat/context-engine';
@@ -130,6 +131,14 @@ export interface ServerMessagesEngineParams {
   // ========== Tools ==========
   /** Tools configuration */
   toolsConfig?: ServerToolsConfig;
+  /**
+   * arckep (19.10.2026): картинки результатов инструментов текущего хода — моделям со зрением
+   * (ToolResultImagesProcessor). Без этого параметра картинки инструментов до модели не доходят.
+   */
+  toolResultImages?: {
+    maxImages?: number;
+    resolveImageUrl: (image: ToolResultImage) => Promise<string | undefined>;
+  };
   // ========== Topic References ==========
   /** Topic reference summaries to inject into last user message */
   topicReferences?: TopicReferenceItem[];

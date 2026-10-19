@@ -81,57 +81,104 @@ const uploadJsonFilePayload = async (
 };
 
 /**
+ * Расширение файла по MIME: «image/svg+xml» → «svg», «image/jpeg» → «jpeg» (без суффиксов «+xml»,
+ * «; charset=…»), чтобы имя файла проходило проверку расширений при загрузке.
+ */
+const extensionFromMime = (mimeType: string | undefined, fallback: string): string => {
+  const subtype = (mimeType || '').split(';')[0].split('/')[1] || '';
+  const ext = subtype.split('+')[0].trim().toLowerCase();
+  return /^[\da-z]{1,10}$/.test(ext) ? ext : fallback;
+};
+
+export interface ProcessContentBlocksOptions {
+  /**
+   * arckep (19.10.2026): серверный путь (движок чата) не должен падать из-за картинки — загрузка
+   * не удалась → блок заменяется текстом «[картинка не сохранена: причина]», сырой base64 не остаётся.
+   * Без флага (браузерный путь, tRPC) поведение прежнее: ошибка загрузки пробрасывается.
+   */
+  degradeOnError?: boolean;
+}
+
+const UNSAVED_LABELS = {
+  audio: 'аудио не сохранено',
+  file: 'файл не сохранён',
+  image: 'картинка не сохранена',
+} as const;
+
+const errorReason = (error: unknown): string => {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return message.replaceAll(/\s+/g, ' ').trim().slice(0, 200) || 'неизвестная ошибка';
+};
+
+/**
+ * Заменяет image/audio блоки текстом «[картинка не сохранена: причина]». Для случая, когда хранилище
+ * недоступно вовсе (нет пользователя или базы): сырой base64 в текст модели и в базу попадать не должен.
+ */
+export const replaceMediaBlocksWithText = (
+  blocks: ToolCallContent[],
+  reason: string,
+): ToolCallContent[] =>
+  blocks.map((block) =>
+    block.type === 'image' || block.type === 'audio'
+      ? { text: `[${UNSAVED_LABELS[block.type]}: ${reason}]`, type: 'text' as const }
+      : block,
+  );
+
+/**
  * Process content blocks returned by MCP
- * - Upload images/audio to storage and replace data with proxy URL
+ * - Upload images/audio to storage and replace data with proxy URL (+ fileId записи файла)
  * - Upload JSON file payloads (content_base64) and replace with a download link
  * - Keep other types of blocks unchanged
  */
 export const processContentBlocks = async (
   blocks: ToolCallContent[],
   fileService: FileService,
+  options: ProcessContentBlocksOptions = {},
 ): Promise<ToolCallContent[]> => {
   // Use date-based sharding for privacy compliance (GDPR, CCPA)
   const today = new Date().toISOString().split('T')[0]; // e.g., "2025-11-08"
 
+  const uploadMedia = async (block: ImageContent | AudioContent): Promise<ToolCallContent> => {
+    const isImage = block.type === 'image';
+
+    // Extract file extension from mimeType (e.g., "image/png" -> "png")
+    const fileExtension = extensionFromMime(block.mimeType, isImage ? 'png' : 'mp3');
+
+    // Generate unique pathname with date-based sharding
+    const pathname = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/mcp/${isImage ? 'images' : 'audio'}/${today}/${nanoid()}.${fileExtension}`;
+
+    // Upload base64 and get proxy URL
+    const { fileId, url } = await fileService.uploadBase64(block.data, pathname);
+
+    log(`${isImage ? 'Image' : 'Audio'} uploaded, proxy URL: ${url}`);
+
+    return { ...block, data: url, fileId };
+  };
+
   return pMap(blocks, async (block) => {
     if (block.type === 'text') {
-      const replacement = await uploadJsonFilePayload(block.text, fileService, today);
-      if (replacement) return { ...block, text: replacement };
+      try {
+        const replacement = await uploadJsonFilePayload(block.text, fileService, today);
+        if (replacement) return { ...block, text: replacement };
+      } catch (error) {
+        if (!options.degradeOnError) throw error;
+        // В тексте лежит файл целиком в base64 — оставлять его нельзя, модели уйдёт мегабайт текста.
+        const reason = errorReason(error);
+        log(`File payload upload failed: ${reason}`);
+        return { text: `[${UNSAVED_LABELS.file}: ${reason}]`, type: 'text' as const };
+      }
       return block;
     }
 
-    if (block.type === 'image') {
-      const imageBlock = block as ImageContent;
-
-      // Extract file extension from mimeType (e.g., "image/png" -> "png")
-      const fileExtension = imageBlock.mimeType.split('/')[1] || 'png';
-
-      // Generate unique pathname with date-based sharding
-      const pathname = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/mcp/images/${today}/${nanoid()}.${fileExtension}`;
-
-      // Upload base64 image and get proxy URL
-      const { url } = await fileService.uploadBase64(imageBlock.data, pathname);
-
-      log(`Image uploaded, proxy URL: ${url}`);
-
-      return { ...block, data: url };
-    }
-
-    if (block.type === 'audio') {
-      const audioBlock = block as AudioContent;
-
-      // Extract file extension from mimeType (e.g., "audio/mp3" -> "mp3")
-      const fileExtension = audioBlock.mimeType.split('/')[1] || 'mp3';
-
-      // Generate unique pathname with date-based sharding
-      const pathname = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/mcp/audio/${today}/${nanoid()}.${fileExtension}`;
-
-      // Upload base64 audio and get proxy URL
-      const { url } = await fileService.uploadBase64(audioBlock.data, pathname);
-
-      log(`Audio uploaded, proxy URL: ${url}`);
-
-      return { ...block, data: url };
+    if (block.type === 'image' || block.type === 'audio') {
+      try {
+        return await uploadMedia(block);
+      } catch (error) {
+        if (!options.degradeOnError) throw error;
+        const reason = errorReason(error);
+        log(`${block.type} upload failed: ${reason}`);
+        return { text: `[${UNSAVED_LABELS[block.type]}: ${reason}]`, type: 'text' as const };
+      }
     }
 
     return block;
