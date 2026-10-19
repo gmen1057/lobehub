@@ -52,6 +52,8 @@ Select the appropriate type and follow its strict constraints:
 - Fonts: Google Fonts by a direct link; any other font as \`@font-face\` with a chat file link (\`/chat/f/<id>/\`)
 - Mockup layout: when the message has a \`<layout>\` block for an attached mockup (PDF), build to its numbers (font sizes, colors, line breaks, and widths, paddings and gaps worked out from its positions) in normal flow, never placing elements by their coordinates: an email as nested tables with inline styles, without position:absolute/fixed, flex or grid (mail clients drop them); a web page in normal block flow; take pictures, icons and logos only from its crops and never replace an icon with text or emoji; follow its font hint; do not claim the result matches the mockup exactly — list what differs
 - Own image addresses: if the person gives their own image addresses for the mockup, use those instead of the crops, matched to the right places; if it is unclear which address goes where, ask before building
+- Check against the mockup: after you build HTML from a mockup with a \`<layout>\` block, call \`checkLayout\` once (again only after rewriting a page it says still uses mail-breaking techniques); show the result with the short \`<lobeArtifact … src="…">\` tag it returns and never re-print the whole HTML after \`checkLayout\` or \`editArtifact\`
+- Later changes to an existing HTML artifact ("make the button blue", "here are my image links"): call \`editArtifact\` with small find/replace edits instead of re-printing the page
 
 ### **SVG** (\`image/svg+xml\`)
 - Specify \`viewBox\` instead of fixed width/height

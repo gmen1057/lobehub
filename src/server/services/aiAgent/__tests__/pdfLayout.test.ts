@@ -56,9 +56,9 @@ const XML = `<?xml version="1.0" encoding="UTF-8"?>
 <image top="104" left="-1" width="604" height="604" src="px/img-1_1.jpg"/>
 <image top="1333" left="247" width="385" height="385" src="px/img-1_3.png"/>
 <text top="46" left="76" width="83" height="26" font="0">Профиль</text>
-<text top="743" left="20" width="456" height="33" font="1"><b>Контрольная точка для пищеварения</b></text>
-<text top="940" left="20" width="510" height="26" font="0">Смена климата, новые блюда &amp; режим — </text>
-<text top="5428" left="71" width="460" height="22" font="2"><a href="https://example.ru/license/?a=1&amp;b=2">Лицензии на осуществление</a></text>
+<text top="743" left="20" width="456" height="33" font="1"><b>Заголовок страницы для примера</b></text>
+<text top="940" left="20" width="510" height="26" font="0">Первая часть текста, образец &amp; режим — </text>
+<text top="5428" left="71" width="460" height="22" font="2"><a href="https://example.ru/license/?a=1&amp;b=2">Документы и лицензии</a></text>
 <text top="900" left="20" width="10" height="26" font="0">   </text>
 <text top="2946" left="190" width="337" height="33" font="0">Иванова Анна Петровна</text>
 <text top="3000" left="190" width="10" height="26" font="9">Нет такого шрифта</text>
@@ -74,9 +74,9 @@ describe('parsePdfHtmlXml', () => {
     // пустая строка из пробелов и строка с неизвестным шрифтом пропущены
     expect(page.lines.map((line) => line.text)).toEqual([
       'Профиль',
-      'Контрольная точка для пищеварения',
-      'Смена климата, новые блюда & режим —', // сущность раскодирована, хвостовой пробел снят
-      'Лицензии на осуществление',
+      'Заголовок страницы для примера',
+      'Первая часть текста, образец & режим —', // сущность раскодирована, хвостовой пробел снят
+      'Документы и лицензии',
       'Иванова Анна Петровна',
     ]);
     expect(page.lines[0]).toMatchObject({ bold: false, h: 26, size: 20, w: 83, x: 76, y: 46 });
@@ -138,7 +138,7 @@ describe('подсказка шрифта', () => {
   });
 
   it('отношение: медиана «ширина строки в PDF / ширина в Arial» по строкам от 15 знаков', () => {
-    const text = 'Контрольная точка для пищеварения';
+    const text = 'Заголовок страницы для примера';
     const lines = [
       { bold: false, size: 20, text, w: arialWidth(text, 20) * 1.1 },
       { bold: false, size: 20, text, w: arialWidth(text, 20) * 1.1 },
@@ -175,7 +175,7 @@ describe('«по центру»', () => {
     ).toEqual([true, false]);
   });
 
-  it('строка почти на всю ширину по центру не считается; строка «пятый продолжает испытывать» — не центр', () => {
+  it('строка почти на всю ширину по центру не считается; строка колонки с левым выравниванием — не центр', () => {
     // 20 + 560 / 2 = 300 — середина страницы, но строка занимает почти всю ширину и левый край у неё общий
     expect(
       centeredFlags(

@@ -338,7 +338,7 @@ const pageText = (page: LayoutPage, withPage: boolean, budget: number) => {
   const head = general(page, withPage);
   const blocks = page.blocks.map(blockLine);
   const crops = cropLines(page);
-  // порядок строк — как в файле (порядок чтения): куски одной строки (со скидкой 20%, чтобы…) остаются рядом
+  // порядок строк — как в файле (порядок чтения): куски одной строки (первая часть, втобы…) остаются рядом
   const lines = page.lines.map(lineText);
 
   const section = (title: string, rows: string[]) =>

@@ -11,6 +11,12 @@ export interface ToolExecutionContext {
   memoryToolPermission?: 'read-only' | 'read-write';
   /** Tool result message ID when known */
   messageId?: string;
+  /**
+   * arckep (19.10.2026): сообщение ассистента, которое вызвало инструмент. Его текст хода уже в базе (call_llm
+   * сохраняет его до вызова инструментов), а модель и поставщик хода лежат в его записи: по ним инструмент
+   * сверки с макетом (`arckep-layout`) находит последнюю версию письма и зовёт ту же модель со списанием в эту тему.
+   */
+  parentMessageId?: string;
   /** Server database for LobeHub Skills execution */
   serverDB?: LobeChatDatabase;
   /** Task ID when executing within the Task system */

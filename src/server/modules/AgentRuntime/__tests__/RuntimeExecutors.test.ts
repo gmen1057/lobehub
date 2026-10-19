@@ -2070,6 +2070,33 @@ describe('RuntimeExecutors', () => {
       expect((result.nextContext!.payload as any).isSuccess).toBe(true);
     });
 
+    // arckep (19.10.2026): инструмент сверки с макетом находит текст хода и модель по сообщению ассистента,
+    // которое вызвало инструмент, — оно приходит в контексте выполнения
+    it('передаёт инструменту сообщение ассистента, которое его вызвало (parentMessageId)', async () => {
+      const executors = createRuntimeExecutors(ctx);
+      await executors.call_tool!(
+        {
+          payload: {
+            parentMessageId: 'assistant-msg-777',
+            toolCalling: {
+              apiName: 'checkLayout',
+              arguments: '{"identifier":"mail"}',
+              id: 'tool-call-layout',
+              identifier: 'arckep-layout',
+              type: 'builtin' as const,
+            },
+          },
+          type: 'call_tool' as const,
+        },
+        createMockState(),
+      );
+
+      const [, context] = mockToolExecutionService.executeTool.mock.calls[0];
+      expect(context.parentMessageId).toBe('assistant-msg-777');
+      expect(context.topicId).toBe(ctx.topicId);
+      expect(context.userId).toBe(ctx.userId);
+    });
+
     it('should stop retrying tool execution after operation is interrupted', async () => {
       mockToolExecutionService.executeTool.mockResolvedValue({
         content: 'timeout',
@@ -2496,6 +2523,39 @@ describe('RuntimeExecutors', () => {
       // Should fallback to original parentMessageId
       const payload = result.nextContext!.payload as { parentMessageId?: string };
       expect(payload.parentMessageId).toBe('original-parent-123');
+    });
+
+    it('передаёт каждому инструменту пачки сообщение ассистента, которое их вызвало (parentMessageId)', async () => {
+      const executors = createRuntimeExecutors(ctx);
+      await executors.call_tools_batch!(
+        {
+          payload: {
+            parentMessageId: 'assistant-msg-888',
+            toolsCalling: [
+              {
+                apiName: 'checkLayout',
+                arguments: '{"identifier":"mail"}',
+                id: 'tool-call-1',
+                identifier: 'arckep-layout',
+                type: 'builtin' as const,
+              },
+              {
+                apiName: 'search',
+                arguments: '{}',
+                id: 'tool-call-2',
+                identifier: 'web-search',
+                type: 'default' as const,
+              },
+            ],
+          },
+          type: 'call_tools_batch' as const,
+        },
+        createMockState(),
+      );
+
+      const calls = mockToolExecutionService.executeTool.mock.calls;
+      expect(calls).toHaveLength(2);
+      for (const [, context] of calls) expect(context.parentMessageId).toBe('assistant-msg-888');
     });
 
     it('should continue processing other tools if one tool execution fails', async () => {

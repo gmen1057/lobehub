@@ -60,6 +60,24 @@ describe('системный промпт помощника: готовые с�
     expect(systemRole).toMatch(/unclear which address goes where, ask before building/);
   });
 
+  it('сверка с макетом: после вёрстки по <layout> один вызов checkLayout, результат коротким тегом src, HTML заново не печатать', () => {
+    expect(systemRole).toMatch(/call checkLayout once/);
+    expect(systemRole).toContain('<lobeArtifact … src="…">');
+    expect(systemRole).toMatch(/never re-print the whole HTML after checkLayout or editArtifact/);
+  });
+
+  it('сверка: после переписывания письма, в котором остались приёмы почты, — ещё один checkLayout', () => {
+    expect(systemRole).toMatch(
+      /call checkLayout once \(again only after rewriting a page it says still uses mail-breaking techniques\)/,
+    );
+  });
+
+  it('правки по просьбе человека: editArtifact малыми правками вместо печати страницы заново', () => {
+    expect(systemRole).toMatch(
+      /later changes to an existing HTML artifact use editArtifact with small edits/i,
+    );
+  });
+
   it('прежние правила на месте: студия, видео с оценкой, перевод файлов', () => {
     expect(systemRole).toContain('mcp-arckep-studio-images');
     expect(systemRole).toContain('mcp-arckep-studio-video');
@@ -109,6 +127,20 @@ describe('навык Artifacts не спорит с системным пром�
     expect(htmlSection).toMatch(/gives their own image addresses for the mockup/);
     expect(htmlSection).toMatch(/use those instead of the crops, matched to the right places/);
     expect(htmlSection).toMatch(/unclear which address goes where, ask before building/);
+  });
+
+  it('HTML: после вёрстки по макету — один checkLayout и показ коротким тегом src; правки — editArtifact', () => {
+    expect(htmlSection).toMatch(/call `checkLayout` once/);
+    expect(htmlSection).toContain('<lobeArtifact … src="…">');
+    expect(htmlSection).toMatch(
+      /never re-print the whole HTML after `checkLayout` or `editArtifact`/,
+    );
+    expect(htmlSection).toMatch(
+      /call `editArtifact` with small find\/replace edits instead of re-printing the page/,
+    );
+    expect(htmlSection).toMatch(
+      /again only after rewriting a page it says still uses mail-breaking techniques/,
+    );
   });
 
   it('SVG и React: правила не тронуты', () => {

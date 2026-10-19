@@ -198,6 +198,7 @@
     "@lobechat/builtin-tool-agent-documents": "workspace:*",
     "@lobechat/builtin-tool-agent-management": "workspace:*",
     "@lobechat/builtin-tool-arckep-bot": "workspace:*",
+    "@lobechat/builtin-tool-arckep-layout": "workspace:*",
     "@lobechat/builtin-tool-arckep-sites": "workspace:*",
     "@lobechat/builtin-tool-arckep-studio": "workspace:*",
     "@lobechat/builtin-tool-brief": "workspace:*",

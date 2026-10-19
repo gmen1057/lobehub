@@ -2,6 +2,7 @@ import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
 import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin-tool-activator';
+import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
@@ -54,7 +55,6 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
-import { appEnv } from '@/envs/app';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import {
@@ -78,6 +78,7 @@ import { type AgentHook } from '@/server/services/agentRuntime/hooks/types';
 import { type StepLifecycleCallbacks } from '@/server/services/agentRuntime/types';
 import { isArckepChatCron } from '@/server/services/arckepCron/flags';
 import { buildScheduledRunPrompt } from '@/server/services/arckepCron/prompt';
+import { isLayoutCheckEnabled, needsLayoutTool } from '@/server/services/arckepLayout/enable';
 import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
@@ -85,7 +86,9 @@ import { MarketService } from '@/server/services/market';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
+import { fileAddress } from './fileAddress';
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
+import { modelHasVision } from './modelVision';
 import {
   isPdfMime,
   PDF_PAGES_PENDING_NOTE,
@@ -99,9 +102,6 @@ import {
 import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
-
-/** Адрес файла человека для модели и HTML-предпросмотра (nginx отдаёт /chat/f/ движку: 302 в хранилище). */
-const fileAddress = (fileId: string) => `${appEnv.APP_URL}/f/${fileId}/`;
 
 /**
  * Подпись картинки для модели (идёт в <image name="…"> блока <files_info>). У кусков — что картинка резалась
@@ -328,12 +328,8 @@ export class AiAgentService {
    * arckep (19.10.2026): есть ли у модели зрение — та же проверка, что при вызове модели
    * (RuntimeExecutors, isCanUseVision): встроенный список моделей, неизвестная модель — со зрением.
    */
-  private async modelHasVision(model: string, provider: string): Promise<boolean> {
-    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
-    const info = LOBE_DEFAULT_MODEL_LIST.find(
-      (item) => item.id === model && item.providerId === provider,
-    );
-    return info?.abilities?.vision ?? true;
+  private modelHasVision(model: string, provider: string): Promise<boolean> {
+    return modelHasVision(model, provider);
   }
 
   /**
@@ -955,6 +951,23 @@ export class AiAgentService {
             .filter(Boolean)
             .join('\n\n');
           log('execAgent: link connector setup hint added (%d)', linkConnectors.setupHints.length);
+        }
+      }
+
+      // arckep (19.10.2026): сверка письма с макетом и правки артефакта кусками (`arckep-layout`). Включается сразу,
+      // а не по требованию (схема ≈ 0,5 тыс. токенов), когда в теме есть PDF (макет) или HTML-артефакт: модель
+      // пишет письмо один раз и зовёт `checkLayout`, а круги правки движок крутит сам, вне переписки. Боты не
+      // трогаем: им нечем показывать артефакт. История читается тем же одним запросом, что нужен сборке сообщений.
+      if (
+        !isBotConversation &&
+        isLayoutCheckEnabled() &&
+        !excludedPluginIds.has(ArckepLayoutIdentifier)
+      ) {
+        const layoutHistory = await loadHistoryMessages();
+        if (needsLayoutTool({ files, history: layoutHistory })) {
+          pickedPluginIds.push(ArckepLayoutIdentifier);
+          agentPlugins = dropExcluded([...new Set([...agentPlugins, ArckepLayoutIdentifier])]);
+          log('execAgent: arckep-layout activated (PDF mockup or HTML artifact in the topic)');
         }
       }
 

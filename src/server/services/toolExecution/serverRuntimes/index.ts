@@ -10,6 +10,7 @@ import { type ToolExecutionContext } from '../types';
 import { activatorRuntime } from './activator';
 import { agentDocumentsRuntime } from './agentDocuments';
 import { arckepBotRuntime } from './arckepBot';
+import { arckepLayoutRuntime } from './arckepLayout';
 import { arckepSitesRuntime } from './arckepSites';
 import { arckepSkillsRuntime } from './arckepSkills';
 import { arckepStudioRuntime } from './arckepStudio';
@@ -53,6 +54,7 @@ registerRuntimes([
   knowledgeBaseRuntime,
   arckepSitesRuntime,
   arckepBotRuntime,
+  arckepLayoutRuntime,
   arckepSkillsRuntime,
   arckepStudioRuntime,
   webBrowsingRuntime,
