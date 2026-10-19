@@ -190,7 +190,7 @@ export const normalizeTimezone = (raw?: string | null): string => {
   if (!timezone) return ARCKEP_CRON_DEFAULT_TIMEZONE;
 
   // Только имена базы IANA (Europe/Moscow, UTC): смещения вида "+03:00" Intl принимает, а студия — нет.
-  if (!/^[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z0-9_+-]+){0,2}$/.test(timezone)) {
+  if (!/^[A-Z][\w+-]*(?:\/[\w+-]+){0,2}$/i.test(timezone)) {
     throw new CronScheduleError(
       `Unknown timezone "${timezone}": use an IANA name like "Europe/Moscow" or "UTC"`,
     );
