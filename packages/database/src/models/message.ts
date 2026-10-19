@@ -333,7 +333,10 @@ export class MessageModel {
         })
         .from(messagesFiles)
         .leftJoin(files, eq(files.id, messagesFiles.fileId))
-        .where(inArray(messagesFiles.messageId, messageIds));
+        .where(inArray(messagesFiles.messageId, messageIds))
+        // arckep (19.10.2026): порядок вложений — как прикладывали. Длинная картинка и страницы PDF приходят
+        // кусками «имя.part-01-of-08.png», и модель должна читать их сверху вниз (имя — запасной ключ порядка).
+        .orderBy(files.createdAt, files.name);
 
       relatedFileList = await Promise.all(
         rawRelatedFileList.map(async (file) => ({
@@ -628,7 +631,9 @@ export class MessageModel {
         })
         .from(messagesFiles)
         .leftJoin(files, eq(files.id, messagesFiles.fileId))
-        .where(inArray(messagesFiles.messageId, messageIds)),
+        .where(inArray(messagesFiles.messageId, messageIds))
+        // arckep (19.10.2026): порядок вложений — как прикладывали (см. выше)
+        .orderBy(files.createdAt, files.name),
 
       // 2b. Get related file chunks
       this.db

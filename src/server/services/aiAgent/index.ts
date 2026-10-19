@@ -43,6 +43,7 @@ import mime from 'mime';
 import { AgentModel } from '@/database/models/agent';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { AiModelModel } from '@/database/models/aiModel';
+import { FileModel } from '@/database/models/file';
 import { MessageModel } from '@/database/models/message';
 import { PluginModel } from '@/database/models/plugin';
 import { ThreadModel } from '@/database/models/thread';
@@ -73,9 +74,35 @@ import { MarketService } from '@/server/services/market';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
-import { ingestAttachment } from './ingestAttachment';
+import { ingestAttachment, type IngestedImage } from './ingestAttachment';
+import { renderPdfPages } from './pdfPages';
 
 const log = debug('lobe-server:ai-agent-service');
+
+/**
+ * Подпись картинки для модели (идёт в <image name="…"> блока <files_info>). У кусков — что картинка резалась
+ * сверху вниз и сколько частей, чтобы модель читала их подряд, а не как отдельные изображения.
+ */
+const imagePartAlt = (name: string, image: Pick<IngestedImage, 'index' | 'total'>) =>
+  image.total === 1
+    ? name
+    : `${name} — часть ${image.index} из ${image.total} (изображение разрезано на ${image.total} частей сверху вниз, читай по порядку)`;
+
+const pdfPageAlt = (
+  name: string,
+  image: { index: number; page: number; total: number },
+  pageCount: number,
+  renderedPages: number,
+) => {
+  const page = `${name} — страница ${image.page} из ${pageCount}`;
+  const more =
+    renderedPages < pageCount && image.page === renderedPages
+      ? `; нарисованы только первые ${renderedPages} стр., остальное — в тексте файла`
+      : '';
+  return image.total === 1
+    ? `${page}${more}`
+    : `${page}, часть ${image.index} из ${image.total} (страница разрезана на ${image.total} частей сверху вниз, читай по порядку)${more}`;
+};
 
 /**
  * Format error for storage in thread metadata
@@ -215,6 +242,82 @@ export class AiAgentService {
     this.agentRuntimeService = new AgentRuntimeService(db, userId, options?.runtimeOptions);
     this.marketService = new MarketService({ userInfo: { userId } });
     this.klavisService = new KlavisService({ db, userId });
+  }
+
+  /**
+   * arckep (19.10.2026): есть ли у модели зрение — та же проверка, что при вызове модели
+   * (RuntimeExecutors, isCanUseVision): встроенный список моделей, неизвестная модель — со зрением.
+   */
+  private async modelHasVision(model: string, provider: string): Promise<boolean> {
+    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
+    const info = LOBE_DEFAULT_MODEL_LIST.find(
+      (item) => item.id === model && item.providerId === provider,
+    );
+    return info?.abilities?.vision ?? true;
+  }
+
+  /**
+   * arckep (19.10.2026): страницы PDF → картинки для модели со зрением (до 10 страниц, не больше 16 картинок,
+   * высокие страницы режутся на куски — pdfPages.ts). Картинки сохраняются файлами и прикрепляются к
+   * сообщению рядом с самим PDF: текстовый слой (documents) остаётся как был. Без зрения, при выключателе
+   * ARCKEP_PDF_PAGE_IMAGES=0 или при любой неудаче — пусто, и модель получает только текст, как раньше.
+   */
+  private async renderPdfPageImages(options: {
+    fileId: string;
+    fileService: FileService;
+    key?: string;
+    model: string;
+    name: string;
+    provider: string;
+  }): Promise<Array<{ alt: string; id: string; url: string }>> {
+    const { fileId, fileService, model, name, provider } = options;
+    if (process.env.ARCKEP_PDF_PAGE_IMAGES === '0') return [];
+
+    try {
+      if (!(await this.modelHasVision(model, provider))) return [];
+
+      const key = options.key ?? (await new FileModel(this.db, this.userId).findById(fileId))?.url;
+      if (!key) return [];
+
+      const bytes = await fileService.getFileByteArray(key);
+      const rendered = await renderPdfPages(Buffer.from(bytes));
+      if (rendered.images.length === 0) return [];
+
+      const { nanoid } = await import('@lobechat/utils');
+      const folder = `files/${this.userId}/${nanoid()}`;
+      const pad = (value: number) => String(value).padStart(2, '0');
+      const out: Array<{ alt: string; id: string; url: string }> = [];
+
+      for (const image of rendered.images) {
+        const ext = image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+        const fileName =
+          image.total === 1
+            ? `${name}.page-${pad(image.page)}.${ext}`
+            : `${name}.page-${pad(image.page)}.part-${pad(image.index)}-of-${pad(image.total)}.${ext}`;
+        const uploaded = await fileService.uploadFromBuffer(
+          image.buffer,
+          image.mimeType,
+          `${folder}/${fileName}`,
+        );
+        out.push({
+          alt: pdfPageAlt(name, image, rendered.pageCount, rendered.renderedPages),
+          id: uploaded.fileId,
+          url: await fileService.getFullFileUrl(uploaded.key),
+        });
+      }
+
+      log(
+        'execAgent: pdf %s → %d page image(s) (%d of %d pages)',
+        name,
+        out.length,
+        rendered.renderedPages,
+        rendered.pageCount,
+      );
+      return out;
+    } catch (error) {
+      log('execAgent: pdf page images failed for %s: %O', name, error);
+      return [];
+    }
   }
 
   /**
@@ -1046,20 +1149,41 @@ export class AiAgentService {
                 size: file.size ?? 0,
                 url: file.url ?? '',
               });
+              // PDF: страницы картинками для модели со зрением, рядом с текстовым слоем
+              if (mimeType === 'application/pdf') {
+                const pages = await this.renderPdfPageImages({
+                  fileId: file.fileId,
+                  fileService,
+                  model,
+                  name: file.name || 'file.pdf',
+                  provider,
+                });
+                for (const page of pages) {
+                  fileIds.push(page.id);
+                  imageList.push(page);
+                }
+              }
             }
             continue;
           }
 
           const result = await ingestAttachment(file, fileService, this.userId);
-          fileIds.push(result.fileId);
 
           if (result.isImage) {
-            imageList.push({
-              alt: file.name || 'image',
-              id: result.fileId,
-              url: result.resolvedUrl,
-            });
+            // Длинная картинка пришла кусками (imageSlicing.ts): все куски сообщению, по порядку сверху вниз
+            const parts = result.images?.length
+              ? result.images
+              : [{ fileId: result.fileId, index: 1, resolvedUrl: result.resolvedUrl, total: 1 }];
+            for (const image of parts) {
+              fileIds.push(image.fileId);
+              imageList.push({
+                alt: imagePartAlt(file.name || 'image', image),
+                id: image.fileId,
+                url: image.resolvedUrl,
+              });
+            }
           } else {
+            fileIds.push(result.fileId);
             fileList.push({
               content: await this.parseDocumentQuietly(result.fileId, mimeType),
               fileType: mimeType ?? 'application/octet-stream',
@@ -1068,6 +1192,20 @@ export class AiAgentService {
               size: file.size ?? 0,
               url: result.resolvedUrl || file.url || '',
             });
+            if (mimeType === 'application/pdf') {
+              const pages = await this.renderPdfPageImages({
+                fileId: result.fileId,
+                fileService,
+                key: result.key,
+                model,
+                name: file.name || 'file.pdf',
+                provider,
+              });
+              for (const page of pages) {
+                fileIds.push(page.id);
+                imageList.push(page);
+              }
+            }
           }
         } catch (error) {
           log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
