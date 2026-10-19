@@ -22,6 +22,14 @@ export const IMAGE_SLICE_OVERLAP = 64;
 /** Выше этого (после сжатия по ширине) картинка режется на куски; обычные экраны телефонов (до ~2:1) — нет. */
 export const IMAGE_SINGLE_MAX_HEIGHT = 3072;
 export const IMAGE_MAX_SLICES = 12;
+/**
+ * Потолок высоты картинки после сжатия по ширине. Резка держит в памяти всю сжатую картинку (сырые пиксели,
+ * ширина × высота × 3 байта), поэтому её размер ограничен: ≤ ширина 1536 × 30000 × 3 ≈ 138 МБ. Выше (пропорция
+ * около 40:1 и круче — не макеты, а полосы) картинка не режется, а сжимается целиком, как раньше (≤1920).
+ */
+export const IMAGE_MAX_TOTAL_HEIGHT = 30_000;
+/** Прежний предел для картинок, которые не режутся. */
+const LEGACY_MAX_SIZE = 1920;
 export const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 /**
  * Целевой вес одного куска длинной картинки. Gemini принимает картинки в запросе целиком (inline, до 20 МБ на весь
@@ -160,11 +168,21 @@ export const prepareImageForModel = async (
   } = {},
 ): Promise<PreparedImages> => {
   try {
-    const meta = await sharp(buffer, { failOn: 'none', limitInputPixels: 600_000_000 }).metadata();
+    const meta = await sharp(buffer, { failOn: 'none' }).metadata();
     const { width, height } = orientedSize(meta);
     if (!width || !height) throw new Error('image size is unknown');
 
-    const plan = planImageSlices(width, height, options.maxSlices);
+    let plan = planImageSlices(width, height, options.maxSlices);
+    // Слишком вытянутая картинка: не режем (иначе сжатая копия в памяти огромна), а сжимаем целиком, как раньше
+    const legacy = plan.height > IMAGE_MAX_TOTAL_HEIGHT;
+    if (legacy) {
+      const factor = Math.min(1, LEGACY_MAX_SIZE / Math.max(width, height));
+      plan = {
+        height: Math.max(1, Math.round(height * factor)),
+        slices: [{ height: Math.max(1, Math.round(height * factor)), top: 0 }],
+        width: Math.max(1, Math.round(width * factor)),
+      };
+    }
     const single = plan.slices.length === 1;
     const singleBytes = options.maxBytes ?? IMAGE_MAX_BYTES;
     const partBytes = options.maxBytes ?? IMAGE_PART_TARGET_BYTES;
@@ -180,9 +198,15 @@ export const prepareImageForModel = async (
     }
 
     const base = () =>
-      sharp(buffer, { failOn: 'none', limitInputPixels: 600_000_000 })
+      sharp(buffer, { failOn: 'none' })
         .rotate()
-        .resize({ kernel: 'lanczos3', width: plan.width, withoutEnlargement: true });
+        .resize({
+          kernel: 'lanczos3',
+          width: plan.width,
+          // сжатие целиком (вытянутая картинка): строго в рамку, как раньше
+          ...(legacy ? { fit: 'inside' as const, height: plan.height } : {}),
+          withoutEnlargement: true,
+        });
 
     if (single) {
       // Один кусок, но надо сжать: по ширине, затем (если тяжелее 5 МБ) сильнее, как раньше
@@ -191,7 +215,7 @@ export const prepareImageForModel = async (
       let scale = 1;
       while (result.buffer.length > singleBytes && scale > 0.25) {
         scale *= 0.8;
-        pipeline = sharp(buffer, { failOn: 'none', limitInputPixels: 600_000_000 })
+        pipeline = sharp(buffer, { failOn: 'none' })
           .rotate()
           .resize({
             width: Math.max(64, Math.round(plan.width * scale)),

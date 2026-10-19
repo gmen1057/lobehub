@@ -18,6 +18,15 @@ const hasPoppler = (() => {
   }
 })();
 
+const hasPrlimit = (() => {
+  try {
+    execFileSync('prlimit', ['--version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 interface TestPage {
   /** Высота в пунктах */
   h: number;
@@ -185,6 +194,43 @@ describe.runIf(hasPoppler)('renderPdfPages (poppler)', () => {
     expect(result.images).toEqual([]);
     expect(result.pageCount).toBe(1);
   });
+
+  it('страница крайней пропорции (полоса 20×14400 пт) не рисуется: рисование прекращается, ничего не раздувается', async () => {
+    const result = await renderPdfPages(makePdf([A4, { h: 14_400, w: 20 }, A4]));
+    expect(result.pageCount).toBe(3);
+    // первая страница нарисована, на полосе остановились (страницы идут подряд)
+    expect(result.renderedPages).toBe(1);
+    expect(result.images).toHaveLength(1);
+    expect(result.images[0].page).toBe(1);
+
+    const onlyStrip = await renderPdfPages(makePdf([{ h: 14_400, w: 20 }]));
+    expect(onlyStrip.images).toEqual([]);
+  }, 60_000);
+
+  it.runIf(hasPrlimit)(
+    'предел памяти программы poppler действует: при 30 МБ страница не рисуется',
+    async () => {
+      process.env.ARCKEP_PDF_MEMORY_MB = '30';
+      try {
+        const result = await renderPdfPages(makePdf([OWNER_PAGE]));
+        expect(result.images).toEqual([]);
+      } finally {
+        delete process.env.ARCKEP_PDF_MEMORY_MB;
+      }
+      // а со стандартным пределом тот же файл рисуется
+      expect((await renderPdfPages(makePdf([A4]))).images).toHaveLength(1);
+    },
+    60_000,
+  );
+
+  it('ARCKEP_PDF_MEMORY_MB=0 — запуск без prlimit', async () => {
+    process.env.ARCKEP_PDF_MEMORY_MB = '0';
+    try {
+      expect((await renderPdfPages(makePdf([A4]))).images).toHaveLength(1);
+    } finally {
+      delete process.env.ARCKEP_PDF_MEMORY_MB;
+    }
+  }, 60_000);
 
   it('maxImages и maxPages ограничивают результат', async () => {
     const result = await renderPdfPages(makePdf([A4, A4, A4, A4]), { maxImages: 2, maxPages: 3 });

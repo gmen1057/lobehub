@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 import {
   IMAGE_MAX_BYTES,
   IMAGE_MAX_SLICES,
+  IMAGE_MAX_TOTAL_HEIGHT,
   IMAGE_MAX_WIDTH,
   IMAGE_PART_TARGET_BYTES,
   IMAGE_SINGLE_MAX_HEIGHT,
@@ -200,6 +201,34 @@ describe('prepareImageForModel', () => {
       expect(part.buffer.length).toBeLessThanOrEqual(IMAGE_PART_TARGET_BYTES);
     }
   }, 120_000);
+
+  it('слишком вытянутая картинка (700×40000, 57:1) не режется: сжимается целиком до 1920, как раньше', async () => {
+    const strip = await sharp({
+      create: { background: '#ddeeff', channels: 3, height: 40_000, width: 700 },
+    })
+      .png()
+      .toBuffer();
+
+    const result = await prepareImageForModel(strip, 'image/png');
+
+    expect(result.sliced).toBe(false);
+    expect(result.parts).toHaveLength(1);
+    expect(result.parts[0].height).toBeLessThanOrEqual(1920);
+    expect(result.parts[0].width).toBeLessThan(700);
+    // сжатая копия в памяти ограничена потолком: картинки выше него не раскладываются в сырые пиксели
+    expect(planImageSlices(700, 40_000).height).toBeGreaterThan(IMAGE_MAX_TOTAL_HEIGHT);
+  }, 60_000);
+
+  it('картинка на границе (768×30000) ещё режется на куски', async () => {
+    const edge = await sharp({
+      create: { background: '#eeeeee', channels: 3, height: 30_000, width: 768 },
+    })
+      .png()
+      .toBuffer();
+    const result = await prepareImageForModel(edge, 'image/png');
+    expect(result.sliced).toBe(true);
+    expect(result.parts.length).toBeLessThanOrEqual(IMAGE_MAX_SLICES);
+  }, 60_000);
 
   it('обычное фото в пределах — тот же файл без изменений, одна картинка', async () => {
     const photo = await sharp({

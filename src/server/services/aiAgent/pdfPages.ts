@@ -5,7 +5,13 @@ import path from 'node:path';
 
 import debug from 'debug';
 
-import { IMAGE_MAX_WIDTH, planImageSlices, prepareImageForModel } from './imageSlicing';
+import {
+  IMAGE_MAX_TOTAL_HEIGHT,
+  IMAGE_MAX_WIDTH,
+  IMAGE_MIN_WIDTH,
+  planImageSlices,
+  prepareImageForModel,
+} from './imageSlicing';
 
 const log = debug('lobe-server:pdf-pages');
 
@@ -72,7 +78,13 @@ interface PageSize {
 const bin = (name: 'pdfinfo' | 'pdftoppm') =>
   (name === 'pdfinfo' ? process.env.PDFINFO_BIN : process.env.PDFTOPPM_BIN) || name;
 
-const run = (file: string, args: string[], timeout: number): Promise<string> =>
+/** Предел памяти (виртуальной) одной программы poppler, МБ; `ARCKEP_PDF_MEMORY_MB`, 0 — без предела. */
+const memoryLimitBytes = () => {
+  const mb = Number(process.env.ARCKEP_PDF_MEMORY_MB ?? 2048);
+  return Number.isFinite(mb) && mb > 0 ? Math.round(mb * 1024 * 1024) : 0;
+};
+
+const exec = (file: string, args: string[], timeout: number): Promise<string> =>
   new Promise((resolve, reject) => {
     const child = execFile(file, args, { maxBuffer: 4 * 1024 * 1024, timeout }, (error, stdout) =>
       error ? reject(error) : resolve(stdout),
@@ -84,6 +96,27 @@ const run = (file: string, args: string[], timeout: number): Promise<string> =>
       // приоритет не обязателен
     }
   });
+
+/**
+ * Запуск poppler с пределами: память (prlimit --as) и время процессора. Чужой PDF с огромной страницей или
+ * «бомбой» упирается в предел и падает, а не съедает память хоста. Нет prlimit на хосте — запуск без него.
+ */
+const run = async (file: string, args: string[], timeout: number): Promise<string> => {
+  const memory = memoryLimitBytes();
+  if (memory > 0) {
+    try {
+      return await exec(
+        'prlimit',
+        [`--as=${memory}`, `--cpu=${Math.ceil(timeout / 1000) + 5}`, '--', file, ...args],
+        timeout,
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      log('prlimit is not available, running without memory limit');
+    }
+  }
+  return exec(file, args, timeout);
+};
 
 /** Число страниц и размеры первых `limit` страниц (пункты) из вывода `pdfinfo -f 1 -l N`. */
 export const parsePdfInfo = (
@@ -137,6 +170,9 @@ export const renderPdfPages = async (
     for (let page = 1; page <= pagesToRender; page++) {
       const size = info.sizes.get(page);
       if (!size) break;
+      // Страница крайней пропорции (полоса, выше 30000 px даже при ширине 768): рисовать нельзя — картинка в памяти
+      // была бы огромной
+      if ((size.height / size.width) * IMAGE_MIN_WIDTH > IMAGE_MAX_TOTAL_HEIGHT) break;
       const reserved = pagesToRender - page; // по картинке на каждую следующую страницу
       const maxForPage = Math.min(budget - reserved, 12);
       if (maxForPage < 1) break;
