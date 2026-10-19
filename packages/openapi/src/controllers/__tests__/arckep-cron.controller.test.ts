@@ -408,7 +408,66 @@ describe('POST /cron-jobs/:id/run', () => {
       USER,
       expect.objectContaining({ id: 'cron_1' }),
       'run-42',
+      undefined,
     );
+  });
+
+  it('model и provider парой доходят до запуска', async () => {
+    mocks.runCronJob.mockResolvedValue({ operationId: 'op_1', success: true, topicId: 'tpc_1' });
+
+    const { status } = await call('POST', '/cron-jobs/cron_1/run', {
+      model: ' claude-opus-4-8 ',
+      provider: 'anthropic',
+      runId: 'run-43',
+    });
+
+    expect(status).toBe(200);
+    expect(mocks.runCronJob).toHaveBeenCalledWith(
+      expect.anything(),
+      USER,
+      expect.objectContaining({ id: 'cron_1' }),
+      'run-43',
+      { model: 'claude-opus-4-8', provider: 'anthropic' },
+    );
+  });
+
+  it('model: null и provider: null читаются как «не задано»', async () => {
+    mocks.runCronJob.mockResolvedValue({ operationId: 'op_1', success: true, topicId: 'tpc_1' });
+
+    const { status } = await call('POST', '/cron-jobs/cron_1/run', {
+      model: null,
+      provider: null,
+      runId: 'run-44',
+    });
+
+    expect(status).toBe(200);
+    expect(mocks.runCronJob.mock.calls[0][4]).toBeUndefined();
+  });
+
+  it.each([
+    ['model без provider', { model: 'claude-opus-4-8' }],
+    ['provider без model', { provider: 'anthropic' }],
+    ['model и null provider', { model: 'claude-opus-4-8', provider: null }],
+    ['пустой model', { model: '', provider: 'anthropic' }],
+    ['model длиннее 200', { model: 'm'.repeat(201), provider: 'anthropic' }],
+    ['provider длиннее 200', { model: 'm', provider: 'p'.repeat(201) }],
+  ])('%s — 400, запуска нет', async (_title, over) => {
+    const { status } = await call('POST', '/cron-jobs/cron_1/run', { runId: 'run-45', ...over });
+
+    expect(status).toBe(400);
+    expect(mocks.runCronJob).not.toHaveBeenCalled();
+  });
+
+  it('границы model и provider 200 знаков проходят', async () => {
+    mocks.runCronJob.mockResolvedValue({ operationId: 'op_1', success: true, topicId: 'tpc_1' });
+
+    const { status } = await call('POST', '/cron-jobs/cron_1/run', {
+      model: 'm'.repeat(200),
+      provider: 'p'.repeat(200),
+      runId: 'run-46',
+    });
+
+    expect(status).toBe(200);
   });
 
   it('запуск выключенной задачи разрешён', async () => {

@@ -53,9 +53,25 @@ export const CronJobUpdateSchema = z
   .partial()
   .refine((value) => Object.keys(value).length > 0, 'at least one field is required');
 
-export const CronJobRunSchema = z.object({
-  runId: z.string().trim().min(1).max(100),
-});
+// Модель и провайдер запуска (хранит студия): только парой; `null` читается как «не задано».
+const RunOverrideSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .nullish()
+  .transform((value) => value ?? undefined);
+
+export const CronJobRunSchema = z
+  .object({
+    model: RunOverrideSchema,
+    provider: RunOverrideSchema,
+    runId: z.string().trim().min(1).max(100),
+  })
+  .refine((value) => (value.model === undefined) === (value.provider === undefined), {
+    message: 'model and provider must be passed together',
+    path: ['model'],
+  });
 
 export type CronJobCreateRequest = z.infer<typeof CronJobCreateSchema>;
 export type CronJobUpdateRequest = z.infer<typeof CronJobUpdateSchema>;

@@ -110,6 +110,27 @@ describe('runCronJob', () => {
     expect(params.hooks[0].webhook).toBeUndefined();
   });
 
+  it('без модели в execAgent model и provider не передаются — работает модель помощника', async () => {
+    await runCronJob(db, 'user-1', job(), 'run-1');
+
+    const params = mockExecAgent.mock.calls[0][0];
+    expect(params).not.toHaveProperty('model');
+    expect(params).not.toHaveProperty('provider');
+  });
+
+  it('модель и провайдер запуска доходят до execAgent', async () => {
+    await runCronJob(db, 'user-1', job(), 'run-1', {
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+    });
+
+    expect(mockExecAgent.mock.calls[0][0]).toMatchObject({
+      model: 'claude-opus-4-8',
+      provider: 'anthropic',
+      trigger: 'cron',
+    });
+  });
+
   it('после успешного старта обновляет счётчики задачи', async () => {
     await runCronJob(db, 'user-1', job(), 'run-1');
 

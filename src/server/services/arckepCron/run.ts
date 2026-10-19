@@ -93,11 +93,18 @@ const pruneRunCache = () => {
 
 export const clearCronRunCache = () => runCache.clear();
 
+/** Модель и провайдер этого запуска; без них работает модель помощника. */
+export interface CronRunModel {
+  model: string;
+  provider: string;
+}
+
 const startRun = async (
   db: LobeChatDatabase,
   userId: string,
   job: AgentCronJob,
   runId: string,
+  modelOverride?: CronRunModel,
 ): Promise<CronRunResult> => {
   const ref: { operationId?: string; topicId?: string } = {};
 
@@ -108,6 +115,7 @@ const startRun = async (
       autoStart: true,
       cronJobId: job.id,
       hooks: [createFinishedHook(job, runId, ref)],
+      ...(modelOverride ? { model: modelOverride.model, provider: modelOverride.provider } : {}),
       prompt: job.content,
       title: buildRunTitle(job),
       trigger: 'cron',
@@ -151,13 +159,14 @@ export const runCronJob = (
   userId: string,
   job: AgentCronJob,
   runId: string,
+  modelOverride?: CronRunModel,
 ): Promise<CronRunResult> => {
   pruneRunCache();
   const key = `${userId}:${job.id}:${runId}`;
   const cached = runCache.get(key);
   if (cached) return cached.promise;
 
-  const promise = startRun(db, userId, job, runId);
+  const promise = startRun(db, userId, job, runId, modelOverride);
   runCache.set(key, { at: Date.now(), promise });
   // Неудачный старт не кэшируем: повтор с тем же runId имеет право попробовать ещё раз.
   void promise.then((result) => {

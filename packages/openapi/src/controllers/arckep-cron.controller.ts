@@ -176,7 +176,7 @@ export class ArckepCronController extends BaseController {
   }
 
   /**
-   * POST /api/v1/arckep/cron-jobs/:id/run { runId } — выполнить задачу сейчас (расписание или ручной запуск
+   * POST /api/v1/arckep/cron-jobs/:id/run { runId, model?, provider? } — выполнить задачу сейчас (расписание или ручной запуск
    * решает студия, у выключенной задачи запуск тоже разрешён). Ответ 200 всегда, если задача найдена:
    * не стартовало — `success: false` и `error` внутри `data`.
    */
@@ -185,12 +185,19 @@ export class ArckepCronController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const { id } = this.getParams<{ id: string }>(c);
-      const { runId } = await this.getBody<CronJobRunRequest>(c);
+      const { model, provider, runId } = await this.getBody<CronJobRunRequest>(c);
 
       const job = await new AgentCronJobModel(db, userId).findById(id);
       if (!job) return this.error(c, 'Cron job not found', 404);
 
-      const result = await runCronJob(db, userId, job, runId);
+      // Модель задачи хранит студия и передаёт при запуске; без неё — модель помощника.
+      const result = await runCronJob(
+        db,
+        userId,
+        job,
+        runId,
+        model && provider ? { model, provider } : undefined,
+      );
       return this.success(c, result, result.success ? 'cron job started' : 'cron job not started');
     } catch (error) {
       return this.handleError(c, error);
