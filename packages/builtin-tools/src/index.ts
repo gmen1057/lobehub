@@ -111,7 +111,9 @@ export const isArckepLazyToolId = (id: string): boolean =>
  * подключения, которые должны быть под рукой с первого сообщения.
  */
 export const ARCKEP_MCP_CONNECTOR_PREFIX = 'mcp-';
-export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = ['mcp-arckep-e2b-sandbox'];
+/** Подключение песочницы E2B (шлюз коннекторов, execute_code / read_file). */
+export const ARCKEP_E2B_CONNECTOR_ID = 'mcp-arckep-e2b-sandbox';
+export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = [ARCKEP_E2B_CONNECTOR_ID];
 export const isArckepLazyMcpConnectorId = (id: string): boolean =>
   id.startsWith(ARCKEP_MCP_CONNECTOR_PREFIX) && !ARCKEP_EAGER_MCP_TOOL_IDS.includes(id);
 

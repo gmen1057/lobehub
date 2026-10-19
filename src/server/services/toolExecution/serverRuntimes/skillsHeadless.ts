@@ -144,7 +144,7 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
       const key = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/skills/exports/${today}/${this.deps.topicId}/${nanoid()}-${name}`;
 
       await this.deps.fileService.uploadBuffer(key, buffer, mimeType);
-      const { fileId } = await this.deps.fileService.createFileRecord({
+      const { fileId, url } = await this.deps.fileService.createFileRecord({
         // UUID, как у uploadBase64: адрес /f/<id> отдаётся без входа, поэтому номер должен не подбираться
         id: uuid(),
         fileHash: sha256(buffer),
@@ -156,19 +156,21 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
       log('exported %s -> file %s (%d bytes)', path, fileId, buffer.length);
 
-      // Модели адрес не отдаём: файл показывает экран студии карточкой по fileId (GET /files/<id>/url у
-      // бэкенда). Ссылка `${APP_URL}/f/<id>` с 19.10 отдаётся nginx'ом движку и работает без входа, но второй
-      // способ показать файл рядом с карточкой только путал бы модель (она вставила бы ссылку в текст).
+      // Тот же вид, что у MCP-пути (processContentBlocks → «Файл готов: [имя](адрес)»): `${APP_URL}/f/<id>`
+      // отдаётся nginx'ом движку без входа (с 19.10). Строка ARCKEP_FILE — последняя: экран студии рисует по ней
+      // карточку по fileId (GET /files/<id>/url у бэкенда).
       return {
         fileId,
         filename: name,
         mimeType,
         note: [
-          `File saved: ${name} (${buffer.length} bytes, ${mimeType}). The chat shows it to the person as a file card — do not paste any link or path.`,
+          `Файл готов: [${name}](${url})`,
+          `(${buffer.length} bytes, ${mimeType}). The chat also shows it to the person as a file card.`,
           `ARCKEP_FILE ${JSON.stringify({ fileId, filename: name, mimeType, size: buffer.length })}`,
         ].join('\n'),
         size: buffer.length,
         success: true,
+        url,
       };
     } catch (error) {
       log('export upload failed: %O', error);

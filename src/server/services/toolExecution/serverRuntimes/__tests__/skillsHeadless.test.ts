@@ -213,9 +213,17 @@ describe('HeadlessSkillRuntimeService.exportFile', () => {
     expect((fileService.createFileRecord.mock.calls[0] as any)[0].id).toMatch(
       /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
     );
-    // модели адрес /f/<id> не отдаётся: файл показывает карточка по fileId
-    expect(result.note).not.toContain('http');
-    expect(result.note).toContain('ARCKEP_FILE {"fileId":"file_9"');
+    // тот же вид, что у MCP-пути: «Файл готов: [имя](адрес)», а ARCKEP_FILE — последней строкой
+    const lines = result.note!.split('\n');
+    expect(lines[0]).toMatch(/^Файл готов: \[.+\.pdf\]\(https:\/\/arckep\.ru\/chat\/f\/file_9\)$/);
+    expect(lines.at(-1)).toMatch(/^ARCKEP_FILE \{"fileId":"file_9",/);
+    expect(JSON.parse(lines.at(-1)!.slice('ARCKEP_FILE '.length))).toEqual({
+      fileId: 'file_9',
+      filename: expect.stringMatching(/\.pdf$/),
+      mimeType: 'application/pdf',
+      size: 14,
+    });
+    expect(result.url).toBe('https://arckep.ru/chat/f/file_9');
   });
 
   it('нет файла в песочнице — причина доходит до модели', async () => {
@@ -323,12 +331,13 @@ describe('SkillsExecutionRuntime поверх HeadlessSkillRuntimeService', () =
     );
   });
 
-  it('exportFile: модель видит fileId и маркер для экрана, а не адрес загрузки', async () => {
+  it('exportFile: модель видит ссылку «Файл готов» и маркер для экрана, а не адрес загрузки', async () => {
     const { service } = make();
     const result = await runtimeFor(service).exportFile({ filename: 'r.pdf', path: 'r.pdf' });
 
     expect(result.success).toBe(true);
-    expect(result.content).toContain('ARCKEP_FILE');
+    expect(result.content).toContain('Файл готов: [r.pdf](https://arckep.ru/chat/f/file_9)');
+    expect(result.content.split('\n').at(-1)).toMatch(/^ARCKEP_FILE /);
     expect(result.content).not.toContain('Download URL');
     expect(result.state).toMatchObject({ fileId: 'file_9', mimeType: 'application/pdf', size: 14 });
   });

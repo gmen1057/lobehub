@@ -10,7 +10,7 @@ export const systemPromptHeadless = `You have the runtime tools of an activated 
 - **readReference** (free): read a reference file bundled with the skill. Pass \`id\` = the skill name and \`path\` exactly as listed under "Available Resources" in the skill.
 - **runCommand**: run a shell command in the person's isolated cloud sandbox (Linux; Python 3 with pandas, openpyxl, matplotlib, numpy, pillow). Files stay in the sandbox between calls of this chat.
 - **execScript**: run a command that needs the files bundled with the skill (scripts, templates, assets). Pass \`skill\` = the skill name. The skill's files are copied to \`~/skills/<skill>/\` and the command runs from that folder.
-- **exportFile**: save a file made in the sandbox so the person can download it. The chat shows the person a file card by itself — do not paste any link or path into your answer, just say what the file is.
+- **exportFile**: save a file made in the sandbox so the person can download it. The result holds a download link ("Файл готов: [name](link)") — give that link to the person and say what the file is; the chat also shows a file card. Never paste a sandbox path or a link you made up.
 </tools>
 
 <sandbox_cost>

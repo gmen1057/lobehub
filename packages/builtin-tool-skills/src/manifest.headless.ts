@@ -82,7 +82,7 @@ export const SkillsManifestHeadless: BuiltinToolManifest = {
     },
     {
       description:
-        'Save a file made in the sandbox so the person can download it. Returns the file id; the chat shows the person a file card by itself, so do not paste links or paths. Maximum file size is 25 MB.',
+        'Save a file made in the sandbox so the person can download it. Returns a download link ("Файл готов: [name](link)") and the file id; the chat also shows the person a file card. Give the person the link from the result, never an invented link or a sandbox path. Maximum file size is 25 MB.',
       name: SkillsApiName.exportFile,
       parameters: {
         properties: {
