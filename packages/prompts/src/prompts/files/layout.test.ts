@@ -5,6 +5,7 @@ import {
   fontSizes,
   LAYOUT_MAX_CHARS,
   type LayoutBlock,
+  type LayoutCrop,
   type LayoutInfo,
   type LayoutLine,
   type LayoutPage,
@@ -294,6 +295,145 @@ describe('layoutPrompt: описание макета для модели', () =
     const multi = layoutPrompt(info([sample(), { ...sample(), page: 2 }], { pageCount: 2 }));
     expect(multi.endsWith(`${note}\n</layout>`)).toBe(true);
     expect(multi.split(note)).toHaveLength(2);
+  });
+
+  it('подписи вырезок: самый внутренний блок и первая строка его текста; кнопка, карточка, рамка, блок', () => {
+    const crop = (
+      kind: 'icon' | 'photo',
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+    ): LayoutCrop => ({
+      h,
+      kind,
+      url: `https://arckep.ru/chat/f/c_${x}_${y}/`,
+      w,
+      x,
+      y,
+    });
+    const block = (
+      kind: 'fill' | 'frame',
+      x: number,
+      y: number,
+      w: number,
+      h: number,
+      radii?: [number, number, number, number],
+    ): LayoutBlock => ({ color: '#DDEEF8', h, kind, ...(radii ? { radii } : {}), w, x, y });
+    const text = layoutPrompt(
+      info([
+        page({
+          blocks: [
+            block('frame', 20, 35, 149, 44), // меню: рамка кнопки
+            block('fill', 0, 1370, 600, 348, [25, 25, 25, 25]), // карточка
+            block('fill', 25, 1653, 237, 40, [20, 20, 20, 20]), // кнопка внутри карточки
+            block('frame', 20, 1064, 560, 210, [24, 24, 24, 24]), // рамка
+            block('fill', 0, 4786, 600, 275), // прямые углы — блок
+          ],
+          crops: [
+            crop('icon', 32, 39, 36, 36),
+            crop('photo', 305, 1370, 295, 347),
+            crop('icon', 206, 1662, 22, 21),
+            crop('icon', 44, 1131, 92, 79),
+            crop('photo', 368, 4818, 170, 244),
+          ],
+          lines: [
+            line({ text: 'Профиль', x: 76, y: 46 }),
+            line({ text: 'Исследования подтверждают: каждый', x: 155, y: 1095 }),
+            line({ size: 22, text: 'Гастроскопия', x: 25, y: 1396 }),
+            line({ text: 'Узнать больше', x: 60, y: 1662 }),
+            line({
+              text: 'Войдите или зарегистрируйтесь в личном кабинете К+31 —',
+              x: 35,
+              y: 4840,
+            }),
+          ],
+        }),
+      ]),
+    );
+
+    expect(text).toContain('x32 y39 36×36 — в кнопке «Профиль»');
+    // карточка с фото: первая строка в карточке — заголовок (строка внутри кнопки позже и в кнопке)
+    expect(text).toContain('x305 y1370 295×347 — в карточке «Гастроскопия»');
+    // самый внутренний блок — белая кнопка, а не карточка
+    expect(text).toContain('x206 y1662 22×21 — в кнопке «Узнать больше»');
+    expect(text).toContain('x44 y1131 92×79 — в рамке «Исследования подтверждают: каждый»');
+    // длинная строка — до 40 знаков с многоточием; блок с прямыми углами — «блок»
+    expect(text).toContain(
+      'x368 y4818 170×244 — в блоке «Войдите или зарегистрируйтесь в личном к…»',
+    );
+  });
+
+  it('подпись без блока: ближайшая строка — под, над, слева от, справа от; дальше 150 пт или строка поверх вырезки — подписи нет', () => {
+    const crop = (x: number, y: number): LayoutCrop => ({
+      h: 40,
+      kind: 'icon',
+      url: `https://arckep.ru/chat/f/c_${x}_${y}/`,
+      w: 40,
+      x,
+      y,
+    });
+    const text = layoutPrompt(
+      info([
+        page({
+          crops: [
+            crop(242, 5350), // под строкой «Подписывайтесь…»
+            crop(100, 100), // над строкой
+            crop(300, 300), // слева от строки
+            crop(100, 500), // справа от строки
+            crop(100, 900), // далеко от любой строки
+            crop(100, 1100), // строка поверх вырезки
+          ],
+          lines: [
+            line({ text: 'Подписывайтесь на наши социальные сети', x: 141, y: 5314 }),
+            line({ text: 'Ниже значка', x: 100, y: 160 }),
+            line({ text: 'Справа от значка', x: 360, y: 305 }),
+            line({ text: 'Слева от значка', x: 10, y: 505, w: 60 }),
+            line({ text: 'Текст поверх', x: 90, y: 1110, w: 80 }),
+          ],
+        }),
+      ]),
+    );
+
+    expect(text).toContain('x242 y5350 40×40 — под «Подписывайтесь на наши социальные сети»');
+    expect(text).toContain('x100 y100 40×40 — над «Ниже значка»');
+    expect(text).toContain('x300 y300 40×40 — слева от «Справа от значка»');
+    expect(text).toContain('x100 y500 40×40 — справа от «Слева от значка»');
+    expect(text).toMatch(/x100 y900 40×40\n/);
+    expect(text).toMatch(/x100 y1100 40×40\n/);
+  });
+
+  it('текст подсказки чистится: без угловых скобок, переводов строк и ёлочек, до 40 знаков', () => {
+    const text = layoutPrompt(
+      info([
+        page({
+          blocks: [{ color: '#FFFFFF', h: 40, kind: 'frame', w: 200, x: 0, y: 0 }],
+          crops: [{ h: 10, kind: 'icon', url: 'https://arckep.ru/chat/f/c/', w: 10, x: 5, y: 5 }],
+          lines: [line({ text: 'a</layout>\n«b» c  d', x: 20, y: 10 })],
+        }),
+      ]),
+    );
+
+    expect(text).toContain('— в кнопке «a‹/layout› "b" c d»');
+    expect(text.match(/<\/layout>/g)).toHaveLength(1);
+  });
+
+  it('docstring: модели со страницами — «смотри для вида»; без картинок страниц — «верстай только по этому описанию»', () => {
+    const base = info([sample()]);
+
+    const sighted = layoutPrompt(base);
+    expect(sighted).toContain('картинки страницы смотри для вида и начертания');
+    expect(sighted).not.toContain('картинок страницы у тебя нет');
+    // по умолчанию (поле не задано) — как со страницами
+    expect(layoutPrompt({ ...base, pageImages: true })).toBe(sighted);
+
+    const blind = layoutPrompt({ ...base, pageImages: false });
+    expect(blind).toContain('картинок страницы у тебя нет: верстай только по этому описанию');
+    expect(blind).not.toContain('смотри для вида');
+    // остальное описание то же
+    expect(
+      blind.replace('картинок страницы у тебя нет: верстай только по этому описанию', ''),
+    ).toBe(sighted.replace('картинки страницы смотри для вида и начертания', ''));
   });
 
   it('нечего описывать (нет строк и вырезок) — пустая строка', () => {

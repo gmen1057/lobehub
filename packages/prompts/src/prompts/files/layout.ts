@@ -68,14 +68,24 @@ export interface LayoutInfo {
   file: string;
   /** Сколько страниц в файле */
   pageCount?: number;
+  /**
+   * У модели есть картинки страниц (модель со зрением, страницы нарисованы). По умолчанию да. Нет — описание для неё
+   * единственный способ «увидеть» макет, и в нём так и сказано.
+   */
+  pageImages?: boolean;
   pages: LayoutPage[];
 }
 
 /** Предел одного описания, знаков. */
 export const LAYOUT_MAX_CHARS = 24_000;
 
-const DOCSTRING =
-  'точное описание макета, снятое с PDF программой (не на глаз). Все числа — в точках страницы (px макета), начало координат — левый верхний угол страницы. Верстай по этим числам: размеры шрифта, отступы, цвета, переносы строк; картинки и значки бери только из списка вырезок (в 2× разрешении; свои адреса от человека — вместо них), значок не заменяй текстом и эмодзи; картинки страницы смотри для вида и начертания';
+const DOCSTRING_HEAD =
+  'точное описание макета, снятое с PDF программой (не на глаз). Все числа — в точках страницы (px макета), начало координат — левый верхний угол страницы. Верстай по этим числам: размеры шрифта, отступы, цвета, переносы строк; картинки и значки бери только из списка вырезок (в 2× разрешении; свои адреса от человека — вместо них), значок не заменяй текстом и эмодзи; ';
+const DOCSTRING_WITH_PAGES = `${DOCSTRING_HEAD}картинки страницы смотри для вида и начертания`;
+const DOCSTRING_NO_PAGES = `${DOCSTRING_HEAD}картинок страницы у тебя нет: верстай только по этому описанию`;
+
+const docstring = (info: LayoutInfo) =>
+  info.pageImages === false ? DOCSTRING_NO_PAGES : DOCSTRING_WITH_PAGES;
 
 /** Последняя строка блока: свои адреса картинок у человека важнее вырезок. */
 const OWN_ADDRESSES =
@@ -248,12 +258,77 @@ const general = (page: LayoutPage, withPage: boolean) => {
   return out.join('\n');
 };
 
-const cropLines = (crops: LayoutCrop[]) => {
+// ---- Подписи вырезок: где стоит ----
+
+const HINT_MAX = 40;
+/** Высота строки текста: у строки в записи её нет, у обычного текста она ≈ 1,3 размера шрифта. */
+const lineHeight = (line: LayoutLine) => line.size * 1.3;
+
+/** Фрагмент строки макета для подсказки: до 40 знаков, без угловых скобок, переводов строк и кавычек-ёлочек. */
+const quote = (text: string) => {
+  const clean = safe(text).replaceAll(/\s+/g, ' ').replaceAll(/[«»]/g, '"').trim();
+  const chars = [...clean];
+  return `«${chars.length > HINT_MAX ? `${chars.slice(0, HINT_MAX).join('').trimEnd()}…` : clean}»`;
+};
+
+/** Слово для блока: маленький — кнопка, рамка — рамка, скруглённая заливка — карточка, остальное — блок. */
+const blockWord = (block: LayoutBlock) => {
+  if (block.h <= 70) return 'кнопке';
+  if (block.kind === 'frame') return 'рамке';
+  return block.radii?.some((value) => value > 0) ? 'карточке' : 'блоке';
+};
+
+/**
+ * Где вырезка стоит: «в кнопке «Профиль»» — самый внутренний блок, в который она попадает, и первая строка текста
+ * этого блока; нет блока (или в нём нет текста) — ближайшая строка рядом: «под …», «над …», «слева от …»,
+ * «справа от …» (описывается положение вырезки относительно строки). Дальше 150 пт строки не ищем.
+ */
+const cropHint = (crop: LayoutCrop, page: LayoutPage): string | undefined => {
+  const inside = (outer: { h: number; w: number; x: number; y: number }, slack = 3) =>
+    crop.x >= outer.x - slack &&
+    crop.y >= outer.y - slack &&
+    crop.x + crop.w <= outer.x + outer.w + slack &&
+    crop.y + crop.h <= outer.y + outer.h + slack;
+
+  const block = page.blocks
+    .filter(
+      (item) => item.kind !== 'line' && inside(item) && item.w * item.h > crop.w * crop.h * 1.15,
+    )
+    .sort((a, b) => a.w * a.h - b.w * b.h)[0];
+  if (block) {
+    const first = page.lines.find((line) => {
+      const cx = line.x + line.w / 2;
+      const cy = line.y + lineHeight(line) / 2;
+      return cx >= block.x && cx <= block.x + block.w && cy >= block.y && cy <= block.y + block.h;
+    });
+    if (first) return `в ${blockWord(block)} ${quote(first.text)}`;
+  }
+
+  let best: { dx: number; dy: number; line: LayoutLine; dist: number } | undefined;
+  for (const line of page.lines) {
+    const height = lineHeight(line);
+    const dx = Math.max(0, line.x - (crop.x + crop.w), crop.x - (line.x + line.w));
+    const dy = Math.max(0, line.y - (crop.y + crop.h), crop.y - (line.y + height));
+    const dist = Math.hypot(dx, dy);
+    // строка поверх самой вырезки (текст на фото) — не подсказка
+    if (dist === 0 || dist > 150) continue;
+    if (!best || dist < best.dist) best = { dist, dx, dy, line };
+  }
+  if (!best) return undefined;
+  const { dx, dy, line } = best;
+  if (dx === 0 || dy >= dx) {
+    return `${line.y >= crop.y + crop.h ? 'над' : 'под'} ${quote(line.text)}`;
+  }
+  return `${line.x >= crop.x + crop.w ? 'слева от' : 'справа от'} ${quote(line.text)}`;
+};
+
+const cropLines = (page: LayoutPage) => {
   const counters = { icon: 0, photo: 0 };
-  return crops.map((crop) => {
+  return page.crops.map((crop) => {
     counters[crop.kind]++;
     const name = crop.kind === 'photo' ? 'фото' : 'значок';
-    return `- ${name} ${counters[crop.kind]}: ${crop.url} — ${rect(crop)}`;
+    const hint = cropHint(crop, page);
+    return `- ${name} ${counters[crop.kind]}: ${crop.url} — ${rect(crop)}${hint ? ` — ${hint}` : ''}`;
   });
 };
 
@@ -262,7 +337,7 @@ const pageText = (page: LayoutPage, withPage: boolean, budget: number) => {
   const suffix = withPage ? ` (стр. ${page.page})` : '';
   const head = general(page, withPage);
   const blocks = page.blocks.map(blockLine);
-  const crops = cropLines(page.crops);
+  const crops = cropLines(page);
   // порядок строк — как в файле (порядок чтения): куски одной строки (со скидкой 20%, чтобы…) остаются рядом
   const lines = page.lines.map(lineText);
 
@@ -316,7 +391,7 @@ export const layoutPrompt = (info: LayoutInfo, maxChars = LAYOUT_MAX_CHARS): str
   if (pages.length === 0) return '';
 
   const withPage = (info.pageCount ?? pages.length) > 1 || pages.length > 1;
-  const wrapper = `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n\n${OWN_ADDRESSES}\n</layout>`;
+  const wrapper = `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${docstring(info)}</layout_docstring>\n\n\n${OWN_ADDRESSES}\n</layout>`;
   let room = maxChars - wrapper.length;
   const parts: string[] = [];
   pages.forEach((page, index) => {
@@ -326,7 +401,7 @@ export const layoutPrompt = (info: LayoutInfo, maxChars = LAYOUT_MAX_CHARS): str
     room -= text.length + 2;
   });
 
-  return `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${DOCSTRING}</layout_docstring>\n\n${parts.join('\n\n')}\n\n${OWN_ADDRESSES}\n</layout>`;
+  return `<layout file="${safe(info.file).replaceAll('"', "'")}">\n<layout_docstring>${docstring(info)}</layout_docstring>\n\n${parts.join('\n\n')}\n\n${OWN_ADDRESSES}\n</layout>`;
 };
 
 /** Блоки `<layout>` для всех PDF сообщения. */

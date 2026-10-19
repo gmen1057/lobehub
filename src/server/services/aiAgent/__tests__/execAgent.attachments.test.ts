@@ -1060,6 +1060,7 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       const expectedInfo = {
         file: 'tmpl.pdf',
         pageCount: 1,
+        pageImages: true,
         pages: [
           {
             ...layoutPage,
@@ -1088,22 +1089,41 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
         expect(JSON.stringify(messageArgs.metadata)).not.toContain('crop_a');
       });
 
-      it('модель без зрения и выключатель ARCKEP_PDF_LAYOUT=0: описания нет', async () => {
+      it('модель без зрения: описание макета есть (это её единственный способ «увидеть» макет), картинок страниц у неё нет', async () => {
         prepStore.set('pdf_1', layoutRecord());
 
         const textOnly = await runWith([pdfFile], 'text-only');
-        expect(textOnly.initialMessages.at(-1).metadata?.layouts).toBeUndefined();
 
-        vi.clearAllMocks();
-        mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
-        mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
-        mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
+        const message = textOnly.initialMessages.at(-1);
+        expect(message.metadata.layouts).toEqual([{ ...expectedInfo, pageImages: false }]);
+        // страницы-картинки модель без зрения по-прежнему не получает
+        expect(message.imageList).toBeUndefined();
+        expect(textOnly.fileIds).toEqual(['pdf_1']);
+        // вшитые картинки — в списке вложений, как и раньше
+        expect(textOnly.attachments).toHaveLength(2);
+      });
+
+      it('выключатели: ARCKEP_PDF_LAYOUT=0 и ARCKEP_PDF_PAGE_IMAGES=0 — описания нет, остальное на месте', async () => {
         process.env.ARCKEP_PDF_LAYOUT = '0';
         prepStore.set('pdf_1', layoutRecord());
         const off = await runWith([pdfFile]);
         expect(off.initialMessages.at(-1).metadata?.layouts).toBeUndefined();
         // страницы и вшитые картинки при этом на месте
         expect(off.initialMessages.at(-1).imageList).toHaveLength(1);
+        expect(off.attachments).toHaveLength(2);
+
+        vi.clearAllMocks();
+        mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+        mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+        mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
+        delete process.env.ARCKEP_PDF_LAYOUT;
+        // страницы-картинки выключены: описание считается вместе с ними, старая запись не используется
+        process.env.ARCKEP_PDF_PAGE_IMAGES = '0';
+        prepStore.set('pdf_1', layoutRecord());
+        const noPages = await runWith([pdfFile]);
+        expect(noPages.initialMessages.at(-1).metadata?.layouts).toBeUndefined();
+        expect(noPages.initialMessages.at(-1).imageList).toBeUndefined();
+        delete process.env.ARCKEP_PDF_PAGE_IMAGES;
       });
 
       it('запись без описания (не макет): metadata без layouts', async () => {
@@ -1162,9 +1182,9 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
         ).toBe(true);
       });
 
-      it('история: модель без зрения описания макета не получает', async () => {
+      it('история: модели без зрения описание тоже идёт (без картинок страниц), модели со зрением — с пометкой, что страницы у неё есть', async () => {
         prepStore.set('pdf_1', layoutRecord());
-        mockMessageQuery.mockResolvedValue([
+        const history = () => [
           {
             content: 'a',
             fileList: [
@@ -1174,16 +1194,32 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
             imageList: [],
             role: 'user',
           },
-        ]);
-        mockGetAgentConfig.mockResolvedValue(agent('text-only'));
+        ];
 
+        mockMessageQuery.mockResolvedValue(history());
+        mockGetAgentConfig.mockResolvedValue(agent('text-only'));
         await service.execAgent({
           agentId: 'agent-1',
           appContext: { topicId: 'topic-existing' },
           prompt: 'ещё',
         });
+        const blind = mockCreateOperation.mock.calls[0][0].initialMessages[0];
+        expect(blind.metadata.layouts).toEqual([{ ...expectedInfo, pageImages: false }]);
+        expect(blind.imageList).toEqual([]); // страниц модель без зрения не получает
 
-        expect(mockCreateOperation.mock.calls[0][0].initialMessages[0].metadata).toBeUndefined();
+        vi.clearAllMocks();
+        mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+        mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+        mockMessageQuery.mockResolvedValue(history());
+        mockGetAgentConfig.mockResolvedValue(agent());
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: { topicId: 'topic-existing' },
+          prompt: 'ещё',
+        });
+        const sighted = mockCreateOperation.mock.calls[0][0].initialMessages[0];
+        expect(sighted.metadata.layouts).toEqual([expectedInfo]);
+        expect(sighted.imageList).toHaveLength(1);
       });
 
       it('подделанное описание (вырезка — чужой файл): запись отвергнута, в сообщение и историю оно не попадает', async () => {

@@ -138,11 +138,17 @@ const embeddedImageRef = (pdfName: string, image: PdfPrepImage): MessageAttachme
  * записи подготовки: вырезки получают устойчивые адреса файлов человека. Нужно только модели в запрос: текст
  * описания собирается при каждом ходе и в metadata сообщения не сохраняется.
  */
-const pdfLayoutInfo = (name: string, record: PdfPrepRecord): LayoutInfo | undefined => {
+const pdfLayoutInfo = (
+  name: string,
+  record: PdfPrepRecord,
+  /** У модели есть картинки страниц (модель со зрением): без них в описании сказано «верстай только по этому описанию» */
+  pageImages: boolean,
+): LayoutInfo | undefined => {
   if (!record.layout || record.layout.pages.length === 0) return undefined;
   return {
     file: name,
     pageCount: record.pageCount,
+    pageImages,
     pages: record.layout.pages.map((page) => ({
       ...page,
       crops: page.crops.map((crop) => ({
@@ -358,7 +364,9 @@ export class AiAgentService {
 
     try {
       const withVision = settings.pageImages && (await this.modelHasVision(model, provider));
-      if (!withVision && !settings.embeddedImages) return result;
+      // описание макета считается вместе со страницами и нужно всем моделям, в том числе без зрения
+      const wantLayout = settings.pageImages && settings.layout;
+      if (!withVision && !settings.embeddedImages && !wantLayout) return result;
 
       const { pending, record } = await PdfPrepareService.forUser(this.db, this.userId).waitFor(
         fileId,
@@ -372,8 +380,9 @@ export class AiAgentService {
       if (settings.embeddedImages) {
         result.images = (record.images ?? []).map((image) => embeddedImageRef(name, image));
       }
-      // описание макета нужно модели со зрением (оно говорит, где на странице что) и идёт вместе со страницами
-      if (withVision && settings.layout) result.layout = pdfLayoutInfo(name, record);
+      // описание макета — всем моделям: у модели без зрения это единственный способ «увидеть» макет (числа и
+      // адреса вырезок); картинки страниц по-прежнему только модели со зрением
+      if (wantLayout) result.layout = pdfLayoutInfo(name, record, withVision);
     } catch (error) {
       log('execAgent: pdf processing failed for %s: %O', name, error);
     }
@@ -444,7 +453,10 @@ export class AiAgentService {
         }
 
         // описание макета: только в память этого хода (в базу не пишется); сообщение могло уйти до его готовности
-        const layout = withVision && settings.layout ? pdfLayoutInfo(file.name, record) : undefined;
+        const layout =
+          settings.pageImages && settings.layout
+            ? pdfLayoutInfo(file.name, record, withVision)
+            : undefined;
         if (layout) {
           const known = Array.isArray(message.metadata?.layouts) ? message.metadata.layouts : [];
           if (!known.some((item: LayoutInfo) => item.file === layout.file)) {
