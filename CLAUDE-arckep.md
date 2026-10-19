@@ -78,4 +78,15 @@ curl -sS -o /dev/null -w "%{http_code}" https://chat.arckep.ru/_spa/assets/$(ls 
 - Отвергли: вечный skip (длинный чат упрётся в лимит) и тот же порог 50% (петля суммаризаций).
 - Почему: свежее сжатие почти всегда около нижнего порога; одна tool-выдача не должна запускать второй проход.
 
+## Задачи по расписанию (19.10.2026)
+
+Цикл «пора ли запускать» живёт в студии (`image-studio`, раз в минуту); движок хранит задачи (`agent_cron_jobs`) и выполняет запуск.
+
+- REST (служебный вход студии, как у остальных `arckep`-маршрутов): `/api/v1/arckep/cron-jobs` — `GET`, `POST`, `PATCH /:id`, `DELETE /:id`, `POST /:id/run {runId}`, `GET /:id/topics`. Код: `packages/openapi/src/controllers/arckep-cron.controller.ts`, `routes/arckep.route.ts`.
+- Расписание (`src/server/services/arckepCron/schedule.ts`) проверяют и REST, и инструмент `lobe-cron`: только 5 полей, макросы `@hourly/@daily/@weekly/@monthly/@yearly`, не чаще раза в 30 минут (поле минут: одно число, два числа ровно через 30 или `*/30`), пояс по умолчанию `Europe/Moscow`.
+- Запуск (`run.ts`): `execAgent({ trigger: 'cron', cronJobId, autoStart, headless })`, затем `updateExecutionStats` (только если операция стартовала; `remainingExecutions` не ниже 0, при 0 задача выключается). Повтор того же `runId` в течение 15 минут задачу второй раз не запускает.
+- Окончание (`finished.ts`): локальный хук `onComplete` шлёт `POST ${IMAGE_STUDIO_API_URL}/api/internal/chat-tasks/finished` с `X-Arckep-Token`. Работает только при локальной очереди (`AGENT_RUNTIME_MODE` не `queue`); студия сама закрывает запуски старше часа.
+- `ARCKEP_CHAT_CRON=1` — `lobe-cron` доступен в обычном чате (по требованию). Внутри запуска `trigger='cron'` он скрыт всегда; в системный контекст запуска (`evalContext.envPrompt`) добавляется пояснение «человека в чате нет» (`prompt.ts`).
+- Ловушка: `AgentCronJobModel.update` при смене `cronPattern`/`timezone` обнуляет `lastExecutedAt` («чтобы сработало сразу»). Студия не должна считать это пропущенным запуском за последний час.
+
 Подробности по AI-tooling, codegraph и общей карте проектов — в `/root/CLAUDE.md`.
