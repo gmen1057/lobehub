@@ -57,6 +57,12 @@ export const LAYOUT_MIN_ELEMENTS = 4;
 const TOTAL_BUDGET_MS = 120_000;
 const PAGE_TIMEOUT_MS = 60_000;
 const MAX_IMAGES_PER_PAGE = 60;
+/** Картинка из pdftohtml не больше этого (точек): как в pdfImages.ts. */
+const MAX_IMAGE_PIXELS = 36_000_000;
+/** Ужатая до места картинка не больше этого (точек): место в PDF может быть сколь угодно большим. */
+const MAX_PLACED_PIXELS = 40_000_000;
+/** Кандидатов на вырезку на странице: остальное отбрасывается до слияния и нарезки. */
+const MAX_CROP_CANDIDATES = 300;
 /** Вырезки сохраняем в 2× (но не крупнее, чем нарисована страница) */
 const CROP_SCALE = 2;
 const PHOTO_QUALITY = 88;
@@ -109,7 +115,7 @@ export const decodeEntities = (text: string) =>
     if (name[0] === '#') {
       const code =
         name[1].toLowerCase() === 'x' ? Number.parseInt(name.slice(2), 16) : Number(name.slice(1));
-      return Number.isFinite(code) && code > 0 && code <= 0x10_ff_ff
+      return Number.isFinite(code) && code > 0 && code <= 1_114_111
         ? String.fromCodePoint(code)
         : match;
     }
@@ -125,7 +131,11 @@ const attributes = (source: string) => {
 
 /** Название шрифта без метки подмножества (ABCDEF+Roboto → Roboto); служебные и пустые — нет. */
 export const cleanFontName = (family?: string) => {
-  const name = (family ?? '').replace(/^[A-Z]{6}\+/, '').trim();
+  // только буквы, цифры и знаки имён шрифтов: название идёт в запрос модели
+  const name = (family ?? '')
+    .replace(/^[A-Z]{6}\+/, '')
+    .replaceAll(/[^\p{L}\p{N} ._+-]/gu, '')
+    .trim();
   if (!name || /^(?:unknown|null|undefined|\d+)$/i.test(name) || /glyphs|type\s*3/i.test(name)) {
     return undefined;
   }
@@ -317,7 +327,12 @@ const loadPlaced = async (
   height: number,
 ): Promise<RawImage | undefined> => {
   try {
-    const { data, info } = await sharp(file, { failOn: 'none' })
+    const { data, info } = await sharp(file, {
+      failOn: 'none',
+      // чужой файл: «бомба» из огромной картинки не должна съесть память
+      limitInputPixels: MAX_IMAGE_PIXELS,
+      sequentialRead: true,
+    })
       .resize(Math.max(1, width), Math.max(1, height), { fit: 'fill' })
       .removeAlpha()
       .raw()
@@ -441,6 +456,24 @@ const dominant = (colors: Array<{ color: string; weight: number }>) => {
   return best;
 };
 
+/**
+ * «По центру»: середина строки у середины страницы (±4 пт) И левый край строки не встречается у других строк (иначе
+ * это колонка с левым выравниванием: строка «пятый продолжает испытывать» ложно считалась бы центрированной).
+ */
+export const centeredFlags = (
+  lines: Array<Pick<ParsedLine, 'w' | 'x'>>,
+  pageWidth: number,
+): boolean[] => {
+  const lefts = new Map<number, number>();
+  for (const line of lines) lefts.set(line.x, (lefts.get(line.x) ?? 0) + 1);
+  return lines.map(
+    (line) =>
+      Math.abs(line.x + line.w / 2 - pageWidth / 2) <= 4 &&
+      line.w < pageWidth * 0.9 &&
+      (lefts.get(line.x) ?? 0) < 2,
+  );
+};
+
 /** Вырезка до слияния: прямоугольник и «фото» ли это (JPEG) или значок (PNG). */
 interface CropItem {
   photo: boolean;
@@ -451,6 +484,8 @@ const analysePage = async (
   context: PageContext,
   page: number,
   raster: PdfPageRaster,
+  /** Сколько вырезок ещё можно на файле */
+  maxCrops: number,
 ): Promise<{ draft: LayoutPageDraft; places: LayoutDraft['places'] } | undefined> => {
   const started = Date.now();
   const marks: string[] = [];
@@ -491,11 +526,17 @@ const analysePage = async (
       inkPlaces.push(onPage);
       continue;
     }
-    const placed = await loadPlaced(
-      path.join(context.dir, path.basename(image.src)),
-      Math.round(place.w * sx),
-      Math.round(place.h * sy),
-    );
+    // место в PDF задаёт кто угодно: огромное ужимать не будем (ни память, ни время), разберём как «чернила»
+    const placedWidth = Math.round(place.w * sx);
+    const placedHeight = Math.round(place.h * sy);
+    const placed =
+      placedWidth * placedHeight <= Math.min(MAX_PLACED_PIXELS, raw.width * raw.height * 2)
+        ? await loadPlaced(
+            path.join(context.dir, path.basename(image.src)),
+            placedWidth,
+            placedHeight,
+          )
+        : undefined;
     const found = placed ? visibleRect(raw, sx, sy, place, placed) : undefined;
     if (found?.rect && !(found.ratio < 0.9 && found.transparent >= 0.5)) {
       visible.push(snap(inside(found.rect, parsed.width, parsed.height)));
@@ -518,20 +559,13 @@ const analysePage = async (
       return color ? [{ color: toHex(color), weight: line.text.trim().length }] : [];
     }),
   );
-  const lefts = new Map<number, number>();
-  for (const line of lines) lefts.set(line.x, (lefts.get(line.x) ?? 0) + 1);
+  const centered = centeredFlags(lines, parsed.width);
   const draftLines: LayoutLine[] = lines.map((line, index) => {
     const found = lineColors[index];
     const color = found ? toHex(found) : undefined;
-    // «по центру»: середина строки у середины страницы (±4 пт), а левый край не встречается у других строк
-    // (иначе это колонка с левым выравниванием)
-    const centered =
-      Math.abs(line.x + line.w / 2 - parsed.width / 2) <= 4 &&
-      line.w < parsed.width * 0.9 &&
-      (lefts.get(line.x) ?? 0) < 2;
     return {
       ...(line.bold ? { bold: true } : {}),
-      ...(centered ? { center: true } : {}),
+      ...(centered[index] ? { center: true } : {}),
       ...(color && color !== mainColor ? { color } : {}),
       ...(line.link ? { link: line.link.slice(0, 300) } : {}),
       size: line.size,
@@ -607,6 +641,13 @@ const analysePage = async (
       rect: grow(rect, 1),
     });
   }
+  // слишком много кандидатов (шумная иллюстрация): фото и крупные вперёд, остальное — не разбираем
+  const byImportance = (a: CropItem, b: CropItem) =>
+    Number(b.photo) - Number(a.photo) || b.rect.w * b.rect.h - a.rect.w * a.rect.h;
+  if (items.length > MAX_CROP_CANDIDATES) {
+    items.sort(byImportance);
+    items.length = MAX_CROP_CANDIDATES;
+  }
   const merged: CropItem[] = [];
   const queue = items.map((item) => ({ ...item }));
   while (queue.length > 0) {
@@ -621,6 +662,11 @@ const analysePage = async (
     merged.push(current);
   }
 
+  // вырезок на файл не больше LAYOUT_MAX_CROPS: лишние не режем вовсе
+  if (merged.length > maxCrops) {
+    merged.sort(byImportance);
+    merged.length = Math.max(0, maxCrops);
+  }
   const crops: LayoutCropDraft[] = [];
   for (const item of merged) {
     const box = snap(inside(item.rect, parsed.width, parsed.height));
@@ -690,7 +736,12 @@ export const analysePdfLayout = async (
         break;
       }
       try {
-        const result = await analysePage(context, page, rasters.get(page)!);
+        const result = await analysePage(
+          context,
+          page,
+          rasters.get(page)!,
+          LAYOUT_MAX_CROPS - totalCrops,
+        );
         if (!result) continue;
         const { draft } = result;
         // общие пределы на файл

@@ -82,8 +82,17 @@ const num = (value: number) => {
   return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 };
 
-/** Угловые скобки в тексте PDF заменяем, чтобы строка не могла закрыть блок описания. */
-const safe = (text: string) => text.replaceAll('<', '‹').replaceAll('>', '›');
+/**
+ * Всё, что пришло из PDF (строки, ссылки, названия шрифтов, имя файла), — чужой текст: угловые скобки заменяем, а
+ * переводы строк и управляющие знаки — пробелом, чтобы строка не могла закрыть блок описания или подделать
+ * следующую строку описания.
+ */
+const safe = (text: string) =>
+  text
+    // eslint-disable-next-line no-control-regex
+    .replaceAll(/[\u0000-\u001F\u007F\u0085\u2028\u2029]/g, ' ')
+    .replaceAll('<', '‹')
+    .replaceAll('>', '›');
 
 const rect = (item: { h: number; w: number; x: number; y: number }) =>
   `x${num(item.x)} y${num(item.y)} ${num(item.w)}×${num(item.h)}`;
@@ -129,23 +138,31 @@ const percent = (value: number) => `${Math.round(value * 100)}`;
 
 const fontHint = (page: LayoutPage) => {
   const ratio = page.fontRatio;
-  const known = page.fontNames?.length ? page.fontNames.join(', ') : undefined;
-  const named = known ? `в файле: ${known}. ` : 'название шрифта в файле не сохранилось. ';
-  if (ratio === undefined) return known ? `в файле: ${known}` : undefined;
+  const known = page.fontNames?.length
+    ? page.fontNames
+        .slice(0, 5)
+        .map((name) => safe(name).replaceAll('"', "'").slice(0, 60))
+        .join(', ')
+    : undefined;
+  const named = known ? `в файле назван ${known}. ` : 'название шрифта в файле не сохранилось. ';
+  if (ratio === undefined) return known ? `в файле назван ${known}` : undefined;
   const share = ratio.toFixed(2).replace('.', ',');
   if (ratio >= 0.93 && ratio <= 1.07) {
-    return `${named}По ширине строк ближе всего Arial (${share}): font-family Arial, Helvetica, sans-serif`;
+    return `${named}По ширине строк ближе всего Arial (ширина в файле / ширина в Arial = ${share}): font-family Arial, Helvetica, sans-serif`;
   }
   const how =
     ratio > 1 ? `шире Arial на ${percent(ratio - 1)} %` : `уже Arial на ${percent(1 - ratio)} %`;
-  return `${named}По ширине строк ${how} (${share}), подбирай шрифт по картинке`;
+  return `${named}Строки в файле ${how} (${share}), подбирай шрифт по картинке`;
 };
 
+/** Скругления: одно число, когда все известные углы одинаковы (с точностью до 2 пт — шум измерения). */
 const radiiText = (radii: LayoutBlock['radii']) => {
   if (!radii) return '';
   const known = radii.filter((value) => value >= 0);
   if (known.every((value) => value === 0)) return '';
-  if (known.every((value) => value === known[0])) return `скругление ${known[0]}`;
+  if (known.every((value) => value > 0) && Math.max(...known) - Math.min(...known) <= 2) {
+    return `скругление ${Math.round(known.reduce((sum, value) => sum + value, 0) / known.length)}`;
+  }
   const names = ['↖', '↗', '↘', '↙'];
   return `скругление ${radii
     .map((value, index) => (value > 0 ? `${names[index]}${value}` : ''))
@@ -191,7 +208,7 @@ const general = (page: LayoutPage, withPage: boolean) => {
       `- Размеры шрифта: ${sizes
         .map(
           (item) =>
-            `${item.size} px — ${item.count} строк${item.step ? `, шаг строк ${num(item.step)}` : ''}`,
+            `${item.size} px (строк ${item.count}${item.step ? `, шаг ${num(item.step)}` : ''})`,
         )
         .join('; ')}.`,
     );
@@ -242,7 +259,8 @@ const pageText = (page: LayoutPage, withPage: boolean, budget: number) => {
   const head = general(page, withPage);
   const blocks = page.blocks.map(blockLine);
   const crops = cropLines(page.crops);
-  const lines = [...page.lines].sort((a, b) => a.y - b.y || a.x - b.x).map(lineText);
+  // порядок строк — как в файле (порядок чтения): куски одной строки (со скидкой 20%, чтобы…) остаются рядом
+  const lines = page.lines.map(lineText);
 
   const section = (title: string, rows: string[]) =>
     rows.length > 0 ? `\n\n${title}${suffix}\n${rows.join('\n')}` : '';
@@ -262,12 +280,18 @@ const pageText = (page: LayoutPage, withPage: boolean, budget: number) => {
     'КАРТИНКИ И ЗНАЧКИ (вырезки с макета в 2× разрешении; ставь по x y и размеру — width/height в px макета)';
   const lineTitle = 'СТРОКИ ТЕКСТА (y — верх строки, x — левый край, размер шрифта)';
 
-  let room = budget - head.length;
-  const keptBlocks = fit(blocks, Math.max(0, room * 0.3));
-  room -= keptBlocks.join('\n').length + blockTitle.length;
-  const keptCrops = fit(crops, Math.max(0, room * 0.5));
-  room -= keptCrops.join('\n').length + cropTitle.length;
-  const keptLines = fit(lines, Math.max(0, room - lineTitle.length));
+  // место под заголовок раздела и пометку об обрезке считаем заранее: итог не должен превысить `budget`
+  const NOTE_ROOM = 220;
+  const used = (rows: string[]) => rows.reduce((sum, row) => sum + row.length + 1, 0);
+  const titled = (title: string, rows: string[]) =>
+    rows.length > 0 ? title.length + suffix.length + 3 + used(rows) : 0;
+
+  let room = budget - head.length - NOTE_ROOM;
+  const keptBlocks = fit(blocks, Math.max(0, (room - blockTitle.length) * 0.3));
+  room -= titled(blockTitle, keptBlocks);
+  const keptCrops = fit(crops, Math.max(0, (room - cropTitle.length) * 0.5));
+  room -= titled(cropTitle, keptCrops);
+  const keptLines = fit(lines, Math.max(0, room - lineTitle.length - suffix.length - 3));
 
   const cut: string[] = [];
   if (keptBlocks.length < blocks.length)

@@ -220,7 +220,7 @@ export const findRegions = async (grid: PtGrid, minCells = 24): Promise<RegionMa
   let lastYield = Date.now();
   for (let start = 0; start < total; start++) {
     // разбор страницы — длинный цикл в процессе движка: отдаём процессор остальным запросам
-    if ((start & 0x3_ff_ff) === 0 && Date.now() - lastYield > 40) {
+    if ((start & 262_143) === 0 && Date.now() - lastYield > 40) {
       await new Promise((resolve) => setImmediate(resolve));
       lastYield = Date.now();
     }
@@ -505,7 +505,7 @@ export const findBlocks = (
     used.add(bottom.id);
     flat.add(top.id);
     flat.add(bottom.id);
-    const thickness = Math.max(top.y1 - top.y0 + 1, bottom.y1 - bottom.y0 + 1);
+    const thickness = Math.min(top.y1 - top.y0 + 1, bottom.y1 - bottom.y0 + 1);
     found.push({
       color: top.color,
       h: bottom.y1 - top.y0 + 1,
