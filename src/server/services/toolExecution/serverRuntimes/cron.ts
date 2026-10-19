@@ -8,6 +8,11 @@ import {
 import debug from 'debug';
 
 import { AgentCronJobModel } from '@/database/models/agentCronJob';
+import {
+  normalizeCronPattern,
+  normalizeTimezone,
+  validateSchedule,
+} from '@/server/services/arckepCron/schedule';
 
 import { type ServerRuntimeRegistration } from './types';
 
@@ -36,15 +41,19 @@ class ServerCronService implements ICronService {
   }): Promise<{ data: CronJobSummary }> {
     log('create: agentId=%s, name=%s', data.agentId, data.name);
 
+    // arckep (19.10.2026): расписание проверяется так же, как в REST движка — 5 полей, не чаще раза в
+    // 30 минут, пояс по умолчанию Europe/Moscow. Ошибка уходит модели текстом (см. ExecutionRuntime).
+    const schedule = validateSchedule({ cronPattern: data.cronPattern, timezone: data.timezone });
+
     const cronJob = await this.cronJobModel.create({
       agentId: data.agentId,
       content: data.content,
-      cronPattern: data.cronPattern,
+      cronPattern: schedule.cronPattern,
       description: data.description,
       enabled: data.enabled ?? true,
       maxExecutions: data.maxExecutions,
       name: data.name,
-      timezone: data.timezone || 'UTC',
+      timezone: schedule.timezone,
     });
 
     log('create success: id=%s', cronJob.id);
@@ -150,7 +159,12 @@ class ServerCronService implements ICronService {
   ): Promise<{ data: CronJobSummary }> {
     log('update: id=%s', id);
 
-    const cronJob = await this.cronJobModel.update(id, data);
+    // arckep (19.10.2026): то же правило расписания при изменении (только для переданных полей)
+    const patch = { ...data };
+    if (data.cronPattern !== undefined) patch.cronPattern = normalizeCronPattern(data.cronPattern);
+    if (data.timezone !== undefined) patch.timezone = normalizeTimezone(data.timezone);
+
+    const cronJob = await this.cronJobModel.update(id, patch);
 
     if (!cronJob) {
       throw new Error(`Cron job not found: ${id}`);

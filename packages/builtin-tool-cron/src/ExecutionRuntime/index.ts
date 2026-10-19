@@ -126,13 +126,14 @@ export class CronExecutionRuntime {
         enabled: args.enabled ?? true,
         maxExecutions: args.maxExecutions,
         name: args.name,
-        timezone: args.timezone || 'UTC',
+        // arckep (19.10.2026): пояс по умолчанию подставляет и проверяет сервис (Europe/Moscow), не 'UTC'
+        timezone: args.timezone,
       });
 
       const cronJob = result.data;
 
       return {
-        content: `Scheduled task "${args.name}" created successfully. It will run according to the pattern "${args.cronPattern}" in timezone ${args.timezone || 'UTC'}.`,
+        content: `Scheduled task "${args.name}" created successfully. It will run according to the pattern "${cronJob.cronPattern ?? args.cronPattern}" in timezone ${cronJob.timezone ?? args.timezone ?? 'UTC'}.`,
         state: {
           cronJob,
           success: true,

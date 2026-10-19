@@ -40,8 +40,8 @@ Cron patterns use the format: "minute hour day month weekday"
 - \`0 9 * * 1,3,5\` - Monday, Wednesday, Friday at 9:00 AM
 - \`0 9 * * 0\` - Every Sunday at 9:00 AM
 
-**Field Values:**
-- Minute: 0-59 (only 0 or 30 for minimum 30-minute interval)
+**Field Values (exactly 5 fields; seconds, \`@every\` and \`@reboot\` are not supported):**
+- Minute: 0-59 — one number (\`15\`), two numbers exactly 30 apart (\`0,30\`, \`15,45\`) or \`*/30\`; anything more frequent is rejected
 - Hour: 0-23 or */N for every N hours
 - Day: 1-31 or * for every day
 - Month: 1-12 or * for every month
@@ -59,7 +59,7 @@ Always specify a timezone when creating tasks to ensure they run at the expected
 - Asia: Asia/Shanghai, Asia/Tokyo, Asia/Seoul, Asia/Singapore, Asia/Hong_Kong
 - Oceania: Australia/Sydney, Pacific/Auckland
 
-Default timezone is UTC. Ask the user for their preferred timezone if not specified.
+Default timezone is Europe/Moscow (used when no timezone is given). Ask the user for their timezone if they are not in Moscow time.
 </timezone_guide>
 
 <execution_limits>

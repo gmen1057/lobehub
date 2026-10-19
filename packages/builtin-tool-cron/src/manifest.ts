@@ -22,7 +22,7 @@ export const CronManifest: BuiltinToolManifest = {
           },
           cronPattern: {
             description:
-              'Standard cron pattern defining when the task runs. Format: "minute hour day month weekday". Examples: "0 9 * * *" (9 AM daily), "30 */2 * * *" (every 2 hours at :30), "0 14 * * 1-5" (2 PM weekdays). Minimum interval is 30 minutes.',
+              'Standard cron pattern with exactly 5 fields (no seconds): "minute hour day month weekday". Examples: "0 9 * * *" (9 AM daily), "30 */2 * * *" (every 2 hours at :30), "0 14 * * 1-5" (2 PM weekdays). Minimum interval is 30 minutes: the minute field must be one number, two numbers exactly 30 apart ("0,30") or "*/30".',
             type: 'string',
           },
           description: {
@@ -45,9 +45,9 @@ export const CronManifest: BuiltinToolManifest = {
             type: 'string',
           },
           timezone: {
-            default: 'UTC',
+            default: 'Europe/Moscow',
             description:
-              'Timezone for the schedule (e.g., "America/New_York", "Asia/Shanghai", "Europe/London"). Default is UTC.',
+              'Timezone for the schedule (e.g., "Europe/Moscow", "Asia/Yekaterinburg", "America/New_York"). Default is Europe/Moscow.',
             type: 'string',
           },
         },
