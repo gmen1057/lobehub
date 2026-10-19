@@ -37,4 +37,4 @@ print(json.dumps({
     'bold': table(DIR + 'LiberationSans-Bold.ttf'),
     'fallback': 560,
     'regular': table(DIR + 'LiberationSans-Regular.ttf'),
-}, ensure_ascii=False, indent=0, sort_keys=True))
+}, ensure_ascii=False, indent=2, sort_keys=True))
