@@ -24,6 +24,13 @@ export { TaskMessageProcessor } from './TaskMessage';
 export { TasksFlattenProcessor } from './TasksFlatten';
 export { ToolCallProcessor } from './ToolCall';
 export { ToolMessageReorder } from './ToolMessageReorder';
+export {
+  extractToolResultImages,
+  TOOL_RESULT_IMAGES_LIMIT,
+  type ToolResultImage,
+  type ToolResultImagesConfig,
+  ToolResultImagesProcessor,
+} from './ToolResultImages';
 
 // Re-export types
 export type { AgentInfo, GroupRoleTransformConfig } from './GroupRoleTransform';
