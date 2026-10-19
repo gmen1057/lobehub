@@ -2,6 +2,7 @@ import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiAgentService } from '../index';
+import { PDF_PAGES_PENDING_NOTE } from '../pdfPrepare';
 
 // arckep (19.10.2026): вложения для модели со зрением. Длинная картинка приходит кусками — все куски сообщению
 // по порядку, с подписью; PDF: текстовый слой остаётся, а страницы картинками добавляются, если у модели есть
@@ -18,7 +19,11 @@ const {
   mockRenderPdfPages,
   mockExtractPdfImages,
   mockFileFindById,
+  mockFileFindByIds,
   mockFileFindByKey,
+  mockFileMergeMetadata,
+  mockMessageQuery,
+  prepStore,
   mockGetFileByteArray,
   mockUploadFromBuffer,
 } = vi.hoisted(() => ({
@@ -26,7 +31,12 @@ const {
   mockGetAgentConfig: vi.fn(),
   mockExtractPdfImages: vi.fn(),
   mockFileFindById: vi.fn(),
+  mockFileFindByIds: vi.fn(),
   mockFileFindByKey: vi.fn(),
+  mockFileMergeMetadata: vi.fn(),
+  mockMessageQuery: vi.fn(),
+  // подготовка PDF, записанная в files.metadata.pdfPrep: id файла → запись
+  prepStore: new Map<string, any>(),
   mockGetFileByteArray: vi.fn(),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
@@ -49,7 +59,7 @@ vi.mock('@/libs/trusted-client', () => ({
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
     create: mockMessageCreate,
-    query: vi.fn().mockResolvedValue([]),
+    query: mockMessageQuery,
     update: vi.fn().mockResolvedValue({}),
   })),
 }));
@@ -75,6 +85,7 @@ vi.mock('@/database/models/plugin', () => ({
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
     create: vi.fn().mockResolvedValue({ id: 'topic-1' }),
+    findById: vi.fn().mockResolvedValue(undefined),
   })),
 }));
 
@@ -119,9 +130,12 @@ vi.mock('@/server/services/file', () => ({
 }));
 
 vi.mock('@/database/models/file', () => ({
-  FileModel: vi
-    .fn()
-    .mockImplementation(() => ({ findById: mockFileFindById, findByKey: mockFileFindByKey })),
+  FileModel: vi.fn().mockImplementation(() => ({
+    findById: mockFileFindById,
+    findByIds: mockFileFindByIds,
+    findByKey: mockFileFindByKey,
+    mergeMetadata: mockFileMergeMetadata,
+  })),
 }));
 
 vi.mock('../pdfPages', () => ({
@@ -181,6 +195,24 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
   let service: AiAgentService;
   let pageCounter: number;
 
+  /** Записи файлов человека и их files.metadata.pdfPrep (боевой FileModel заменён памятью теста). */
+  const installFileMocks = () => {
+    const names: Record<string, string> = { pdf_1: 'tmpl.pdf', pdf_2: 'from-url.pdf' };
+    const row = (id: string) => ({
+      id,
+      metadata: prepStore.has(id) ? { pdfPrep: structuredClone(prepStore.get(id)) } : null,
+      name: names[id] ?? `${id}.pdf`,
+      url: `files/user-1/${names[id] ?? `${id}.pdf`}`,
+    });
+    mockFileFindById.mockImplementation(async (id: string) => row(id));
+    mockFileFindByIds.mockImplementation(async (ids: string[]) =>
+      ids.filter((id) => prepStore.has(id)).map(row),
+    );
+    mockFileMergeMetadata.mockImplementation(async (id: string, patch: { pdfPrep: unknown }) => {
+      prepStore.set(id, structuredClone(patch.pdfPrep));
+    });
+  };
+
   const agent = (model = 'gpt-4') => ({
     chatConfig: { historyCount: 8, searchMode: 'auto' },
     id: 'agent-1',
@@ -220,6 +252,7 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
     vi.clearAllMocks();
     delete process.env.ARCKEP_PDF_PAGE_IMAGES;
     delete process.env.ARCKEP_PDF_EMBEDDED_IMAGES;
+    delete process.env.ARCKEP_PDF_PREPARE_WAIT_MS;
     pageCounter = 0;
     mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
     mockCreateOperation.mockResolvedValue({
@@ -229,7 +262,9 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       success: true,
     });
     mockParseFile.mockResolvedValue({ content: 'Текст шаблона из слоя PDF', id: 'doc-1' });
-    mockFileFindById.mockResolvedValue({ url: 'files/user-1/tmpl.pdf' });
+    prepStore.clear();
+    installFileMocks();
+    mockMessageQuery.mockResolvedValue([]);
     mockGetFileByteArray.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
     mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => ({
       fileId: `page_file_${++pageCounter}`,
@@ -370,16 +405,19 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       );
     });
 
-    it('модель без зрения: только текст, страницы не рисуются и не загружаются', async () => {
+    it('модель без зрения: модели только текст; страницы готовятся в фоне, но ей не отдаются', async () => {
+      mockRenderPdfPages.mockResolvedValue({
+        images: [pageImage(1)],
+        pageCount: 1,
+        renderedPages: 1,
+      });
       const { fileIds, initialMessages } = await runWith([pdfFile], 'text-only');
 
+      // сообщению — только сам PDF, ни страниц, ни пометки «ещё рисуются»
       expect(fileIds).toEqual(['pdf_1']);
       expect(initialMessages.at(-1).imageList).toBeUndefined();
       expect(initialMessages.at(-1).fileList).toHaveLength(1);
-      expect(mockRenderPdfPages).not.toHaveBeenCalled();
-      // вшитые картинки ищутся и без зрения (они нужны для HTML), но ничего не найдено — ничего не загружается
       expect(mockExtractPdfImages).toHaveBeenCalledTimes(1);
-      expect(mockUploadFromBuffer).not.toHaveBeenCalled();
     });
 
     it('выключатель ARCKEP_PDF_PAGE_IMAGES=0: страниц нет, вшитые картинки ищутся', async () => {
@@ -414,7 +452,7 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
         success: true,
       });
       mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
-      mockFileFindById.mockResolvedValue({ url: 'k' });
+      installFileMocks();
       mockGetFileByteArray.mockResolvedValue(new Uint8Array([1]));
       mockRenderPdfPages.mockRejectedValue(new Error('poppler crashed'));
       ({ fileIds } = await runWith([pdfFile]));
@@ -440,8 +478,9 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       ]);
 
       expect(fileIds).toEqual(['pdf_2', 'page_file_1']);
+      // PDF читается по ключу записи файла, которую создал ingest
+      expect(mockFileFindById).toHaveBeenCalledWith('pdf_2');
       expect(mockGetFileByteArray).toHaveBeenCalledWith('files/user-1/from-url.pdf');
-      expect(mockFileFindById).not.toHaveBeenCalled();
     });
 
     it('не PDF (docx, txt) страниц не получает', async () => {
@@ -694,10 +733,10 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
 
       const { attachments, fileIds, initialMessages } = await runWith([pdfFile]);
 
-      // PDF и страница — оба загрузки, страница первой (загружена раньше вшитой картинки)
-      expect(fileIds).toEqual(['pdf_1', 'page_file_1']);
+      // вшитые картинки готовятся первыми (page_file_1), страница — следом (page_file_2)
+      expect(fileIds).toEqual(['pdf_1', 'page_file_2']);
       expect(initialMessages.at(-1).imageList).toHaveLength(1);
-      expect(attachments!.map((item) => item.url)).toEqual([addr('pdf_1'), addr('page_file_2')]);
+      expect(attachments!.map((item) => item.url)).toEqual([addr('pdf_1'), addr('page_file_1')]);
       // PDF читается из хранилища один раз на обе задачи
       expect(mockGetFileByteArray).toHaveBeenCalledTimes(1);
     });
@@ -761,7 +800,8 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
       mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
       mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
-      mockFileFindById.mockResolvedValue({ url: 'files/user-1/tmpl.pdf' });
+      prepStore.clear();
+      installFileMocks();
       mockGetFileByteArray.mockResolvedValue(new Uint8Array([1]));
       mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => ({
         fileId: `page_file_${++pageCounter}`,
@@ -773,6 +813,241 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       expect(result.fileIds).toEqual(['pdf_1']);
       expect(result.attachments).toHaveLength(2);
       expect(result.attachments![1].name).toBe('картинка 1 из tmpl.pdf');
+    });
+  });
+
+  describe('фоновая подготовка PDF (готовится при загрузке файла, execAgent забирает готовое)', () => {
+    const addr = (id: string) => `https://arckep.ru/chat/f/${id}/`;
+    const pdfFile = {
+      fileId: 'pdf_1',
+      mimeType: 'application/pdf',
+      name: 'tmpl.pdf',
+      size: 2_000_000,
+      url: 'https://s3/files/user-1/tmpl.pdf',
+    };
+    const embeddedImage = {
+      buffer: Buffer.from('img'),
+      hasAlpha: true,
+      height: 400,
+      index: 1,
+      mimeType: 'image/png',
+      page: 1,
+      width: 800,
+    };
+    /** Запись, как её оставляет подготовка: вшитая картинка и одна страница. */
+    const readyRecord = {
+      finishedAt: 2,
+      images: [{ fileId: 'img_a', height: 400, index: 1, mime: 'image/png', page: 1, width: 800 }],
+      pageCount: 1,
+      pages: [
+        {
+          fileId: 'page_x',
+          height: 2048,
+          index: 1,
+          key: 'files/user-1/tmpl.pdf.page-01.png',
+          mime: 'image/png',
+          page: 1,
+          total: 1,
+          width: 1536,
+        },
+      ],
+      renderedPages: 1,
+      startedAt: 1,
+      status: 'done',
+      version: 1,
+    };
+
+    it('уже подготовлено при загрузке: ничего не рисуется заново, страницы и картинки берутся из записи файла', async () => {
+      prepStore.set('pdf_1', readyRecord);
+
+      const { attachments, fileIds, initialMessages } = await runWith([pdfFile]);
+
+      expect(fileIds).toEqual(['pdf_1', 'page_x']);
+      expect(initialMessages.at(-1).imageList).toEqual([
+        {
+          alt: 'tmpl.pdf — страница 1 из 1',
+          id: 'page_x',
+          url: 'https://s3/files/user-1/tmpl.pdf.page-01.png',
+        },
+      ]);
+      expect(attachments).toEqual([
+        { mime: 'application/pdf', name: 'tmpl.pdf', url: addr('pdf_1') },
+        {
+          height: 400,
+          mime: 'image/png',
+          name: 'картинка 1 из tmpl.pdf',
+          note: 'стр. 1',
+          url: addr('img_a'),
+          width: 800,
+        },
+      ]);
+      // PDF не читается, страницы не рисуются, ничего не загружается
+      expect(mockGetFileByteArray).not.toHaveBeenCalled();
+      expect(mockRenderPdfPages).not.toHaveBeenCalled();
+      expect(mockExtractPdfImages).not.toHaveBeenCalled();
+      expect(mockUploadFromBuffer).not.toHaveBeenCalled();
+    });
+
+    it('страницы ещё рисуются: ждём не дольше ARCKEP_PDF_PREPARE_WAIT_MS, модель получает текст и пометку, без ошибки', async () => {
+      process.env.ARCKEP_PDF_PREPARE_WAIT_MS = '30';
+      let finish!: (value: unknown) => void;
+      mockRenderPdfPages.mockReturnValue(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      mockExtractPdfImages.mockResolvedValue([embeddedImage]);
+
+      const started = Date.now();
+      const { attachments, fileIds, initialMessages } = await runWith([pdfFile]);
+
+      // не ждали отрисовку (она ещё не закончена), отправка не упала
+      expect(Date.now() - started).toBeLessThan(3000);
+      expect(fileIds).toEqual(['pdf_1']);
+      expect(initialMessages.at(-1).imageList).toBeUndefined();
+      expect(initialMessages.at(-1).fileList).toHaveLength(1);
+      // на строке PDF — пометка, вшитые картинки (они готовятся первыми) уже в списке
+      expect(attachments).toEqual([
+        {
+          mime: 'application/pdf',
+          name: 'tmpl.pdf',
+          note: PDF_PAGES_PENDING_NOTE,
+          url: addr('pdf_1'),
+        },
+        expect.objectContaining({ name: 'картинка 1 из tmpl.pdf', url: addr('page_file_1') }),
+      ]);
+
+      // дорисовалось в фоне: запись файла готова
+      finish({ images: [pageImage(1)], pageCount: 1, renderedPages: 1 });
+      await vi.waitFor(() => expect(prepStore.get('pdf_1')?.status).toBe('done'));
+      expect(prepStore.get('pdf_1').pages).toHaveLength(1);
+    });
+
+    it('следующий ход: страницы, дорисованные позже, берутся из записи в историю; пометка «ещё рисуются» снимается', async () => {
+      prepStore.set('pdf_1', readyRecord);
+      mockMessageQuery.mockResolvedValue([
+        {
+          content: 'сделай письмо',
+          fileList: [
+            {
+              fileType: 'application/pdf',
+              id: 'pdf_1',
+              name: 'tmpl.pdf',
+              size: 1,
+              url: 'https://s3/tmpl.pdf',
+            },
+          ],
+          id: 'm1',
+          imageList: [],
+          metadata: {
+            attachments: [
+              {
+                mime: 'application/pdf',
+                name: 'tmpl.pdf',
+                note: PDF_PAGES_PENDING_NOTE,
+                url: addr('pdf_1'),
+              },
+            ],
+          },
+          role: 'user',
+        },
+        { content: 'вот ответ по тексту', id: 'm2', role: 'assistant' },
+      ]);
+      mockGetAgentConfig.mockResolvedValue(agent());
+
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'теперь по картинкам',
+      });
+
+      const { initialMessages } = mockCreateOperation.mock.calls[0][0];
+      const history = initialMessages[0];
+      expect(history.imageList).toEqual([
+        {
+          alt: 'tmpl.pdf — страница 1 из 1',
+          id: 'page_x',
+          url: 'https://s3/files/user-1/tmpl.pdf.page-01.png',
+        },
+      ]);
+      expect(history.metadata.attachments).toEqual([
+        { mime: 'application/pdf', name: 'tmpl.pdf', note: undefined, url: addr('pdf_1') },
+        expect.objectContaining({ name: 'картинка 1 из tmpl.pdf', url: addr('img_a') }),
+      ]);
+    });
+
+    it('история: страницы уже у сообщения — не дублируются; текстовая модель страниц не получает; список без вложений не трогается', async () => {
+      prepStore.set('pdf_1', readyRecord);
+      const pdfItem = {
+        fileType: 'application/pdf',
+        id: 'pdf_1',
+        name: 'tmpl.pdf',
+        size: 1,
+        url: 'u',
+      };
+      mockMessageQuery.mockResolvedValue([
+        // страницы были прикреплены при отправке
+        {
+          content: 'a',
+          fileList: [pdfItem],
+          id: 'm1',
+          imageList: [{ alt: 'tmpl.pdf — страница 1 из 1', id: 'page_x', url: 'https://s3/p' }],
+          role: 'user',
+        },
+        // старое сообщение без списка вложений
+        { content: 'b', fileList: [pdfItem], id: 'm2', imageList: [], role: 'user' },
+      ]);
+
+      mockGetAgentConfig.mockResolvedValue(agent());
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'ещё',
+      });
+      let { initialMessages } = mockCreateOperation.mock.calls[0][0];
+      expect(initialMessages[0].imageList).toHaveLength(1); // не продублирована
+      expect(initialMessages[1].imageList).toHaveLength(1); // добавлена: у старого сообщения страниц нет
+      expect(initialMessages[1].metadata).toBeUndefined();
+
+      // модель без зрения: страницы в историю не добавляются
+      vi.clearAllMocks();
+      mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+      mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+      mockMessageQuery.mockResolvedValue([
+        { content: 'b', fileList: [pdfItem], id: 'm2', imageList: [], role: 'user' },
+      ]);
+      mockGetAgentConfig.mockResolvedValue(agent('text-only'));
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'ещё',
+      });
+      ({ initialMessages } = mockCreateOperation.mock.calls[0][0]);
+      expect(initialMessages[0].imageList).toEqual([]);
+    });
+
+    it('сбой чтения записей истории не мешает отправке', async () => {
+      mockMessageQuery.mockResolvedValue([
+        {
+          content: 'a',
+          fileList: [
+            { fileType: 'application/pdf', id: 'pdf_1', name: 'tmpl.pdf', size: 1, url: 'u' },
+          ],
+          id: 'm1',
+          imageList: [],
+          role: 'user',
+        },
+      ]);
+      mockFileFindByIds.mockRejectedValue(new Error('db down'));
+      mockGetAgentConfig.mockResolvedValue(agent());
+
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'ещё',
+      });
+
+      expect(mockCreateOperation).toHaveBeenCalledTimes(1);
     });
   });
 });

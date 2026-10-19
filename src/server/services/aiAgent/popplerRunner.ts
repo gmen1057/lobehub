@@ -48,6 +48,8 @@ export const runPoppler = async (
   file: string,
   args: string[],
   timeout: number,
+  /** maxFileBytes — предел одного записываемого файла (по умолчанию 256 МБ) */
+  options: { maxFileBytes?: number } = {},
 ): Promise<string> => {
   const memory = memoryLimitBytes();
   if (memory > 0) {
@@ -56,7 +58,7 @@ export const runPoppler = async (
         'prlimit',
         [
           `--as=${memory}`,
-          `--fsize=${MAX_WRITE_BYTES}`,
+          `--fsize=${options.maxFileBytes ?? MAX_WRITE_BYTES}`,
           `--cpu=${Math.ceil(timeout / 1000) + 5}`,
           '--',
           file,

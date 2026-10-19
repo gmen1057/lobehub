@@ -77,8 +77,16 @@ import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
-import { extractPdfImages } from './pdfImages';
-import { renderPdfPages } from './pdfPages';
+import {
+  isPdfMime,
+  PDF_PAGES_PENDING_NOTE,
+  PDF_PREP_VERSION,
+  pdfPrepareOptions,
+  PdfPrepareService,
+  type PdfPrepImage,
+  type PdfPrepPage,
+  type PdfPrepRecord,
+} from './pdfPrepare';
 
 const log = debug('lobe-server:ai-agent-service');
 
@@ -98,12 +106,20 @@ const imagePartAlt = (name: string, image: Pick<IngestedImage, 'index' | 'total'
 interface PdfJob {
   fileId: string;
   fileService: FileService;
-  /** Ключ файла в хранилище, если он уже известен (иначе берётся из записи файла) */
-  key?: string;
   model: string;
   name: string;
   provider: string;
 }
+
+/** Вшитая картинка PDF → строка списка вложений. */
+const embeddedImageRef = (pdfName: string, image: PdfPrepImage): MessageAttachmentRef => ({
+  height: image.height,
+  mime: image.mime,
+  name: `картинка ${image.index} из ${pdfName}`,
+  note: `стр. ${image.page}`,
+  url: fileAddress(image.fileId),
+  width: image.width,
+});
 
 const pdfPageAlt = (
   name: string,
@@ -278,99 +294,136 @@ export class AiAgentService {
    * 16 картинок, высокие страницы режутся на куски — pdfPages.ts): они прикрепляются к сообщению рядом с самим
    * PDF, текстовый слой (documents) остаётся как был; (б) вшитые в PDF картинки файлами человека (pdfImages.ts):
    * к сообщению не прикрепляются, а попадают в список вложений с адресами — модель вставляет их в HTML.
-   * Выключатели: ARCKEP_PDF_PAGE_IMAGES=0 и ARCKEP_PDF_EMBEDDED_IMAGES=0. Любая неудача — пусто (модель
-   * получает только текст, как раньше); сбой одной части не отменяет другую. PDF читается из хранилища один раз.
+   *
+   * Рисует не этот метод: страницы и картинки готовятся в фоне при загрузке файла (pdfPrepare.ts), результат лежит
+   * в записи файла. Здесь — забрать готовое, подождав не дольше ARCKEP_PDF_PREPARE_WAIT_MS (5 с); не успело —
+   * `pending`: модель получает только текстовый слой с пометкой «страницы ещё рисуются», без ошибки.
+   * Выключатели: ARCKEP_PDF_PAGE_IMAGES=0 и ARCKEP_PDF_EMBEDDED_IMAGES=0. Любая неудача — пусто (только текст).
    */
   private async processPdf(options: PdfJob): Promise<{
     images: MessageAttachmentRef[];
     pages: Array<{ alt: string; id: string; url: string }>;
+    pending: boolean;
   }> {
     const { fileId, fileService, model, name, provider } = options;
-    const result: {
-      images: MessageAttachmentRef[];
-      pages: Array<{ alt: string; id: string; url: string }>;
-    } = {
+    const result: Awaited<ReturnType<AiAgentService['processPdf']>> = {
       images: [],
       pages: [],
+      pending: false,
     };
-    const wantPages = process.env.ARCKEP_PDF_PAGE_IMAGES !== '0';
-    const wantImages = process.env.ARCKEP_PDF_EMBEDDED_IMAGES !== '0';
-    if (!wantPages && !wantImages) return result;
+    const settings = pdfPrepareOptions();
+    if (!settings.pageImages && !settings.embeddedImages) return result;
 
     try {
-      const withVision = wantPages && (await this.modelHasVision(model, provider));
-      if (!withVision && !wantImages) return result;
+      const withVision = settings.pageImages && (await this.modelHasVision(model, provider));
+      if (!withVision && !settings.embeddedImages) return result;
 
-      const key = options.key ?? (await new FileModel(this.db, this.userId).findById(fileId))?.url;
-      if (!key) return result;
+      const { pending, record } = await PdfPrepareService.forUser(this.db, this.userId).waitFor(
+        fileId,
+        settings.waitMs,
+      );
+      // страницы нужны только модели со зрением: ей и говорим, что они ещё рисуются
+      result.pending = pending && withVision && !record?.pages;
+      if (!record) return result;
 
-      const pdf = Buffer.from(await fileService.getFileByteArray(key));
-      const { nanoid } = await import('@lobechat/utils');
-      const folder = `files/${this.userId}/${nanoid()}`;
-      const pad = (value: number) => String(value).padStart(2, '0');
-
-      if (withVision) {
-        try {
-          const rendered = await renderPdfPages(pdf);
-          for (const image of rendered.images) {
-            const ext = image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-            const fileName =
-              image.total === 1
-                ? `${name}.page-${pad(image.page)}.${ext}`
-                : `${name}.page-${pad(image.page)}.part-${pad(image.index)}-of-${pad(image.total)}.${ext}`;
-            const uploaded = await fileService.uploadFromBuffer(
-              image.buffer,
-              image.mimeType,
-              `${folder}/${fileName}`,
-            );
-            result.pages.push({
-              alt: pdfPageAlt(name, image, rendered.pageCount, rendered.renderedPages),
-              id: uploaded.fileId,
-              url: await fileService.getFullFileUrl(uploaded.key),
-            });
-          }
-          log(
-            'execAgent: pdf %s → %d page image(s) (%d of %d pages)',
-            name,
-            result.pages.length,
-            rendered.renderedPages,
-            rendered.pageCount,
-          );
-        } catch (error) {
-          log('execAgent: pdf page images failed for %s: %O', name, error);
-          result.pages = [];
-        }
-      }
-
-      if (wantImages) {
-        try {
-          for (const image of await extractPdfImages(pdf)) {
-            const ext = image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
-            const uploaded = await fileService.uploadFromBuffer(
-              image.buffer,
-              image.mimeType,
-              `${folder}/${name}.image-${pad(image.index)}.p${image.page}.${ext}`,
-            );
-            result.images.push({
-              height: image.height,
-              mime: image.mimeType,
-              name: `картинка ${image.index} из ${name}`,
-              note: `стр. ${image.page}`,
-              url: fileAddress(uploaded.fileId),
-              width: image.width,
-            });
-          }
-          log('execAgent: pdf %s → %d embedded image(s)', name, result.images.length);
-        } catch (error) {
-          log('execAgent: pdf embedded images failed for %s: %O', name, error);
-          result.images = [];
-        }
+      if (withVision) result.pages = await this.pdfPageImages(fileService, name, record);
+      if (settings.embeddedImages) {
+        result.images = (record.images ?? []).map((image) => embeddedImageRef(name, image));
       }
     } catch (error) {
       log('execAgent: pdf processing failed for %s: %O', name, error);
     }
 
     return result;
+  }
+
+  /** Страницы подготовленного PDF → картинки сообщения (подпись, адрес копии). */
+  private async pdfPageImages(
+    fileService: FileService,
+    name: string,
+    record: PdfPrepRecord,
+  ): Promise<Array<{ alt: string; id: string; url: string }>> {
+    const pages: Array<{ alt: string; id: string; url: string }> = [];
+    for (const page of record.pages ?? ([] as PdfPrepPage[])) {
+      pages.push({
+        alt: pdfPageAlt(name, page, record.pageCount ?? 0, record.renderedPages ?? 0),
+        id: page.fileId,
+        url: await fileService.getFullFileUrl(page.key),
+      });
+    }
+    return pages;
+  }
+
+  /**
+   * arckep (19.10.2026): история подхватывает подготовленное позже. Если страницы PDF дорисовались уже после
+   * того, как сообщение с файлом ушло к модели (она получила только текст), то на следующем ходе они берутся из
+   * записи файла — в память, без записи в базу: к картинкам сообщения добавляются страницы, из пометки на строке
+   * PDF убирается «ещё рисуются», в список добавляются вшитые картинки. Ничего не готово или сбой — история
+   * остаётся как была.
+   */
+  private async enrichHistoryWithPdf(
+    historyMessages: any[],
+    model: string,
+    provider: string,
+    fileService: FileService,
+  ) {
+    const settings = pdfPrepareOptions();
+    if (!settings.pageImages && !settings.embeddedImages) return;
+
+    const pdfIds = new Set<string>();
+    for (const message of historyMessages) {
+      if (message.role !== 'user') continue;
+      for (const file of message.fileList ?? []) {
+        if (isPdfMime(file.fileType, file.name)) pdfIds.add(file.id);
+      }
+    }
+    if (pdfIds.size === 0) return;
+
+    const records = await PdfPrepareService.forUser(this.db, this.userId).peek([...pdfIds]);
+    if (records.size === 0) return;
+    const withVision = settings.pageImages && (await this.modelHasVision(model, provider));
+
+    for (const message of historyMessages) {
+      if (message.role !== 'user') continue;
+      for (const file of message.fileList ?? []) {
+        const record = records.get(file.id);
+        if (!record || record.version !== PDF_PREP_VERSION) continue;
+
+        // страницы: у сообщения их нет совсем (рисовались позже) — добавляем все
+        const have = new Set((message.imageList ?? []).map((image: { id: string }) => image.id));
+        const pages = record.pages ?? [];
+        if (withVision && pages.length > 0 && pages.every((page) => !have.has(page.fileId))) {
+          message.imageList = [
+            ...(message.imageList ?? []),
+            ...(await this.pdfPageImages(fileService, file.name, record)),
+          ];
+        }
+
+        // список вложений: пометка «ещё рисуются» снимается, вшитые картинки добавляются
+        const attachments = message.metadata?.attachments;
+        if (Array.isArray(attachments)) {
+          const address = fileAddress(file.id);
+          const known = new Set(attachments.map((item: MessageAttachmentRef) => item.url));
+          const added = settings.embeddedImages
+            ? (record.images ?? [])
+                .map((image) => embeddedImageRef(file.name, image))
+                .filter((item) => !known.has(item.url))
+            : [];
+          const pagesReady = record.status === 'done' || pages.length > 0;
+          message.metadata = {
+            ...message.metadata,
+            attachments: [
+              ...attachments.map((item: MessageAttachmentRef) =>
+                pagesReady && item.url === address && item.note === PDF_PAGES_PENDING_NOTE
+                  ? { ...item, note: undefined }
+                  : item,
+              ),
+              ...added,
+            ],
+          };
+        }
+      }
+    }
   }
 
   /**
@@ -1184,6 +1237,13 @@ export class AiAgentService {
 
     await throwIfExecutionAborted('message history loading');
 
+    // arckep (19.10.2026): страницы и картинки PDF, подготовленные уже после отправки старого сообщения
+    try {
+      await this.enrichHistoryWithPdf(historyMessages, model, provider, fileService);
+    } catch (error) {
+      log('execAgent: history pdf enrichment failed: %O', error);
+    }
+
     // 12. Upload external files to S3 and collect file IDs
     let fileIds: string[] | undefined;
     let imageList: Array<{ alt: string; id: string; url: string }> | undefined;
@@ -1203,14 +1263,18 @@ export class AiAgentService {
     // или качает в песочнице. Сохраняется в metadata user-сообщения (живёт в истории), в текст человека не попадает.
     const attachmentRefs: MessageAttachmentRef[] = [];
 
-    // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений
-    const attachPdf = async (pdf: PdfJob) => {
+    // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений;
+    // строка самого PDF получает пометку, если страницы ещё рисуются
+    const attachPdf = async (pdf: PdfJob, ref: MessageAttachmentRef) => {
       const processed = await this.processPdf(pdf);
       for (const page of processed.pages) {
         fileIds!.push(page.id);
         imageList!.push(page);
       }
-      attachmentRefs.push(...processed.images);
+      attachmentRefs.push(
+        processed.pending ? { ...ref, note: PDF_PAGES_PENDING_NOTE } : ref,
+        ...processed.images,
+      );
     };
 
     if (files && files.length > 0) {
@@ -1241,15 +1305,20 @@ export class AiAgentService {
                 size: file.size ?? 0,
                 url: file.url ?? '',
               });
-              attachmentRefs.push({ mime: mimeType, name, url: fileAddress(file.fileId) });
+              const ref = { mime: mimeType, name, url: fileAddress(file.fileId) };
               if (mimeType === 'application/pdf') {
-                await attachPdf({
-                  fileId: file.fileId,
-                  fileService,
-                  model,
-                  name: file.name || 'file.pdf',
-                  provider,
-                });
+                await attachPdf(
+                  {
+                    fileId: file.fileId,
+                    fileService,
+                    model,
+                    name: file.name || 'file.pdf',
+                    provider,
+                  },
+                  ref,
+                );
+              } else {
+                attachmentRefs.push(ref);
               }
             }
             continue;
@@ -1323,20 +1392,24 @@ export class AiAgentService {
               size: file.size ?? 0,
               url: result.resolvedUrl || file.url || '',
             });
-            attachmentRefs.push({
+            const ref = {
               mime: mimeType,
               name: file.name || 'file',
               url: fileAddress(result.fileId),
-            });
+            };
             if (mimeType === 'application/pdf') {
-              await attachPdf({
-                fileId: result.fileId,
-                fileService,
-                key: result.key,
-                model,
-                name: file.name || 'file.pdf',
-                provider,
-              });
+              await attachPdf(
+                {
+                  fileId: result.fileId,
+                  fileService,
+                  model,
+                  name: file.name || 'file.pdf',
+                  provider,
+                },
+                ref,
+              );
+            } else {
+              attachmentRefs.push(ref);
             }
           }
         } catch (error) {

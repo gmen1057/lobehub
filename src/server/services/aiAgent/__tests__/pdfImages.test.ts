@@ -173,9 +173,27 @@ describe('parsePdfImagesList', () => {
     );
 
     expect(rows).toEqual([
-      { height: 600, num: 0, objectId: '12:0', page: 1, type: 'image', width: 800 },
-      { height: 600, num: 1, objectId: '12:0', page: 1, type: 'smask', width: 800 },
-      { height: 32, num: 2, objectId: '19:0', page: 2, type: 'image', width: 32 },
+      {
+        bpc: 8,
+        comp: 3,
+        height: 600,
+        num: 0,
+        objectId: '12:0',
+        page: 1,
+        type: 'image',
+        width: 800,
+      },
+      {
+        bpc: 8,
+        comp: 1,
+        height: 600,
+        num: 1,
+        objectId: '12:0',
+        page: 1,
+        type: 'smask',
+        width: 800,
+      },
+      { bpc: 8, comp: 3, height: 32, num: 2, objectId: '19:0', page: 2, type: 'image', width: 32 },
     ]);
   });
 
@@ -277,6 +295,31 @@ describe.skipIf(!hasPoppler)('extractPdfImages', () => {
     expect(all.map((image) => image.index)).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
 
     expect(await extractPdfImages(pdf, { maxImages: 2 })).toHaveLength(2);
+  });
+
+  it('страница с «бомбой» (оценка сырого размера картинок > 512 МБ) не распаковывается, остальные — да', async () => {
+    // заявлена картинка 30000×30000 (≈ 2,7 ГБ сырых), поток почти пустой: pdfimages -list её видит, распаковывать нельзя
+    const bomb: ImageSpec = { data: Buffer.alloc(16), dict: rgbDict(30_000, 30_000) };
+    const beside = await jpegImage(120, 90, 1); // на одной странице с «бомбой»
+    const other = await jpegImage(110, 80, 2); // на соседней
+    const result = await extractPdfImages(makeImagePdf([bomb, beside, other], [[0, 1], [2]]));
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({ height: 80, page: 2, width: 110 });
+  });
+
+  it('ломаная страница не отменяет остальные: картинки соседней страницы достаются', async () => {
+    const good = await jpegImage(100, 100, 3);
+    // поток, объявленный JPEG, но с мусором: pdfimages отдаёт файл, sharp его отвергает — пропуск одной картинки
+    const broken: ImageSpec = {
+      data: Buffer.from('это не jpeg'),
+      dict: rgbDict(100, 100, ' /Filter /DCTDecode'),
+    };
+    const result = await extractPdfImages(makeImagePdf([broken, good], [[0], [1]]));
+
+    expect(result).toHaveLength(1);
+    expect(result[0].buffer.equals(good.data)).toBe(true);
+    expect(result[0]).toMatchObject({ index: 1, page: 2 });
   });
 
   it('PDF без картинок, пустой буфер и не-PDF — пустой список, без исключения', async () => {

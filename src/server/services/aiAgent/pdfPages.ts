@@ -38,8 +38,11 @@ export const PDF_MAX_BYTES = 40 * 1024 * 1024;
 /** Вес одной картинки страницы: до 16 штук на файл, весь запрос к Gemini (inline) — до 20 МБ с base64. */
 const PDF_IMAGE_TARGET_BYTES = 640 * 1024;
 
-const PAGE_TIMEOUT_MS = 60_000;
-const TOTAL_BUDGET_MS = 120_000;
+// Рисование идёт в фоне при загрузке файла (pdfPrepare.ts) под низким приоритетом: на занятом хосте poppler
+// получает малую долю процессора, и прежние 60 с на страницу превращались в «ничего не нарисовано». Модель
+// результат не ждёт (execAgent — не дольше 5 с), поэтому пределы щедрые; от зависания защищает prlimit --cpu.
+const PAGE_TIMEOUT_MS = 180_000;
+const TOTAL_BUDGET_MS = 420_000;
 const PARALLEL_PAGES = 2;
 
 export interface PdfPageImage {
@@ -112,7 +115,7 @@ export const renderPdfPages = async (
     let info: ReturnType<typeof parsePdfInfo>;
     try {
       info = parsePdfInfo(
-        await run(bin('pdfinfo'), ['-f', '1', '-l', String(maxPages), input], 15_000),
+        await run(bin('pdfinfo'), ['-f', '1', '-l', String(maxPages), input], 60_000),
       );
     } catch (error) {
       log('pdfinfo failed, no page images: %s', (error as Error).message);

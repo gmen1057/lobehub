@@ -32,7 +32,8 @@ describe.runIf(existsSync(PDF))('PDF владельца 603×5532 пт', () => {
     expect(result.images.every((image) => image.width === 1536 && image.height === 2048)).toBe(
       true,
     );
-  }, 120_000);
+    // poppler идёт под низким приоритетом: на занятом хосте (CI, соседние службы) рисование растягивается в разы
+  }, 240_000);
 
   it('13 вшитых картинок, все с мягкой маской → PNG с альфой, мелочи и дублей нет', async () => {
     const images = await extractPdfImages(readFileSync(PDF));
@@ -40,5 +41,5 @@ describe.runIf(existsSync(PDF))('PDF владельца 603×5532 пт', () => {
     expect(images.every((image) => image.hasAlpha && image.mimeType === 'image/png')).toBe(true);
     expect(images.every((image) => Math.min(image.width, image.height) >= 48)).toBe(true);
     expect(images.map((image) => image.index)).toEqual(Array.from({ length: 13 }, (_, i) => i + 1));
-  }, 120_000);
+  }, 240_000);
 });

@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -20,6 +20,13 @@ const log = debug('lobe-server:pdf-images');
  * картинкой с тем же номером объекта — маска применяется, получается PNG с альфой. Нет маски — исходный JPEG
  * без перекодирования. Мелочь (сторона меньше 48 точек: линии, градиентные полосы), дубли (тот же объект
  * на нескольких страницах, тот же хеш) и картинки сверх 30 на файл отбрасываются.
+ *
+ * Пределы против «бомб» (PDF приходит от кого угодно, а разбор теперь может стартовать при загрузке файла):
+ * - распаковываем только страницы, где есть нужные картинки, по одной (`-f N -l N`), а не весь диапазон сразу;
+ * - по списку `pdfimages -list` оцениваем сырой размер всех картинок страницы (ширина × высота × каналы × бит):
+ *   страница тяжелее PAGE_RAW_CAP пропускается, всего — не больше TOTAL_RAW_CAP;
+ * - каждый записываемый файл ≤ OUTPUT_FILE_MAX_BYTES (prlimit --fsize), реальный размер папки после каждой
+ *   страницы ≤ DIR_BYTES_CAP, весь разбор ≤ TOTAL_BUDGET_MS.
  */
 
 export const PDF_IMAGE_MIN_SIDE = 48;
@@ -27,11 +34,21 @@ export const PDF_IMAGES_MAX = 30;
 /** Сколько первых страниц просматриваем. */
 export const PDF_IMAGES_MAX_PAGES = 40;
 /** Картинка больше этого (точек) не обрабатывается: при разборе она заняла бы слишком много памяти. */
-const MAX_PIXELS = 50_000_000;
+const MAX_PIXELS = 36_000_000;
+/** Один файл, который может записать pdfimages (сырой RGB 36 Мпикс ≈ 108 МБ). */
+const OUTPUT_FILE_MAX_BYTES = 128 * 1024 * 1024;
+/** Оценка сырого размера всех картинок одной страницы; тяжелее — страница не распаковывается. */
+const PAGE_RAW_CAP = 512 * 1024 * 1024;
+/** То же на весь файл. */
+const TOTAL_RAW_CAP = 1024 * 1024 * 1024;
+/** Реальный размер временной папки; больше — следующие страницы не распаковываются. */
+const DIR_BYTES_CAP = 512 * 1024 * 1024;
+const TOTAL_BUDGET_MS = 300_000;
 /** Самый большой PDF, из которого достаём картинки (байт). */
 const MAX_PDF_BYTES = 40 * 1024 * 1024;
-const LIST_TIMEOUT_MS = 20_000;
-const EXTRACT_TIMEOUT_MS = 60_000;
+// Пределы щедрые по той же причине, что в pdfPages.ts: разбор идёт в фоне под низким приоритетом.
+const LIST_TIMEOUT_MS = 60_000;
+const EXTRACT_TIMEOUT_MS = 180_000;
 
 export interface PdfEmbeddedImage {
   buffer: Buffer;
@@ -47,6 +64,10 @@ export interface PdfEmbeddedImage {
 }
 
 interface ListedImage {
+  /** Бит на канал; 0 — неизвестно */
+  bpc: number;
+  /** Каналов; 0 — неизвестно */
+  comp: number;
   height: number;
   num: number;
   objectId: string;
@@ -63,6 +84,8 @@ export const parsePdfImagesList = (output: string): ListedImage[] => {
     if (cols.length < 12 || !/^\d+$/.test(cols[0]) || !/^\d+$/.test(cols[1])) continue;
     const [page, num, type, width, height] = cols;
     rows.push({
+      bpc: Number(cols[7]) || 0,
+      comp: Number(cols[6]) || 0,
       height: Number(height),
       num: Number(num),
       // номер объекта и поколение: у картинки и её маски номер объекта общий
@@ -73,6 +96,16 @@ export const parsePdfImagesList = (output: string): ListedImage[] => {
     });
   }
   return rows;
+};
+
+/** Оценка сырого размера картинки в памяти (байт); неизвестные каналы и глубина — по верхней границе. */
+const rawBytes = (row: ListedImage) =>
+  (row.width * row.height * (row.comp || 4) * (row.bpc || 8)) / 8;
+
+const dirBytes = async (dir: string) => {
+  let total = 0;
+  for (const name of await readdir(dir)) total += (await stat(path.join(dir, name))).size;
+  return total;
 };
 
 /** Картинка (и, если есть, её маска) → один файл: PNG с альфой при маске, иначе исходный JPEG/PNG. */
@@ -152,9 +185,13 @@ export const extractPdfImages = async (
       return [];
     }
 
-    // Маска (smask) — отдельная строка с тем же номером объекта, что у картинки
+    // Маска (smask) — отдельная строка с тем же номером объекта, что у картинки, на той же странице
     const masks = new Map<string, ListedImage>();
-    for (const row of listed) if (row.type === 'smask') masks.set(row.objectId, row);
+    const rowsByPage = new Map<number, ListedImage[]>();
+    for (const row of listed) {
+      rowsByPage.set(row.page, [...(rowsByPage.get(row.page) ?? []), row]);
+      if (row.type === 'smask') masks.set(`${row.page}:${row.objectId}`, row);
+    }
 
     // Кандидаты: настоящие картинки не мельче 48 точек, один объект — один раз (на многих страницах он повторяется)
     const seenObjects = new Set<string>();
@@ -171,34 +208,56 @@ export const extractPdfImages = async (
     }
     if (candidates.length === 0) return [];
 
-    const lastPage = Math.max(...candidates.map((row) => row.page));
-    try {
-      await runPoppler(
-        popplerBin('pdfimages'),
-        ['-all', '-f', '1', '-l', String(lastPage), input, path.join(dir, 'img')],
-        EXTRACT_TIMEOUT_MS,
-      );
-    } catch (error) {
-      log('pdfimages -all failed: %s', (error as Error).message);
-      return [];
+    // Распаковываем по странице: только те, где есть кандидаты, и только пока укладываемся в пределы
+    const deadline = Date.now() + TOTAL_BUDGET_MS;
+    let totalRaw = 0;
+    for (const page of [...new Set(candidates.map((row) => row.page))].sort((a, b) => a - b)) {
+      if (Date.now() > deadline) break;
+      const raw = (rowsByPage.get(page) ?? []).reduce((sum, row) => sum + rawBytes(row), 0);
+      if (raw > PAGE_RAW_CAP) {
+        log('page %d skipped: images are about %d MB raw', page, Math.round(raw / 1024 / 1024));
+        continue;
+      }
+      if (totalRaw + raw > TOTAL_RAW_CAP) break;
+      totalRaw += raw;
+      try {
+        await runPoppler(
+          popplerBin('pdfimages'),
+          ['-all', '-f', String(page), '-l', String(page), input, path.join(dir, `p${page}`)],
+          EXTRACT_TIMEOUT_MS,
+          { maxFileBytes: OUTPUT_FILE_MAX_BYTES },
+        );
+      } catch (error) {
+        // одна «тяжёлая» страница не отменяет остальные
+        log('pdfimages -all failed on page %d: %s', page, (error as Error).message);
+        continue;
+      }
+      if ((await dirBytes(dir)) > DIR_BYTES_CAP) {
+        log('extracted images exceed %d MB, stopping', DIR_BYTES_CAP / 1024 / 1024);
+        break;
+      }
     }
 
-    // номер картинки в списке → файл img-NNN.ext
-    const files = new Map<number, string>();
+    // страница + номер картинки на странице → файл p<стр>-NNN.ext (в каждом запуске номера идут с нуля)
+    const files = new Map<string, string>();
     for (const name of await readdir(dir)) {
-      const match = name.match(/^img-(\d+)\.(\w+)$/);
-      if (match) files.set(Number(match[1]), name);
+      const match = name.match(/^p(\d+)-(\d+)\.(\w+)$/);
+      if (match) files.set(`${Number(match[1])}:${Number(match[2])}`, name);
     }
+    const fileOf = (row: ListedImage) => {
+      const first = Math.min(...(rowsByPage.get(row.page) ?? [row]).map((item) => item.num));
+      return files.get(`${row.page}:${row.num - first}`);
+    };
 
     const out: PdfEmbeddedImage[] = [];
     const hashes = new Set<string>();
     for (const row of candidates) {
       if (out.length >= maxImages) break;
-      const imageName = files.get(row.num);
+      const imageName = fileOf(row);
       if (!imageName) continue;
       try {
-        const maskRow = masks.get(row.objectId);
-        const maskName = maskRow ? files.get(maskRow.num) : undefined;
+        const maskRow = masks.get(`${row.page}:${row.objectId}`);
+        const maskName = maskRow ? fileOf(maskRow) : undefined;
         const composed = await compose(
           await readFile(path.join(dir, imageName)),
           maskName ? await readFile(path.join(dir, maskName)) : undefined,

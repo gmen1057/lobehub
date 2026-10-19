@@ -580,6 +580,64 @@ describe('FileModel', () => {
     });
   });
 
+  describe('mergeMetadata', () => {
+    it('adds keys without touching the existing ones, repeated merges replace only their own key', async () => {
+      const { id } = await fileModel.create({
+        name: 'a.pdf',
+        url: 'files/u/a.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+        metadata: {
+          dirname: 'files/u',
+          filename: 'a.pdf',
+          path: 'files/u/a.pdf',
+          date: '2026-10-19',
+        },
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'processing', version: 1 } });
+      await fileModel.mergeMetadata(id, {
+        pdfPrep: { status: 'done', version: 1, images: [1, 2] },
+      });
+
+      const file = await fileModel.findById(id);
+      expect(file?.metadata).toEqual({
+        date: '2026-10-19',
+        dirname: 'files/u',
+        filename: 'a.pdf',
+        path: 'files/u/a.pdf',
+        pdfPrep: { images: [1, 2], status: 'done', version: 1 },
+      });
+    });
+
+    it('works on a file with empty metadata', async () => {
+      const { id } = await fileModel.create({
+        name: 'b.pdf',
+        url: 'files/u/b.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'done' } });
+
+      expect((await fileModel.findById(id))?.metadata).toEqual({ pdfPrep: { status: 'done' } });
+    });
+
+    it('does not change files of other users', async () => {
+      const other = new FileModel(serverDB, 'user2');
+      const { id } = await other.create({
+        name: 'c.pdf',
+        url: 'files/u2/c.pdf',
+        size: 1,
+        fileType: 'application/pdf',
+      });
+
+      await fileModel.mergeMetadata(id, { pdfPrep: { status: 'done' } });
+
+      expect((await other.findById(id))?.metadata ?? null).toBeNull();
+    });
+  });
+
   it('should update a file', async () => {
     const { id } = await fileModel.create({
       name: 'test-file.txt',
