@@ -106,8 +106,8 @@ describe.each([
   });
 });
 
-// arckep (19.10.2026): ссылка на Figma → mcp-arckep-figma; параметры — по шлюзу (node_id у трёх инструментов,
-// список node_ids только у export_images)
+// arckep (19.10.2026): ссылка на Figma → mcp-arckep-figma; порядок работы — по шлюзу (get_design_context принимает
+// node_ids до 10 в одном запросе к Figma, значки — export_images format svg)
 describe.each([
   ['full', systemPrompt],
   ['headless', systemPromptHeadless],
@@ -120,19 +120,24 @@ describe.each([
     expect(prompt).toContain('Never answer that you cannot open Figma links');
   });
 
-  it('names the real gateway calls: get_metadata first, one node_id per get_design_context, get_screenshot to look', () => {
-    expect(prompt).toContain('`get_metadata` first');
-    expect(prompt).toContain(
-      '`get_design_context` for the frame you need (one `node_id` per call)',
-    );
-    expect(prompt).toContain('`get_screenshot` (one frame)');
-    // get_design_context не принимает список (node_ids есть только у export_images)
-    expect(prompt).not.toContain('node_ids');
+  it('plans the calls: get_metadata once, ONE get_design_context with all node_ids, get_screenshot to look', () => {
+    expect(prompt).toContain('`get_metadata` once');
+    expect(prompt).toContain('ONE `get_design_context` with all the `node_ids` you need');
+    expect(prompt).toContain('`get_screenshot` to actually look at a frame');
+  });
+
+  it('exports icons as svg in one call and says what to do about fonts', () => {
+    expect(prompt).toContain('one `export_images` call with `format: svg`');
+    expect(prompt).toContain('Figma does not give out font files');
+    expect(prompt).toContain('Google Fonts or a free substitute with Cyrillic');
+    expect(prompt).toContain('tell the user which font you chose');
   });
 
   it('tells the model what to say when Figma is not connected, and warns about Figma limits', () => {
     expect(prompt).toContain('Подключите Figma: Подключения → Figma → вставьте личный токен');
     expect(prompt).toContain('about 20 a month');
+    expect(prompt).toContain('never re-read a node you already have');
+    expect(prompt).toContain('never call Figma tools in parallel');
   });
 
   it('stays inside <on_demand_tools> and keeps the "only identifiers from <available_tools>" rule', () => {

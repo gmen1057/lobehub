@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import {
   ARCKEP_LINK_CONNECTORS,
   hasFilledConnectorSettings,
+  hasReadyLinkConnector,
+  RECENT_HUMAN_MESSAGES,
   resolveArckepLinkConnectors,
 } from '../arckepLinkConnectors';
 
@@ -226,5 +228,169 @@ describe('hasFilledConnectorSettings', () => {
     ]) {
       expect(hasFilledConnectorSettings(value), JSON.stringify(value)).toBe(false);
     }
+  });
+});
+
+// следующие ходы темы: «а теперь сверстай» — без ссылки в самом сообщении
+describe('resolveArckepLinkConnectors — история темы', () => {
+  const user = (content: unknown) => ({ content, role: 'user' });
+  const assistant = (content = 'ok', tools?: Array<{ identifier: string }>) => ({
+    content,
+    role: 'assistant',
+    tools,
+  });
+  const toolResult = (identifier: string) => ({
+    content: '…',
+    plugin: { identifier },
+    role: 'tool',
+  });
+  const none = { activate: [], setupHints: [] };
+
+  it('ссылка в сообщении человека из истории включает подключение на ход без ссылки', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [user(`${figmaLink} — посмотри что тут`), assistant('Это лендинг…')],
+        installedPlugins: [withToken],
+        prompt: 'а теперь сверстай',
+      }),
+    ).toEqual({ activate: [FIGMA], setupHints: [] });
+  });
+
+  it('окно — последние сообщения человека: десятое с конца ещё в счёт, одиннадцатое уже нет', () => {
+    const filler = (n: number) =>
+      Array.from({ length: n }, (_, i) => [user(`сообщение ${i}`), assistant()]).flat();
+    const inside = [user(figmaLink), ...filler(RECENT_HUMAN_MESSAGES - 1)];
+    const outside = [user(figmaLink), ...filler(RECENT_HUMAN_MESSAGES)];
+    expect(RECENT_HUMAN_MESSAGES).toBe(10);
+    expect(
+      resolveArckepLinkConnectors({
+        history: inside,
+        installedPlugins: [withToken],
+        prompt: 'дальше',
+      }).activate,
+    ).toEqual([FIGMA]);
+    expect(
+      resolveArckepLinkConnectors({
+        history: outside,
+        installedPlugins: [withToken],
+        prompt: 'дальше',
+      }),
+    ).toEqual(none);
+  });
+
+  it('ссылка в ответе помощника или в результате инструмента — не ссылка человека', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [
+          assistant(`Вот ваш макет: ${figmaLink}`),
+          { content: figmaLink, plugin: { identifier: 'mcp-arckep-wordstat' }, role: 'tool' },
+        ],
+        installedPlugins: [withToken],
+        prompt: 'дальше',
+      }),
+    ).toEqual(none);
+  });
+
+  it('прежние вызовы подключения в истории (результат инструмента) включают его без ссылки', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [user('посмотри макет'), toolResult(FIGMA)],
+        installedPlugins: [withToken],
+        prompt: 'а теперь сверстай',
+      }).activate,
+    ).toEqual([FIGMA]);
+  });
+
+  it('прежние вызовы подключения в списке tools у сообщения помощника тоже считаются', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [assistant('', [{ identifier: FIGMA }])],
+        installedPlugins: [withToken],
+        prompt: 'а теперь сверстай',
+      }).activate,
+    ).toEqual([FIGMA]);
+  });
+
+  it('вызовы других инструментов и обычная переписка не включают Figma', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [
+          user('нарисуй кота'),
+          assistant('', [{ identifier: 'mcp-arckep-studio-images' }]),
+          toolResult('mcp-arckep-studio-images'),
+        ],
+        installedPlugins: [withToken],
+        prompt: 'а теперь сверстай',
+      }),
+    ).toEqual(none);
+  });
+
+  it('те же условия: нет подключения или токена — не включаем; подсказки на старую ссылку нет', () => {
+    for (const installedPlugins of [[], [{ identifier: FIGMA, settings: {} }]]) {
+      expect(
+        resolveArckepLinkConnectors({
+          history: [user(figmaLink), toolResult(FIGMA)],
+          installedPlugins,
+          prompt: 'а теперь сверстай',
+        }),
+      ).toEqual(none);
+    }
+  });
+
+  it('подсказка остаётся только на ссылку в последнем сообщении, даже когда в истории тоже есть ссылка', () => {
+    const result = resolveArckepLinkConnectors({
+      history: [user(figmaLink)],
+      installedPlugins: [],
+      prompt: figmaLink,
+    });
+    expect(result.activate).toEqual([]);
+    expect(result.setupHints).toHaveLength(1);
+  });
+
+  it('disabled_tools сильнее истории', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        excludePluginIds: [FIGMA],
+        history: [user(figmaLink), toolResult(FIGMA)],
+        installedPlugins: [withToken],
+        prompt: 'а теперь сверстай',
+      }),
+    ).toEqual(none);
+  });
+
+  it('содержимое-не-строка и пустые элементы истории не ломают разбор', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [user([{ text: figmaLink, type: 'text' }]), user(undefined), {}, null as any],
+        installedPlugins: [withToken],
+        prompt: 'дальше',
+      }),
+    ).toEqual(none);
+  });
+
+  it('ссылка и в сообщении, и в истории, и вызовы были — подключение одно', () => {
+    expect(
+      resolveArckepLinkConnectors({
+        history: [user(figmaLink), toolResult(FIGMA), assistant('', [{ identifier: FIGMA }])],
+        installedPlugins: [withToken],
+        prompt: figmaLink,
+      }),
+    ).toEqual({ activate: [FIGMA], setupHints: [] });
+  });
+});
+
+describe('hasReadyLinkConnector', () => {
+  it('true только при установленном подключении с заполненными настройками', () => {
+    expect(hasReadyLinkConnector([withToken])).toBe(true);
+    expect(hasReadyLinkConnector([])).toBe(false);
+    expect(hasReadyLinkConnector([{ identifier: FIGMA, settings: {} }])).toBe(false);
+    expect(
+      hasReadyLinkConnector([{ identifier: 'mcp-arckep-wordstat', settings: { a: 'b' } }]),
+    ).toBe(false);
+  });
+
+  it('подключению без личных настроек достаточно быть установленным', () => {
+    const table = [{ connectorId: 'mcp-x', pattern: /x/, requiresSettings: false, setupHint: '' }];
+    expect(hasReadyLinkConnector([{ identifier: 'mcp-x' }], table)).toBe(true);
   });
 });

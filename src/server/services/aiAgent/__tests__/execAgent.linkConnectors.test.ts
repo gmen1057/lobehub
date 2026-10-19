@@ -15,12 +15,14 @@ const {
   mockMessageCreate,
   mockIngestAttachment,
   mockParseFile,
+  mockMessageQuery,
   mockPluginQuery,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
+  mockMessageQuery: vi.fn(),
   mockParseFile: vi.fn(),
   mockPluginQuery: vi.fn(),
 }));
@@ -34,7 +36,7 @@ vi.mock('@/libs/trusted-client', () => ({
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
     create: mockMessageCreate,
-    query: vi.fn().mockResolvedValue([]),
+    query: mockMessageQuery,
     update: vi.fn().mockResolvedValue({}),
   })),
 }));
@@ -173,6 +175,7 @@ describe('AiAgentService.execAgent — arckep: ссылка на Figma вклю�
       success: true,
     });
     mockPluginQuery.mockResolvedValue([withToken]);
+    mockMessageQuery.mockResolvedValue([]);
     mockGetAgentConfig.mockResolvedValue(agentConfig());
     service = new AiAgentService({} as any, 'test-user-id');
   });
@@ -290,5 +293,125 @@ describe('AiAgentService.execAgent — arckep: ссылка на Figma вклю�
 
     expect(mockPluginQuery).not.toHaveBeenCalled();
     expect(systemRole()).toBe('You are a helpful assistant.');
+  });
+
+  // следующие ходы темы: «а теперь сверстай» — в сообщении ссылки нет
+  describe('следующий ход темы без ссылки', () => {
+    const topic = { topicId: 'topic-1' };
+    const user = (id: string, content: string) => ({ content, id, role: 'user' });
+    const reply = (id: string, tools?: Array<{ identifier: string }>) => ({
+      content: 'ответ',
+      id,
+      role: 'assistant',
+      tools,
+    });
+    const followUp = (extra: Record<string, unknown> = {}) =>
+      service.execAgent({
+        agentId: 'agent-1',
+        appContext: topic,
+        prompt: 'а теперь сверстай',
+        ...extra,
+      });
+
+    it('ссылка Figma в недавнем сообщении человека: подключение снова в первом шаге, даже если его нет у помощника', async () => {
+      mockMessageQuery.mockResolvedValue([
+        user('m1', `${figmaLink} — посмотри что тут`),
+        reply('m2'),
+      ]);
+      await followUp();
+
+      expect(enginePlugins()).toContain(FIGMA);
+      expect(generateArgs().toolIds).toContain(FIGMA);
+      expect(generateArgs().excludeDefaultToolIds ?? []).not.toContain(FIGMA);
+      expect(systemRole()).toBe('You are a helpful assistant.');
+    });
+
+    it('в истории уже были вызовы Figma (ссылка давно ушла из окна): подключение в первом шаге', async () => {
+      const filler = Array.from({ length: 12 }, (_, i) => user(`u${i}`, `дальше ${i}`));
+      mockMessageQuery.mockResolvedValue([
+        user('m0', figmaLink),
+        reply('m1', [{ identifier: FIGMA }]),
+        ...filler,
+      ]);
+      await followUp();
+
+      expect(generateArgs().toolIds).toContain(FIGMA);
+    });
+
+    it('вызов Figma виден по сообщению инструмента в истории', async () => {
+      mockMessageQuery.mockResolvedValue([
+        user('m1', 'посмотри макет'),
+        { content: '…', id: 't1', plugin: { identifier: FIGMA }, role: 'tool' },
+      ]);
+      await followUp();
+
+      expect(generateArgs().toolIds).toContain(FIGMA);
+    });
+
+    it('история читается один раз — тем же запросом, что собирает сообщения', async () => {
+      mockMessageQuery.mockResolvedValue([user('m1', figmaLink)]);
+      await followUp();
+
+      expect(mockMessageQuery).toHaveBeenCalledTimes(1);
+      const { initialMessages } = mockCreateOperation.mock.calls[0][0];
+      expect(initialMessages.map((message: any) => message.id)).toContain('m1');
+    });
+
+    it('в истории нет ни ссылки, ни вызовов Figma: подключение, как и раньше, отложено', async () => {
+      mockGetAgentConfig.mockResolvedValue(agentConfig([FIGMA, 'lobe-user-memory']));
+      mockMessageQuery.mockResolvedValue([user('m1', 'нарисуй кота'), reply('m2')]);
+      await followUp();
+
+      expect(generateArgs().toolIds).not.toContain(FIGMA);
+      expect(generateArgs().excludeDefaultToolIds).toContain(FIGMA);
+    });
+
+    it('disabled_tools с Figma сильнее истории', async () => {
+      mockMessageQuery.mockResolvedValue([
+        user('m1', figmaLink),
+        reply('m2', [{ identifier: FIGMA }]),
+      ]);
+      await followUp({ excludePluginIds: [FIGMA] });
+
+      expect(enginePlugins()).not.toContain(FIGMA);
+      expect(generateArgs().toolIds).not.toContain(FIGMA);
+    });
+
+    it.each([
+      ['подключения нет', [] as any[]],
+      ['токена нет', [{ identifier: FIGMA, settings: {} }]],
+    ])('%s: ничего не включаем и не подсказываем на старую ссылку', async (_name, plugins) => {
+      mockPluginQuery.mockResolvedValue(plugins);
+      mockMessageQuery.mockResolvedValue([user('m1', figmaLink), reply('m2')]);
+      await followUp();
+
+      expect(enginePlugins()).not.toContain(FIGMA);
+      expect(systemRole()).toBe('You are a helpful assistant.');
+    });
+
+    it('у бота история правило не включает', async () => {
+      mockMessageQuery.mockResolvedValue([
+        user('m1', figmaLink),
+        reply('m2', [{ identifier: FIGMA }]),
+      ]);
+      await followUp({ botContext });
+
+      expect(enginePlugins()).not.toContain(FIGMA);
+    });
+
+    it('новая тема: истории нет, запрос сообщений не выполняется, подключение не включается', async () => {
+      await service.execAgent({ agentId: 'agent-1', prompt: 'привет' });
+
+      expect(mockMessageQuery).not.toHaveBeenCalled();
+      expect(enginePlugins()).not.toContain(FIGMA);
+    });
+
+    it('без настроенной Figma запрос сообщений один — для сборки сообщений', async () => {
+      mockPluginQuery.mockResolvedValue([]);
+      mockMessageQuery.mockResolvedValue([user('m1', 'привет')]);
+      await followUp();
+
+      expect(mockMessageQuery).toHaveBeenCalledTimes(1);
+    });
   });
 });
