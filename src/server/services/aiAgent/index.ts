@@ -13,7 +13,11 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
-import { ArckepSkillsIdentifier, SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import {
+  ArckepConnectorsIdentifier,
+  ArckepSkillsIdentifier,
+  SkillsIdentifier,
+} from '@lobechat/builtin-tool-skills';
 import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
@@ -1072,8 +1076,13 @@ export class AiAgentService {
       // или скрипты; в <available_tools> они не перечисляются (buildToolDiscoveryConfig).
       // «Мои навыки» (arckep-skills — сохранить навык по просьбе человека) в <available_tools> есть, но
       // тоже по требованию; ботам он не нужен.
+      // «Подключения» (arckep-connectors, 19.10.2026, этап 3 — поиск подключения для человека, карточка «Подключить»)
+      // — там же и тоже по требованию; ботам карточки показать негде.
       const skillToolIds = isArckepHeadlessTools()
-        ? [SkillsIdentifier, ...(keepsOwnToolSet ? [] : [ArckepSkillsIdentifier])]
+        ? [
+            SkillsIdentifier,
+            ...(keepsOwnToolSet ? [] : [ArckepSkillsIdentifier, ArckepConnectorsIdentifier]),
+          ]
         : [];
       const lazyToolIds = [
         ...new Set(

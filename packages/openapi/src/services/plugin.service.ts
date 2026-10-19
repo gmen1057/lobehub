@@ -1,8 +1,16 @@
+import { ARCKEP_USER_MCP_PREFIX, isArckepUserMcpId } from '@lobechat/builtin-tools';
 import { desc, like } from 'drizzle-orm';
 
 import { PluginModel } from '@/database/models/plugin';
 import { userInstalledPlugins } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import {
+  buildUserMcpHeaders,
+  buildUserMcpManifest,
+  getUserMcpGatewayUrl,
+  listUserMcpTools,
+  UserMcpGatewayError,
+} from '@/server/services/userMcp/gateway';
 
 /**
  * arckep (план chat-next-redesign, E2): подключения (MCP-коннекторы `mcp-arckep-*`) по REST.
@@ -24,7 +32,41 @@ export interface ConnectorSummary {
   title: string;
   tools: string[];
   type: string;
+  /**
+   * arckep (19.10.2026, этап 3): только у своих подключений `umcp-*` — вид и то, что показать человеку (хост
+   * ссылки, ключ сервера каталога, `owner/repo`). Шифротекст настроек (`sealed`) наружу не отдаётся никогда.
+   */
+  userMcp?: { display: Record<string, string>; kind: string };
 }
+
+export const USER_MCP_KINDS = ['remote', 'catalog', 'github'] as const;
+export type UserMcpKind = (typeof USER_MCP_KINDS)[number];
+
+export interface UserMcpCreateInput {
+  /** Номер человека в студии (по нему шлюз считает деньги и квоты) */
+  arckepUserId: number;
+  description: string;
+  display: Record<string, string>;
+  identifier: string;
+  kind: UserMcpKind;
+  /** Шифротекст `enc:v1:…` настроек: расшифровывает только шлюз */
+  sealed: string;
+  title: string;
+}
+
+/** `display` и `kind` из customParams.arckepUserMcp — только строки; ничего другого (и `sealed`) не берётся. */
+const pickUserMcp = (customParams: unknown): ConnectorSummary['userMcp'] | undefined => {
+  const stored = (customParams as { arckepUserMcp?: { display?: unknown; kind?: unknown } } | null)
+    ?.arckepUserMcp;
+  if (!stored || typeof stored !== 'object') return undefined;
+  const display: Record<string, string> = {};
+  if (stored.display && typeof stored.display === 'object') {
+    for (const [key, value] of Object.entries(stored.display as Record<string, unknown>)) {
+      if (typeof value === 'string') display[key] = value;
+    }
+  }
+  return { display, kind: typeof stored.kind === 'string' ? stored.kind : '' };
+};
 
 interface ConnectorRow {
   customParams?: unknown;
@@ -43,6 +85,9 @@ export const summarizeConnector = (row: ConnectorRow, installed: boolean): Conne
     row.settings && typeof row.settings === 'object'
       ? (row.settings as Record<string, unknown>)
       : {};
+  const userMcp = row.identifier.startsWith(ARCKEP_USER_MCP_PREFIX)
+    ? pickUserMcp(row.customParams)
+    : undefined;
   return {
     description: typeof meta.description === 'string' ? meta.description : '',
     identifier: row.identifier,
@@ -53,6 +98,7 @@ export const summarizeConnector = (row: ConnectorRow, installed: boolean): Conne
       .map((item) => (item && typeof item === 'object' ? (item as { name?: unknown }).name : ''))
       .filter((name): name is string => typeof name === 'string' && name.length > 0),
     type: row.type ?? 'customPlugin',
+    ...(userMcp ? { userMcp } : {}),
   };
 };
 
@@ -105,6 +151,78 @@ export class PluginService {
     if (!existing) return null;
     await this.pluginModel.update(identifier, { settings });
     return summarizeConnector({ ...(existing as ConnectorRow), settings }, true);
+  }
+
+  /**
+   * arckep (19.10.2026, этап 3, п. 3.В): добавить своё подключение. Шлюз получает `initialize` → `tools/list`
+   * с заголовками п. 3.Б (номер человека, идентификатор, шифротекст настроек); ответ (вплоть до 2 минут — шлюз
+   * может поднимать песочницу) становится manifest. Ошибка шлюза — `UserMcpGatewayError` с русским текстом,
+   * строка не пишется. Строка: `customParams = {mcp: {type: 'http', url}, arckepUserMcp: {kind, sealed, display}}`.
+   */
+  async createUserMcp(input: UserMcpCreateInput): Promise<ConnectorSummary> {
+    const tools = await listUserMcpTools({
+      headers: buildUserMcpHeaders({
+        arckepUserId: input.arckepUserId,
+        identifier: input.identifier,
+        sealed: input.sealed,
+      }),
+    });
+    if (tools.length === 0) {
+      throw new UserMcpGatewayError('Сервер не отдал ни одного подходящего инструмента', 422);
+    }
+    const url = getUserMcpGatewayUrl();
+    const row = await this.pluginModel.create({
+      customParams: {
+        arckepUserMcp: { display: input.display, kind: input.kind, sealed: input.sealed },
+        mcp: { type: 'http', url },
+      } as never,
+      identifier: input.identifier,
+      manifest: buildUserMcpManifest({
+        description: input.description,
+        identifier: input.identifier,
+        title: input.title,
+        tools,
+        url,
+      }) as never,
+      settings: {},
+      source: 'custom',
+      type: 'customPlugin',
+    });
+    return summarizeConnector(row as ConnectorRow, true);
+  }
+
+  /** Перечитать `tools/list` своего подключения и обновить manifest; название и описание остаются. */
+  async refreshUserMcp(
+    identifier: string,
+    arckepUserId: number,
+  ): Promise<ConnectorSummary | null> {
+    if (!isArckepUserMcpId(identifier)) return null;
+    const existing = await this.pluginModel.findById(identifier);
+    if (!existing) return null;
+    const sealed = (existing.customParams as { arckepUserMcp?: { sealed?: unknown } } | null)
+      ?.arckepUserMcp?.sealed;
+    if (typeof sealed !== 'string' || !sealed.startsWith('enc:v1:')) {
+      throw new UserMcpGatewayError(
+        'Подключение повреждено: удалите его и добавьте заново',
+        409,
+      );
+    }
+    const tools = await listUserMcpTools({
+      headers: buildUserMcpHeaders({ arckepUserId, identifier, sealed }),
+    });
+    if (tools.length === 0) {
+      throw new UserMcpGatewayError('Сервер не отдал ни одного подходящего инструмента', 422);
+    }
+    const meta = ((existing.manifest ?? {}) as { meta?: { description?: unknown; title?: unknown } })
+      .meta;
+    const manifest = buildUserMcpManifest({
+      description: typeof meta?.description === 'string' ? meta.description : '',
+      identifier,
+      title: typeof meta?.title === 'string' && meta.title ? meta.title : identifier,
+      tools,
+    });
+    await this.pluginModel.update(identifier, { manifest: manifest as never });
+    return summarizeConnector({ ...(existing as ConnectorRow), manifest }, true);
   }
 
   async uninstall(identifier: string): Promise<boolean> {

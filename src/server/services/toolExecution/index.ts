@@ -1,4 +1,9 @@
-import { ARCKEP_E2B_CONNECTOR_ID, ARCKEP_STUDIO_CONNECTOR_PREFIX } from '@lobechat/builtin-tools';
+import {
+  ARCKEP_E2B_CONNECTOR_ID,
+  ARCKEP_STUDIO_CONNECTOR_PREFIX,
+  isArckepPaidStudioTool,
+  isArckepUserMcpId,
+} from '@lobechat/builtin-tools';
 import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
@@ -18,9 +23,12 @@ import {
 
 import { DiscoverService } from '../discover';
 import { type MCPService } from '../mcp';
+import { buildUserMcpHeaders, getUserMcpGatewayUrl } from '../userMcp/gateway';
 import { type BuiltinToolsExecutor } from './builtin';
 import { classifyToolError } from './errorClassification';
+import { assertMcpConnectionAllowed, getStudioMcpUrl, isInternalConnectorUrl } from './mcpPolicy';
 import { userOwnsTopic } from './topicOwnership';
+import { gatePaidToolCall, markTopicUntrusted } from './topicTrust';
 import {
   type ToolExecutionContext,
   type ToolExecutionResult,
@@ -32,11 +40,9 @@ const log = debug('lobe-server:tool-execution-service');
 /** Заголовки шлюза, которыми выбирается песочница: их выставляет только сервер. */
 const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-mcp-topic-id']);
 
-/**
- * Куда ходят подключения студии mcp-arckep-studio-* (F6): публичный MCP Arckep на этой же машине
- * (служба image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения.
- */
-const ARCKEP_STUDIO_MCP_URL = process.env.ARCKEP_STUDIO_MCP_URL || 'http://127.0.0.1:8422/mcp';
+// Куда ходят подключения студии mcp-arckep-studio-* (F6): публичный MCP Arckep на этой же машине (служба
+// image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения: `getStudioMcpUrl()` (./mcpPolicy,
+// ARCKEP_STUDIO_MCP_URL) — он же в белом списке адресов `mcp-arckep-*`.
 
 interface ToolExecutionServiceDeps {
   builtinToolsExecutor: BuiltinToolsExecutor;
@@ -93,6 +99,10 @@ export class ToolExecutionService {
 
     const startTime = Date.now();
     try {
+      // arckep (19.10.2026, этап 3, п. 3.Д): платные запуски студии в теме с чужим инструментом ждут человека.
+      const blocked = await this.gatePaidCall(payload, context);
+      if (blocked) return { ...blocked, executionTime: Date.now() - startTime };
+
       const typeStr = type as string;
       let data: ToolExecutionResult;
       switch (typeStr) {
@@ -164,6 +174,40 @@ export class ToolExecutionService {
   }
 
   /**
+   * arckep (19.10.2026, этап 3 «свои инструменты», п. 3.Д): ворота платных запусков студии. В теме, где работает
+   * чужой инструмент (`umcp-*`, метка темы), платный инструмент студии не выполняется сразу: движок записывает
+   * запрос подтверждения в метаданные темы, а модель получает просьбу дождаться человека (`ARCKEP_CONFIRM`).
+   * Повтор того же вызова после «Подтвердить» гасит одобрение и выполняется. Не платный инструмент, тема без
+   * метки или вызов без темы — ворот нет (см. ./topicTrust).
+   */
+  private async gatePaidCall(
+    payload: ChatToolPayload,
+    context: ToolExecutionContext,
+  ): Promise<ToolExecutionResult | undefined> {
+    const { identifier, apiName } = payload;
+    if (!isArckepPaidStudioTool(identifier, apiName)) return undefined;
+    if (!context.serverDB || !context.userId || !context.topicId) return undefined;
+
+    const gate = await gatePaidToolCall(context.serverDB, context.userId, context.topicId, {
+      apiName,
+      arguments: payload.arguments,
+      identifier,
+    });
+    if (gate.action === 'proceed') return undefined;
+
+    log('Paid tool %s:%s held: %s', identifier, apiName, gate.code);
+    // Короткий текст без служебных слов («timeout», «network»…): ошибка не должна попасть под повтор
+    // инструмента (errorClassification); полный текст для модели — в content.
+    const message =
+      gate.code === 'ARCKEP_CONFIRMATION_REJECTED'
+        ? 'Человек отказался от запуска'
+        : gate.code === 'ARCKEP_CONFIRMATION_REQUIRED'
+          ? 'Нужно подтверждение человека'
+          : 'Подтверждение сейчас недоступно';
+    return { content: gate.content, error: { code: gate.code, message }, success: false };
+  }
+
+  /**
    * arckep (план chat-next-redesign, F5, 18.10.2026). Браузерный путь (src/services/mcp.ts) подмешивает
    * данные доступа подключения (settings: X-MCP-Host, пароль и т. д.) в заголовки http-подключения или
    * окружение stdio, а серверный брал только manifest.mcpParams — из нового чата PostgreSQL, MySQL,
@@ -177,6 +221,9 @@ export class ToolExecutionService {
     mcpParams: any,
     context: ToolExecutionContext,
   ): Promise<any> {
+    // arckep (19.10.2026, этап 3): свои подключения людей `umcp-*` — до всех прочих проверок и без возврата
+    // манифеста: ни адрес, ни заголовки из строки базы не используются ни при каких условиях.
+    if (isArckepUserMcpId(identifier)) return this.userMcpConnectionParams(identifier, context);
     if (!context.serverDB || !context.userId) return mcpParams;
     // Только сетевые подключения: для stdio настройки человека стали бы окружением подпроцесса на
     // сервере (LD_PRELOAD, NODE_OPTIONS, PATH…) — этого не делаем, у студии все подключения по http.
@@ -230,7 +277,7 @@ export class ToolExecutionService {
       return {
         headers: { 'Authorization': `Bearer ${token}`, 'X-Arckep-User': String(arckepUserId) },
         type: 'http',
-        url: ARCKEP_STUDIO_MCP_URL,
+        url: getStudioMcpUrl(),
       };
     }
     log(
@@ -239,11 +286,16 @@ export class ToolExecutionService {
       Object.keys(settings).length,
       arckepUserId ?? '-',
     );
-    const headers: Record<string, string> = {
-      ...mcpParams.headers,
-      ...settings,
-      ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
-    };
+    // arckep (19.10.2026, этап 3, п. 3.Е): номер человека — только на шлюз и MCP студии. Сторонний адрес (вне
+    // безголового режима такие подключения ещё бывают) его не получает: по номеру шлюз считает деньги и квоты.
+    // Заголовки номера из манифеста и настроек (любой регистр) отбрасываются: номер задаёт только сервер.
+    const headers: Record<string, string> = { ...mcpParams.headers, ...settings };
+    for (const key of Object.keys(headers)) {
+      if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) delete headers[key];
+    }
+    if (arckepUserId && isInternalConnectorUrl(mcpParams.url)) {
+      headers['X-Arckep-User'] = String(arckepUserId);
+    }
     // arckep (19.10.2026): песочница E2B ключуется номером темы (шлюз: заголовок темы сильнее session_id из
     // аргументов модели — защита от чужой сессии). Номер даёт сервер из контекста операции, и только этому
     // подключению: execute_code из MCP и команды навыков (skillSandbox) одной темы попадают в одну песочницу.
@@ -267,6 +319,73 @@ export class ToolExecutionService {
     }
 
     return { ...mcpParams, headers };
+  }
+
+  /**
+   * arckep (19.10.2026, этап 3 «свои инструменты», п. 3.Б): параметры вызова своего подключения `umcp-*`.
+   * Адрес — USER_MCP_GATEWAY_URL из окружения; `sealed` (шифротекст настроек) — из строки ЭТОГО человека
+   * (`PluginModel` ограничен userId), расшифровывает его только шлюз; `settings` не читаются. Номер человека
+   * в студии выводит сервер из учётной записи. Тема нужна своя (как у песочницы E2B): по ней шлюз и метка
+   * «чужой инструмент» (п. 3.Д) — тема помечается здесь, до самого вызова, чтобы платные запуски студии с этого
+   * момента ждали подтверждения. Любая ошибка — текст модели (executeMCPTool), вызов на шлюз не уходит.
+   */
+  private async userMcpConnectionParams(identifier: string, context: ToolExecutionContext) {
+    if (!context.serverDB || !context.userId) {
+      throw new Error('Свой инструмент доступен только в аккаунте студии Arckep.');
+    }
+    let arckepUserId: number;
+    try {
+      const { resolveArckepUserId } = await import('./serverRuntimes/arckepStudio');
+      arckepUserId = await resolveArckepUserId(context.serverDB, context.userId);
+    } catch {
+      throw new Error('Свой инструмент доступен только аккаунтам студии Arckep.');
+    }
+    if (
+      !context.topicId ||
+      !(await userOwnsTopic(context.serverDB, context.userId, context.topicId))
+    ) {
+      throw new Error('Свой инструмент работает только в своём чате аккаунта студии Arckep.');
+    }
+
+    let sealed = '';
+    try {
+      const plugin = await new PluginModel(context.serverDB, context.userId).findById(identifier);
+      const stored = (plugin?.customParams as { arckepUserMcp?: { sealed?: unknown } } | null)
+        ?.arckepUserMcp?.sealed;
+      sealed = typeof stored === 'string' ? stored : '';
+    } catch (error) {
+      log('user MCP lookup failed for %s: %O', identifier, error);
+    }
+    if (!sealed.startsWith('enc:v1:') || sealed.length > 8000) {
+      throw new Error(
+        'Подключение не найдено или повреждено: добавьте его заново на экране «Подключения».',
+      );
+    }
+
+    try {
+      const marked = await markTopicUntrusted(
+        context.serverDB,
+        context.userId,
+        context.topicId,
+        identifier,
+      );
+      if (!marked) throw new Error('topic not marked');
+    } catch (error) {
+      log('user MCP: topic mark failed for %s: %O', identifier, error);
+      throw new Error('Не удалось отметить чат перед запуском чужого инструмента, повторите вызов.');
+    }
+
+    log('MCP connection %s: user MCP, arckep user %s', identifier, arckepUserId);
+    return {
+      headers: buildUserMcpHeaders({
+        arckepUserId,
+        identifier,
+        sealed,
+        topicId: context.topicId,
+      }),
+      type: 'http',
+      url: getUserMcpGatewayUrl(),
+    };
   }
 
   /**
@@ -345,6 +464,20 @@ export class ToolExecutionService {
       apiName,
       mcpParams.type,
     );
+
+    // arckep (19.10.2026, этап 3, п. 3.Е): stdio выключен, адреса `mcp-arckep-*` — только из списка, прочие
+    // сетевые подключения в безголовом режиме отклоняются (./mcpPolicy). Отказ — текст модели, не повтор.
+    try {
+      assertMcpConnectionAllowed({ identifier, mcpParams });
+    } catch (error) {
+      const message = (error as Error).message;
+      log('MCP connection %s not allowed: %s', identifier, message);
+      return {
+        content: message,
+        error: { code: 'MCP_CONNECTION_NOT_ALLOWED', message },
+        success: false,
+      };
+    }
 
     try {
       // Check if this is a cloud MCP endpoint

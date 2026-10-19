@@ -1,3 +1,4 @@
+import { ARCKEP_USER_MCP_PREFIX } from '@lobechat/builtin-tools';
 import { DEFAULT_AGENT_CHAT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
 import { LayersEnum } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
@@ -28,10 +29,12 @@ import {
   resolveServerModelParams,
 } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
+import { resolveArckepUserId } from '@/server/services/toolExecution/serverRuntimes/arckepStudio';
+import { UserMcpGatewayError } from '@/server/services/userMcp/gateway';
 import type { ProviderConfig } from '@/types/user/settings';
 
 import { BaseController } from '../common/base.controller';
-import { PluginService } from '../services/plugin.service';
+import { PluginService, type UserMcpKind } from '../services/plugin.service';
 
 /**
  * arckep: маршруты REST, которых не хватает студийному экрану
@@ -167,12 +170,75 @@ export class ArckepController extends BaseController {
     }
   }
 
+  /**
+   * POST /api/v1/plugins/user-mcp — своё подключение человека (arckep, 19.10.2026, этап 3, п. 3.В).
+   * Только служебный вход студии: бэкенд выдал идентификатор и зашифровал настройки, движок зовёт шлюз
+   * (до 2 минут), собирает manifest и пишет строку. Ошибка шлюза уходит с его русским текстом и статусом,
+   * строка не пишется. Шифротекст `sealed` в ответ не попадает.
+   */
+  async createUserMcp(c: Context): Promise<Response> {
+    try {
+      if (this.getAuthType(c) !== 'arckep-service') {
+        return this.error(c, 'Только служебный вход студии', 403);
+      }
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const body = await this.getBody<{
+        description: string;
+        display: Record<string, string>;
+        identifier: string;
+        kind: UserMcpKind;
+        sealed: string;
+        title: string;
+      }>(c);
+      const arckepUserId = await resolveArckepUserId(db, userId);
+      const connector = await new PluginService(db, userId).createUserMcp({
+        ...body,
+        arckepUserId,
+      });
+      return this.success(c, connector, 'user mcp created');
+    } catch (error) {
+      if (error instanceof UserMcpGatewayError) return this.error(c, error.message, error.status);
+      return this.handleError(c, error);
+    }
+  }
+
+  /** POST /api/v1/plugins/user-mcp/:identifier/refresh — перечитать список инструментов своего подключения. */
+  async refreshUserMcp(c: Context): Promise<Response> {
+    try {
+      if (this.getAuthType(c) !== 'arckep-service') {
+        return this.error(c, 'Только служебный вход студии', 403);
+      }
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const { identifier } = this.getParams<{ identifier: string }>(c);
+      const arckepUserId = await resolveArckepUserId(db, userId);
+      const connector = await new PluginService(db, userId).refreshUserMcp(
+        identifier,
+        arckepUserId,
+      );
+      if (!connector) return this.error(c, 'Plugin not installed', 404);
+      return this.success(c, connector, 'user mcp refreshed');
+    } catch (error) {
+      if (error instanceof UserMcpGatewayError) return this.error(c, error.message, error.status);
+      return this.handleError(c, error);
+    }
+  }
+
   /** PATCH /api/v1/plugins/:identifier — настройки подключения. */
   async updatePluginSettings(c: Context): Promise<Response> {
     try {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const { identifier } = this.getParams<{ identifier: string }>(c);
+      // У своих подключений настроек нет: ключи зашифрованы целиком (sealed) — поменять = удалить и добавить.
+      if (identifier.startsWith(ARCKEP_USER_MCP_PREFIX)) {
+        return this.error(
+          c,
+          'У своих подключений нет настроек: удалите подключение и добавьте заново',
+          400,
+        );
+      }
       const { settings } = await this.getBody<{ settings: Record<string, unknown> }>(c);
       const plugin = await new PluginService(db, userId).updateSettings(identifier, settings);
       if (!plugin) return this.error(c, 'Plugin not installed', 404);

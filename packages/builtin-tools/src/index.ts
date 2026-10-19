@@ -22,7 +22,11 @@ import { NotebookManifest } from '@lobechat/builtin-tool-notebook';
 import { PageAgentManifest } from '@lobechat/builtin-tool-page-agent';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import { SkillStoreManifest } from '@lobechat/builtin-tool-skill-store';
-import { ArckepSkillsManifest, SkillsManifest } from '@lobechat/builtin-tool-skills';
+import {
+  ArckepConnectorsManifest,
+  ArckepSkillsManifest,
+  SkillsManifest,
+} from '@lobechat/builtin-tool-skills';
 import { TaskManifest } from '@lobechat/builtin-tool-task';
 import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { UserInteractionManifest } from '@lobechat/builtin-tool-user-interaction';
@@ -114,8 +118,43 @@ export const ARCKEP_MCP_CONNECTOR_PREFIX = 'mcp-';
 /** Подключение песочницы E2B (шлюз коннекторов, execute_code / read_file). */
 export const ARCKEP_E2B_CONNECTOR_ID = 'mcp-arckep-e2b-sandbox';
 export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = [ARCKEP_E2B_CONNECTOR_ID];
+/**
+ * arckep (19.10.2026, этап 3 «свои инструменты»): свои подключения людей — `umcp-` + 12 знаков [a-z0-9], их
+ * выдаёт бэкенд студии. Префикс `mcp-arckep-` у них запрещён: каталог движка — свежие строки `mcp-arckep-*`
+ * всех людей, чужая строка с этим префиксом попала бы в каталог каждому. Вызов идёт на шлюз
+ * (`USER_MCP_GATEWAY_URL`), а не по адресу из строки базы. Грузятся по требованию, как остальные `mcp-*`.
+ */
+export const ARCKEP_USER_MCP_PREFIX = 'umcp-';
+export const isArckepUserMcpId = (id: string): boolean => /^umcp-[a-z0-9]{12}$/.test(id);
+
 export const isArckepLazyMcpConnectorId = (id: string): boolean =>
-  id.startsWith(ARCKEP_MCP_CONNECTOR_PREFIX) && !ARCKEP_EAGER_MCP_TOOL_IDS.includes(id);
+  (id.startsWith(ARCKEP_MCP_CONNECTOR_PREFIX) && !ARCKEP_EAGER_MCP_TOOL_IDS.includes(id)) ||
+  id.startsWith(ARCKEP_USER_MCP_PREFIX);
+
+/**
+ * arckep (19.10.2026, этап 3, п. 3.Д): платные запуски студии, которые в теме со «своим» инструментом человека
+ * (`umcp-*`) не выполняются без подтверждения человеком. У подключений студии `mcp-arckep-studio-*` — имена
+ * `create_*`, `revise_*`, `replicate_*`, `chat_completion`, `decide`; у встроенной «Студии» — только платные
+ * `createImage` и `createSpeech` (оценка, чтение результата, список моделей и баланс денег не тратят).
+ */
+export const isArckepPaidStudioTool = (identifier: string, apiName: string): boolean => {
+  if (identifier.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX)) {
+    return (
+      apiName.startsWith('create_') ||
+      apiName.startsWith('revise_') ||
+      apiName.startsWith('replicate_') ||
+      apiName === 'chat_completion' ||
+      apiName === 'decide'
+    );
+  }
+  if (identifier === ArckepStudioManifest.identifier) {
+    return apiName === 'createImage' || apiName === 'createSpeech';
+  }
+  return false;
+};
+
+/** Метка перед JSON запроса подтверждения в ответе инструмента (читает экран студии): `ARCKEP_CONFIRM {json}`. */
+export const ARCKEP_CONFIRM_MARKER = 'ARCKEP_CONFIRM';
 
 export const builtinTools: LobeBuiltinTool[] = [
   {
@@ -259,6 +298,14 @@ export const builtinTools: LobeBuiltinTool[] = [
     hidden: true,
     identifier: ArckepSkillsManifest.identifier,
     manifest: ArckepSkillsManifest,
+    type: 'builtin',
+  },
+  {
+    // arckep (19.10.2026, этап 3): поиск подключений для модели; по требованию, только серверный путь движка
+    discoverable: false,
+    hidden: true,
+    identifier: ArckepConnectorsManifest.identifier,
+    manifest: ArckepConnectorsManifest,
     type: 'builtin',
   },
   {

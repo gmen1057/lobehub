@@ -1,3 +1,15 @@
+export { ArckepConnectorsManifest } from './arckepConnectors/manifest';
+export { systemPrompt as arckepConnectorsSystemPrompt } from './arckepConnectors/systemRole';
+export {
+  ARCKEP_CONNECT_LIMIT,
+  ARCKEP_CONNECT_MARKER,
+  ArckepConnectorsApiName,
+  ArckepConnectorsIdentifier,
+  type ConnectorSource,
+  type ConnectorSuggestion,
+  type SearchConnectorsParams,
+  type SearchConnectorsState,
+} from './arckepConnectors/types';
 export { ArckepSkillsManifest } from './arckepSkills/manifest';
 export { systemPrompt as arckepSkillsSystemPrompt } from './arckepSkills/systemRole';
 export {

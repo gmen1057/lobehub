@@ -81,11 +81,23 @@ export class MCPService {
     return { content, state, success: true };
   }
 
+  // arckep (19.10.2026, этап 3): в журнал не попадают и значения чувствительных заголовков (служебный токен,
+  // шифротекст настроек своего подключения `X-Arckep-User-Mcp-Config`) и ключи авторизации `auth`.
   private sanitizeForLogging = <T extends Record<string, any>>(obj: T): Omit<T, 'env'> => {
     if (!obj) return obj;
 
-    const { env: _, ...rest } = obj;
-    return rest as Omit<T, 'env'>;
+    const { env: _, auth, headers, ...rest } = obj as Record<string, any>;
+    const safe: Record<string, any> = { ...rest };
+    if (auth) safe.auth = { type: auth.type };
+    if (headers && typeof headers === 'object') {
+      safe.headers = Object.fromEntries(
+        Object.entries(headers).map(([key, value]) => [
+          key,
+          /authorization|token|password|secret|config|key|cookie/i.test(key) ? '***' : value,
+        ]),
+      );
+    }
+    return safe as Omit<T, 'env'>;
   };
 
   // --- MCP Interaction ---

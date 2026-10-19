@@ -1,8 +1,13 @@
 import { zValidator } from '@hono/zod-validator';
 import { Hono } from 'hono';
 
+import { ArckepConfirmationController } from '../controllers/arckep-confirmations.controller';
 import { ArckepCronController } from '../controllers/arckep-cron.controller';
 import { requireAuth } from '../middleware/auth';
+import {
+  ConfirmationDecisionSchema,
+  ConfirmationParamSchema,
+} from '../types/arckep-confirmations.type';
 import {
   CronJobCreateSchema,
   CronJobIdParamSchema,
@@ -69,6 +74,16 @@ ArckepRoutes.get(
   zValidator('param', CronJobIdParamSchema),
   zValidator('query', CronJobTopicsQuerySchema),
   async (c) => new ArckepCronController().topics(c),
+);
+
+// POST /api/v1/arckep/topics/:topicId/confirmations/:id { action } — решение человека по платному запуску
+// студии в теме с чужим инструментом (этап 3, п. 3.Д); только служебный вход студии
+ArckepRoutes.post(
+  '/topics/:topicId/confirmations/:id',
+  requireAuth,
+  zValidator('param', ConfirmationParamSchema),
+  zValidator('json', ConfirmationDecisionSchema),
+  async (c) => new ArckepConfirmationController().decide(c),
 );
 
 export default ArckepRoutes;
