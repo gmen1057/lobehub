@@ -251,14 +251,18 @@ export class ToolExecutionService {
     for (const key of Object.keys(headers)) {
       if (TOPIC_HEADERS.has(key.toLowerCase())) delete headers[key];
     }
-    // Тема отдаётся шлюзу только вместе с номером человека и только если тема его: номер приходит от клиента,
-    // шлюз ему доверяет (заголовок сильнее session_id), а ключ песочницы — одна тема.
-    if (
-      identifier === ARCKEP_E2B_CONNECTOR_ID &&
-      context.topicId &&
-      arckepUserId &&
-      (await userOwnsTopic(context.serverDB, context.userId, context.topicId))
-    ) {
+    // Песочница E2B: тема отдаётся шлюзу только вместе с номером человека в студии и только если тема его
+    // (номер приходит от клиента, шлюз ему доверяет: заголовок сильнее session_id из аргументов модели).
+    // Нет своей темы или человека — вызов отклоняется: откат на session_id, который называет модель, дал бы
+    // выбрать чужую песочницу. Ошибка уходит модели текстом (executeMCPTool).
+    if (identifier === ARCKEP_E2B_CONNECTOR_ID) {
+      if (
+        !context.topicId ||
+        !arckepUserId ||
+        !(await userOwnsTopic(context.serverDB, context.userId, context.topicId))
+      ) {
+        throw new Error('Песочница доступна только в своём чате аккаунта студии Arckep.');
+      }
       headers['X-Arckep-Topic'] = context.topicId;
     }
 

@@ -68,10 +68,8 @@ describe('withUserConnectionParams — песочница E2B и номер те
     expect(result.url).toBe(http.url);
   });
 
-  it('нет номера темы — заголовка нет', async () => {
-    const result = await params(E2B, context({ topicId: undefined }));
-    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
-    expect(result.headers['X-Arckep-User']).toBe('15');
+  it('нет номера темы — вызов отклоняется, а не уходит на session_id модели', async () => {
+    await expect(params(E2B, context({ topicId: undefined }))).rejects.toThrow('в своём чате');
   });
 
   it('другие подключения номер темы не получают', async () => {
@@ -104,25 +102,27 @@ describe('withUserConnectionParams — песочница E2B и номер те
     expect(other.headers['X-MCP-Host']).toBe('db.local');
   });
 
-  it('аккаунт не из студии: номера человека нет — тему шлюзу не отдаём', async () => {
+  it('аккаунт не из студии: номера человека нет — вызов отклоняется', async () => {
     mockResolveArckepUserId.mockRejectedValue(new Error('not studio'));
-    const result = await params(E2B);
-    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
-    expect(result.headers).not.toHaveProperty('X-Arckep-User');
+    await expect(params(E2B)).rejects.toThrow('аккаунта студии Arckep');
   });
 
-  it('чужая тема (номер пришёл от клиента) шлюзу не отдаётся: проверка по базе, в рамках человека', async () => {
+  it('чужая тема (номер пришёл от клиента) — вызов отклоняется, проверка по базе в рамках человека', async () => {
     mockFindTopic.mockResolvedValue(undefined);
-    const result = await params(E2B, context({ topicId: 'tpc_victim' }));
-    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
-    expect(result.headers['X-Arckep-User']).toBe('15');
+    await expect(params(E2B, context({ topicId: 'tpc_victim' }))).rejects.toThrow('в своём чате');
     expect(mockFindTopic).toHaveBeenCalledWith('tpc_victim');
   });
 
-  it('сбой базы при проверке темы = тема не его', async () => {
+  it('сбой базы при проверке темы = тема не его, вызов отклоняется', async () => {
     mockFindTopic.mockRejectedValue(new Error('db down'));
-    const result = await params(E2B);
+    await expect(params(E2B)).rejects.toThrow('в своём чате');
+  });
+
+  it('отказ касается только песочницы: другие подключения работают без темы и для не-студийных аккаунтов', async () => {
+    mockResolveArckepUserId.mockRejectedValue(new Error('not studio'));
+    const result = await params('mcp-arckep-wordstat', context({ topicId: undefined }));
     expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
+    expect(result.url).toBe(http.url);
   });
 
   it('stdio-подключение не меняется', async () => {
