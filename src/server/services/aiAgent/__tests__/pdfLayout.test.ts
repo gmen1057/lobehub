@@ -192,9 +192,11 @@ describe('«по центру»', () => {
 // ---- Места картинок ----
 
 describe('места вшитых картинок', () => {
-  const place = (page: number, x: number, y: number, w: number, h: number) => ({
+  /** Место: x y w h — видимая часть; ratio — соотношение сторон места до обрезки (по умолчанию w/h) */
+  const place = (page: number, x: number, y: number, w: number, h: number, ratio = w / h) => ({
     h,
     page,
+    ratio,
     w,
     x,
     y,
@@ -208,15 +210,50 @@ describe('места вшитых картинок', () => {
     ];
     const places = matchImagePlaces(images, [
       place(1, 0, 0, 100, 100),
-      place(1, 5, 5, 20, 20), // дубль: у pdfImages его нет, но 1:1 встретится позже — берём следующую по порядку
+      place(1, 5, 5, 20, 40), // у pdfImages такой картинки нет (мелочь): пропускается
       place(1, 10, 200, 300, 150),
       place(2, 7, 8, 50, 50),
     ]);
 
     expect(places.get(1)).toEqual({ h: 100, w: 100, x: 0, y: 0 });
-    // вторая картинка 2:1 — место (10,200), а не (5,5)
     expect(places.get(2)).toEqual({ h: 150, w: 300, x: 10, y: 200 });
     expect(places.get(3)).toEqual({ h: 50, w: 50, x: 7, y: 8 });
+  });
+
+  it('фото обрезано рамкой: сопоставление идёт по соотношению сторон места до обрезки, а в запись — видимое место', () => {
+    // макет письма: 1:1 картинки (герой, фото услуг, врачи) подряд, потом рука 0,9 и рамка телефона 0,7
+    const images = [
+      { height: 1024, index: 1, page: 1, width: 1024 },
+      { height: 1024, index: 2, page: 1, width: 1024 },
+      { height: 300, index: 3, page: 1, width: 300 },
+      { height: 816, index: 4, page: 1, width: 736 },
+      { height: 798, index: 5, page: 1, width: 556 },
+    ];
+    const places = matchImagePlaces(images, [
+      place(1, 0, 104, 600, 604, 1),
+      // фото услуги 385×385 видно только 295×347 (обрезано карточкой): ratio 1, а не 0,85
+      place(1, 305, 1370, 295, 347, 1),
+      place(1, 20, 2931, 150, 150, 1),
+      place(1, 368, 4870, 184, 204, 0.9),
+      place(1, 382, 4819, 139, 199, 0.7),
+    ]);
+
+    expect([...places.keys()]).toEqual([5, 4, 3, 2, 1]);
+    expect(places.get(2)).toEqual({ h: 347, w: 295, x: 305, y: 1370 });
+    expect(places.get(4)).toEqual({ h: 204, w: 184, x: 368, y: 4870 });
+    expect(places.get(5)).toEqual({ h: 199, w: 139, x: 382, y: 4819 });
+  });
+
+  it('у картинки нет места среди тех, что нашёл pdftohtml (другое соотношение) — пропускается, остальные на своих местах', () => {
+    const images = [
+      { height: 100, index: 1, page: 1, width: 100 },
+      { height: 2532, index: 2, page: 1, width: 1170 }, // pdftohtml даёт для неё другое место: пары нет
+      { height: 100, index: 3, page: 1, width: 100 },
+    ];
+    const places = matchImagePlaces(images, [place(1, 0, 0, 50, 50), place(1, 60, 0, 70, 70)]);
+    expect(places.get(1)).toEqual({ h: 50, w: 50, x: 0, y: 0 });
+    expect(places.has(2)).toBe(false);
+    expect(places.get(3)).toEqual({ h: 70, w: 70, x: 60, y: 0 });
   });
 
   it('соотношение сторон не сошлось — места нет', () => {

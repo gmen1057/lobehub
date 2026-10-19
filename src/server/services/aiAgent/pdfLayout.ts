@@ -261,10 +261,23 @@ export interface LayoutPageDraft {
   width: number;
 }
 
+export interface LayoutPlace {
+  h: number;
+  page: number;
+  ratio: number;
+  w: number;
+  x: number;
+  y: number;
+}
+
 export interface LayoutDraft {
   pages: LayoutPageDraft[];
   /** Места вшитых картинок на страницах (по порядку в файле) для списка вложений */
-  places: Array<{ h: number; page: number; w: number; x: number; y: number }>;
+  /**
+   * Места вшитых картинок на страницах (по порядку в файле) для списка вложений: x y w h — видимая часть на странице,
+   * ratio — соотношение сторон места ДО обрезки (по нему картинка из pdfimages сопоставляется с местом)
+   */
+  places: LayoutPlace[];
 }
 
 // ---- Пиксели ----
@@ -486,7 +499,7 @@ const analysePage = async (
   raster: PdfPageRaster,
   /** Сколько вырезок ещё можно на файле */
   maxCrops: number,
-): Promise<{ draft: LayoutPageDraft; places: LayoutDraft['places'] } | undefined> => {
+): Promise<{ draft: LayoutPageDraft; places: LayoutPlace[] } | undefined> => {
   const started = Date.now();
   const marks: string[] = [];
   const mark = (name: string) => marks.push(`${name} ${Date.now() - started}`);
@@ -511,12 +524,20 @@ const analysePage = async (
   // значок) по совпадению не найти: их содержимое ищется как «чернила» вместе с векторными значками.
   const visible: Rect[] = []; // видимые части фото, найденные по совпадению
   const inkPlaces: Rect[] = []; // места картинок, которые разбираются как чернила
-  const places: LayoutDraft['places'] = [];
+  const places: LayoutPlace[] = [];
   for (const image of parsed.images.slice(0, MAX_IMAGES_PER_PAGE)) {
     const place: Rect = { h: image.h, w: image.w, x: image.x, y: image.y };
     const onPage = inside(place, parsed.width, parsed.height);
     if (onPage.w < 6 || onPage.h < 6) continue;
-    places.push({ h: onPage.h, page, w: onPage.w, x: onPage.x, y: onPage.y });
+    const entry: LayoutPlace = {
+      h: onPage.h,
+      page,
+      ratio: place.w / place.h,
+      w: onPage.w,
+      x: onPage.x,
+      y: onPage.y,
+    };
+    places.push(entry);
     // картинка на всю страницу (скан): страница уже есть картинкой, отдельная вырезка не нужна
     if (onPage.w * onPage.h >= pageArea * 0.85) {
       visible.push(onPage);
@@ -539,7 +560,10 @@ const analysePage = async (
         : undefined;
     const found = placed ? visibleRect(raw, sx, sy, place, placed) : undefined;
     if (found?.rect && !(found.ratio < 0.9 && found.transparent >= 0.5)) {
-      visible.push(snap(inside(found.rect, parsed.width, parsed.height)));
+      const seen = snap(inside(found.rect, parsed.width, parsed.height));
+      visible.push(seen);
+      // в список вложений — видимое место (фото обрезано рамкой карточки), а не всё место картинки
+      Object.assign(entry, { h: seen.h, w: seen.w, x: seen.x, y: seen.y });
     } else {
       inkPlaces.push(onPage);
     }
@@ -727,7 +751,7 @@ export const analysePdfLayout = async (
     const context: PageContext = { deadline, dir, pdfPath };
 
     const pages: LayoutPageDraft[] = [];
-    const places: LayoutDraft['places'] = [];
+    const places: LayoutPlace[] = [];
     let totalLines = 0;
     let totalCrops = 0;
     for (const page of [...rasters.keys()].sort((a, b) => a - b).slice(0, maxPages)) {
@@ -794,33 +818,54 @@ export interface PlacedImage {
 
 /**
  * Место на странице каждой вшитой картинки (pdfImages.ts) по местам из pdftohtml. Порядок картинок на странице у
- * обеих программ один (порядок рисования), но у pdfImages есть пропуски (мелочь, дубли): идём по местам подряд и
- * берём следующую картинку той же страницы с тем же соотношением сторон (±4 %); не нашли — места нет.
+ * обеих программ один (порядок рисования), но у pdfImages есть пропуски (мелочь меньше 48 пт, дубли, маски), а у
+ * pdftohtml — нет. Поэтому это выравнивание двух последовательностей: пары (место, картинка) с одинаковым
+ * соотношением сторон (±4 % — по месту ДО обрезки, `ratio`) в том же порядке, как можно больше; при равенстве
+ * берутся более ранние. Не нашлось пары — места нет. Страницы выравниваются отдельно.
  */
 export const matchImagePlaces = (
   images: PlacedImage[],
-  placements: Array<{ h: number; page: number; w: number; x: number; y: number }>,
+  placements: LayoutPlace[],
   ratioOf: (image: PlacedImage) => number = (image) => image.width / image.height,
 ): Map<number, { h: number; w: number; x: number; y: number }> => {
   const result = new Map<number, { h: number; w: number; x: number; y: number }>();
-  const pages = new Set(images.map((image) => image.page));
-  for (const page of pages) {
+  const fits = (image: PlacedImage, place: LayoutPlace) => {
+    const ratio = ratioOf(image);
+    return Number.isFinite(ratio) && Math.abs(ratio - place.ratio) / place.ratio <= 0.04;
+  };
+
+  for (const page of new Set(images.map((image) => image.page))) {
     const mine = images.filter((image) => image.page === page).sort((a, b) => a.index - b.index);
-    let pointer = 0;
-    for (const place of placements.filter((item) => item.page === page)) {
-      const ratio = place.w / place.h;
-      for (let i = pointer; i < mine.length; i++) {
-        const candidate = ratioOf(mine[i]);
-        if (Math.abs(candidate - ratio) / ratio <= 0.04) {
-          result.set(mine[i].index, {
-            h: roundPt(place.h),
-            w: roundPt(place.w),
-            x: roundPt(place.x),
-            y: roundPt(place.y),
-          });
-          pointer = i + 1;
-          break;
-        }
+    const spots = placements.filter((item) => item.page === page && item.ratio > 0);
+    // best[i][j] — сколько пар можно составить из первых i мест и первых j картинок
+    const best = Array.from({ length: spots.length + 1 }, () =>
+      Array.from({ length: mine.length + 1 }, () => 0),
+    );
+    for (let i = 1; i <= spots.length; i++) {
+      for (let j = 1; j <= mine.length; j++) {
+        best[i][j] = Math.max(
+          best[i - 1][j],
+          best[i][j - 1],
+          fits(mine[j - 1], spots[i - 1]) ? best[i - 1][j - 1] + 1 : 0,
+        );
+      }
+    }
+    // обратный ход с конца: пара берётся, когда она даёт ту же сумму; при равенстве — пропускаем поздние
+    let i = spots.length;
+    let j = mine.length;
+    while (i > 0 && j > 0) {
+      if (best[i][j] === best[i][j - 1]) j--;
+      else if (best[i][j] === best[i - 1][j]) i--;
+      else {
+        const place = spots[i - 1];
+        result.set(mine[j - 1].index, {
+          h: roundPt(place.h),
+          w: roundPt(place.w),
+          x: roundPt(place.x),
+          y: roundPt(place.y),
+        });
+        i--;
+        j--;
       }
     }
   }
