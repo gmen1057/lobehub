@@ -8,13 +8,19 @@ import { TraceClient } from '@/libs/traces';
 
 export interface AgentChatOptions {
   enableTrace?: boolean;
+  /**
+   * arckep (19.10.2026): вызов модели идёт вне веб-запроса (серверная операция движка: ответ живёт в
+   * общем реестре и не привязан к соединению). `after()` из next/server там недоступен, поэтому
+   * трассу закрываем сами, не задерживая конец потока ответа.
+   */
+  outsideRequest?: boolean;
   provider: string;
   trace?: TracePayload;
 }
 
 export const createTraceOptions = (
   payload: ChatStreamPayload,
-  { trace: tracePayload, provider }: AgentChatOptions,
+  { trace: tracePayload, provider, outsideRequest }: AgentChatOptions,
 ) => {
   const { messages, model, tools, ...parameters } = payload;
   // create a trace to monitor the completion
@@ -86,13 +92,21 @@ export const createTraceOptions = (
       },
 
       onFinal: () => {
-        after(async () => {
+        const shutdown = async () => {
           try {
             await traceClient.shutdownAsync();
           } catch (e) {
             console.error('TraceClient shutdown error:', e);
           }
-        });
+        };
+
+        if (outsideRequest) {
+          // не ждём сброс в Langfuse: он не должен тормозить конец ответа; ошибка гасится внутри
+          void shutdown();
+          return;
+        }
+
+        after(shutdown);
       },
 
       onStart: () => {

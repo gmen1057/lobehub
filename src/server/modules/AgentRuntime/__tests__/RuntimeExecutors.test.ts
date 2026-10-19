@@ -3,15 +3,20 @@ import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
-import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import { createTraceOptions, initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
-import { createRuntimeExecutors, type RuntimeExecutorContext, resolveServerEnabledSearch } from '../RuntimeExecutors';
+import {
+  createRuntimeExecutors,
+  resolveServerEnabledSearch,
+  type RuntimeExecutorContext,
+} from '../RuntimeExecutors';
 
 const mockCreateCompressionGroup = vi.fn();
 const mockFinalizeCompression = vi.fn();
 
 // Mock dependencies
 vi.mock('@/server/modules/ModelRuntime', () => ({
+  createTraceOptions: vi.fn(),
   initModelRuntimeFromDB: vi.fn().mockResolvedValue({
     chat: vi.fn().mockResolvedValue(new Response('done')),
   }),
@@ -1180,6 +1185,261 @@ describe('RuntimeExecutors', () => {
         // resolveTopicReferences ran but found no <refer_topic> tags → topicReferences is undefined
         const callArgs = engineSpy.mock.calls[0][0];
         expect(callArgs).not.toHaveProperty('topicReferences');
+      });
+    });
+
+    // arckep (19.10.2026): подключённое активатором остаётся подключённым в пределах темы —
+    // восстановленные из истории записи activatedStepTools дают функции с первого шага и пропадают
+    // из <available_tools>; вызов такого инструмента исполняется по манифесту набора операции.
+    describe('инструменты, подключённые активатором в прошлых сообщениях темы', () => {
+      let mockChat: ReturnType<typeof vi.fn>;
+      let engineSpy: any;
+
+      const manifestOf = (identifier: string, type: 'builtin' | 'mcp' = 'mcp') =>
+        ({
+          api: [
+            {
+              description: `${identifier} run`,
+              name: 'run',
+              parameters: { properties: {}, type: 'object' },
+            },
+          ],
+          identifier,
+          mcpParams: type === 'mcp' ? { type: 'http', url: 'http://127.0.0.1:1/mcp' } : undefined,
+          meta: { description: `${identifier} description`, title: identifier },
+          type,
+        }) as any;
+
+      const studioImages = manifestOf('mcp-arckep-studio-images');
+      const operationToolSet = {
+        enabledToolIds: ['lobe-activator'],
+        manifestMap: {
+          'lobe-activator': manifestOf('lobe-activator', 'builtin'),
+          'mcp-arckep-studio-images': studioImages,
+        },
+        sourceMap: {},
+        tools: [],
+      };
+      const seeded = [
+        {
+          activatedAtStep: 0,
+          id: 'mcp-arckep-studio-images',
+          manifest: studioImages,
+          source: 'discovery' as const,
+        },
+      ];
+
+      const callLlm = (overrides?: Partial<AgentState>) =>
+        createRuntimeExecutors({
+          ...ctx,
+          agentConfig: { plugins: [], systemRole: 'test' },
+        }).call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Теперь собаку', role: 'user' }],
+              model: 'gpt-4',
+              provider: 'openai',
+            },
+            type: 'call_llm' as const,
+          },
+          createMockState({ operationToolSet: operationToolSet as any, ...overrides }),
+        );
+
+      const functionNames = () =>
+        ((mockChat.mock.calls[0][0].tools ?? []) as Array<{ function: { name: string } }>).map(
+          (tool) => tool.function.name,
+        );
+
+      beforeEach(() => {
+        mockChat = vi.fn().mockResolvedValue(new Response('done'));
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+        engineSpy = vi.spyOn(ContextEngineering, 'serverMessagesEngine');
+      });
+
+      afterEach(() => {
+        engineSpy.mockRestore();
+      });
+
+      it('без восстановления: функций подключения в первом шаге нет, оно перечислено в <available_tools>', async () => {
+        await callLlm();
+
+        expect(functionNames().some((name) => name.includes('mcp-arckep-studio-images'))).toBe(
+          false,
+        );
+        expect(engineSpy.mock.calls[0][0].toolDiscoveryConfig.availableTools).toEqual([
+          expect.objectContaining({ identifier: 'mcp-arckep-studio-images' }),
+        ]);
+      });
+
+      it('с восстановленным activatedStepTools: функции подключения уже есть, в списке его больше нет', async () => {
+        await callLlm({ activatedStepTools: seeded });
+
+        expect(functionNames().some((name) => name.includes('mcp-arckep-studio-images'))).toBe(
+          true,
+        );
+        // всё подключено — предлагать больше нечего
+        expect(engineSpy.mock.calls[0][0].toolDiscoveryConfig).toBeUndefined();
+        // инструкция подключения приходит в системной части, как после шага activateTools
+        expect(
+          engineSpy.mock.calls[0][0].toolsConfig.manifests.map((m: any) => m.identifier),
+        ).toContain('mcp-arckep-studio-images');
+      });
+
+      it('вызов восстановленного инструмента исполняется по его манифесту с параметрами MCP', async () => {
+        const executors = createRuntimeExecutors(ctx);
+        const state = createMockState({
+          activatedStepTools: seeded,
+          operationToolSet: operationToolSet as any,
+        });
+
+        await executors.call_tool!(
+          {
+            payload: {
+              parentMessageId: 'assistant-msg-1',
+              toolCalling: {
+                apiName: 'run',
+                arguments: '{}',
+                id: 'tool-call-1',
+                identifier: 'mcp-arckep-studio-images',
+                type: 'mcp' as const,
+              },
+            },
+            type: 'call_tool' as const,
+          },
+          state,
+        );
+
+        const [payload, context] = mockToolExecutionService.executeTool.mock.calls[0];
+        expect(payload).toMatchObject({ identifier: 'mcp-arckep-studio-images', type: 'mcp' });
+        expect(context.toolManifestMap['mcp-arckep-studio-images']).toBe(studioImages);
+        expect(context.toolManifestMap['mcp-arckep-studio-images'].mcpParams).toEqual({
+          type: 'http',
+          url: 'http://127.0.0.1:1/mcp',
+        });
+      });
+    });
+
+    // arckep (19.10.2026): Langfuse в серверном пути (ENABLE_LANGFUSE=1) — трассировочные колбэки
+    // добавляются к колбэкам серверного пути, ответ от них не зависит
+    describe('трассировка Langfuse', () => {
+      let mockChat: ReturnType<typeof vi.fn>;
+      const traceCallbacks = {
+        onCompletion: vi.fn(),
+        onFinal: vi.fn(),
+        onStart: vi.fn(),
+        onToolsCalling: vi.fn(),
+      };
+
+      const callLlm = () =>
+        createRuntimeExecutors({
+          ...ctx,
+          agentConfig: { plugins: [], systemRole: 'test' },
+        }).call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Привет', role: 'user' }],
+              model: 'gpt-4',
+              provider: 'openai',
+            },
+            type: 'call_llm' as const,
+          },
+          createMockState({
+            metadata: { agentId: 'agent-123', sessionId: 'agent-123', topicId: 'topic-123' },
+          }),
+        );
+
+      beforeEach(() => {
+        Object.values(traceCallbacks).forEach((fn) => fn.mockReset());
+        vi.mocked(createTraceOptions).mockReset();
+        vi.mocked(createTraceOptions).mockReturnValue({
+          callback: traceCallbacks,
+          headers: new Headers(),
+        } as any);
+        mockChat = vi.fn().mockImplementation(async (_payload: any, options: any) => {
+          await options.callback.onStart?.();
+          await options.callback.onCompletion?.({
+            text: 'ответ',
+            usage: { totalInputTokens: 10, totalOutputTokens: 5, totalTokens: 15 },
+          });
+          await options.callback.onFinal?.({});
+          return new Response('done');
+        });
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: mockChat } as any);
+      });
+
+      afterEach(() => {
+        vi.unstubAllEnvs();
+      });
+
+      it('ENABLE_LANGFUSE=1: трасса создаётся для вызова модели, все четыре трассировочных колбэка срабатывают', async () => {
+        vi.stubEnv('ENABLE_LANGFUSE', '1');
+
+        await callLlm();
+
+        expect(createTraceOptions).toHaveBeenCalledTimes(1);
+        expect(createTraceOptions).toHaveBeenCalledWith(
+          expect.objectContaining({ model: 'gpt-4' }),
+          expect.objectContaining({
+            outsideRequest: true,
+            provider: 'openai',
+            trace: expect.objectContaining({
+              sessionId: 'agent-123',
+              topicId: 'topic-123',
+              traceName: 'Engine Chat',
+              userId: 'user-123',
+            }),
+          }),
+        );
+        expect(traceCallbacks.onStart).toHaveBeenCalledTimes(1);
+        expect(traceCallbacks.onCompletion).toHaveBeenCalledWith(
+          expect.objectContaining({ text: 'ответ' }),
+        );
+        expect(traceCallbacks.onFinal).toHaveBeenCalledTimes(1);
+      });
+
+      it('колбэки серверного пути работают как раньше: расход попадает в результат шага', async () => {
+        vi.stubEnv('ENABLE_LANGFUSE', '1');
+
+        const result = await callLlm();
+
+        const llmResult = result.events.find((event: any) => event.type === 'llm_result') as any;
+        expect(llmResult.result.usage).toMatchObject({ totalTokens: 15 });
+      });
+
+      it('ENABLE_LANGFUSE не включён: трасса не создаётся', async () => {
+        await callLlm();
+
+        expect(createTraceOptions).not.toHaveBeenCalled();
+        expect(traceCallbacks.onCompletion).not.toHaveBeenCalled();
+      });
+
+      it('ошибка трассировки не ломает ответ', async () => {
+        vi.stubEnv('ENABLE_LANGFUSE', '1');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        traceCallbacks.onCompletion.mockRejectedValue(new Error('langfuse упал'));
+        traceCallbacks.onFinal.mockImplementation(() => {
+          throw new Error('и сброс тоже');
+        });
+
+        const result = await callLlm();
+
+        expect(result.events.some((event: any) => event.type === 'llm_result')).toBe(true);
+        expect(result.events.some((event: any) => event.type === 'error')).toBe(false);
+        errorSpy.mockRestore();
+      });
+
+      it('если трасса не создалась (нет ключей), вызов модели идёт без неё', async () => {
+        vi.stubEnv('ENABLE_LANGFUSE', '1');
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        vi.mocked(createTraceOptions).mockImplementation(() => {
+          throw new TypeError('NO_LANGFUSE_KEY_ERROR');
+        });
+
+        const result = await callLlm();
+
+        expect(mockChat).toHaveBeenCalledTimes(1);
+        expect(result.events.some((event: any) => event.type === 'llm_result')).toBe(true);
+        errorSpy.mockRestore();
       });
     });
 
@@ -3269,7 +3529,11 @@ describe('RuntimeExecutors', () => {
 describe('resolveServerEnabledSearch (arckep: native search for server runs)', () => {
   it('is off when the agent search mode is off or builtin search is declined', async () => {
     expect(
-      await resolveServerEnabledSearch({ chatConfig: { searchMode: 'off' } }, 'gemini-3.6-flash', 'google'),
+      await resolveServerEnabledSearch(
+        { chatConfig: { searchMode: 'off' } },
+        'gemini-3.6-flash',
+        'google',
+      ),
     ).toBe(false);
     expect(
       await resolveServerEnabledSearch(
@@ -3283,10 +3547,14 @@ describe('resolveServerEnabledSearch (arckep: native search for server runs)', (
 
   it('is on for providers with native search (google, openai, openrouter) by default', async () => {
     expect(await resolveServerEnabledSearch(undefined, 'gemini-3.6-flash', 'google')).toBe(true);
-    expect(await resolveServerEnabledSearch({ chatConfig: {} }, 'openrouter/auto', 'openrouter')).toBe(true);
+    expect(
+      await resolveServerEnabledSearch({ chatConfig: {} }, 'openrouter/auto', 'openrouter'),
+    ).toBe(true);
   });
 
   it('is off for a provider and model without native search', async () => {
-    expect(await resolveServerEnabledSearch(undefined, 'no-such-model', 'no-such-provider')).toBe(false);
+    expect(await resolveServerEnabledSearch(undefined, 'no-such-model', 'no-such-provider')).toBe(
+      false,
+    );
   });
 });
