@@ -4,6 +4,7 @@ import {
   arckepLazyToolIds,
   builtinTools,
   isArckepLazyMcpConnectorId,
+  isArckepPageOpeningTool,
   isArckepPaidStudioTool,
   isArckepUserMcpId,
 } from '@lobechat/builtin-tools';
@@ -186,5 +187,23 @@ describe('свои подключения umcp-*: как они попадают
     expect(isArckepPaidStudioTool('arckep-studio', 'getBalance')).toBe(false);
     expect(isArckepPaidStudioTool('mcp-arckep-e2b-sandbox', 'execute_code')).toBe(false);
     expect(isArckepPaidStudioTool(UMCP, 'create_anything')).toBe(false);
+  });
+
+  it('какие вызовы открывают адрес (ждут подтверждения): web_fetch, чтение страниц, импорт навыка по ссылке; поиск — нет', () => {
+    expect(isArckepPageOpeningTool('mcp-arckep-studio-web', 'web_fetch')).toBe(true);
+    expect(isArckepPageOpeningTool('lobe-web-browsing', 'crawlSinglePage')).toBe(true);
+    expect(isArckepPageOpeningTool('lobe-web-browsing', 'crawlMultiPages')).toBe(true);
+    expect(isArckepPageOpeningTool('arckep-skills', 'saveSkillFromUrl')).toBe(true);
+    for (const [identifier, apiName] of [
+      ['mcp-arckep-studio-web', 'web_search'],
+      ['lobe-web-browsing', 'search'],
+      ['arckep-skills', 'saveSkillFromText'],
+      ['mcp-arckep-studio-images', 'create_image'],
+    ]) {
+      expect(isArckepPageOpeningTool(identifier, apiName), `${identifier}:${apiName}`).toBe(false);
+    }
+    // web_search не платный по списку п. 3.Д — решение владельца: поиск не трогаем
+    expect(isArckepPaidStudioTool('mcp-arckep-studio-web', 'web_search')).toBe(false);
+    expect(isArckepPaidStudioTool('mcp-arckep-studio-web', 'web_fetch')).toBe(false);
   });
 });

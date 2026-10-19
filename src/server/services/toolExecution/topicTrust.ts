@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto';
 
-import { ARCKEP_CONFIRM_MARKER, isArckepUserMcpId } from '@lobechat/builtin-tools';
+import {
+  ARCKEP_CONFIRM_MARKER,
+  isArckepPageOpeningTool,
+  isArckepUserMcpId,
+} from '@lobechat/builtin-tools';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { messagePlugins, messages, topics } from '@/database/schemas';
@@ -351,9 +355,45 @@ export const summarizeToolCall = (tool: string, rawArguments: unknown): string =
   return oneLine(parts.join(', '), SUMMARY_LIMIT);
 };
 
-const needConfirmationText = (entry: TopicConfirmation, summary: string) =>
+/** Адрес или адреса из аргументов инструмента, который открывает страницу (`url`, `urls`, `link`). */
+const pageAddresses = (rawArguments: unknown): string[] => {
+  let args: Record<string, unknown> = {};
+  try {
+    const parsed = typeof rawArguments === 'string' ? JSON.parse(rawArguments) : rawArguments;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
+  } catch {
+    // нечитаемые аргументы — адресов нет
+  }
+  const found: string[] = [];
+  for (const key of ['url', 'link', 'urls']) {
+    const value = args[key];
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (typeof item === 'string' && item.trim()) found.push(oneLine(item, SUMMARY_LIMIT));
+    }
+  }
+  return found;
+};
+
+/** Описание вызова, открывающего страницу: «Открыть страницу <адрес>» — человек должен видеть адрес целиком. */
+export const summarizePageCall = (rawArguments: unknown): string => {
+  const addresses = pageAddresses(rawArguments);
+  if (addresses.length === 0) return 'Открыть страницу';
+  return oneLine(
+    `${addresses.length === 1 ? 'Открыть страницу' : 'Открыть страницы'} ${addresses.join(', ')}`,
+    SUMMARY_LIMIT,
+  );
+};
+
+const callSummary = (call: GateToolCall) =>
+  isArckepPageOpeningTool(call.identifier, call.apiName)
+    ? summarizePageCall(call.arguments)
+    : summarizeToolCall(call.apiName, call.arguments);
+
+const needConfirmationText = (entry: TopicConfirmation, summary: string, opensPage: boolean) =>
   [
-    `Нужно подтверждение человека: «${entry.tool}» — платный запуск, а в этой теме работает чужой инструмент. Вызов НЕ выполнен.`,
+    opensPage
+      ? `Нужно подтверждение человека: «${entry.tool}» открывает страницу, а в этой теме работает чужой инструмент. Вызов НЕ выполнен.`
+      : `Нужно подтверждение человека: «${entry.tool}» — платный запуск, а в этой теме работает чужой инструмент. Вызов НЕ выполнен.`,
     'Скажи человеку одной фразой, что нужно нажать «Подтвердить», дождись его ответа и повтори вызов с теми же параметрами.',
     `${ARCKEP_CONFIRM_MARKER} ${JSON.stringify({ id: entry.id, summary, tool: entry.tool })}`,
   ].join('\n');
@@ -362,8 +402,9 @@ const rejectedText = (entry: TopicConfirmation) =>
   `Человек отказался от запуска «${entry.tool}». Вызов НЕ выполнен. Не повторяй его с теми же параметрами, спроси человека, что делать дальше.`;
 
 /**
- * Ворота платных запусков студии в теме с чужим инструментом (п. 3.Д). Не платный инструмент или тема без
- * метки — сразу `proceed`. Иначе:
+ * Ворота в теме с чужим инструментом (п. 3.Д) для платных запусков студии и вызовов, открывающих адрес
+ * (`isArckepPageOpeningTool`); что именно ждёт человека, решает вызывающий. Тема без метки — сразу `proceed`.
+ * Иначе:
  *  1. одобренный живой запрос на тот же инструмент и те же аргументы гасится (один вызов) → `proceed`;
  *  2. ожидающий — модель снова получает просьбу подождать человека;
  *  3. отклонённый (в пределах 15 минут) — отказ;
@@ -377,6 +418,7 @@ export const gatePaidToolCall = async (
   call: GateToolCall,
 ): Promise<GateResult> => {
   const tool = call.apiName;
+  const opensPage = isArckepPageOpeningTool(call.identifier, call.apiName);
   const argsHash = hashToolArguments(call.arguments);
   const id = confirmationIdFor(call.identifier, tool, argsHash);
 
@@ -400,7 +442,7 @@ export const gatePaidToolCall = async (
         return {
           action: 'blocked',
           code: 'ARCKEP_CONFIRMATION_REQUIRED',
-          content: needConfirmationText(entry, summarizeToolCall(tool, call.arguments)),
+          content: needConfirmationText(entry, callSummary(call), opensPage),
         };
       }
 
@@ -416,7 +458,7 @@ export const gatePaidToolCall = async (
         return {
           action: 'blocked',
           code: 'ARCKEP_CONFIRMATION_REQUIRED',
-          content: needConfirmationText(fresh, summarizeToolCall(tool, call.arguments)),
+          content: needConfirmationText(fresh, callSummary(call), opensPage),
         };
       }
     }

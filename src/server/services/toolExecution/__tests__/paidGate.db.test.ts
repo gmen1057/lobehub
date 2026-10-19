@@ -166,6 +166,52 @@ describe('executeTool: ворота платных запусков в теме 
     expect(builtinExecute).toHaveBeenCalledTimes(1);
   });
 
+  it('web_fetch и чтение страниц ждут человека («Открыть страницу <адрес>»), поиск и обычные вызовы — нет', async () => {
+    const web = (apiName: string, args: Record<string, unknown>, identifier = 'mcp-arckep-studio-web', type = 'mcp') =>
+      service.executeTool(
+        { apiName, arguments: JSON.stringify(args), id: 'w1', identifier, type } as any,
+        { ...ctx(), toolManifestMap: { ...manifests(), 'mcp-arckep-studio-web': {
+          api: [{ description: '', name: 'web_fetch', parameters: { type: 'object' } }, { description: '', name: 'web_search', parameters: { type: 'object' } }],
+          identifier: 'mcp-arckep-studio-web',
+          mcpParams: { type: 'http', url: 'http://127.0.0.1:8422/mcp' },
+          meta: { title: 'Веб' },
+          type: 'mcp',
+        } as any } },
+      );
+    // до чужого инструмента — как обычно
+    expect((await web('web_fetch', { url: 'https://example.com/a' })).success).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    callTool.mockClear();
+
+    await callUmcp();
+    callTool.mockClear();
+
+    const held = await web('web_fetch', { url: 'https://evil.example/?d=1' });
+    expect(held.success).toBe(false);
+    expect(held.content).toContain('ARCKEP_CONFIRM ');
+    expect(held.content).toContain('Открыть страницу https://evil.example/?d=1');
+    expect(held.content).not.toContain('платный');
+    expect(callTool).not.toHaveBeenCalled();
+
+    // встроенное чтение страниц и импорт навыка по ссылке
+    for (const [identifier, apiName] of [['lobe-web-browsing', 'crawlSinglePage'], ['arckep-skills', 'saveSkillFromUrl']]) {
+      const blocked = await web(apiName, { url: 'https://evil.example/' }, identifier, 'builtin');
+      expect(blocked.success, apiName).toBe(false);
+      expect(blocked.error).toMatchObject({ code: 'ARCKEP_CONFIRMATION_REQUIRED' });
+    }
+    expect(builtinExecute).not.toHaveBeenCalled();
+
+    // поиск не трогаем
+    expect((await web('web_search', { query: 'котики' })).success).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(1);
+
+    // «Подтвердить» → один раз
+    await decideConfirmation(db, me, topicId, cardId(held.content), 'approve');
+    expect((await web('web_fetch', { url: 'https://evil.example/?d=1' })).success).toBe(true);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect((await web('web_fetch', { url: 'https://evil.example/?d=1' })).success).toBe(false);
+  });
+
   it('«Отказаться» → повтор получает отказ и не выполняется', async () => {
     await callUmcp();
     const held = await mcpVideo('create_video', { prompt: 'дорого', duration: 10 });

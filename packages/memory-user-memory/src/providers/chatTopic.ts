@@ -2,7 +2,7 @@ import type { LobeChatDatabase } from '@lobechat/database';
 import { topics } from '@lobechat/database/schemas';
 import type { OpenAIChatMessage } from '@lobechat/model-runtime';
 import type { ChatTopicMetadata } from '@lobechat/types';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { u } from 'unist-builder';
 import { toXml } from 'xast-util-to-xml';
 import type { Child } from 'xastscript';
@@ -36,6 +36,15 @@ export interface ChatTopicResultRecorderOptions {
   topicId: string;
   traceId?: string;
 }
+
+/**
+ * arckep (19.10.2026): результат разбора памяти дописывается в `topics.metadata` патчем (`metadata || патч` одним
+ * UPDATE), а не заменой объекта целиком по снимку, снятому до разбора. Пока разбор шёл, в metadata могли
+ * появиться чужие ключи (метка `arckepUntrusted`, запросы `arckepConfirmations` — подтверждение платных запусков
+ * в теме с чужим инструментом); замена по снимку их стирала.
+ */
+const mergeMetadataPatch = (patch: Partial<ChatTopicMetadata>) =>
+  sql`(CASE WHEN jsonb_typeof(${topics.metadata}) = 'object' THEN ${topics.metadata} ELSE '{}'::jsonb END) || ${JSON.stringify(patch)}::jsonb`;
 
 export class LobeChatTopicContextProvider implements MemoryContextProvider<
   Record<string, unknown>,
@@ -154,15 +163,14 @@ export class LobeChatTopicResultRecorder implements MemoryResultRecorder<{
     memoryExtraction.processedMemoryCount = result.processedMemoryCount;
     memoryExtraction.traceId = this.options.traceId;
 
-    const updatedMetadata: ChatTopicMetadata = {
-      ...existingMetadata,
+    const patch: Partial<ChatTopicMetadata> = {
       userMemoryExtractRunState: memoryExtraction,
       userMemoryExtractStatus: 'completed',
     };
 
     await this.options.database
       .update(topics)
-      .set({ metadata: updatedMetadata, updatedAt: topics.updatedAt })
+      .set({ metadata: mergeMetadataPatch(patch), updatedAt: topics.updatedAt })
       .where(and(eq(topics.id, this.options.topicId), eq(topics.userId, job.userId)));
   }
 
@@ -187,15 +195,14 @@ export class LobeChatTopicResultRecorder implements MemoryResultRecorder<{
     memoryExtraction.processedMemoryCount = 0;
     memoryExtraction.traceId = this.options.traceId;
 
-    const updatedMetadata: ChatTopicMetadata = {
-      ...existingMetadata,
+    const patch: Partial<ChatTopicMetadata> = {
       userMemoryExtractRunState: memoryExtraction,
       userMemoryExtractStatus: 'failed',
     };
 
     await this.options.database
       .update(topics)
-      .set({ metadata: updatedMetadata, updatedAt: topics.updatedAt })
+      .set({ metadata: mergeMetadataPatch(patch), updatedAt: topics.updatedAt })
       .where(and(eq(topics.id, this.options.topicId), eq(topics.userId, job.userId)));
   }
 }

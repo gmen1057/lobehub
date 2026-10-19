@@ -1,6 +1,7 @@
 import {
   ARCKEP_E2B_CONNECTOR_ID,
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
+  isArckepPageOpeningTool,
   isArckepPaidStudioTool,
   isArckepUserMcpId,
 } from '@lobechat/builtin-tools';
@@ -180,8 +181,9 @@ export class ToolExecutionService {
   }
 
   /**
-   * arckep (19.10.2026, этап 3 «свои инструменты», п. 3.Д): ворота платных запусков студии. В теме, где работает
-   * чужой инструмент (`umcp-*`, метка темы), платный инструмент студии не выполняется сразу: движок записывает
+   * arckep (19.10.2026, этап 3 «свои инструменты», п. 3.Д): ворота платных запусков студии и вызовов, открывающих
+   * страницу по адресу (`web_fetch`, чтение страниц, импорт навыка по ссылке). В теме, где работает чужой
+   * инструмент (`umcp-*`, метка темы), такой вызов не выполняется сразу: движок записывает
    * запрос подтверждения в метаданные темы, а модель получает просьбу дождаться человека (`ARCKEP_CONFIRM`).
    * Повтор того же вызова после «Подтвердить» гасит одобрение и выполняется. Не платный инструмент, тема без
    * метки или вызов без темы — ворот нет (см. ./topicTrust).
@@ -191,7 +193,9 @@ export class ToolExecutionService {
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult | undefined> {
     const { identifier, apiName } = payload;
-    if (!isArckepPaidStudioTool(identifier, apiName)) return undefined;
+    if (!isArckepPaidStudioTool(identifier, apiName) && !isArckepPageOpeningTool(identifier, apiName)) {
+      return undefined;
+    }
     if (!context.serverDB || !context.userId || !context.topicId) return undefined;
 
     const gate = await gatePaidToolCall(context.serverDB, context.userId, context.topicId, {
