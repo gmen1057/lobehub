@@ -66,7 +66,8 @@ vi.mock('@/database/models/plugin', () => ({
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
     create: vi.fn().mockResolvedValue({ id: 'topic-1' }),
-    findById: vi.fn().mockResolvedValue(undefined),
+    // arckep: тема из appContext должна быть этого человека (assertTopicAccess) — в тестах она есть
+    findById: vi.fn().mockImplementation(async (id: string) => ({ id })),
     updateMetadata: vi.fn().mockResolvedValue(undefined),
   })),
 }));

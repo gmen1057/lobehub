@@ -1,8 +1,8 @@
-import type { SkillItem, SkillListItem } from '@lobechat/types';
+import type { SkillItem, SkillListItem, SkillResourceMeta } from '@lobechat/types';
 import { merge } from '@lobechat/utils';
 import { and, desc, eq, ilike, inArray, or } from 'drizzle-orm';
 
-import type {NewAgentSkill } from '../schemas';
+import type { NewAgentSkill } from '../schemas';
 import { agentSkills } from '../schemas';
 import type { LobeChatDatabase } from '../type';
 
@@ -91,6 +91,20 @@ export class AgentSkillModel {
     return { data, total: data.length };
   };
 
+  /**
+   * arckep: список для экрана «Мои навыки» — те же колонки, что у findAll, плюс карта файлов
+   * (по ней видно, есть ли у навыка справочники и скрипты).
+   */
+  findAllWithResources = async (): Promise<
+    Array<SkillListItem & { resources?: Record<string, SkillResourceMeta> | null }>
+  > => {
+    return this.db
+      .select({ ...skillListColumns, resources: agentSkills.resources })
+      .from(agentSkills)
+      .where(eq(agentSkills.userId, this.userId))
+      .orderBy(desc(agentSkills.updatedAt));
+  };
+
   findByIds = async (ids: string[]): Promise<SkillItem[]> => {
     if (ids.length === 0) return [];
     return this.db
@@ -136,6 +150,22 @@ export class AgentSkillModel {
     const [result] = await this.db
       .update(agentSkills)
       .set(updateData)
+      .where(and(eq(agentSkills.id, id), eq(agentSkills.userId, this.userId)))
+      .returning(skillItemColumns);
+    return result;
+  };
+
+  /**
+   * arckep: полная замена полей навыка. `update` сливает объекты вглубь (lodash merge), и убранные файлы
+   * остаются в `resources`; здесь значения заменяются как есть.
+   */
+  replace = async (
+    id: string,
+    data: Pick<NewAgentSkill, 'content' | 'description' | 'manifest' | 'resources'>,
+  ): Promise<SkillItem | undefined> => {
+    const [result] = await this.db
+      .update(agentSkills)
+      .set({ ...data, updatedAt: new Date() })
       .where(and(eq(agentSkills.id, id), eq(agentSkills.userId, this.userId)))
       .returning(skillItemColumns);
     return result;

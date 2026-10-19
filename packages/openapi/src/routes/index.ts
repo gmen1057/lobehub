@@ -12,6 +12,7 @@ import PluginsRoutes from './plugins.route';
 import ProvidersRoutes from './providers.route';
 import ResponsesRoutes from './responses.route';
 import RolesRoutes from './roles.route';
+import SkillsRoutes from './skills.route';
 import TopicsRoutes from './topics.route';
 import UsersRoutes from './users.route';
 
@@ -30,6 +31,7 @@ export default {
   'providers': ProvidersRoutes,
   'responses': ResponsesRoutes,
   'roles': RolesRoutes,
+  'skills': SkillsRoutes,
   'topics': TopicsRoutes,
   'users': UsersRoutes,
 };

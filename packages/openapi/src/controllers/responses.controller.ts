@@ -24,6 +24,9 @@ export class ResponsesController extends BaseController {
       const db = await this.getDatabase();
       const service = new ResponsesService(db, userId);
 
+      // Тема из previous_response_id — этого человека, иначе 404 до начала ответа
+      await service.assertPreviousTopicAccess(body);
+
       if (body.stream) {
         return this.handleStreamingResponse(c, service, body);
       }

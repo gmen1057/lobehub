@@ -854,6 +854,27 @@ This is the skill content.`,
       });
     });
 
+    it('arckep: скачивает через переданный fetchImpl, а не через глобальный fetch', async () => {
+      const safeFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => '---\nname: Safe Skill\ndescription: d\n---\n# Safe',
+      });
+      mockParserInstance.parseSkillMd.mockReturnValue({
+        content: '# Safe',
+        manifest: { description: 'd', name: 'Safe Skill' },
+        raw: 'raw',
+      });
+      const safeImporter = new SkillImporter(db, userId, { fetchImpl: safeFetch });
+
+      const result = await safeImporter.importFromUrl({ url: 'https://example.com/safe.md' });
+
+      expect(result.skill.name).toBe('Safe Skill');
+      expect(safeFetch).toHaveBeenCalledTimes(1);
+      expect(safeFetch.mock.calls[0][0]).toBe('https://example.com/safe.md');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should handle URL with path', async () => {
       mockFetch.mockResolvedValue({
         ok: true,

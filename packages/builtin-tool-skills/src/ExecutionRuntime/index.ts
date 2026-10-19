@@ -28,9 +28,13 @@ export interface SkillImportServiceResult {
 }
 
 export interface ExportFileResult {
+  /** Причина неудачи — попадает в ответ модели (без неё модель видела только «Failed to export file»). */
+  error?: string;
   fileId?: string;
   filename: string;
   mimeType?: string;
+  /** Готовый текст ответа модели; если задан, заменяет стандартный с адресом загрузки. */
+  note?: string;
   size?: number;
   success: boolean;
   url?: string;
@@ -67,13 +71,21 @@ export class SkillsExecutionRuntime {
   }
 
   async execScript(args: ExecScriptParams): Promise<BuiltinServerRuntimeOutput> {
-    const { activatedSkills, command, description } = args;
+    const { activatedSkills, command, description, skill } = args;
+
+    // arckep: в серверном пути активированные навыки неизвестны исполнителю, модель называет навык сама
+    const skillsForScript =
+      activatedSkills && activatedSkills.length > 0
+        ? activatedSkills
+        : skill
+          ? [{ id: skill, name: skill }]
+          : undefined;
 
     // Try new execScript method first (with cloud sandbox support)
     if (this.service.execScript) {
       try {
         const result = await this.service.execScript(command, {
-          activatedSkills,
+          activatedSkills: skillsForScript,
           description,
         });
 
@@ -141,13 +153,15 @@ export class SkillsExecutionRuntime {
 
       if (!result.success) {
         return {
-          content: `Failed to export file: ${filename}`,
+          content: `Failed to export file: ${filename}${result.error ? ` — ${result.error}` : ''}`,
           success: false,
         };
       }
 
       return {
-        content: `File exported successfully: ${filename}\nDownload URL: ${result.url || 'N/A'}`,
+        content:
+          result.note ??
+          `File exported successfully: ${filename}\nDownload URL: ${result.url || 'N/A'}`,
         state: {
           fileId: result.fileId,
           filename: result.filename,

@@ -1,4 +1,4 @@
-import { ARCKEP_STUDIO_CONNECTOR_PREFIX } from '@lobechat/builtin-tools';
+import { ARCKEP_E2B_CONNECTOR_ID, ARCKEP_STUDIO_CONNECTOR_PREFIX } from '@lobechat/builtin-tools';
 import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
@@ -20,6 +20,7 @@ import { DiscoverService } from '../discover';
 import { type MCPService } from '../mcp';
 import { type BuiltinToolsExecutor } from './builtin';
 import { classifyToolError } from './errorClassification';
+import { userOwnsTopic } from './topicOwnership';
 import {
   type ToolExecutionContext,
   type ToolExecutionResult,
@@ -27,6 +28,9 @@ import {
 } from './types';
 
 const log = debug('lobe-server:tool-execution-service');
+
+/** Заголовки шлюза, которыми выбирается песочница: их выставляет только сервер. */
+const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-mcp-topic-id']);
 
 /**
  * Куда ходят подключения студии mcp-arckep-studio-* (F6): публичный MCP Arckep на этой же машине
@@ -194,6 +198,8 @@ export class ToolExecutionService {
           // строка без управляющих символов; служебные заголовки транспорта не переопределяются.
           if (!/^X-[\w-]{1,60}$/i.test(key)) continue;
           if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
+          // Номер темы (песочница E2B) задаёт только сервер, см. ниже.
+          if (TOPIC_HEADERS.has(key.toLowerCase())) continue;
           if (value === undefined || value === null || value === '') continue;
           const text = String(value)
             .replaceAll(/[\r\n\0]/g, '')
@@ -233,14 +239,34 @@ export class ToolExecutionService {
       Object.keys(settings).length,
       arckepUserId ?? '-',
     );
-    return {
-      ...mcpParams,
-      headers: {
-        ...mcpParams.headers,
-        ...settings,
-        ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
-      },
+    const headers: Record<string, string> = {
+      ...mcpParams.headers,
+      ...settings,
+      ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
     };
+    // arckep (19.10.2026): песочница E2B ключуется номером темы (шлюз: заголовок темы сильнее session_id из
+    // аргументов модели — защита от чужой сессии). Номер даёт сервер из контекста операции, и только этому
+    // подключению: execute_code из MCP и команды навыков (skillSandbox) одной темы попадают в одну песочницу.
+    // Заголовки темы из манифеста и настроек человека отбрасываются у всех подключений.
+    for (const key of Object.keys(headers)) {
+      if (TOPIC_HEADERS.has(key.toLowerCase())) delete headers[key];
+    }
+    // Песочница E2B: тема отдаётся шлюзу только вместе с номером человека в студии и только если тема его
+    // (номер приходит от клиента, шлюз ему доверяет: заголовок сильнее session_id из аргументов модели).
+    // Нет своей темы или человека — вызов отклоняется: откат на session_id, который называет модель, дал бы
+    // выбрать чужую песочницу. Ошибка уходит модели текстом (executeMCPTool).
+    if (identifier === ARCKEP_E2B_CONNECTOR_ID) {
+      if (
+        !context.topicId ||
+        !arckepUserId ||
+        !(await userOwnsTopic(context.serverDB, context.userId, context.topicId))
+      ) {
+        throw new Error('Песочница доступна только в своём чате аккаунта студии Arckep.');
+      }
+      headers['X-Arckep-Topic'] = context.topicId;
+    }
+
+    return { ...mcpParams, headers };
   }
 
   /**

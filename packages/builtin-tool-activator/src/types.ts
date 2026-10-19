@@ -27,6 +27,12 @@ export interface ActivateSkillParams {
 }
 
 export interface ActivateSkillState {
+  /**
+   * arckep: инструменты, которые `activateSkill` подключает вместе с навыком (у него есть справочники
+   * или скрипты). Той же формы, что `activateTools`: серверный исполнитель добавляет их в
+   * `activatedStepTools`, и они остаются подключёнными в пределах темы.
+   */
+  activatedTools?: ActivatedToolInfo[];
   description?: string;
   hasResources: boolean;
   id: string;

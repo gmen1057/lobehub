@@ -17,7 +17,7 @@ import { MemoryManifest } from '@lobechat/builtin-tool-memory';
 import { MessageManifest } from '@lobechat/builtin-tool-message';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import { SkillStoreManifest } from '@lobechat/builtin-tool-skill-store';
-import { SkillsManifest } from '@lobechat/builtin-tool-skills';
+import { SkillsManifest, SkillsManifestHeadless } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { alwaysOnToolIds, builtinTools, defaultToolIds } from '@lobechat/builtin-tools';
@@ -61,7 +61,13 @@ export const createServerToolsEngine = (
     .filter(Boolean);
 
   // Get all builtin tool manifests
-  const builtinManifests = builtinTools.map((tool) => tool.manifest as LobeToolManifest);
+  // arckep (19.10.2026): в движке без интерфейса инструменты навыков — вариант без подтверждения человеком
+  // и с командами в песочнице E2B (SkillsManifestHeadless); подключает их activateSkill.
+  const builtinManifests = builtinTools.map((tool) =>
+    isArckepHeadlessTools() && tool.identifier === SkillsManifest.identifier
+      ? (SkillsManifestHeadless as LobeToolManifest)
+      : (tool.manifest as LobeToolManifest),
+  );
 
   // Combine all manifests
   const allManifests = [...pluginManifests, ...builtinManifests, ...additionalManifests];

@@ -13,6 +13,11 @@ export interface ActivateSkillParams {
 }
 
 export interface ActivateSkillState {
+  /**
+   * arckep: инструменты, которые подключает сам `activateSkill` (у навыка есть справочники или скрипты).
+   * Той же формы, что у `activateTools` — серверный исполнитель кладёт их в `activatedStepTools`.
+   */
+  activatedTools?: Array<{ apiCount: number; avatar?: string; identifier: string; name: string }>;
   description?: string;
   hasResources: boolean;
   id: string;
@@ -36,6 +41,11 @@ export interface ExecScriptParams {
   activatedSkills?: ExecScriptActivatedSkill[];
   command: string;
   description: string;
+  /**
+   * arckep: имя навыка, чьи файлы нужны команде. В серверном пути (движок без интерфейса) нет
+   * stepContext.activatedSkills, поэтому модель называет навык сама.
+   */
+  skill?: string;
 }
 
 export interface ExecScriptState {

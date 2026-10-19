@@ -7,7 +7,7 @@ import { sha256 } from 'js-sha256';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { SkillManifestError, SkillParseError } from './errors';
-import { SkillParser } from './parser';
+import { MAX_ZIP_ENTRIES, SkillParser } from './parser';
 
 const createZip = (files: Record<string, Uint8Array>): Promise<Uint8Array> => {
   return new Promise((resolve, reject) => {
@@ -721,6 +721,88 @@ Content from file`;
       await writeFile(invalidZipPath, Buffer.from([1, 2, 3, 4]));
 
       await expect(parser.parseZipFile(invalidZipPath)).rejects.toThrow(SkillParseError);
+    });
+  });
+
+  describe('пределы распаковки (arckep, 19.10.2026)', () => {
+    const skillMd = `---\nname: Big\ndescription: d\n---\nbody`;
+
+    it('архив, распаковывающийся сверх предела, отклоняется (бомба из нулей)', async () => {
+      const bomb = await createZip({
+        'SKILL.md': new TextEncoder().encode(skillMd),
+        'data/zeros.bin': new Uint8Array(3 * 1024 * 1024),
+      });
+      // сжатый архив крошечный, распакованный — 3 МБ
+      expect(bomb.byteLength).toBeLessThan(20 * 1024);
+
+      await expect(
+        parser.parseZipPackage(Buffer.from(bomb), { maxUncompressedBytes: 1024 * 1024 }),
+      ).rejects.toThrow(SkillParseError);
+      await expect(
+        parser.parseZipPackage(Buffer.from(bomb), { maxUncompressedBytes: 1024 * 1024 }),
+      ).rejects.toThrow('too large to unpack');
+    });
+
+    it('в пределах предела архив разбирается как раньше', async () => {
+      const data = await createZip({
+        'SKILL.md': new TextEncoder().encode(skillMd),
+        'references/a.md': new TextEncoder().encode('# a'),
+      });
+      const parsed = await parser.parseZipPackage(Buffer.from(data), {
+        maxUncompressedBytes: 1024 * 1024,
+      });
+      expect(parsed.manifest.name).toBe('Big');
+      expect([...parsed.resources.keys()]).toEqual(['references/a.md']);
+    });
+
+    it('слишком много записей в архиве отклоняется', async () => {
+      const files: Record<string, Uint8Array> = {
+        'SKILL.md': new TextEncoder().encode(skillMd),
+      };
+      for (let i = 0; i < MAX_ZIP_ENTRIES; i++) files[`f/${i}.txt`] = new Uint8Array(1);
+      const data = await createZip(files);
+
+      await expect(parser.parseZipPackage(Buffer.from(data))).rejects.toThrow(
+        'too large to unpack',
+      );
+    });
+  });
+
+  describe('корневая папка архива GitHub (arckep, 19.10.2026)', () => {
+    const FULL_HASH = '3f2c1a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a';
+    const skillMd = `---\nname: Pdf Forms\ndescription: d\n---\nbody`;
+    const make = (root: string, skillDir = 'skills/pdf') =>
+      createZip({
+        [`${root}/README.md`]: new TextEncoder().encode('# repo'),
+        [`${root}/${skillDir}/SKILL.md`]: new TextEncoder().encode(skillMd),
+        [`${root}/${skillDir}/scripts/run.py`]: new TextEncoder().encode('print(1)'),
+      });
+
+    // archive/<ref>.zip: ветка → repo-<ветка>, тег → repo-<тег без v>, хеш → repo-<полный хеш>
+    it.each([
+      ['ветка', 'skills-main'],
+      ['ветка со слэшем', 'skills-feature-new-ui'],
+      ['тег (без v)', 'skills-1.2.0'],
+      ['полный хеш коммита', `skills-${FULL_HASH}`],
+    ])('%s: навык находится по basePath при любом имени корневой папки', async (_, root) => {
+      const data = await make(root);
+      const parsed = await parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/pdf' });
+      expect(parsed.manifest.name).toBe('Pdf Forms');
+      expect([...parsed.resources.keys()]).toEqual(['scripts/run.py']);
+    });
+
+    it('спецзнаки в basePath не ломают поиск и не падают выражением', async () => {
+      const data = await make('skills-main', 'skills/a+b.c');
+      // запасной путь поиска (корень не определён по первой записи) тоже работает с экранированием
+      const parsed = await parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/a+b.c' });
+      expect(parsed.manifest.name).toBe('Pdf Forms');
+
+      await expect(
+        parser.parseZipPackage(Buffer.from(data), { basePath: 'skills/(oops' }),
+      ).rejects.toThrow('SKILL.md not found');
+      await expect(
+        parser.parseZipPackage(Buffer.from(data), { basePath: '(a+)+$' }),
+      ).rejects.toThrow('SKILL.md not found');
     });
   });
 });

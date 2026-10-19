@@ -13,6 +13,7 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
+import { ArckepSkillsIdentifier, SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
@@ -94,6 +95,7 @@ import {
   type PdfPrepPage,
   type PdfPrepRecord,
 } from './pdfPrepare';
+import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
 
@@ -480,6 +482,22 @@ export class AiAgentService {
   }
 
   /**
+   * arckep (19.10.2026): тема от клиента должна быть этого человека, иначе TopicNotFoundError (HTTP 404
+   * «Тема не найдена»). См. topicAccess.ts. Публичный: ResponsesService проверяет тему до начала потока.
+   */
+  async assertTopicAccess(
+    topicId: string,
+    options: { allowMissing?: boolean } = {},
+  ): Promise<void> {
+    await assertTopicAccess({
+      allowMissing: options.allowMissing,
+      topicId,
+      topicModel: this.topicModel,
+      userId: this.userId,
+    });
+  }
+
+  /**
    * Execute agent with just a prompt
    *
    * This is a simplified API that requires agent identifier (id or slug) and prompt.
@@ -729,6 +747,12 @@ export class AiAgentService {
         cronJobId || 'none',
       );
     } else {
+      // arckep (19.10.2026): тема от клиента должна быть этого человека (чужая или несуществующая — 404
+      // «Тема не найдена», сообщения не пишутся). Боты берут номер из состояния ветки и сами лечат удалённую
+      // тему по внешнему ключу — им несуществующая тема проходит как раньше, чужая не проходит.
+      await this.assertTopicAccess(topicId, {
+        allowMissing: Boolean(botContext || botPlatformContext || discordContext),
+      });
       log('execAgent: reusing existing topic %s', topicId);
     }
 
@@ -1043,15 +1067,24 @@ export class AiAgentService {
         ...restHiddenToolIds,
         ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
       ];
+      // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
+      // карте, чтобы `activateSkill` мог подключить инструменты вместе с навыком, у которого есть справочники
+      // или скрипты; в <available_tools> они не перечисляются (buildToolDiscoveryConfig).
+      // «Мои навыки» (arckep-skills — сохранить навык по просьбе человека) в <available_tools> есть, но
+      // тоже по требованию; ботам он не нужен.
+      const skillToolIds = isArckepHeadlessTools()
+        ? [SkillsIdentifier, ...(keepsOwnToolSet ? [] : [ArckepSkillsIdentifier])]
+        : [];
       const lazyToolIds = [
         ...new Set(
           keepsOwnToolSet
-            ? studioConnectorIds
+            ? [...studioConnectorIds, ...skillToolIds]
             : [
                 ...arckepLazyToolIds,
                 ...studioConnectorIds,
                 ...lazyMcpConnectorIds,
                 ...lazyOnDemandToolIds,
+                ...skillToolIds,
               ],
         ),
       ].filter((id) => !pickedToolIds.has(id) && !hiddenToolIds.includes(id));

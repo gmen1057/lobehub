@@ -174,7 +174,7 @@ describe('GitHub', () => {
         owner: 'lobehub',
         repo: 'lobe-chat',
       });
-      expect(url).toBe('https://github.com/lobehub/lobe-chat/archive/refs/heads/main.zip');
+      expect(url).toBe('https://github.com/lobehub/lobe-chat/archive/main.zip');
     });
 
     it('should handle different branches', () => {
@@ -183,8 +183,34 @@ describe('GitHub', () => {
         owner: 'lobehub',
         repo: 'lobe-chat',
       });
-      expect(url).toBe(
-        'https://github.com/lobehub/lobe-chat/archive/refs/heads/feature/new-ui.zip',
+      expect(url).toBe('https://github.com/lobehub/lobe-chat/archive/feature/new-ui.zip');
+    });
+
+    // arckep (19.10.2026): ветка, тег и хеш коммита — один вид адреса, GitHub различает их сам
+    const FULL_HASH = '3f2c1a9b8d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a';
+    it.each([
+      ['ветка', 'main', 'https://github.com/anthropics/skills/archive/main.zip'],
+      ['тег', 'v1.2.0', 'https://github.com/anthropics/skills/archive/v1.2.0.zip'],
+      ['полный хеш', FULL_HASH, `https://github.com/anthropics/skills/archive/${FULL_HASH}.zip`],
+      ['короткий хеш', '3f2c1a9', 'https://github.com/anthropics/skills/archive/3f2c1a9.zip'],
+    ])('%s в адресе без refs/heads/', (_, ref, expected) => {
+      const url = gh.buildRepoZipUrl({ branch: ref, owner: 'anthropics', repo: 'skills' });
+      expect(url).toBe(expected);
+      expect(url).not.toContain('refs/heads');
+    });
+
+    it('ссылка .../tree/<хеш>/<путь> разбирается в хеш и путь, а адрес архива строится по хешу', () => {
+      const info = gh.parseRepoUrl(
+        `https://github.com/anthropics/skills/tree/${FULL_HASH}/skills/pdf`,
+      );
+      expect(info).toEqual({
+        branch: FULL_HASH,
+        owner: 'anthropics',
+        path: 'skills/pdf',
+        repo: 'skills',
+      });
+      expect(gh.buildRepoZipUrl(info)).toBe(
+        `https://github.com/anthropics/skills/archive/${FULL_HASH}.zip`,
       );
     });
   });
@@ -242,7 +268,7 @@ describe('GitHub', () => {
 
       expect(result).toBeInstanceOf(Buffer);
       expect(mockFetch).toHaveBeenCalledWith(
-        'https://github.com/lobehub/lobe-chat/archive/refs/heads/main.zip',
+        'https://github.com/lobehub/lobe-chat/archive/main.zip',
         {
           headers: {
             'User-Agent': 'LobeHub',

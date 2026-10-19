@@ -13,13 +13,17 @@ import { sha256 } from 'js-sha256';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { UserModel } from '@/database/models/user';
-import { filterBuiltinSkills } from '@/helpers/skillFilters';
+import { filterBuiltinSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
 import { FileS3 } from '@/server/modules/S3';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import { SkillResourceService } from '@/server/services/skill/resource';
+import { SkillSandbox } from '@/server/services/skillSandbox';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
+import { userOwnsTopic } from '@/server/services/toolExecution/topicOwnership';
 
+import { resolveArckepUserId } from './arckepStudio';
+import { HeadlessSkillRuntimeService } from './skillsHeadless';
 import { type ServerRuntimeRegistration } from './types';
 
 const log = debug('lobe-server:skills-runtime');
@@ -341,6 +345,39 @@ export const skillsRuntime: ServerRuntimeRegistration = {
       topicId: context.topicId,
       userId: context.userId,
     });
+
+    // arckep (19.10.2026): в движке без интерфейса команды и файлы навыков идут в песочницу E2B человека
+    // через шлюз коннекторов (облака LobeHub, куда ведёт апстримный путь, у нас нет).
+    if (isHeadlessSkillMode() && context.topicId) {
+      // Песочница платная и считается по номеру человека в студии. Аккаунт не из студии номера не имеет:
+      // тогда команды и файлы не выполняются (справочники навыков работают), в обход учёта не ходим.
+      let sandbox: SkillSandbox | undefined;
+      let sandboxUnavailable: string | undefined;
+      try {
+        const arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
+        // Номер темы приходит от клиента: чужая тема не должна вести в чужую песочницу.
+        if (await userOwnsTopic(context.serverDB, context.userId, context.topicId)) {
+          sandbox = new SkillSandbox({ arckepUserId, topicId: context.topicId });
+        } else {
+          sandboxUnavailable = 'The sandbox is available only inside your own chat.';
+        }
+      } catch {
+        sandboxUnavailable =
+          'The sandbox is available only to Arckep accounts: open the chat from arckep.ru.';
+      }
+
+      return new SkillsExecutionRuntime({
+        builtinSkills: filterBuiltinSkills(builtinSkills),
+        service: new HeadlessSkillRuntimeService({
+          base: service,
+          fileService,
+          resourceService,
+          sandbox,
+          sandboxUnavailable,
+          topicId: context.topicId,
+        }),
+      });
+    }
 
     return new SkillsExecutionRuntime({
       builtinSkills: filterBuiltinSkills(builtinSkills),

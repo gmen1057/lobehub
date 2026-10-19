@@ -6,6 +6,7 @@
     ".": "./src/index.ts",
     "./client": "./src/client/index.ts",
     "./executor": "./src/executor/index.ts",
+    "./arckepSkillsRuntime": "./src/arckepSkills/ExecutionRuntime.ts",
     "./executionRuntime": "./src/ExecutionRuntime/index.ts"
   },
   "main": "./src/index.ts",

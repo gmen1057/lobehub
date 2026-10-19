@@ -12,6 +12,14 @@ import { sha256 } from 'js-sha256';
 
 import { SkillManifestError, SkillParseError } from './errors';
 
+/**
+ * arckep (19.10.2026): архивы теперь приходят от людей (файл в чате, ссылка), а fflate распаковывает всё в
+ * память. Предел суммы распакованного и числа записей отсекает «бомбы»; репозиторий GitHub целиком —
+ * десятки МБ, поэтому предел щедрый.
+ */
+export const MAX_ZIP_UNCOMPRESSED_BYTES = 200 * 1024 * 1024;
+export const MAX_ZIP_ENTRIES = 5000;
+
 export interface ParseZipOptions {
   /**
    * Base path within the ZIP to look for SKILL.md
@@ -19,6 +27,8 @@ export interface ParseZipOptions {
    * https://github.com/owner/repo/tree/main/skills/skill-name
    */
   basePath?: string;
+  /** arckep: предел суммы распакованного, байт (по умолчанию MAX_ZIP_UNCOMPRESSED_BYTES) */
+  maxUncompressedBytes?: number;
   /**
    * Whether to repack only the skill directory into a new ZIP
    * Used for GitHub imports to avoid storing the entire repo ZIP
@@ -76,7 +86,7 @@ export class SkillParser {
    */
   async parseZipPackage(buffer: Buffer, options?: ParseZipOptions): Promise<ParsedZipSkill> {
     try {
-      const unzipped = await this.unzipBuffer(buffer);
+      const unzipped = await this.unzipBuffer(buffer, options?.maxUncompressedBytes);
 
       // Find SKILL.md (support root directory, first-level subdirectory, or specified basePath)
       const { skillMdContent, skillMdPath } = this.findSkillMd(unzipped, options?.basePath);
@@ -126,12 +136,32 @@ export class SkillParser {
   /**
    * Unzip Buffer using fflate
    */
-  private unzipBuffer(buffer: Buffer): Promise<Record<string, Uint8Array>> {
+  private unzipBuffer(
+    buffer: Buffer,
+    maxUncompressedBytes: number = MAX_ZIP_UNCOMPRESSED_BYTES,
+  ): Promise<Record<string, Uint8Array>> {
     return new Promise((resolve, reject) => {
-      fflateUnzip(new Uint8Array(buffer), (error, unzipped) => {
-        if (error) reject(new SkillParseError('Failed to unzip buffer', error));
-        else resolve(unzipped);
-      });
+      let entries = 0;
+      let total = 0;
+      fflateUnzip(
+        new Uint8Array(buffer),
+        {
+          // arckep: размеры берутся из оглавления архива до распаковки; обманутый заголовок fflate
+          // обрывает ошибкой, а не раздувает память.
+          filter: (file) => {
+            entries += 1;
+            total += file.originalSize;
+            if (entries > MAX_ZIP_ENTRIES || total > maxUncompressedBytes) {
+              throw new SkillParseError('ZIP package is too large to unpack');
+            }
+            return true;
+          },
+        },
+        (error, unzipped) => {
+          if (error) reject(new SkillParseError('Failed to unzip buffer', error));
+          else resolve(unzipped);
+        },
+      );
     });
   }
 
@@ -201,9 +231,12 @@ export class SkillParser {
       }
 
       // Fallback: try to find SKILL.md that contains the basePath
-      const basePathPattern = new RegExp(
-        `^[^/]+/${basePath.replaceAll(/^\/|\/$/g, '')}/SKILL\\.md$`,
-      );
+      // arckep: basePath приходит из ссылки человека — спецзнаки экранируются (иначе битое выражение или
+      // ReDoS на путях из чужого репозитория).
+      const escapedBasePath = basePath
+        .replaceAll(/^\/|\/$/g, '')
+        .replaceAll(/[$()*+.?[\\\]^{|}]/g, String.raw`\$&`);
+      const basePathPattern = new RegExp(`^[^/]+/${escapedBasePath}/SKILL\\.md$`);
       const matchWithBasePath = allPaths.find((path) => basePathPattern.test(path));
 
       if (matchWithBasePath) {

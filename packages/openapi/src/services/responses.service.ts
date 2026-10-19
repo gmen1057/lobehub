@@ -97,6 +97,18 @@ export class ResponsesService extends BaseService {
   }
 
   /**
+   * arckep (19.10.2026): тема из previous_response_id должна быть этого человека. Проверка до начала ответа
+   * (в том числе потокового), чтобы чужая или несуществующая тема давала HTTP 404 «Тема не найдена», а не
+   * событие response.failed посреди потока. Ту же проверку делает и execAgent (последний рубеж).
+   */
+  async assertPreviousTopicAccess(params: CreateResponseRequest): Promise<void> {
+    if (!params.previous_response_id) return;
+    const topicId = this.extractTopicIdFromResponseId(params.previous_response_id);
+    if (!topicId) return;
+    await new AiAgentService(this.db, this.userId).assertTopicAccess(topicId);
+  }
+
+  /**
    * arckep (chat-next-redesign, E2): остановить ответ. Id ответа кодирует тему, у темы может
    * быть незавершённая операция — она помечается прерванной и остановится на границе шага.
    */

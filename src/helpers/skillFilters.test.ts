@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { filterBuiltinSkills, shouldEnableBuiltinSkill } from './skillFilters';
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
   vi.resetModules();
 });
@@ -55,5 +56,49 @@ describe('skillFilters', () => {
 
     expect(filtered).toHaveLength(1);
     expect(filtered[0].identifier).toBe('lobe-artifacts');
+  });
+
+  describe('движок без интерфейса (arckep, 19.10.2026)', () => {
+    it('прячет LobeHub и Task, оставляет Artifacts', () => {
+      expect(shouldEnableBuiltinSkill('lobehub', { isDesktop: false, isHeadless: true })).toBe(
+        false,
+      );
+      expect(shouldEnableBuiltinSkill('task', { isDesktop: false, isHeadless: true })).toBe(false);
+      expect(
+        shouldEnableBuiltinSkill('lobe-artifacts', { isDesktop: false, isHeadless: true }),
+      ).toBe(true);
+    });
+
+    it('в браузерном движке LobeHub и Task остаются', () => {
+      expect(shouldEnableBuiltinSkill('lobehub', { isDesktop: false, isHeadless: false })).toBe(
+        true,
+      );
+      expect(shouldEnableBuiltinSkill('task', { isDesktop: false, isHeadless: false })).toBe(true);
+    });
+
+    it('признак берётся из ARCKEP_HEADLESS_TOOLS=1, пока не задан явно', () => {
+      vi.stubEnv('ARCKEP_HEADLESS_TOOLS', '1');
+      expect(shouldEnableBuiltinSkill('lobehub', { isDesktop: false })).toBe(false);
+
+      vi.stubEnv('ARCKEP_HEADLESS_TOOLS', '');
+      expect(shouldEnableBuiltinSkill('lobehub', { isDesktop: false })).toBe(true);
+    });
+
+    it('filterBuiltinSkills убирает их из списка', () => {
+      const make = (identifier: string) => ({
+        content: identifier,
+        description: identifier,
+        identifier,
+        name: identifier,
+        source: 'builtin' as const,
+      });
+
+      const filtered = filterBuiltinSkills(
+        [make('lobe-artifacts'), make('lobehub'), make('task'), make('seo-demand')],
+        { isDesktop: false, isHeadless: true },
+      );
+
+      expect(filtered.map((skill) => skill.identifier)).toEqual(['lobe-artifacts', 'seo-demand']);
+    });
   });
 });

@@ -216,6 +216,19 @@ export class TopicModel {
     });
   };
 
+  /**
+   * arckep: владелец темы БЕЗ ограничения по человеку (undefined — темы нет вовсе). Только для проверки доступа
+   * (assertTopicAccess): отличить чужую тему от несуществующей. Данные темы этим методом не отдаются.
+   */
+  findOwnerId = async (id: string): Promise<string | undefined> => {
+    const [row] = await this.db
+      .select({ userId: topics.userId })
+      .from(topics)
+      .where(eq(topics.id, id))
+      .limit(1);
+    return row?.userId;
+  };
+
   queryAll = async (): Promise<TopicItem[]> => {
     return this.db
       .select()

@@ -129,9 +129,14 @@ export class GitHub {
 
   /**
    * Build the ZIP download URL for a GitHub repository
+   *
+   * arckep (19.10.2026): `archive/<ref>.zip`, а не `archive/refs/heads/<ref>.zip`: GitHub сам различает ветку,
+   * тег и хеш коммита. Адрес с refs/heads/ для хеша (ссылка вида .../tree/<хеш>/<путь>) даёт 404. Имя корневой
+   * папки в архиве зависит от ссылки (`<repo>-<ветка>`, `<repo>-<тег без v>`, `<repo>-<полный хеш>`);
+   * разбор архива (SkillParser) её не угадывает, а берёт первую папку архива.
    */
   buildRepoZipUrl(info: GitHubRepoInfo): string {
-    return `https://github.com/${info.owner}/${info.repo}/archive/refs/heads/${info.branch}.zip`;
+    return `https://github.com/${info.owner}/${info.repo}/archive/${info.branch}.zip`;
   }
 
   /**
