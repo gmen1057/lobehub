@@ -589,7 +589,11 @@ export class UserSkillService {
     const message = (error as Error)?.message ?? String(error);
     log('import failed: %O', error);
     // Ошибки защищённой загрузки (внутренний адрес, не https, слишком большой ответ)
-    if (/SSRF blocked|Only https|not allowed|over limit|Invalid URL/i.test(message)) {
+    if (
+      /SSRF blocked|Only https|not allowed|over limit|Invalid URL|Too many redirects|without a location/i.test(
+        message,
+      )
+    ) {
       return new UserSkillError(
         'Эта ссылка недоступна для загрузки: нужен публичный адрес https и файл до 10 МБ.',
         'INVALID',

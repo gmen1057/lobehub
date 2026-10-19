@@ -310,6 +310,12 @@ describe('importFromUrl', () => {
       [new SkillManifestError('Invalid skill manifest: name'), 'INVALID', 'name и description'],
       [new SkillParseError('SKILL.md not found in zip package'), 'INVALID', 'Не удалось разобрать'],
       [new Error('SSRF blocked: 127.0.0.1 is not allowed'), 'INVALID', 'публичный адрес https'],
+      [new Error('Too many redirects (more than 5)'), 'INVALID', 'публичный адрес https'],
+      [
+        new Error('Only https links are allowed (redirect to http://example.com)'),
+        'INVALID',
+        'публичный адрес https',
+      ],
     ];
     for (const [thrown, code, text] of cases) {
       const { importer, service } = make();
