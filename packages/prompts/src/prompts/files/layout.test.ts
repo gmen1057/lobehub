@@ -65,7 +65,7 @@ const sample = (): LayoutPage =>
       line({ text: 'Защитите ЖКТ', x: 20, y: 785 }),
       line({ text: 'Узнать больше', x: 232, y: 2759, center: true, bold: true }),
       line({ color: '#FF0000', text: 'Акция', x: 40, y: 3000 }),
-      line({ link: 'https://k31.ru/license/', text: 'Лицензии', x: 71, y: 5428 }),
+      line({ link: 'https://example.com/license/', text: 'Лицензии', x: 71, y: 5428 }),
     ],
     textColor: '#2D3C82',
   });
@@ -128,7 +128,7 @@ describe('layoutPrompt: описание макета для модели', () =
             line({ text: ', чтобы вы могли выбрать', x: 296, y: 2669 }),
             line({ bold: true, center: true, text: 'Узнать больше', x: 232, y: 2759 }),
             line({ color: '#FF0000', text: 'Акция', x: 40, y: 3000 }),
-            line({ link: 'https://k31.ru/license/', text: 'Лицензии', x: 71, y: 5428 }),
+            line({ link: 'https://example.com/license/', text: 'Лицензии', x: 71, y: 5428 }),
           ],
         }),
       ]),
@@ -136,7 +136,7 @@ describe('layoutPrompt: описание макета для модели', () =
 
     expect(text).toContain('y2759 x232 20px по центру жирный | Узнать больше');
     expect(text).toContain('y3000 x40 20px #FF0000 | Акция');
-    expect(text).toContain('y5428 x71 20px | Лицензии  [ссылка https://k31.ru/license/]');
+    expect(text).toContain('y5428 x71 20px | Лицензии  [ссылка https://example.com/license/]');
     // «со скидкой 20%» (y2671) остаётся перед «, чтобы…» (y2669): порядок чтения, а не сортировка по y
     expect(text.indexOf('со скидкой 20%')).toBeLessThan(text.indexOf(', чтобы вы могли выбрать'));
   });
@@ -343,7 +343,7 @@ describe('layoutPrompt: описание макета для модели', () =
             line({ size: 22, text: 'Гастроскопия', x: 25, y: 1396 }),
             line({ text: 'Узнать больше', x: 60, y: 1662 }),
             line({
-              text: 'Войдите или зарегистрируйтесь в личном кабинете К+31 —',
+              text: 'Войдите или зарегистрируйтесь в личном кабинете клиники —',
               x: 35,
               y: 4840,
             }),
