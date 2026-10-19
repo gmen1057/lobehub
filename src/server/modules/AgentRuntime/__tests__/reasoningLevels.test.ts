@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isReasoningLevel,
+  levelFromCallParams,
   reasoningCallParams,
+  resolveReasoningAuto,
   resolveReasoningProfile,
   snapReasoningLevel,
 } from '../reasoningLevels';
@@ -153,5 +155,44 @@ describe('reasoningCallParams', () => {
     expect(isReasoningLevel('xhigh')).toBe(true);
     expect(isReasoningLevel('ultra')).toBe(false);
     expect(isReasoningLevel(3)).toBe(false);
+  });
+});
+
+describe('resolveReasoningAuto (что значит «Авто», 19.10)', () => {
+  it('то, что шлёт сам движок, важнее умолчания провайдера', () => {
+    expect(levelFromCallParams({ thinking: { budget_tokens: 0, type: 'disabled' } })).toBe('none');
+    expect(levelFromCallParams({ reasoning_effort: 'high' })).toBe('high');
+    expect(levelFromCallParams({ effort: 'max', thinking: { type: 'adaptive' } })).toBe('max');
+    expect(levelFromCallParams({ thinkingLevel: 'low' })).toBe('low');
+    expect(
+      levelFromCallParams({ thinking: { budget_tokens: 2000, type: 'enabled' } }),
+    ).toBeUndefined();
+    // Claude 4.6 и Qwen: движок по умолчанию выключает рассуждения; Grok 4.7 — всегда high
+    expect(
+      resolveReasoningAuto('claude-sonnet-4-6', 'anthropic', {
+        thinking: { budget_tokens: 0, type: 'disabled' },
+      }),
+    ).toBe('none');
+    expect(resolveReasoningAuto('grok-4.7', 'xai', { reasoning_effort: 'high' })).toBe('high');
+  });
+
+  it('умолчания провайдеров по пробам и документации', () => {
+    const auto = (model: string, provider: string) => resolveReasoningAuto(model, provider, {});
+    expect(auto('gpt-5.4', 'openai')).toBe('none');
+    expect(auto('gpt-5.4-nano', 'openai')).toBe('none');
+    expect(auto('gpt-5.5', 'openai')).toBe('medium');
+    expect(auto('gpt-6-astra', 'openai')).toBe('medium');
+    expect(auto('gpt-5.6-luna', 'openai')).toBe('medium');
+    expect(auto('o3', 'openai')).toBe('medium');
+    expect(auto('claude-fable-5', 'anthropic')).toBe('high');
+    expect(auto('claude-opus-5', 'anthropic')).toBe('high');
+    expect(auto('claude-opus-5-5', 'anthropic')).toBe('medium');
+    expect(auto('deepseek-v4-pro', 'deepseek')).toBe('high');
+    expect(auto('gemini-4-argon', 'google')).toBe('medium');
+    expect(auto('gemini-3.6-flash', 'google')).toBe('auto');
+    expect(auto('grok-4.6', 'xai')).toBe('auto');
+    expect(auto('moonshotai/kimi-k3', 'openrouter')).toBe('auto');
+    expect(auto('gpt-7', 'openai')).toBeUndefined();
+    expect(auto('mystery', 'qwen')).toBeUndefined();
   });
 });
