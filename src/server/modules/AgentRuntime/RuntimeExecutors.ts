@@ -15,6 +15,7 @@ import {
 } from '@lobechat/agent-runtime';
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
+import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -172,13 +173,24 @@ const executeToolWithRetry = async (
   throw new Error('Tool execution retry loop exited unexpectedly');
 };
 
-const buildToolDiscoveryConfig = (operationToolSet: OperationToolSet, enabledToolIds: string[]) => {
+/**
+ * arckep (19.10.2026): манифест есть в карте операции, но в <available_tools> не показывается — модель
+ * получает эти инструменты от `activateSkill`, а не выбирает сама. Сейчас так скрыты инструменты навыков.
+ */
+const HIDDEN_FROM_DISCOVERY = new Set<string>([SkillsIdentifier]);
+
+export const buildToolDiscoveryConfig = (
+  operationToolSet: OperationToolSet,
+  enabledToolIds: string[],
+) => {
   const enabledToolSet = new Set(enabledToolIds);
 
   if (!enabledToolSet.has(LobeActivatorIdentifier)) return undefined;
 
   const availableTools = Object.entries(operationToolSet.manifestMap)
-    .filter(([identifier]) => !enabledToolSet.has(identifier))
+    .filter(
+      ([identifier]) => !enabledToolSet.has(identifier) && !HIDDEN_FROM_DISCOVERY.has(identifier),
+    )
     .map(([identifier, manifest]) => ({
       description: manifest.meta?.description || '',
       identifier,

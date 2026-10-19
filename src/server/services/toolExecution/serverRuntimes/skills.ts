@@ -13,13 +13,16 @@ import { sha256 } from 'js-sha256';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { FileModel } from '@/database/models/file';
 import { UserModel } from '@/database/models/user';
-import { filterBuiltinSkills } from '@/helpers/skillFilters';
+import { filterBuiltinSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
 import { FileS3 } from '@/server/modules/S3';
 import { FileService } from '@/server/services/file';
 import { MarketService } from '@/server/services/market';
 import { SkillResourceService } from '@/server/services/skill/resource';
+import { SkillSandbox } from '@/server/services/skillSandbox';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
 
+import { resolveArckepUserId } from './arckepStudio';
+import { HeadlessSkillRuntimeService } from './skillsHeadless';
 import { type ServerRuntimeRegistration } from './types';
 
 const log = debug('lobe-server:skills-runtime');
@@ -341,6 +344,28 @@ export const skillsRuntime: ServerRuntimeRegistration = {
       topicId: context.topicId,
       userId: context.userId,
     });
+
+    // arckep (19.10.2026): в движке без интерфейса команды и файлы навыков идут в песочницу E2B человека
+    // через шлюз коннекторов (облака LobeHub, куда ведёт апстримный путь, у нас нет).
+    if (isHeadlessSkillMode() && context.topicId) {
+      let arckepUserId: string | undefined;
+      try {
+        arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
+      } catch {
+        arckepUserId = undefined; // аккаунт не из студии — шлюз получит запрос без номера человека
+      }
+
+      return new SkillsExecutionRuntime({
+        builtinSkills: filterBuiltinSkills(builtinSkills),
+        service: new HeadlessSkillRuntimeService({
+          base: service,
+          fileService,
+          resourceService,
+          sandbox: new SkillSandbox({ arckepUserId, topicId: context.topicId }),
+          topicId: context.topicId,
+        }),
+      });
+    }
 
     return new SkillsExecutionRuntime({
       builtinSkills: filterBuiltinSkills(builtinSkills),

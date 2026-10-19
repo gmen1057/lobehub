@@ -8,8 +8,9 @@ import {
 import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionRuntime';
 
 import { AgentSkillModel } from '@/database/models/agentSkill';
-import { filterBuiltinSkills } from '@/helpers/skillFilters';
+import { filterBuiltinSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
 
+import { withSkillTools } from './skillTools';
 import { type ServerRuntimeRegistration } from './types';
 
 /**
@@ -38,7 +39,14 @@ export const activatorRuntime: ServerRuntimeRegistration = {
     }
 
     const service: ActivatorRuntimeService = {
-      activateSkill: skillsRuntime ? (args) => skillsRuntime!.activateSkill(args) : undefined,
+      // arckep (19.10.2026): в движке без интерфейса навык со справочниками или скриптами подключает и
+      // инструменты навыков (readReference, runCommand, execScript, exportFile) — в постоянной части их нет.
+      activateSkill: skillsRuntime
+        ? async (args) => {
+            const result = await skillsRuntime!.activateSkill(args);
+            return isHeadlessSkillMode() ? withSkillTools(result) : result;
+          }
+        : undefined,
       getActivatedToolIds: () => [...activatedIds],
       getToolManifests: async (identifiers: string[]): Promise<ToolManifestInfo[]> => {
         // Note: context.toolManifestMap should only contain discoverable tools.

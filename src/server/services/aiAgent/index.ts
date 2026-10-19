@@ -13,6 +13,7 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
+import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
@@ -701,15 +702,20 @@ export class AiAgentService {
         ...restHiddenToolIds,
         ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
       ];
+      // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
+      // карте, чтобы `activateSkill` мог подключить инструменты вместе с навыком, у которого есть справочники
+      // или скрипты; в <available_tools> они не перечисляются (buildToolDiscoveryConfig).
+      const skillToolIds = isArckepHeadlessTools() ? [SkillsIdentifier] : [];
       const lazyToolIds = [
         ...new Set(
           keepsOwnToolSet
-            ? studioConnectorIds
+            ? [...studioConnectorIds, ...skillToolIds]
             : [
                 ...arckepLazyToolIds,
                 ...studioConnectorIds,
                 ...lazyMcpConnectorIds,
                 ...lazyOnDemandToolIds,
+                ...skillToolIds,
               ],
         ),
       ].filter((id) => !pickedToolIds.has(id) && !hiddenToolIds.includes(id));
