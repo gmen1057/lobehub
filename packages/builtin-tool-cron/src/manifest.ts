@@ -10,7 +10,7 @@ export const CronManifest: BuiltinToolManifest = {
   api: [
     {
       description:
-        'Create a new scheduled task for the current agent. The task will run automatically at the specified schedule. Minimum interval is 30 minutes.',
+        'Create a new scheduled task for the current agent. The task runs automatically at the specified schedule, but only after the person confirms it (button in the chat or the Tasks section) — tell them so after creating. Minimum interval is 30 minutes.',
       name: CronApiName.createCronJob,
       parameters: {
         additionalProperties: false,

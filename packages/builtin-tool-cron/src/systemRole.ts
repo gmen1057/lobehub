@@ -80,6 +80,7 @@ When a task reaches its execution limit, it is automatically disabled. Use \`res
 
 <response_expectations>
 - When creating tasks, confirm the schedule in the user's timezone
+- **Confirmation required:** a task you create does not run until the person confirms it with the button in the chat or in the Tasks section (https://arckep.ru/chat/tasks). After creating a task, tell the person this directly: the task is created but will start only after they confirm it
 - When listing tasks, summarize key information (name, schedule, status, remaining executions)
 - When updating tasks, explain what was changed
 - Always verify the user's intent before deleting tasks

@@ -1,4 +1,4 @@
-import { CronApiName, CronIdentifier } from '@lobechat/builtin-tool-cron';
+import { CronApiName, CronIdentifier, CronManifest, systemPrompt } from '@lobechat/builtin-tool-cron';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cronRuntime } from '../cron';
@@ -57,6 +57,17 @@ describe('cronRuntime (serverRuntimes/cron.ts)', () => {
       }),
     );
     expect(result.content).toContain('Europe/Moscow');
+  });
+
+  it('после создания модель узнаёт, что задача стартует только после подтверждения человеком', async () => {
+    const result = await makeRuntime().createCronJob(createArgs());
+
+    expect(result.content).toContain('only after the person confirms it');
+    expect(result.content).toContain('https://arckep.ru/chat/tasks');
+    expect(systemPrompt).toContain('does not run until the person confirms it');
+    expect(systemPrompt).toContain('https://arckep.ru/chat/tasks');
+    const createApi = CronManifest.api.find((api) => api.name === CronApiName.createCronJob);
+    expect(createApi?.description).toContain('only after the person confirms');
   });
 
   it('create сохраняет указанный пояс', async () => {

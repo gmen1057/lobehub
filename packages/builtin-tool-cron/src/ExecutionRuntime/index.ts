@@ -133,7 +133,7 @@ export class CronExecutionRuntime {
       const cronJob = result.data;
 
       return {
-        content: `Scheduled task "${args.name}" created successfully. It will run according to the pattern "${cronJob.cronPattern ?? args.cronPattern}" in timezone ${cronJob.timezone ?? args.timezone ?? 'UTC'}.`,
+        content: `Scheduled task "${args.name}" created successfully. It will run according to the pattern "${cronJob.cronPattern ?? args.cronPattern}" in timezone ${cronJob.timezone ?? args.timezone ?? 'UTC'}. It will start running only after the person confirms it (button in the chat or the Tasks section, https://arckep.ru/chat/tasks) — tell them this now.`,
         state: {
           cronJob,
           success: true,
