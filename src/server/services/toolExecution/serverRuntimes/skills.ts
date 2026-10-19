@@ -20,6 +20,7 @@ import { MarketService } from '@/server/services/market';
 import { SkillResourceService } from '@/server/services/skill/resource';
 import { SkillSandbox } from '@/server/services/skillSandbox';
 import { preprocessLhCommand } from '@/server/services/toolExecution/preprocessLhCommand';
+import { userOwnsTopic } from '@/server/services/toolExecution/topicOwnership';
 
 import { resolveArckepUserId } from './arckepStudio';
 import { HeadlessSkillRuntimeService } from './skillsHeadless';
@@ -354,7 +355,12 @@ export const skillsRuntime: ServerRuntimeRegistration = {
       let sandboxUnavailable: string | undefined;
       try {
         const arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
-        sandbox = new SkillSandbox({ arckepUserId, topicId: context.topicId });
+        // Номер темы приходит от клиента: чужая тема не должна вести в чужую песочницу.
+        if (await userOwnsTopic(context.serverDB, context.userId, context.topicId)) {
+          sandbox = new SkillSandbox({ arckepUserId, topicId: context.topicId });
+        } else {
+          sandboxUnavailable = 'The sandbox is available only inside your own chat.';
+        }
       } catch {
         sandboxUnavailable =
           'The sandbox is available only to Arckep accounts: open the chat from arckep.ru.';

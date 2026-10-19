@@ -20,6 +20,7 @@ import { DiscoverService } from '../discover';
 import { type MCPService } from '../mcp';
 import { type BuiltinToolsExecutor } from './builtin';
 import { classifyToolError } from './errorClassification';
+import { userOwnsTopic } from './topicOwnership';
 import {
   type ToolExecutionContext,
   type ToolExecutionResult,
@@ -250,7 +251,14 @@ export class ToolExecutionService {
     for (const key of Object.keys(headers)) {
       if (TOPIC_HEADERS.has(key.toLowerCase())) delete headers[key];
     }
-    if (identifier === ARCKEP_E2B_CONNECTOR_ID && context.topicId) {
+    // Тема отдаётся шлюзу только вместе с номером человека и только если тема его: номер приходит от клиента,
+    // шлюз ему доверяет (заголовок сильнее session_id), а ключ песочницы — одна тема.
+    if (
+      identifier === ARCKEP_E2B_CONNECTOR_ID &&
+      context.topicId &&
+      arckepUserId &&
+      (await userOwnsTopic(context.serverDB, context.userId, context.topicId))
+    ) {
       headers['X-Arckep-Topic'] = context.topicId;
     }
 

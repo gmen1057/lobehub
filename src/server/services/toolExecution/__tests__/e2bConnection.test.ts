@@ -10,6 +10,11 @@ import { ToolExecutionService } from '../index';
 
 const mockFindById = vi.hoisted(() => vi.fn());
 const mockResolveArckepUserId = vi.hoisted(() => vi.fn());
+const mockFindTopic = vi.hoisted(() => vi.fn());
+
+vi.mock('@/database/models/topic', () => ({
+  TopicModel: vi.fn(() => ({ findById: mockFindTopic })),
+}));
 
 vi.mock('@/database/models/plugin', () => ({
   PluginModel: vi.fn(() => ({ findById: mockFindById })),
@@ -42,6 +47,7 @@ describe('withUserConnectionParams — песочница E2B и номер те
     vi.clearAllMocks();
     mockResolveArckepUserId.mockResolvedValue(15);
     mockFindById.mockResolvedValue({ settings: {} });
+    mockFindTopic.mockResolvedValue({ id: 'tpc_1' });
     service = new ToolExecutionService({ builtinToolsExecutor: {} as any, mcpService: {} as any });
   });
 
@@ -98,11 +104,25 @@ describe('withUserConnectionParams — песочница E2B и номер те
     expect(other.headers['X-MCP-Host']).toBe('db.local');
   });
 
-  it('аккаунт не из студии: номера человека нет, тема всё равно передаётся (шлюз без человека не считает деньги)', async () => {
+  it('аккаунт не из студии: номера человека нет — тему шлюзу не отдаём', async () => {
     mockResolveArckepUserId.mockRejectedValue(new Error('not studio'));
     const result = await params(E2B);
-    expect(result.headers['X-Arckep-Topic']).toBe('tpc_1');
+    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
     expect(result.headers).not.toHaveProperty('X-Arckep-User');
+  });
+
+  it('чужая тема (номер пришёл от клиента) шлюзу не отдаётся: проверка по базе, в рамках человека', async () => {
+    mockFindTopic.mockResolvedValue(undefined);
+    const result = await params(E2B, context({ topicId: 'tpc_victim' }));
+    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
+    expect(result.headers['X-Arckep-User']).toBe('15');
+    expect(mockFindTopic).toHaveBeenCalledWith('tpc_victim');
+  });
+
+  it('сбой базы при проверке темы = тема не его', async () => {
+    mockFindTopic.mockRejectedValue(new Error('db down'));
+    const result = await params(E2B);
+    expect(result.headers).not.toHaveProperty('X-Arckep-Topic');
   });
 
   it('stdio-подключение не меняется', async () => {
