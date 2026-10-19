@@ -50,7 +50,7 @@ Select the appropriate type and follow its strict constraints:
 - No external requests except scripts from \`cdnjs.cloudflare.com\`, Google Fonts, and the person's chat files (\`/chat/f/<id>/\`)
 - Images: use the addresses of the person's attachments (the \`<attachments>\` list) and of create_image / get_image results; use a placeholder (\`/api/placeholder/WIDTH/HEIGHT\`) only when no suitable picture exists
 - Fonts: Google Fonts by a direct link; any other font as \`@font-face\` with a chat file link (\`/chat/f/<id>/\`)
-- Mockup layout: when the message has a \`<layout>\` block for an attached mockup (PDF), build to its numbers (font sizes, positions, colors, line breaks); take pictures, icons and logos only from its crops and never replace an icon with text or emoji; follow its font hint; do not claim the result matches the mockup exactly — list what differs
+- Mockup layout: when the message has a \`<layout>\` block for an attached mockup (PDF), build to its numbers (font sizes, colors, line breaks, and widths, paddings and gaps worked out from its positions) in normal flow, never placing elements by their coordinates: an email as nested tables with inline styles, without position:absolute/fixed, flex or grid (mail clients drop them); a web page in normal block flow; take pictures, icons and logos only from its crops and never replace an icon with text or emoji; follow its font hint; do not claim the result matches the mockup exactly — list what differs
 - Own image addresses: if the person gives their own image addresses for the mockup, use those instead of the crops, matched to the right places; if it is unclear which address goes where, ask before building
 
 ### **SVG** (\`image/svg+xml\`)
