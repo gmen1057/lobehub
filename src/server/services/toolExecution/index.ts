@@ -213,7 +213,9 @@ export class ToolExecutionService {
         ? 'Человек отказался от запуска'
         : gate.code === 'ARCKEP_CONFIRMATION_REQUIRED'
           ? 'Нужно подтверждение человека'
-          : 'Подтверждение сейчас недоступно';
+          : gate.code === 'ARCKEP_CONFIRMATION_UNSUPPORTED'
+            ? 'Этот вызов нельзя подтвердить'
+            : 'Подтверждение сейчас недоступно';
     return { content: gate.content, error: { code: gate.code, message }, success: false };
   }
 

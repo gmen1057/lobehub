@@ -355,39 +355,65 @@ export const summarizeToolCall = (tool: string, rawArguments: unknown): string =
   return oneLine(parts.join(', '), SUMMARY_LIMIT);
 };
 
-/** Адрес или адреса из аргументов инструмента, который открывает страницу (`url`, `urls`, `link`). */
-const pageAddresses = (rawArguments: unknown): string[] => {
-  let args: Record<string, unknown> = {};
-  try {
-    const parsed = typeof rawArguments === 'string' ? JSON.parse(rawArguments) : rawArguments;
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) args = parsed as Record<string, unknown>;
-  } catch {
-    // нечитаемые аргументы — адресов нет
-  }
-  const found: string[] = [];
-  for (const key of ['url', 'link', 'urls']) {
-    const value = args[key];
-    for (const item of Array.isArray(value) ? value : [value]) {
-      if (typeof item === 'string' && item.trim()) found.push(oneLine(item, SUMMARY_LIMIT));
+const PAGE_ADDRESS_LIMIT = 5;
+
+/** Какие аргументы допустимы у вызовов, открывающих адрес: только сами адреса — всё показанное и есть всё хешируемое. */
+const pageArgumentKey = (apiName: string) => (apiName === 'crawlMultiPages' ? 'urls' : 'url');
+
+export type PageCallDescription = { ok: false; reason: string } | { ok: true; summary: string };
+
+/**
+ * Описание вызова, открывающего страницу: «Открыть страницу <адрес>». Человек подтверждает то, что видит, поэтому
+ * показывается ВСЁ и ничего не усекается: только допустимые аргументы (`url`, у `crawlMultiPages` — `urls`; любое
+ * другое поле — отказ), адреса `http(s)` без логина и пароля, не больше 5, итоговая строка не длиннее 300 знаков.
+ * Не получилось — `ok: false`: подтверждение не создаётся, вызов не выполняется. Адрес показывается в
+ * канонической записи (`URL.href`: имя узла в punycode, как его откроет загрузчик), а не в том виде, как его
+ * написала модель, — похожие символы в имени узла не маскируют чужой адрес.
+ */
+export const describePageCall = (apiName: string, rawArguments: unknown): PageCallDescription => {
+  let args: unknown = rawArguments;
+  if (typeof rawArguments === 'string') {
+    try {
+      args = JSON.parse(rawArguments);
+    } catch {
+      return { ok: false, reason: 'параметры не читаются' };
     }
   }
-  return found;
-};
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    return { ok: false, reason: 'параметры не читаются' };
+  }
+  const record = args as Record<string, unknown>;
+  const key = pageArgumentKey(apiName);
+  if (Object.keys(record).some((name) => name !== key)) {
+    return { ok: false, reason: 'в параметрах есть что-то кроме адреса' };
+  }
 
-/** Описание вызова, открывающего страницу: «Открыть страницу <адрес>» — человек должен видеть адрес целиком. */
-export const summarizePageCall = (rawArguments: unknown): string => {
-  const addresses = pageAddresses(rawArguments);
-  if (addresses.length === 0) return 'Открыть страницу';
-  return oneLine(
-    `${addresses.length === 1 ? 'Открыть страницу' : 'Открыть страницы'} ${addresses.join(', ')}`,
-    SUMMARY_LIMIT,
-  );
-};
+  const raw = key === 'urls' ? record.urls : [record.url];
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > PAGE_ADDRESS_LIMIT) {
+    return { ok: false, reason: `нужно от 1 до ${PAGE_ADDRESS_LIMIT} адресов` };
+  }
 
-const callSummary = (call: GateToolCall) =>
-  isArckepPageOpeningTool(call.identifier, call.apiName)
-    ? summarizePageCall(call.arguments)
-    : summarizeToolCall(call.apiName, call.arguments);
+  const addresses: string[] = [];
+  for (const item of raw) {
+    let parsed: URL;
+    try {
+      parsed = new URL(typeof item === 'string' ? item.trim() : '');
+    } catch {
+      return { ok: false, reason: 'адрес не читается' };
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { ok: false, reason: 'адрес не http и не https' };
+    }
+    if (parsed.username || parsed.password) {
+      return { ok: false, reason: 'в адресе есть логин или пароль' };
+    }
+    addresses.push(parsed.href);
+  }
+
+  const summary = `${addresses.length === 1 ? 'Открыть страницу' : 'Открыть страницы'} ${addresses.join(', ')}`;
+  if (summary.length > SUMMARY_LIMIT) return { ok: false, reason: 'адрес слишком длинный' };
+  return { ok: true, summary };
+};
 
 const needConfirmationText = (entry: TopicConfirmation, summary: string, opensPage: boolean) =>
   [
@@ -425,6 +451,22 @@ export const gatePaidToolCall = async (
   try {
     if (!(await isTopicUntrusted(db, userId, topicId))) return { action: 'proceed' };
 
+    // Открытие адреса: подтверждается только то, что можно показать человеку целиком (describePageCall).
+    let summary = '';
+    if (opensPage) {
+      const page = describePageCall(call.apiName, call.arguments);
+      if (!page.ok) {
+        return {
+          action: 'blocked',
+          code: 'ARCKEP_CONFIRMATION_UNSUPPORTED',
+          content: `Вызов «${tool}» НЕ выполнен: человеку нельзя показать, что именно открывается (${page.reason}). Не повторяй его в таком виде. Если человеку нужна эта страница, назови адрес в ответе — пусть откроет сам.`,
+        };
+      }
+      summary = page.summary;
+    } else {
+      summary = summarizeToolCall(tool, call.arguments);
+    }
+
     for (let attempt = 0; attempt < 3; attempt++) {
       const entry = await readConfirmation(db, userId, topicId, id);
 
@@ -442,7 +484,7 @@ export const gatePaidToolCall = async (
         return {
           action: 'blocked',
           code: 'ARCKEP_CONFIRMATION_REQUIRED',
-          content: needConfirmationText(entry, callSummary(call), opensPage),
+          content: needConfirmationText(entry, summary, opensPage),
         };
       }
 
@@ -458,7 +500,7 @@ export const gatePaidToolCall = async (
         return {
           action: 'blocked',
           code: 'ARCKEP_CONFIRMATION_REQUIRED',
-          content: needConfirmationText(fresh, callSummary(call), opensPage),
+          content: needConfirmationText(fresh, summary, opensPage),
         };
       }
     }
