@@ -51,6 +51,7 @@ import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
+import { resolveArckepLinkConnectors } from '@/server/modules/AgentRuntime/arckepLinkConnectors';
 import { resolveArckepSearchPluginIds } from '@/server/modules/AgentRuntime/arckepSearch';
 import {
   createServerAgentToolsEngine,
@@ -542,6 +543,32 @@ export class AiAgentService {
       // 5a. Get installed plugins from database
       const installedPlugins = await this.pluginModel.query();
       log('execAgent: got %d installed plugins', installedPlugins.length);
+
+      // arckep (19.10.2026): ссылка на Figma (и другие узнаваемые ссылки, arckepLinkConnectors.ts) в ПОСЛЕДНЕМ
+      // сообщении человека. Подключение установлено и с токеном — включаем его сразу, как «Поиск Arckep»: схемы
+      // инструментов в первом шаге, без activateTools (раньше модель отвечала «не могу открыть Figma» и звала
+      // инструменты только после просьбы проверить ещё раз). Подключения нет или токен не вставлен — на этот ход
+      // одна строка в системной подсказке «подключите…». Место — здесь, а не в браузере и не в подсказке
+      // активатора: только тут известны и установленные подключения, и `disabled_tools` запроса. Боты не
+      // трогаем: там ссылку присылает посторонний, а токен — владельца бота.
+      if (!isBotConversation) {
+        const linkConnectors = resolveArckepLinkConnectors({
+          excludePluginIds,
+          installedPlugins,
+          prompt,
+        });
+        if (linkConnectors.activate.length > 0) {
+          pickedPluginIds.push(...linkConnectors.activate);
+          agentPlugins = dropExcluded([...new Set([...agentPlugins, ...linkConnectors.activate])]);
+          log('execAgent: link connectors activated: %O', linkConnectors.activate);
+        }
+        if (linkConnectors.setupHints.length > 0) {
+          agentConfig.systemRole = [agentConfig.systemRole, ...linkConnectors.setupHints]
+            .filter(Boolean)
+            .join('\n\n');
+          log('execAgent: link connector setup hint added (%d)', linkConnectors.setupHints.length);
+        }
+      }
 
       // 5b. Get model abilities from model-bank for function calling support check
       const isModelSupportToolUse = (m: string, p: string) => {

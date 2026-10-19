@@ -105,3 +105,42 @@ describe.each([
     expect(prompt).not.toContain('estimateImage');
   });
 });
+
+// arckep (19.10.2026): ссылка на Figma → mcp-arckep-figma; параметры — по шлюзу (node_id у трёх инструментов,
+// список node_ids только у export_images)
+describe.each([
+  ['full', systemPrompt],
+  ['headless', systemPromptHeadless],
+])('activator prompt (%s) — Figma link', (_name, prompt) => {
+  it('sends a Figma link to mcp-arckep-figma and forbids "cannot open Figma links"', () => {
+    expect(prompt).toContain(
+      'A Figma link (figma.com/design, /file, /proto, /board, /slides, /make)',
+    );
+    expect(prompt).toContain('`mcp-arckep-figma`');
+    expect(prompt).toContain('Never answer that you cannot open Figma links');
+  });
+
+  it('names the real gateway calls: get_metadata first, one node_id per get_design_context, get_screenshot to look', () => {
+    expect(prompt).toContain('`get_metadata` first');
+    expect(prompt).toContain(
+      '`get_design_context` for the frame you need (one `node_id` per call)',
+    );
+    expect(prompt).toContain('`get_screenshot` (one frame)');
+    // get_design_context не принимает список (node_ids есть только у export_images)
+    expect(prompt).not.toContain('node_ids');
+  });
+
+  it('tells the model what to say when Figma is not connected, and warns about Figma limits', () => {
+    expect(prompt).toContain('Подключите Figma: Подключения → Figma → вставьте личный токен');
+    expect(prompt).toContain('about 20 a month');
+  });
+
+  it('stays inside <on_demand_tools> and keeps the "only identifiers from <available_tools>" rule', () => {
+    const block = prompt.slice(
+      prompt.indexOf('<on_demand_tools>'),
+      prompt.indexOf('</on_demand_tools>'),
+    );
+    expect(block).toContain('mcp-arckep-figma');
+    expect(block).toContain('Activate only identifiers that appear in `<available_tools>`');
+  });
+});
