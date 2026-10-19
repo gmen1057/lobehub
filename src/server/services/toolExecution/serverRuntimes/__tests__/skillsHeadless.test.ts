@@ -245,6 +245,7 @@ describe('HeadlessSkillRuntimeService.exportFile', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('too large');
     expect(fileService.uploadBuffer).not.toHaveBeenCalled();
+    expect(fileService.createFileRecord).not.toHaveBeenCalled();
   });
 
   it('ошибка хранилища не роняет вызов', async () => {
@@ -255,6 +256,48 @@ describe('HeadlessSkillRuntimeService.exportFile', () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('S3 down');
+  });
+});
+
+describe('HeadlessSkillRuntimeService без песочницы (аккаунт не из студии)', () => {
+  const reason = 'The sandbox is available only to Arckep accounts: open the chat from arckep.ru.';
+  const makeClosed = () => {
+    const { base, fileService, resourceService } = make();
+    return new HeadlessSkillRuntimeService({
+      base,
+      fileService,
+      resourceService,
+      sandboxUnavailable: reason,
+      topicId: 'tpc_77',
+    } as any);
+  };
+
+  it('команды, скрипты и экспорт файлов отказывают с понятной причиной', async () => {
+    const service = makeClosed();
+
+    expect(await service.runCommand({ command: 'ls' })).toMatchObject({
+      stderr: reason,
+      success: false,
+    });
+    expect(
+      await service.execScript('ls', {
+        activatedSkills: [{ id: 'x', name: 'SEO Demand' }],
+        description: 'x',
+      }),
+    ).toMatchObject({ stderr: reason, success: false });
+    expect(await service.exportFile('a.txt', 'a.txt')).toEqual({
+      error: reason,
+      filename: 'a.txt',
+      success: false,
+    });
+  });
+
+  it('справочники навыков по-прежнему читаются', async () => {
+    const result = await new SkillsExecutionRuntime({
+      builtinSkills: filterBuiltinSkills(builtinSkills),
+      service: makeClosed(),
+    }).readReference({ id: 'SEO Demand', path: 'references/workflow' });
+    expect(result.success).toBe(true);
   });
 });
 

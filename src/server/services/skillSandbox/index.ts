@@ -21,6 +21,49 @@ const GATEWAY_TIMEOUT_MS = 110_000;
 export const SANDBOX_MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
 /** Предел файла, который забираем из песочницы (шлюз отдаёт его base64 внутри JSON). */
 export const SANDBOX_MAX_EXPORT_BYTES = 25 * 1024 * 1024;
+/** Предел ответа шлюза на команду (stdout+stderr): команда, печатающая гигабайты, не должна съесть память движка. */
+const GATEWAY_COMMAND_RESPONSE_LIMIT = 8 * 1024 * 1024;
+/** Ответ на read_file: base64 файла (×4/3) плюс обёртка JSON. */
+const GATEWAY_FILE_RESPONSE_LIMIT = Math.ceil((SANDBOX_MAX_EXPORT_BYTES * 4) / 3) + 4096;
+
+/** Файл по длине base64 (без декодирования): `=` в конце уменьшают размер. */
+export const base64DecodedSize = (base64: string): number => {
+  const padding = base64.endsWith('==') ? 2 : base64.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+};
+
+/**
+ * Тело ответа не больше `maxBytes`: длина из заголовка проверяется до чтения, а само чтение идёт потоком
+ * и обрывается на пределе — не `response.json()` по неограниченному телу. `null` — предел превышен.
+ */
+const readCappedText = async (response: Response, maxBytes: number): Promise<string | null> => {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    return null;
+  }
+
+  if (!response.body) {
+    const text = await response.text();
+    return Buffer.byteLength(text) > maxBytes ? null : text;
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+};
 
 /** Метка перед JSON-результатом команды в выводе шлюза; управляющие знаки в обычном выводе не встречаются. */
 const RESULT_MARKER = '\u0001ARCKEP_RESULT\u0001';
@@ -35,8 +78,11 @@ export type SandboxFileRead =
   { base64: string; filename: string; ok: true; size: number } | { message: string; ok: false };
 
 export interface SkillSandboxOptions {
-  /** Номер человека в студии (X-Arckep-User): по нему шлюз считает деньги и квоты. */
-  arckepUserId?: string;
+  /**
+   * Номер человека в студии (X-Arckep-User): по нему шлюз считает деньги и квоты. Обязателен: без него
+   * песочница работала бы неучтённо, поэтому вызывающий не создаёт SkillSandbox для чужих аккаунтов.
+   */
+  arckepUserId: string;
   fetchImpl?: typeof fetch;
   gatewayUrl?: string;
   topicId: string;
@@ -152,6 +198,7 @@ export class SkillSandbox {
   private async call(
     toolName: string,
     args: Record<string, unknown>,
+    maxResponseBytes: number = GATEWAY_COMMAND_RESPONSE_LIMIT,
   ): Promise<{ ok: true; text: string } | { message: string; ok: false }> {
     try {
       const response = await this.fetchImpl(this.gatewayUrl, {
@@ -164,7 +211,7 @@ export class SkillSandbox {
         headers: {
           'Content-Type': 'application/json',
           'X-Arckep-Topic': this.options.topicId,
-          ...(this.options.arckepUserId ? { 'X-Arckep-User': this.options.arckepUserId } : {}),
+          'X-Arckep-User': this.options.arckepUserId,
         },
         method: 'POST',
         signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
@@ -174,7 +221,12 @@ export class SkillSandbox {
         return { message: `The sandbox is unavailable (HTTP ${response.status}).`, ok: false };
       }
 
-      const data = (await response.json()) as {
+      const body = await readCappedText(response, maxResponseBytes);
+      if (body === null) {
+        return { message: 'The sandbox response is too large to read.', ok: false };
+      }
+
+      const data = JSON.parse(body) as {
         error?: { message?: string };
         result?: { content?: Array<{ text?: string }>; isError?: boolean };
       };
@@ -215,8 +267,16 @@ export class SkillSandbox {
 
   /** Файл из песочницы (base64). */
   async readFile(path: string): Promise<SandboxFileRead> {
-    const result = await this.call('read_file', { path });
-    if (!result.ok) return { message: result.message, ok: false };
+    const result = await this.call('read_file', { path }, GATEWAY_FILE_RESPONSE_LIMIT);
+    if (!result.ok) {
+      const tooLarge = result.message === 'The sandbox response is too large to read.';
+      return {
+        message: tooLarge
+          ? `The file is too large to export (limit ${SANDBOX_MAX_EXPORT_BYTES} bytes).`
+          : result.message,
+        ok: false,
+      };
+    }
 
     try {
       const parsed = JSON.parse(result.text) as {

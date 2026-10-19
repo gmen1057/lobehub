@@ -7,6 +7,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  base64DecodedSize,
   buildCommandProgram,
   parseCommandOutput,
   safeRelativePath,
@@ -34,6 +35,19 @@ const jsonRpc = (text: string, isError = false) =>
 
 afterEach(() => {
   vi.unstubAllEnvs();
+});
+
+describe('base64DecodedSize', () => {
+  it.each([
+    ['', 0],
+    ['aGk=', 2],
+    ['aGVsbG8=', 5],
+    ['aGVsbG8h', 6],
+    ['YQ==', 1],
+  ])('%j → %d байт', (base64, size) => {
+    expect(base64DecodedSize(base64)).toBe(size);
+    expect(Buffer.from(base64, 'base64').length).toBe(size);
+  });
 });
 
 describe('safeRelativePath', () => {
@@ -167,6 +181,7 @@ describe('buildCommandProgram', () => {
 describe('SkillSandbox', () => {
   const make = (fetchImpl: typeof fetch, extra: { arckepUserId?: string } = {}) =>
     new SkillSandbox({
+      arckepUserId: '15',
       fetchImpl,
       gatewayUrl: 'http://gw.test/mcp/e2b-sandbox',
       topicId: 'tpc_1',
@@ -190,15 +205,6 @@ describe('SkillSandbox', () => {
     expect(body.params.name).toBe('execute_code');
     expect(body.params.arguments.session_id).toBe('tpc_1');
     expect(body.params.arguments.code).toContain('subprocess.run');
-  });
-
-  it('без номера человека заголовок X-Arckep-User не отправляется', async () => {
-    const fetchImpl = vi.fn(async () =>
-      jsonRpc(`${MARKER}${JSON.stringify({ exit: 0, stderr: '', stdout: '' })}`),
-    );
-    await make(fetchImpl as unknown as typeof fetch).runCommand('true');
-    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
-    expect(init.headers).not.toHaveProperty('X-Arckep-User');
   });
 
   it('текст ошибки шлюза (лимит, баланс) доходит до модели как stderr', async () => {
@@ -238,6 +244,46 @@ describe('SkillSandbox', () => {
     expect(result.success).toBe(false);
     expect(result.stderr).toContain('too large');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('X-Arckep-User уходит в каждом вызове: без него шлюз не мог бы списать деньги', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonRpc(JSON.stringify({ content_base64: '', success: true })),
+    );
+    await make(fetchImpl as unknown as typeof fetch).readFile('a');
+    const init = (fetchImpl.mock.calls[0] as unknown as [string, RequestInit])[1];
+    expect(init.headers).toMatchObject({ 'X-Arckep-User': '15' });
+  });
+
+  it('ответ шлюза на команду сверх предела не читается целиком (поток обрывается)', async () => {
+    let pulled = 0;
+    const chunk = new TextEncoder().encode('x'.repeat(1024 * 1024));
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled += 1;
+        controller.enqueue(chunk);
+        if (pulled > 200) controller.close();
+      },
+    });
+    const fetchImpl = vi.fn(async () => new Response(body));
+
+    const result = await make(fetchImpl as unknown as typeof fetch).runCommand('yes');
+
+    expect(result.success).toBe(false);
+    expect(result.stderr).toContain('too large');
+    // читали ровно до предела (8 МБ), а не все 200 МБ
+    expect(pulled).toBeLessThan(20);
+  });
+
+  it('заголовок Content-Length сверх предела отбрасывает ответ до чтения тела', async () => {
+    const fetchImpl = vi.fn(
+      async () => new Response('{}', { headers: { 'content-length': String(500 * 1024 * 1024) } }),
+    );
+    const result = await make(fetchImpl as unknown as typeof fetch).readFile('big.bin');
+    expect(result).toEqual({
+      message: expect.stringContaining('too large to export'),
+      ok: false,
+    });
   });
 
   it('readFile: возвращает файл, а текст «не найден» — ошибкой', async () => {

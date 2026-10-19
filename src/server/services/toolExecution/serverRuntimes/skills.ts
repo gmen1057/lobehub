@@ -348,11 +348,16 @@ export const skillsRuntime: ServerRuntimeRegistration = {
     // arckep (19.10.2026): в движке без интерфейса команды и файлы навыков идут в песочницу E2B человека
     // через шлюз коннекторов (облака LobeHub, куда ведёт апстримный путь, у нас нет).
     if (isHeadlessSkillMode() && context.topicId) {
-      let arckepUserId: string | undefined;
+      // Песочница платная и считается по номеру человека в студии. Аккаунт не из студии номера не имеет:
+      // тогда команды и файлы не выполняются (справочники навыков работают), в обход учёта не ходим.
+      let sandbox: SkillSandbox | undefined;
+      let sandboxUnavailable: string | undefined;
       try {
-        arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
+        const arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
+        sandbox = new SkillSandbox({ arckepUserId, topicId: context.topicId });
       } catch {
-        arckepUserId = undefined; // аккаунт не из студии — шлюз получит запрос без номера человека
+        sandboxUnavailable =
+          'The sandbox is available only to Arckep accounts: open the chat from arckep.ru.';
       }
 
       return new SkillsExecutionRuntime({
@@ -361,7 +366,8 @@ export const skillsRuntime: ServerRuntimeRegistration = {
           base: service,
           fileService,
           resourceService,
-          sandbox: new SkillSandbox({ arckepUserId, topicId: context.topicId }),
+          sandbox,
+          sandboxUnavailable,
           topicId: context.topicId,
         }),
       });

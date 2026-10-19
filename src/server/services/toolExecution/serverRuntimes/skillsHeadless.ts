@@ -13,6 +13,7 @@ import { filterBuiltinSkills } from '@/helpers/skillFilters';
 import { type FileService } from '@/server/services/file';
 import { type SkillResourceService } from '@/server/services/skill/resource';
 import {
+  base64DecodedSize,
   safeRelativePath,
   SANDBOX_MAX_EXPORT_BYTES,
   type SandboxFile,
@@ -54,7 +55,12 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
       base: Pick<SkillRuntimeService, 'findAll' | 'findById' | 'findByName' | 'readResource'>;
       fileService: Pick<FileService, 'createFileRecord' | 'uploadBuffer'>;
       resourceService: Pick<SkillResourceService, 'readResource'>;
-      sandbox: Pick<SkillSandbox, 'readFile' | 'runCommand'>;
+      /**
+       * Песочница человека. Нет её — команды и файлы не выполняются совсем (`sandboxUnavailable` — почему):
+       * без номера человека в студии шлюз не мог бы списать деньги, поэтому в обход учёта мы не работаем.
+       */
+      sandbox?: Pick<SkillSandbox, 'readFile' | 'runCommand'>;
+      sandboxUnavailable?: string;
       topicId: string;
     },
   ) {}
@@ -68,13 +74,18 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
   readResource: SkillRuntimeService['readResource'] = (id, path) =>
     this.deps.base.readResource(id, path);
 
-  runCommand = async (options: { command: string }): Promise<CommandResult> =>
-    this.deps.sandbox.runCommand(options.command);
+  runCommand = async (options: { command: string }): Promise<CommandResult> => {
+    const sandbox = this.sandboxOrReason();
+    return typeof sandbox === 'string' ? failure(sandbox) : sandbox.runCommand(options.command);
+  };
 
   execScript = async (
     command: string,
     options: { activatedSkills?: Array<{ id: string; name: string }>; description: string },
   ): Promise<CommandResult> => {
+    const sandbox = this.sandboxOrReason();
+    if (typeof sandbox === 'string') return failure(sandbox);
+
     const names = [...new Set((options.activatedSkills ?? []).map((skill) => skill.name))];
     if (names.length === 0) {
       return failure('execScript needs the `skill` parameter: the name of the activated skill.');
@@ -104,21 +115,27 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
       ),
     ];
 
-    return this.deps.sandbox.runCommand(command, { cwd: firstFolder, files });
+    return sandbox.runCommand(command, { cwd: firstFolder, files });
   };
 
   exportFile = async (path: string, filename: string): Promise<ExportFileResult> => {
-    const read = await this.deps.sandbox.readFile(path);
+    const sandbox = this.sandboxOrReason();
+    if (typeof sandbox === 'string') return { error: sandbox, filename, success: false };
+
+    const read = await sandbox.readFile(path);
     if (!read.ok) return { error: read.message, filename, success: false };
 
-    const buffer = Buffer.from(read.base64, 'base64');
-    if (buffer.length > SANDBOX_MAX_EXPORT_BYTES) {
+    // Размер — по длине base64, до декодирования: буфер для файла сверх предела не создаётся.
+    const decodedSize = base64DecodedSize(read.base64);
+    if (decodedSize > SANDBOX_MAX_EXPORT_BYTES) {
       return {
-        error: `The file is too large (${buffer.length} bytes, limit ${SANDBOX_MAX_EXPORT_BYTES}).`,
+        error: `The file is too large (${decodedSize} bytes, limit ${SANDBOX_MAX_EXPORT_BYTES}).`,
         filename,
         success: false,
       };
     }
+
+    const buffer = Buffer.from(read.base64, 'base64');
 
     try {
       const name = safeFilename(filename);
@@ -159,6 +176,14 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
       };
     }
   };
+
+  private sandboxOrReason(): NonNullable<typeof this.deps.sandbox> | string {
+    return (
+      this.deps.sandbox ??
+      this.deps.sandboxUnavailable ??
+      'The sandbox is not available for this account.'
+    );
+  }
 
   /** Файлы навыка для песочницы: SKILL.md и справочники. Встроенные берутся из пакета, остальные — из хранилища. */
   private async resolveSkillFiles(name: string): Promise<ResolvedSkillFiles | null> {
