@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ARCKEP_WEB_SEARCH_CONNECTOR,
   modelHasBuiltinSearch,
+  offersArckepSearchChoice,
+  prefersArckepSearchOnSchedule,
   resolveArckepSearchPluginIds,
 } from '../arckepSearch';
 
@@ -92,5 +94,61 @@ describe('resolveArckepSearchPluginIds', () => {
       [],
     );
     expect(await resolveArckepSearchPluginIds({ chatConfig: {} }, 'x', undefined)).toEqual([]);
+  });
+});
+
+describe('prefersArckepSearchOnSchedule', () => {
+  it('is true for the four providers whose built-in search is paid per call', () => {
+    for (const provider of ['anthropic', 'google', 'openai', 'xai']) {
+      expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, provider), provider).toBe(true);
+    }
+    expect(prefersArckepSearchOnSchedule(undefined, 'openai')).toBe(true);
+  });
+
+  it('is false for Qwen (search not billed), models without built-in search and missing provider', () => {
+    expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, 'qwen')).toBe(false);
+    expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, 'deepseek')).toBe(false);
+    expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, 'openrouter')).toBe(false);
+    expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, undefined)).toBe(false);
+  });
+
+  it('is false when search is off or the built-in one is already declined', () => {
+    expect(prefersArckepSearchOnSchedule({ chatConfig: { searchMode: 'off' } }, 'openai')).toBe(
+      false,
+    );
+    expect(
+      prefersArckepSearchOnSchedule({ chatConfig: { useModelBuiltinSearch: false } }, 'openai'),
+    ).toBe(false);
+  });
+});
+
+describe('offersArckepSearchChoice', () => {
+  it('offers the cheap search as a second one to models with paid built-in search', async () => {
+    expect(await offersArckepSearchChoice({ chatConfig: {} }, 'claude-opus-5', 'anthropic')).toBe(
+      true,
+    );
+    expect(await offersArckepSearchChoice(undefined, 'gemini-3.7-flash', 'google')).toBe(true);
+  });
+
+  it('does not offer it to Qwen, to models without built-in search or when search is off', async () => {
+    expect(await offersArckepSearchChoice({ chatConfig: {} }, 'qwen3.7-flash', 'qwen')).toBe(false);
+    expect(
+      await offersArckepSearchChoice({ chatConfig: {} }, 'deepseek-v4-flash', 'deepseek'),
+    ).toBe(false);
+    expect(
+      await offersArckepSearchChoice(
+        { chatConfig: { searchMode: 'off' } },
+        'gpt-5.6-luna',
+        'openai',
+      ),
+    ).toBe(false);
+    // встроенный снят человеком — «Поиск Arckep» уже идёт сразу (resolveArckepSearchPluginIds), не вторым
+    expect(
+      await offersArckepSearchChoice(
+        { chatConfig: { useModelBuiltinSearch: false } },
+        'gpt-5.6-luna',
+        'openai',
+      ),
+    ).toBe(false);
   });
 });

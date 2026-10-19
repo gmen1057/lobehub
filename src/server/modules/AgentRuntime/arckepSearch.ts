@@ -22,6 +22,19 @@ export const ARCKEP_NATIVE_SEARCH_PROVIDERS = new Set([
   'xai',
 ]);
 
+/**
+ * arckep (19.10.2026, владелец: «где оптимально — дать модели выбор, какой поиск запустить»): у этих
+ * провайдеров человек платит за каждый вызов встроенного поиска (backend/app/services/provider_search_fees.py,
+ * курс чата 110 ₽/$): Claude и GPT ≈1,10 ₽, Gemini ≈1,54 ₽, Grok ≈0,55 ₽ — против 0,10 ₽ у «Поиска Arckep».
+ * У Qwen встроенный поиск отдельно не оплачивается — второй ему не нужен.
+ */
+export const ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS = new Set([
+  'anthropic',
+  'google',
+  'openai',
+  'xai',
+]);
+
 /** Подключение студии с двумя инструментами web_search / web_fetch (mcp_service/chat_connectors.py). */
 export const ARCKEP_WEB_SEARCH_CONNECTOR = 'mcp-arckep-studio-web';
 
@@ -81,4 +94,35 @@ export const resolveArckepSearchPluginIds = async (
   if ((agentConfig?.chatConfig?.searchMode ?? 'auto') === 'off') return [];
   if (await resolveServerEnabledSearch(agentConfig, model, provider)) return [];
   return [ARCKEP_WEB_SEARCH_CONNECTOR];
+};
+
+/**
+ * Запуск по расписанию (мониторинг новостей и т. п.) идёт без человека и повторяется: вместо платного
+ * встроенного поиска модели — только «Поиск Arckep». true — выключить встроенный на этот запуск
+ * (useModelBuiltinSearch: false), дальше resolveArckepSearchPluginIds и resolveServerEnabledSearch работают как
+ * у DeepSeek. Поиск выключен или встроенный уже снят — менять нечего.
+ */
+export const prefersArckepSearchOnSchedule = (
+  agentConfig: { chatConfig?: SearchChatConfig } | undefined,
+  provider: string | undefined,
+): boolean => {
+  if (!provider || !ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS.has(provider)) return false;
+  const chatConfig = agentConfig?.chatConfig;
+  if ((chatConfig?.searchMode ?? 'auto') === 'off') return false;
+  return chatConfig?.useModelBuiltinSearch ?? true;
+};
+
+/**
+ * Обычный чат у модели с платным встроенным поиском: «Поиск Arckep» — вторым, по требованию (в
+ * <available_tools>, подключается activateTools). Модель выбирает сама: один вопрос — встроенным, много запросов
+ * подряд (новости, списки, сравнения) — дешёвым. Сразу в набор не кладём: два описания инструментов легли бы в
+ * каждый шаг, а нужны они редко.
+ */
+export const offersArckepSearchChoice = async (
+  agentConfig: { chatConfig?: SearchChatConfig } | undefined,
+  model: string | undefined,
+  provider: string | undefined,
+): Promise<boolean> => {
+  if (!provider || !ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS.has(provider)) return false;
+  return resolveServerEnabledSearch(agentConfig, model, provider);
 };

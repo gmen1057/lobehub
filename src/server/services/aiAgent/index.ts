@@ -65,7 +65,12 @@ import {
   hasReadyLinkConnector,
   resolveArckepLinkConnectors,
 } from '@/server/modules/AgentRuntime/arckepLinkConnectors';
-import { resolveArckepSearchPluginIds } from '@/server/modules/AgentRuntime/arckepSearch';
+import {
+  ARCKEP_WEB_SEARCH_CONNECTOR,
+  offersArckepSearchChoice,
+  prefersArckepSearchOnSchedule,
+  resolveArckepSearchPluginIds,
+} from '@/server/modules/AgentRuntime/arckepSearch';
 import {
   createServerAgentToolsEngine,
   type EvalContext,
@@ -695,6 +700,19 @@ export class AiAgentService {
     if (paramsOverride && Object.keys(paramsOverride).length > 0) {
       agentConfig.params = { ...agentConfig.params, ...paramsOverride } as any;
     }
+    // arckep (19.10.2026): запуск по расписанию ищет «Поиском Arckep» (0,10 ₽), а не платным встроенным поиском
+    // модели (см. prefersArckepSearchOnSchedule). Подключение человек удалил — остаётся встроенный, как было.
+    if (trigger === 'cron' && prefersArckepSearchOnSchedule(agentConfig, agentConfig.provider)) {
+      let hasArckepSearch = false;
+      try {
+        hasArckepSearch = !!(await this.pluginModel.findById(ARCKEP_WEB_SEARCH_CONNECTOR));
+      } catch (error) {
+        log('execAgent: failed to look up %s: %O', ARCKEP_WEB_SEARCH_CONNECTOR, error);
+      }
+      if (hasArckepSearch) {
+        agentConfig.chatConfig = { ...agentConfig.chatConfig, useModelBuiltinSearch: false } as any;
+      }
+    }
 
     log(
       'execAgent: got agent config for %s (id: %s), model: %s, provider: %s',
@@ -1117,6 +1135,12 @@ export class AiAgentService {
             ...(hasTopicReference ? [] : [TopicReferenceIdentifier]),
           ]
         : [];
+      // arckep (19.10.2026): у модели с платным встроенным поиском «Поиск Arckep» — вторым, по требованию: модель
+      // сама выбирает, каким искать (offersArckepSearchChoice). Не установлен у человека — манифеста нет, не
+      // предлагается.
+      if (defersLightweight && (await offersArckepSearchChoice(agentConfig, model, provider))) {
+        lazyOnDemandToolIds.push(ARCKEP_WEB_SEARCH_CONNECTOR);
+      }
       // Прежняя встроенная «Студия» (arckep-studio) заменена подключениями mcp-arckep-studio-*: если они
       // у помощника есть, старую не предлагаем вовсе — иначе у модели два набора инструментов для картинок
       // и устаревший estimateImage → createImage. Без подключений остаётся запасным путём.
