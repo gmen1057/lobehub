@@ -803,4 +803,28 @@ export class TopicModel {
       topics: topicList,
     }));
   };
+
+  /**
+   * arckep (19.10.2026, задачи по расписанию): переписки запусков одной задачи, свежие первыми.
+   * Не зависит от помощника: проверка идёт по `trigger = 'cron'` и `metadata.cronJobId`, только свои переписки.
+   */
+  getCronTopicsByCronJobId = async (cronJobId: string, limit = 50) => {
+    return this.db
+      .select({
+        createdAt: topics.createdAt,
+        id: topics.id,
+        title: topics.title,
+        updatedAt: topics.updatedAt,
+      })
+      .from(topics)
+      .where(
+        and(
+          eq(topics.userId, this.userId),
+          eq(topics.trigger, 'cron'),
+          sql`${topics.metadata} @> ${JSON.stringify({ cronJobId })}::jsonb`,
+        ),
+      )
+      .orderBy(desc(topics.createdAt))
+      .limit(limit);
+  };
 }

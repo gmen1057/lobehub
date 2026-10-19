@@ -1464,4 +1464,83 @@ describe('TopicModel - Query', () => {
       expect(result).toEqual([]);
     });
   });
+
+  // arckep (19.10.2026): переписки запусков одной задачи по расписанию
+  describe('getCronTopicsByCronJobId', () => {
+    it('возвращает только переписки этой задачи, свежие первыми, и только свои', async () => {
+      await serverDB.insert(agents).values({ id: 'cron-agent-2', userId });
+      await serverDB.insert(topics).values([
+        {
+          createdAt: new Date('2026-10-01T10:00:00Z'),
+          id: 'run-old',
+          metadata: { cronJobId: 'job-a' },
+          title: 'Старый запуск',
+          trigger: 'cron',
+          userId,
+        },
+        {
+          createdAt: new Date('2026-10-02T10:00:00Z'),
+          id: 'run-new',
+          metadata: { cronJobId: 'job-a' },
+          title: 'Новый запуск',
+          trigger: 'cron',
+          userId,
+        },
+        {
+          id: 'run-other-job',
+          metadata: { cronJobId: 'job-b' },
+          title: 'Другая задача',
+          trigger: 'cron',
+          userId,
+        },
+        {
+          id: 'chat-with-same-meta',
+          metadata: { cronJobId: 'job-a' },
+          title: 'Обычная переписка',
+          trigger: 'chat',
+          userId,
+        },
+        {
+          id: 'no-trigger',
+          metadata: { cronJobId: 'job-a' },
+          title: 'Без источника',
+          userId,
+        },
+        {
+          id: 'foreign-run',
+          metadata: { cronJobId: 'job-a' },
+          title: 'Чужой запуск',
+          trigger: 'cron',
+          userId: userId2,
+        },
+      ]);
+
+      const result = await topicModel.getCronTopicsByCronJobId('job-a');
+
+      expect(result.map((item) => item.id)).toEqual(['run-new', 'run-old']);
+      expect(result[0]).toEqual({
+        createdAt: new Date('2026-10-02T10:00:00Z'),
+        id: 'run-new',
+        title: 'Новый запуск',
+        updatedAt: expect.any(Date),
+      });
+    });
+
+    it('учитывает limit и пустой результат', async () => {
+      await serverDB.insert(topics).values(
+        [1, 2, 3].map((n) => ({
+          createdAt: new Date(`2026-10-0${n}T10:00:00Z`),
+          id: `run-${n}`,
+          metadata: { cronJobId: 'job-limit' },
+          trigger: 'cron',
+          userId,
+        })),
+      );
+
+      expect(
+        (await topicModel.getCronTopicsByCronJobId('job-limit', 2)).map((item) => item.id),
+      ).toEqual(['run-3', 'run-2']);
+      expect(await topicModel.getCronTopicsByCronJobId('job-missing')).toEqual([]);
+    });
+  });
 });

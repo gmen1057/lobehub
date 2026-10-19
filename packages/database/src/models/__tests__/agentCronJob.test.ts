@@ -506,6 +506,24 @@ describe('AgentCronJobModel', () => {
       const updated = await AgentCronJobModel.updateExecutionStats(serverDB, 'non-existent-id');
       expect(updated).toBeNull();
     });
+
+    // arckep (19.10.2026): ручной запуск исчерпанной задачи не уводит remainingExecutions ниже нуля
+    it('should not decrement remainingExecutions below zero', async () => {
+      const model = new AgentCronJobModel(serverDB, userId);
+      const created = await model.create({
+        agentId,
+        cronPattern: '0 * * * *',
+        content: 'Floor test',
+        maxExecutions: 1,
+      });
+
+      await AgentCronJobModel.updateExecutionStats(serverDB, created.id);
+      const again = await AgentCronJobModel.updateExecutionStats(serverDB, created.id);
+
+      expect(again!.remainingExecutions).toBe(0);
+      expect(again!.totalExecutions).toBe(2);
+      expect(again!.enabled).toBe(false);
+    });
   });
 
   describe('resetExecutions', () => {

@@ -135,10 +135,11 @@ export class AgentCronJobModel {
       .update(agentCronJobs)
       .set({
         lastExecutedAt: new Date(),
+        // arckep (19.10.2026): не ниже нуля — ручной запуск исчерпанной задачи не должен давать -1
         remainingExecutions: sql`
           CASE 
             WHEN ${agentCronJobs.remainingExecutions} IS NULL THEN NULL
-            ELSE ${agentCronJobs.remainingExecutions} - 1
+            ELSE GREATEST(${agentCronJobs.remainingExecutions} - 1, 0)
           END
         `,
         totalExecutions: sql`${agentCronJobs.totalExecutions} + 1`,
