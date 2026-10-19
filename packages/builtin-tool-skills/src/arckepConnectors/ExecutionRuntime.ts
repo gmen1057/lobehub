@@ -25,7 +25,7 @@ const sourceLabel = (item: ConnectorSuggestion): string => {
   const parts = [item.source === 'catalog' ? 'from the catalog' : 'in your connections'];
   if (item.installed) parts.push('already installed');
   if (item.needsSetup) parts.push('needs keys or a link');
-  if (item.paid) parts.push('paid: runs in a sandbox, about 0.2 RUB per minute');
+  if (item.paid) parts.push('paid: runs in a sandbox, about 0.25 RUB per minute');
   return parts.join(', ');
 };
 

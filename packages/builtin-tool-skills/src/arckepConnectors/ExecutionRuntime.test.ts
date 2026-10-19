@@ -45,7 +45,7 @@ describe('arckep-connectors: searchConnectors', () => {
     }).searchConnectors({ query: 'notion' });
     expect(result.content).toContain('press it and enter keys themselves');
     expect(result.content).toContain('Do not ask for keys, tokens or passwords in the chat');
-    expect(result.content).toContain('0.2 RUB per minute');
+    expect(result.content).toContain('0.25 RUB per minute');
     expect(result.content).toContain('needs keys or a link');
 
     const description = ArckepConnectorsManifest.api[0].description;
