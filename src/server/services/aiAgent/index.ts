@@ -26,6 +26,7 @@ import { LOADING_FLAT } from '@lobechat/const';
 import type { LobeToolManifest, ToolSource } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
 import type { LobeChatDatabase } from '@lobechat/database';
+import type { LayoutInfo } from '@lobechat/prompts';
 import type {
   ChatTopicBotContext,
   ExecAgentParams,
@@ -120,19 +121,45 @@ interface PdfJob {
   provider: string;
 }
 
-/** Вшитая картинка PDF → строка списка вложений. */
+/** Вшитая картинка PDF → строка списка вложений (с местом на странице, если оно известно). */
 const embeddedImageRef = (pdfName: string, image: PdfPrepImage): MessageAttachmentRef => ({
   height: image.height,
   mime: image.mime,
   name: `картинка ${image.index} из ${pdfName}`,
-  note: `стр. ${image.page}`,
+  note: image.place
+    ? `стр. ${image.page}, на странице x${Math.round(image.place.x)} y${Math.round(image.place.y)} ${Math.round(image.place.w)}×${Math.round(image.place.h)} пт`
+    : `стр. ${image.page}`,
   url: fileAddress(image.fileId),
   width: image.width,
 });
 
+/**
+ * arckep (19.10.2026): описание макета PDF для модели — данные блока `<layout>` (packages/prompts/.../layout.ts) из
+ * записи подготовки: вырезки получают устойчивые адреса файлов человека. Нужно только модели в запрос: текст
+ * описания собирается при каждом ходе и в metadata сообщения не сохраняется.
+ */
+const pdfLayoutInfo = (name: string, record: PdfPrepRecord): LayoutInfo | undefined => {
+  if (!record.layout || record.layout.pages.length === 0) return undefined;
+  return {
+    file: name,
+    pageCount: record.pageCount,
+    pages: record.layout.pages.map((page) => ({
+      ...page,
+      crops: page.crops.map((crop) => ({
+        h: crop.h,
+        kind: crop.kind,
+        url: fileAddress(crop.fileId),
+        w: crop.w,
+        x: crop.x,
+        y: crop.y,
+      })),
+    })),
+  };
+};
+
 const pdfPageAlt = (
   name: string,
-  image: { index: number; page: number; total: number },
+  image: { fromPt?: number; index: number; page: number; toPt?: number; total: number },
   pageCount: number,
   renderedPages: number,
 ) => {
@@ -141,9 +168,14 @@ const pdfPageAlt = (
     renderedPages < pageCount && image.page === renderedPages
       ? `; нарисованы только первые ${renderedPages} стр., остальное — в тексте файла`
       : '';
+  // где кусок на странице (в точках страницы, как координаты в описании макета)
+  const span =
+    image.fromPt !== undefined && image.toPt !== undefined
+      ? ` (y ${image.fromPt}–${image.toPt} в точках страницы)`
+      : '';
   return image.total === 1
     ? `${page}${more}`
-    : `${page}, часть ${image.index} из ${image.total} (страница разрезана на ${image.total} частей сверху вниз, читай по порядку)${more}`;
+    : `${page}, часть ${image.index} из ${image.total}${span} (страница разрезана на ${image.total} частей сверху вниз, читай по порядку)${more}`;
 };
 
 /**
@@ -305,12 +337,13 @@ export class AiAgentService {
    * к сообщению не прикрепляются, а попадают в список вложений с адресами — модель вставляет их в HTML.
    *
    * Рисует не этот метод: страницы и картинки готовятся в фоне при загрузке файла (pdfPrepare.ts), результат лежит
-   * в записи файла. Здесь — забрать готовое, подождав не дольше ARCKEP_PDF_PREPARE_WAIT_MS (5 с); не успело —
+   * в записи файла. Здесь — забрать готовое, подождав не дольше ARCKEP_PDF_PREPARE_WAIT_MS (45 с); не успело —
    * `pending`: модель получает только текстовый слой с пометкой «страницы ещё рисуются», без ошибки.
    * Выключатели: ARCKEP_PDF_PAGE_IMAGES=0 и ARCKEP_PDF_EMBEDDED_IMAGES=0. Любая неудача — пусто (только текст).
    */
   private async processPdf(options: PdfJob): Promise<{
     images: MessageAttachmentRef[];
+    layout?: LayoutInfo;
     pages: Array<{ alt: string; id: string; url: string }>;
     pending: boolean;
   }> {
@@ -339,6 +372,8 @@ export class AiAgentService {
       if (settings.embeddedImages) {
         result.images = (record.images ?? []).map((image) => embeddedImageRef(name, image));
       }
+      // описание макета нужно модели со зрением (оно говорит, где на странице что) и идёт вместе со страницами
+      if (withVision && settings.layout) result.layout = pdfLayoutInfo(name, record);
     } catch (error) {
       log('execAgent: pdf processing failed for %s: %O', name, error);
     }
@@ -406,6 +441,15 @@ export class AiAgentService {
             ...(message.imageList ?? []),
             ...(await this.pdfPageImages(fileService, file.name, record)),
           ];
+        }
+
+        // описание макета: только в память этого хода (в базу не пишется); сообщение могло уйти до его готовности
+        const layout = withVision && settings.layout ? pdfLayoutInfo(file.name, record) : undefined;
+        if (layout) {
+          const known = Array.isArray(message.metadata?.layouts) ? message.metadata.layouts : [];
+          if (!known.some((item: LayoutInfo) => item.file === layout.file)) {
+            message.metadata = { ...message.metadata, layouts: [...known, layout] };
+          }
         }
 
         // список вложений: пометка «ещё рисуются» снимается, вшитые картинки добавляются
@@ -1379,6 +1423,8 @@ export class AiAgentService {
     // arckep (19.10.2026): оригиналы вложений с устойчивыми адресами — модель вставляет их в HTML-предпросмотр
     // или качает в песочнице. Сохраняется в metadata user-сообщения (живёт в истории), в текст человека не попадает.
     const attachmentRefs: MessageAttachmentRef[] = [];
+    // arckep (19.10.2026): описание макета PDF — только в сообщение для модели (в памяти), в базу не пишется
+    const pdfLayouts: LayoutInfo[] = [];
 
     // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений;
     // строка самого PDF получает пометку, если страницы ещё рисуются
@@ -1392,6 +1438,7 @@ export class AiAgentService {
         processed.pending ? { ...ref, note: PDF_PAGES_PENDING_NOTE } : ref,
         ...processed.images,
       );
+      if (processed.layout) pdfLayouts.push(processed.layout);
     };
 
     if (files && files.length > 0) {
@@ -1580,7 +1627,13 @@ export class AiAgentService {
       content: prompt,
       fileList,
       imageList,
-      metadata: attachmentRefs.length > 0 ? { attachments: attachmentRefs } : undefined,
+      metadata:
+        attachmentRefs.length > 0 || pdfLayouts.length > 0
+          ? {
+              ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+              ...(pdfLayouts.length > 0 ? { layouts: pdfLayouts } : {}),
+            }
+          : undefined,
       role: 'user' as const,
     };
 

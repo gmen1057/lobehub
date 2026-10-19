@@ -35,6 +35,17 @@ describe('системный промпт помощника: готовые с�
     expect(systemRole).toContain('@font-face');
   });
 
+  it('макет PDF с блоком <layout>: верстать по его числам, картинки и значки только из вырезок, не писать «точно»', () => {
+    expect(systemRole).toContain('<layout>');
+    expect(systemRole).toMatch(/build the HTML to its numbers/);
+    expect(systemRole).toMatch(/font sizes, positions, colors, line breaks/);
+    expect(systemRole).toMatch(/pictures, icons and logos only from its crops/);
+    expect(systemRole).toMatch(/never replace an icon with text or emoji/);
+    expect(systemRole).toMatch(/font hint/);
+    expect(systemRole).toMatch(/do not claim the result matches the mockup exactly/);
+    expect(systemRole).toMatch(/list what differs/);
+  });
+
   it('прежние правила на месте: студия, видео с оценкой, перевод файлов', () => {
     expect(systemRole).toContain('mcp-arckep-studio-images');
     expect(systemRole).toContain('mcp-arckep-studio-video');
@@ -64,6 +75,16 @@ describe('навык Artifacts не спорит с системным пром�
     expect(htmlSection).toContain('Google Fonts');
     expect(htmlSection).toContain('/chat/f/<id>/');
     expect(htmlSection).toContain('@font-face');
+  });
+
+  it('HTML: макет с блоком <layout> — по его числам, картинки и значки из вырезок, без «точно», с перечнем отличий', () => {
+    expect(htmlSection).toContain('<layout>');
+    expect(htmlSection).toMatch(/build to its numbers/);
+    expect(htmlSection).toMatch(/only from its crops/);
+    expect(htmlSection).toMatch(/never replace an icon with text or emoji/);
+    expect(htmlSection).toMatch(/follow its font hint/);
+    expect(htmlSection).toMatch(/do not claim the result matches the mockup exactly/);
+    expect(htmlSection).toMatch(/list what differs/);
   });
 
   it('SVG и React: правила не тронуты', () => {

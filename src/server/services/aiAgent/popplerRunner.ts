@@ -6,17 +6,18 @@ import debug from 'debug';
 const log = debug('lobe-server:poppler');
 
 /**
- * arckep (19.10.2026): запуск программ poppler (pdfinfo, pdftoppm, pdfimages) для PDF от людей. Отдельным
+ * arckep (19.10.2026): запуск программ poppler (pdfinfo, pdftoppm, pdfimages, pdftohtml) для PDF от людей. Отдельным
  * процессом, под prlimit: память (виртуальная, ARCKEP_PDF_MEMORY_MB, по умолчанию 2048, 0 — без предела),
  * размер записываемого файла и процессорное время — чужой PDF с огромной страницей или «бомбой» упирается в
  * предел и падает, а не съедает память и диск хоста. Нет prlimit на хосте — запуск без него.
  */
 
-export type PopplerProgram = 'pdfimages' | 'pdfinfo' | 'pdftoppm';
+export type PopplerProgram = 'pdfimages' | 'pdfinfo' | 'pdftohtml' | 'pdftoppm';
 
 const ENV_NAMES: Record<PopplerProgram, string> = {
   pdfimages: 'PDFIMAGES_BIN',
   pdfinfo: 'PDFINFO_BIN',
+  pdftohtml: 'PDFTOHTML_BIN',
   pdftoppm: 'PDFTOPPM_BIN',
 };
 
