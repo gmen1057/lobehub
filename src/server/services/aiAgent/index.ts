@@ -41,6 +41,7 @@ import debug from 'debug';
 import mime from 'mime';
 
 import { AgentModel } from '@/database/models/agent';
+import { AgentCronJobModel } from '@/database/models/agentCronJob';
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { AiModelModel } from '@/database/models/aiModel';
 import { MessageModel } from '@/database/models/message';
@@ -65,6 +66,8 @@ import { AgentRuntimeService } from '@/server/services/agentRuntime';
 import { getAbortError, isAbortError, throwIfAborted } from '@/server/services/agentRuntime/abort';
 import { type AgentHook } from '@/server/services/agentRuntime/hooks/types';
 import { type StepLifecycleCallbacks } from '@/server/services/agentRuntime/types';
+import { isArckepChatCron } from '@/server/services/arckepCron/flags';
+import { buildScheduledRunPrompt } from '@/server/services/arckepCron/prompt';
 import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
@@ -296,6 +299,30 @@ export class AiAgentService {
 
     // Determine the identifier to use (agentId takes precedence)
     const identifier = agentId || slug!;
+
+    // arckep (19.10.2026, задачи помощника по расписанию): запуск по расписанию идёт без человека в чате —
+    // пояснение уходит в системный контекст (после роли помощника), а сообщение пользователя остаётся
+    // ровно текстом задачи.
+    let effectiveEvalContext = evalContext;
+    if (trigger === 'cron') {
+      let cronJob: Awaited<ReturnType<AgentCronJobModel['findById']>> = null;
+      if (cronJobId) {
+        try {
+          cronJob = await new AgentCronJobModel(this.db, this.userId).findById(cronJobId);
+        } catch (error) {
+          log('execAgent: failed to load cron job %s: %O', cronJobId, error);
+        }
+      }
+      const scheduledPrompt = buildScheduledRunPrompt({
+        cronPattern: cronJob?.cronPattern,
+        name: cronJob?.name,
+        timezone: cronJob?.timezone,
+      });
+      effectiveEvalContext = {
+        ...evalContext,
+        envPrompt: [evalContext?.envPrompt, scheduledPrompt].filter(Boolean).join('\n\n'),
+      };
+    }
 
     log('execAgent: identifier=%s, prompt=%s', identifier, prompt.slice(0, 50));
 
@@ -650,16 +677,23 @@ export class AiAgentService {
       // они только перечислены в <available_tools>, и модель подключает их activateTools (разбор
       // docs/external/chat-next-tools-review-2026-10-18.md: 28 тыс. токенов описаний на каждом шаге).
       // Инструменты, выбранные на сообщение (additionalPluginIds), включаются сразу. lobe-page-agent без
-      // открытой страницы бесполезен — в серверном пути его нет; lobe-message и lobe-cron — только у ботов.
+      // открытой страницы бесполезен — в серверном пути его нет; lobe-message — только у ботов, lobe-cron —
+      // у ботов и (ARCKEP_CHAT_CRON=1) в обычном чате.
       // Боты и встроенные помощники (кроме inbox) сохраняют свой набор, как в браузере.
       const keepsOwnToolSet =
         isBotConversation ||
         (Boolean(agentConfig.slug) &&
           (Object.values(BUILTIN_AGENT_SLUGS) as string[]).includes(agentConfig.slug!) &&
           agentConfig.slug !== BUILTIN_AGENT_SLUGS.inbox);
-      const restHiddenToolIds = isBotConversation
-        ? [PageAgentIdentifier]
-        : [PageAgentIdentifier, MessageToolIdentifier, CronManifest.identifier];
+      // arckep (19.10.2026, задачи по расписанию): lobe-cron в обычном чате — за ARCKEP_CHAT_CRON=1 (тогда он
+      // «ленивый», см. arckepLazyToolIds). Внутри запуска по расписанию (trigger 'cron') скрыт всегда:
+      // задача не плодит задачи. У ботов, как и раньше, виден.
+      const hideCron = trigger === 'cron' || (!isBotConversation && !isArckepChatCron());
+      const restHiddenToolIds = [
+        PageAgentIdentifier,
+        ...(isBotConversation ? [] : [MessageToolIdentifier]),
+        ...(hideCron ? [CronManifest.identifier] : []),
+      ];
       const pickedToolIds = new Set(additionalPluginIds || []);
       // Подключения студии mcp-arckep-studio-* (F6) — по требованию, как и встроенные тяжёлые инструменты.
       // Подключения студии откладываются и у ботов (F7, 19.10): их 51 инструмент сразу — это десятки тысяч
@@ -1211,7 +1245,7 @@ export class AiAgentService {
         autoStart,
         botPlatformContext,
         discordContext,
-        evalContext,
+        evalContext: effectiveEvalContext,
         initialContext,
         initialMessages: allMessages,
         initialStepCount,
