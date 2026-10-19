@@ -18,7 +18,19 @@ export interface TopicListQuery extends IPaginationQuery {
 export const TopicListQuerySchema = z
   .object({
     agentId: z.string().nullish(),
-    excludeTriggers: z.array(z.string()).optional(),
+    // arckep (19.10.2026): `?excludeTriggers=cron` или `?excludeTriggers=cron,eval` (и повтор ключа) — одна
+    // строка приходит из Hono строкой, а не массивом, поэтому ждём и то и другое
+    excludeTriggers: z
+      .union([z.string(), z.array(z.string())])
+      .optional()
+      .transform((value) =>
+        value === undefined
+          ? undefined
+          : (Array.isArray(value) ? value : [value])
+              .flatMap((item) => item.split(','))
+              .map((item) => item.trim())
+              .filter(Boolean),
+      ),
     groupId: z.string().nullish(),
     isInbox: z
       .string()

@@ -1,5 +1,6 @@
 import AgentGroupsRoutes from './agent-groups.route';
 import AgentsRoutes from './agents.route';
+import ArckepRoutes from './arckep.route';
 import FileRoutes from './files.route';
 import KnowledgeBasesRoutes from './knowledge-bases.route';
 import MemoriesRoutes from './memories.route';
@@ -17,6 +18,7 @@ import UsersRoutes from './users.route';
 export default {
   'agent-groups': AgentGroupsRoutes,
   'agents': AgentsRoutes,
+  'arckep': ArckepRoutes,
   'files': FileRoutes,
   'knowledge-bases': KnowledgeBasesRoutes,
   'memories': MemoriesRoutes,

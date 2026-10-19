@@ -77,8 +77,12 @@ export class TopicService extends BaseService {
       }
 
       // Exclude topics with specified trigger sources
+      // arckep (19.10.2026): `NULL NOT IN (…)` в SQL даёт NULL — переписки без источника (trigger IS NULL,
+      // то есть обычные чаты) пропадали из списка. Берём их явно, как делает модель TopicModel.query.
       if (request.excludeTriggers && request.excludeTriggers.length > 0) {
-        conditions.push(notInArray(topics.trigger, request.excludeTriggers));
+        conditions.push(
+          or(isNull(topics.trigger), notInArray(topics.trigger, request.excludeTriggers))!,
+        );
       }
 
       // If keyword is provided, add fuzzy search condition on title
