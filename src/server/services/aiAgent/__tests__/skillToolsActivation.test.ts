@@ -279,4 +279,32 @@ describe('инструменты навыков в движке без инте�
       expect(systemPrompt).not.toContain('arckep-skills');
     });
   });
+
+  describe('магазин навыков в движке без интерфейса', () => {
+    it('не включается, даже если id записан в плагинах помощника', () => {
+      const engine = createServerAgentToolsEngine(
+        { installedPlugins: [], isModelSupportToolUse: () => true },
+        {
+          agentConfig: { plugins: ['lobe-skill-store', 'lobe-skills'] },
+          model: 'gpt-4',
+          provider: 'openai',
+        },
+      );
+      const result = engine.generateToolsDetailed({
+        model: 'gpt-4',
+        provider: 'openai',
+        toolIds: ['lobe-skill-store', 'lobe-skills'],
+      });
+      expect(result.enabledToolIds).not.toContain('lobe-skill-store');
+      expect(result.enabledToolIds).not.toContain(SkillsIdentifier);
+    });
+
+    it('серверный runtime магазина отказывает: импорты идут только через «Мои навыки»', async () => {
+      const { skillStoreRuntime } =
+        await import('@/server/services/toolExecution/serverRuntimes/skillStore');
+      await expect(
+        skillStoreRuntime.factory({ serverDB: {} as any, userId: 'u' } as any),
+      ).rejects.toThrow('arckep-skills');
+    });
+  });
 });

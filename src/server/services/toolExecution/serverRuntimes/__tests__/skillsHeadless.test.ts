@@ -209,7 +209,11 @@ describe('HeadlessSkillRuntimeService.exportFile', () => {
     expect(fileService.createFileRecord).toHaveBeenCalledWith(
       expect.objectContaining({ fileType: 'application/pdf', size: 14, url: key }),
     );
-    // модели не отдаётся адрес /f/<id>: людям он недоступен
+    // номер записи — UUID: адрес /f/<id> отдаётся без входа, его нельзя подобрать
+    expect((fileService.createFileRecord.mock.calls[0] as any)[0].id).toMatch(
+      /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/,
+    );
+    // модели адрес /f/<id> не отдаётся: файл показывает карточка по fileId
     expect(result.note).not.toContain('http');
     expect(result.note).toContain('ARCKEP_FILE {"fileId":"file_9"');
   });

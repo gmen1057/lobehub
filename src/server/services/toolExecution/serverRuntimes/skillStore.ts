@@ -11,6 +11,7 @@ import {
 import debug from 'debug';
 
 import { UserModel } from '@/database/models/user';
+import { isHeadlessSkillMode } from '@/helpers/skillFilters';
 import { MarketService } from '@/server/services/market';
 import { SkillImporter } from '@/server/services/skill/importer';
 
@@ -86,6 +87,14 @@ class SkillStoreServerRuntimeService implements SkillStoreRuntimeService {
  */
 export const skillStoreRuntime: ServerRuntimeRegistration = {
   factory: async (context) => {
+    // arckep (19.10.2026): в движке без интерфейса магазина навыков нет — инструмент скрыт и не подключается.
+    // Страховка: импорты отсюда шли бы мимо «Мои навыков» (UserSkillService: защита ссылок, метка и предел
+    // сохранений помощника). Навык по просьбе сохраняет arckep-skills.
+    if (isHeadlessSkillMode()) {
+      throw new Error(
+        'The skill store is not available here. Use the "arckep-skills" tool to save a skill.',
+      );
+    }
     if (!context.serverDB) {
       throw new Error('serverDB is required for Skill Store execution');
     }

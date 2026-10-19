@@ -20,7 +20,7 @@ import {
   skillFolderName,
   type SkillSandbox,
 } from '@/server/services/skillSandbox';
-import { nanoid } from '@/utils/uuid';
+import { nanoid, uuid } from '@/utils/uuid';
 
 const log = debug('lobe-server:skills-runtime-headless');
 
@@ -145,6 +145,8 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
       await this.deps.fileService.uploadBuffer(key, buffer, mimeType);
       const { fileId } = await this.deps.fileService.createFileRecord({
+        // UUID, как у uploadBase64: адрес /f/<id> отдаётся без входа, поэтому номер должен не подбираться
+        id: uuid(),
         fileHash: sha256(buffer),
         fileType: mimeType,
         name,
@@ -154,8 +156,9 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
       log('exported %s -> file %s (%d bytes)', path, fileId, buffer.length);
 
-      // Ссылка `${APP_URL}/f/<id>` людям недоступна (nginx не отдаёт её движку), поэтому модели её не
-      // показываем: экран студии берёт файл по fileId у бэкенда (GET /files/<id>/url).
+      // Модели адрес не отдаём: файл показывает экран студии карточкой по fileId (GET /files/<id>/url у
+      // бэкенда). Ссылка `${APP_URL}/f/<id>` с 19.10 отдаётся nginx'ом движку и работает без входа, но второй
+      // способ показать файл рядом с карточкой только путал бы модель (она вставила бы ссылку в текст).
       return {
         fileId,
         filename: name,
