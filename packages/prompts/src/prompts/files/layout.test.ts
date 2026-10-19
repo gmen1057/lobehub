@@ -418,6 +418,16 @@ describe('layoutPrompt: описание макета для модели', () =
     expect(text.match(/<\/layout>/g)).toHaveLength(1);
   });
 
+  it('docstring: координаты — для ширин и отступов, не для расстановки; письмо таблицами, без position:absolute', () => {
+    // 19.10 живая проверка: по точным координатам модель расставила всё position:absolute — в почте это разваливается
+    for (const pageImages of [true, false]) {
+      const text = layoutPrompt({ ...info([sample()]), pageImages });
+      expect(text).toContain('а не для расстановки');
+      expect(text).toContain('письмо — вложенными таблицами');
+      expect(text).toContain('без position:absolute/fixed, flex и grid');
+    }
+  });
+
   it('docstring: модели со страницами — «смотри для вида»; без картинок страниц — «верстай только по этому описанию»', () => {
     const base = info([sample()]);
 
