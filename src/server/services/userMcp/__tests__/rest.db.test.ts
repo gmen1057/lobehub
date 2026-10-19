@@ -226,11 +226,42 @@ describe('REST своих подключений', () => {
       );
     });
 
-    it('каталог подключений своих umcp-* не содержит; установить из каталога их нельзя', async () => {
-      const catalog = await (await call('GET', '/plugins/catalog')).json();
-      expect(catalog.data.plugins.some((p: any) => p.identifier.startsWith('umcp-'))).toBe(false);
-      const install = await call('POST', `/plugins/${ID}/install`, { user: 'u2' });
-      expect(install.status).toBe(404);
+    it('каталог: свои umcp-* этого человека (installed: true, с userMcp), чужих нет; установить из каталога нельзя', async () => {
+      // у человека B (u2) своё подключение с другим идентификатором
+      const other = 'umcp-zzzzzzzzzzzz';
+      await call('POST', '/plugins/user-mcp', {
+        body: body({ display: { host: 'other.example' }, identifier: other, title: 'Чужой сервер' }),
+        user: 'u2',
+      });
+
+      const catalogOf = async (user?: string) => {
+        const response = await call('GET', '/plugins/catalog', { user });
+        const text = await response.text();
+        expect(text).not.toContain('enc:v1');
+        return JSON.parse(text).data.plugins as any[];
+      };
+
+      const mine = (await catalogOf()).filter((p) => p.identifier.startsWith('umcp-'));
+      expect(mine.map((p) => p.identifier)).toEqual([ID]);
+      expect(mine[0]).toMatchObject({
+        description: 'Мои заметки',
+        installed: true,
+        title: 'Мой Notion',
+        tools: ['search', 'read_page'],
+        userMcp: { display: { host: 'notion.example' }, kind: 'remote' },
+      });
+
+      const theirs = (await catalogOf('u2')).filter((p) => p.identifier.startsWith('umcp-'));
+      expect(theirs.map((p) => p.identifier)).toEqual([other]);
+      expect(theirs[0].userMcp).toEqual({ display: { host: 'other.example' }, kind: 'remote' });
+
+      // у человека без своих подключений их в каталоге нет
+      await db.insert(users).values({ id: 'u3' });
+      expect((await catalogOf('u3')).some((p) => p.identifier.startsWith('umcp-'))).toBe(false);
+
+      // установить из каталога нельзя ни своё, ни чужое
+      expect((await call('POST', `/plugins/${ID}/install`, { user: 'u2' })).status).toBe(404);
+      expect((await call('POST', `/plugins/${ID}/install`)).status).toBe(404);
     });
 
     it('PATCH настроек для umcp-* отклоняется: ключи зашифрованы целиком', async () => {

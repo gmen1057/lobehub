@@ -123,9 +123,17 @@ export class PluginService {
       this.pluginModel.query(),
     ]);
     const mine = new Set(installed.map((row) => row.identifier));
-    return latest.map((row) =>
-      summarizeConnector({ ...row, settings: null }, mine.has(row.identifier)),
-    );
+    // arckep (19.10.2026, этап 3): в каталог входят и СВОИ подключения `umcp-*` этого человека (installed: true,
+    // с `userMcp`): по этому ответу экран «Подключения» студии строит список и считает предел «10 своих».
+    // Строки читаются через PluginModel человека, чужих здесь не бывает; в общем каталоге (`latestCatalogRows`)
+    // их тоже нет — он собирается только по префиксу `mcp-arckep-`.
+    const own = installed
+      .filter((row) => isArckepUserMcpId(row.identifier))
+      .map((row) => summarizeConnector({ ...(row as ConnectorRow), settings: null }, true));
+    return [
+      ...latest.map((row) => summarizeConnector({ ...row, settings: null }, mine.has(row.identifier))),
+      ...own,
+    ];
   }
 
   async install(identifier: string): Promise<ConnectorSummary | null> {
