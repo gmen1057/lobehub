@@ -13,7 +13,7 @@ import {
   generateSystemPrompt,
   RemoteDeviceManifest,
 } from '@lobechat/builtin-tool-remote-device';
-import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import { ArckepSkillsIdentifier, SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
@@ -705,7 +705,11 @@ export class AiAgentService {
       // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
       // карте, чтобы `activateSkill` мог подключить инструменты вместе с навыком, у которого есть справочники
       // или скрипты; в <available_tools> они не перечисляются (buildToolDiscoveryConfig).
-      const skillToolIds = isArckepHeadlessTools() ? [SkillsIdentifier] : [];
+      // «Мои навыки» (arckep-skills — сохранить навык по просьбе человека) в <available_tools> есть, но
+      // тоже по требованию; ботам он не нужен.
+      const skillToolIds = isArckepHeadlessTools()
+        ? [SkillsIdentifier, ...(keepsOwnToolSet ? [] : [ArckepSkillsIdentifier])]
+        : [];
       const lazyToolIds = [
         ...new Set(
           keepsOwnToolSet

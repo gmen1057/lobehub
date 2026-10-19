@@ -337,4 +337,90 @@ describe('AgentSkillModel', () => {
       expect(result).toBeUndefined();
     });
   });
+
+  describe('arckep: replace и findAllWithResources', () => {
+    it('replace заменяет resources целиком (update сливает вглубь и оставляет старые файлы)', async () => {
+      const skill = await agentSkillModel.create({
+        content: 'old',
+        description: 'old description',
+        identifier: 'user.replace',
+        manifest: createManifest(),
+        name: 'Replace Me',
+        resources: { 'old.md': { fileHash: 'h1', size: 1 } },
+        source: 'user',
+      });
+
+      const merged = await agentSkillModel.update(skill.id, {
+        resources: { 'new.md': { fileHash: 'h2', size: 2 } },
+      });
+      expect(Object.keys(merged.resources ?? {}).sort()).toEqual(['new.md', 'old.md']);
+
+      const replaced = await agentSkillModel.replace(skill.id, {
+        content: 'new',
+        description: 'new description',
+        manifest: createManifest({ description: 'new description' }),
+        resources: { 'new.md': { fileHash: 'h2', size: 2 } },
+      });
+
+      expect(replaced).toMatchObject({
+        content: 'new',
+        description: 'new description',
+        name: 'Replace Me',
+      });
+      expect(Object.keys(replaced!.resources ?? {})).toEqual(['new.md']);
+      expect(replaced!.updatedAt.getTime()).toBeGreaterThanOrEqual(skill.updatedAt.getTime());
+    });
+
+    it('replace не трогает чужой навык', async () => {
+      const otherUserId = 'agent-skill-model-other-user';
+      await serverDB.insert(users).values([{ id: otherUserId }]);
+      const other = await new AgentSkillModel(serverDB, otherUserId).create({
+        content: 'secret',
+        description: 'other',
+        identifier: 'user.other',
+        manifest: createManifest(),
+        name: 'Other',
+        source: 'user',
+      });
+
+      const result = await agentSkillModel.replace(other.id, {
+        content: 'hacked',
+        description: 'x',
+        manifest: createManifest(),
+        resources: {},
+      });
+
+      expect(result).toBeUndefined();
+      expect((await new AgentSkillModel(serverDB, otherUserId).findById(other.id))?.content).toBe(
+        'secret',
+      );
+      await serverDB.delete(users).where(eq(users.id, otherUserId));
+    });
+
+    it('findAllWithResources отдаёт навыки человека с картой файлов, новые выше', async () => {
+      await agentSkillModel.create({
+        description: 'a',
+        identifier: 'user.a',
+        manifest: createManifest({ name: 'A' }),
+        name: 'A',
+        resources: { 'x.md': { fileHash: 'h', size: 1 } },
+        source: 'user',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      await agentSkillModel.create({
+        description: 'b',
+        identifier: 'user.b',
+        manifest: createManifest({ name: 'B' }),
+        name: 'B',
+        source: 'market',
+      });
+
+      const list = await agentSkillModel.findAllWithResources();
+
+      expect(list.map((item) => item.name)).toEqual(['B', 'A']);
+      expect(Object.keys(list[1].resources ?? {})).toEqual(['x.md']);
+      // содержимого в списке нет — только то, что нужно экрану
+      expect(list[0]).not.toHaveProperty('content');
+    });
+  });
 });

@@ -22,7 +22,7 @@ import { NotebookManifest } from '@lobechat/builtin-tool-notebook';
 import { PageAgentManifest } from '@lobechat/builtin-tool-page-agent';
 import { RemoteDeviceManifest } from '@lobechat/builtin-tool-remote-device';
 import { SkillStoreManifest } from '@lobechat/builtin-tool-skill-store';
-import { SkillsManifest } from '@lobechat/builtin-tool-skills';
+import { ArckepSkillsManifest, SkillsManifest } from '@lobechat/builtin-tool-skills';
 import { TaskManifest } from '@lobechat/builtin-tool-task';
 import { TopicReferenceManifest } from '@lobechat/builtin-tool-topic-reference';
 import { UserInteractionManifest } from '@lobechat/builtin-tool-user-interaction';
@@ -248,6 +248,15 @@ export const builtinTools: LobeBuiltinTool[] = [
   {
     identifier: ArckepBotManifest.identifier,
     manifest: ArckepBotManifest,
+    type: 'builtin',
+  },
+  {
+    // arckep (19.10.2026): «Мои навыки» — помощник сам сохраняет навык человека; грузится по требованию
+    // (только серверный путь движка без интерфейса, в браузерном списке инструментов его нет)
+    discoverable: false,
+    hidden: true,
+    identifier: ArckepSkillsManifest.identifier,
+    manifest: ArckepSkillsManifest,
     type: 'builtin',
   },
   {

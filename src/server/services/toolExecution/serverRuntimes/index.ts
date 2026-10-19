@@ -11,6 +11,7 @@ import { activatorRuntime } from './activator';
 import { agentDocumentsRuntime } from './agentDocuments';
 import { arckepBotRuntime } from './arckepBot';
 import { arckepSitesRuntime } from './arckepSites';
+import { arckepSkillsRuntime } from './arckepSkills';
 import { arckepStudioRuntime } from './arckepStudio';
 import { briefRuntime } from './brief';
 import { calculatorRuntime } from './calculator';
@@ -52,6 +53,7 @@ registerRuntimes([
   knowledgeBaseRuntime,
   arckepSitesRuntime,
   arckepBotRuntime,
+  arckepSkillsRuntime,
   arckepStudioRuntime,
   webBrowsingRuntime,
   cloudSandboxRuntime,

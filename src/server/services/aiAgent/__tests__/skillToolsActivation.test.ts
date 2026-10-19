@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildToolDiscoveryConfig } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
 import { seedActivatedStepToolsFromHistory } from '@/server/services/agentRuntime/activatedToolsFromHistory';
+import { hasServerRuntime } from '@/server/services/toolExecution/serverRuntimes';
 import { activatorRuntime } from '@/server/services/toolExecution/serverRuntimes/activator';
 
 // arckep (19.10.2026): настоящие модули, без подмен. Инструменты навыков (lobe-skills) в движке без
@@ -202,6 +203,80 @@ describe('инструменты навыков в движке без инте�
       const seeded = seedActivatedStepToolsFromHistory(history, operationToolSet);
       expect(seeded.map((tool) => tool.id)).toEqual([SkillsIdentifier]);
       expect(resolve(seeded as any).tools.length).toBe(now.tools.length);
+    });
+  });
+
+  describe('«Мои навыки» (arckep-skills): помощник сам сохраняет навык', () => {
+    const ID = 'arckep-skills';
+
+    it('есть манифест и серверный runtime; в первом шаге не включён', () => {
+      const engine = buildEngine();
+      expect(engine.getPluginManifest(ID)?.api.map((api) => api.name)).toEqual([
+        'saveSkillFromText',
+        'saveSkillFromUrl',
+        'saveSkillFromFile',
+      ]);
+      expect(hasServerRuntime(ID)).toBe(true);
+
+      const result = engine.generateToolsDetailed({
+        excludeDefaultToolIds: [ID],
+        model: 'gpt-4',
+        provider: 'openai',
+        toolIds: [],
+      });
+      expect(result.enabledToolIds).not.toContain(ID);
+      expect(JSON.stringify(result.tools ?? [])).not.toContain(ID);
+    });
+
+    it('в <available_tools> одной строкой, подключается шагом activateTools', async () => {
+      const engine = buildEngine();
+      const manifestMap = {
+        'lobe-activator': activatorManifest(engine),
+        [ID]: engine.getPluginManifest(ID)!,
+        [SkillsIdentifier]: engine.getPluginManifest(SkillsIdentifier)!,
+      };
+      const operationToolSet = {
+        enabledToolIds: ['lobe-activator'],
+        manifestMap,
+        sourceMap: {},
+        tools: [],
+      };
+
+      const listed = buildToolDiscoveryConfig(operationToolSet as any, [
+        'lobe-activator',
+      ])!.availableTools;
+      expect(listed).toEqual([expect.objectContaining({ identifier: ID, name: 'Мои навыки' })]);
+      expect(listed[0].description).toContain('Сохранить навык');
+
+      const runtime = await makeRuntime(manifestMap);
+      const result = await runtime.activateTools({ identifiers: [ID] });
+      expect(result.success).toBe(true);
+      expect(result.state.activatedTools.map((tool: any) => tool.identifier)).toEqual([ID]);
+
+      const resolved = new ToolResolver().resolve(
+        operationToolSet as any,
+        buildStepToolDelta({
+          enabledToolIds: operationToolSet.enabledToolIds,
+          operationManifestMap: manifestMap,
+        } as any),
+        [{ activatedAtStep: 1, id: ID, manifest: manifestMap[ID], source: 'discovery' }],
+      );
+      const names = resolved.tools.map((tool) => tool.function.name);
+      for (const api of ['saveSkillFromText', 'saveSkillFromUrl', 'saveSkillFromFile']) {
+        expect(
+          names.some((name) => name.includes(ID) && name.includes(api)),
+          api,
+        ).toBe(true);
+      }
+    });
+
+    it('подсказка в промпте активатора: сохранение навыка — только по просьбе человека', async () => {
+      const { systemPromptHeadless, systemPrompt } =
+        await import('@lobechat/builtin-tool-activator');
+      expect(systemPromptHeadless).toContain('arckep-skills');
+      expect(systemPromptHeadless).toContain('only on their request');
+      // браузерный промпт про этот инструмент не знает
+      expect(systemPrompt).not.toContain('arckep-skills');
     });
   });
 });

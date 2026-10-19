@@ -29,8 +29,14 @@ export class SkillImporter {
   private fileService: FileService;
   private github: GitHub;
   private userId: string;
+  private fetchImpl: typeof fetch;
 
-  constructor(db: LobeChatDatabase, userId: string) {
+  /**
+   * @param options.fetchImpl arckep: чем скачивать SKILL.md/zip по ссылке. По умолчанию глобальный fetch
+   * (как в апстриме); ссылки от людей идут через защищённый от внутренних адресов (safeFetch.ts).
+   */
+  constructor(db: LobeChatDatabase, userId: string, options: { fetchImpl?: typeof fetch } = {}) {
+    this.fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
     this.skillModel = new AgentSkillModel(db, userId);
     this.parser = new SkillParser();
     this.resourceService = new SkillResourceService(db, userId);
@@ -322,7 +328,7 @@ export class SkillImporter {
 
       let response: Response;
       try {
-        response = await fetch(input.url, { signal: controller.signal });
+        response = await this.fetchImpl(input.url, { signal: controller.signal });
       } finally {
         clearTimeout(timeoutId);
       }
