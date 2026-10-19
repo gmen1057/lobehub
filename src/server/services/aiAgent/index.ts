@@ -52,6 +52,10 @@ import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
+import {
+  hasReadyLinkConnector,
+  resolveArckepLinkConnectors,
+} from '@/server/modules/AgentRuntime/arckepLinkConnectors';
 import { resolveArckepSearchPluginIds } from '@/server/modules/AgentRuntime/arckepSearch';
 import {
   createServerAgentToolsEngine,
@@ -529,6 +533,43 @@ export class AiAgentService {
       userTimezone ?? 'default',
     );
 
+    // 11. (загрузка истории). Use postProcessUrl to resolve S3 keys in imageList to publicly accessible URLs,
+    // matching the frontend flow in aiChatService.getMessagesAndTopics.
+    // arckep (19.10.2026): определена до сборки инструментов и выполняется не больше одного раза — историю темы
+    // читает ещё и правило ссылок на сервисы (arckepLinkConnectors: «а теперь сверстай» без ссылки).
+    const fileService = new FileService(this.db, this.userId);
+    const postProcessUrl = (path: string | null) => fileService.getFullFileUrl(path);
+    let historyMessagesPromise: Promise<any[]> | undefined;
+    const loadHistoryMessages = (): Promise<any[]> => {
+      historyMessagesPromise ??= (async () => {
+        let loaded: any[] = [];
+        if (existingMessageIds.length > 0) {
+          loaded = await this.messageModel.query(
+            {
+              sessionId: appContext?.sessionId,
+              threadId: appContext?.threadId,
+              topicId: appContext?.topicId ?? undefined,
+            },
+            { postProcessUrl },
+          );
+          const idSet = new Set(existingMessageIds);
+          loaded = loaded.filter((msg) => idSet.has(msg.id));
+        } else if (appContext?.topicId) {
+          // Follow-up message in existing topic: load all history for context
+          loaded = await this.messageModel.query(
+            {
+              sessionId: appContext?.sessionId,
+              threadId: appContext?.threadId,
+              topicId: appContext?.topicId,
+            },
+            { postProcessUrl },
+          );
+        }
+        return loaded;
+      })();
+      return historyMessagesPromise;
+    };
+
     // 5. Tool discovery — short-circuit when disableTools is set
     let tools: any[] | undefined;
     let toolsResult: {
@@ -569,6 +610,40 @@ export class AiAgentService {
       // 5a. Get installed plugins from database
       const installedPlugins = await this.pluginModel.query();
       log('execAgent: got %d installed plugins', installedPlugins.length);
+
+      // arckep (19.10.2026): ссылка на Figma (и другие узнаваемые ссылки, arckepLinkConnectors.ts) в ПОСЛЕДНЕМ
+      // сообщении человека. Подключение установлено и с токеном — включаем его сразу, как «Поиск Arckep»: схемы
+      // инструментов в первом шаге, без activateTools (раньше модель отвечала «не могу открыть Figma» и звала
+      // инструменты только после просьбы проверить ещё раз). Подключения нет или токен не вставлен — на этот ход
+      // одна строка в системной подсказке «подключите…». Место — здесь, а не в браузере и не в подсказке
+      // активатора: только тут известны и установленные подключения, и `disabled_tools` запроса. Боты не
+      // трогаем: там ссылку присылает посторонний, а токен — владельца бота.
+      // Следующие ходы темы: ссылка в последних сообщениях человека или прежние вызовы подключения в истории
+      // включают его снова — «подключённое помнится в теме» (seedActivatedStepToolsFromHistory) знает только шаги
+      // activateTools, а включённое здесь сразу их не оставляет. История читается лишь у людей с настроенным
+      // подключением из таблицы ссылок и тем же одним запросом, что нужен сборке сообщений.
+      if (!isBotConversation) {
+        const linkHistory = hasReadyLinkConnector(installedPlugins)
+          ? await loadHistoryMessages()
+          : undefined;
+        const linkConnectors = resolveArckepLinkConnectors({
+          excludePluginIds,
+          history: linkHistory,
+          installedPlugins,
+          prompt,
+        });
+        if (linkConnectors.activate.length > 0) {
+          pickedPluginIds.push(...linkConnectors.activate);
+          agentPlugins = dropExcluded([...new Set([...agentPlugins, ...linkConnectors.activate])]);
+          log('execAgent: link connectors activated: %O', linkConnectors.activate);
+        }
+        if (linkConnectors.setupHints.length > 0) {
+          agentConfig.systemRole = [agentConfig.systemRole, ...linkConnectors.setupHints]
+            .filter(Boolean)
+            .join('\n\n');
+          log('execAgent: link connector setup hint added (%d)', linkConnectors.setupHints.length);
+        }
+      }
 
       // 5b. Get model abilities from model-bank for function calling support check
       const isModelSupportToolUse = (m: string, p: string) => {
@@ -1007,34 +1082,9 @@ export class AiAgentService {
     }
 
     // 11. Get existing messages if provided
-    // Use postProcessUrl to resolve S3 keys in imageList to publicly accessible URLs,
-    // matching the frontend flow in aiChatService.getMessagesAndTopics.
-    const fileService = new FileService(this.db, this.userId);
-    const postProcessUrl = (path: string | null) => fileService.getFullFileUrl(path);
-
-    let historyMessages: any[] = [];
-    if (existingMessageIds.length > 0) {
-      historyMessages = await this.messageModel.query(
-        {
-          sessionId: appContext?.sessionId,
-          threadId: appContext?.threadId,
-          topicId: appContext?.topicId ?? undefined,
-        },
-        { postProcessUrl },
-      );
-      const idSet = new Set(existingMessageIds);
-      historyMessages = historyMessages.filter((msg) => idSet.has(msg.id));
-    } else if (appContext?.topicId) {
-      // Follow-up message in existing topic: load all history for context
-      historyMessages = await this.messageModel.query(
-        {
-          sessionId: appContext?.sessionId,
-          threadId: appContext?.threadId,
-          topicId: appContext?.topicId,
-        },
-        { postProcessUrl },
-      );
-    }
+    // arckep (19.10.2026): загрузка истории вынесена выше (loadHistoryMessages) — её читает и правило ссылок
+    // (arckepLinkConnectors), и сборка сообщений; запрос выполняется один раз.
+    const historyMessages: any[] = await loadHistoryMessages();
 
     await throwIfExecutionAborted('message history loading');
 
