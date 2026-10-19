@@ -165,8 +165,10 @@ export type Truncation = z.infer<typeof TruncationSchema>;
 
 // ==================== Reasoning ====================
 
+// arckep: ступени рассуждений студии (`src/server/modules/AgentRuntime/reasoningLevels.ts`, REASONING_LEVELS);
+// модель, которая выбранную не знает, получает ближайшую.
 export const ReasoningConfigSchema = z.object({
-  effort: z.enum(['low', 'medium', 'high']).optional(),
+  effort: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 export type ReasoningConfig = z.infer<typeof ReasoningConfigSchema>;
 

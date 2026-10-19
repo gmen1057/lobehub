@@ -1,6 +1,14 @@
 import type { LobeAgentChatConfig } from '@lobechat/types';
 import debug from 'debug';
 
+import {
+  ARCKEP_REASONING_LEVEL_KEY,
+  isReasoningLevel,
+  reasoningCallParams,
+  resolveReasoningProfile,
+  snapReasoningLevel,
+} from './reasoningLevels';
+
 const log = debug('lobe-server:agent-runtime:model-params');
 
 /**
@@ -13,8 +21,6 @@ const log = debug('lobe-server:agent-runtime:model-params');
  * помощника на REST не действовали. Здесь — порт того же алгоритма без картиночных параметров;
  * клиентский файл не трогаем (интерфейс в ветке движка не собирается).
  */
-
-export type ReasoningEffort = 'low' | 'medium' | 'high';
 
 type ChatConfig = Partial<LobeAgentChatConfig>;
 
@@ -108,48 +114,23 @@ export const resolveExtendParams = (
   return out;
 };
 
-/**
- * «Думать дольше» одним словом: раскладывает усилие по всем полям `chatConfig`, из которых
- * `resolveExtendParams` потом выберет нужное для конкретной модели.
- */
-export const applyEffortToChatConfig = (
-  chatConfig: ChatConfig | null | undefined,
-  effort: ReasoningEffort,
-): ChatConfig => {
-  const budget = effort === 'high' ? 24_000 : effort === 'medium' ? 8000 : 1024;
-  return {
-    ...chatConfig,
-    codexMaxReasoningEffort: effort,
-    effort,
-    enableAdaptiveThinking: true,
-    enableReasoning: true,
-    enableReasoningEffort: true,
-    gpt5_1ReasoningEffort: effort,
-    gpt5_2ProReasoningEffort: effort === 'low' ? 'medium' : effort,
-    gpt5_2ReasoningEffort: effort,
-    gpt5ReasoningEffort: effort,
-    gpt6ReasoningEffort: effort,
-    grok4_20ReasoningEffort: effort,
-    reasoningBudgetToken: budget,
-    reasoningBudgetToken32k: budget,
-    reasoningBudgetToken80k: budget,
-    reasoningEffort: effort,
-    thinking: 'enabled',
-    thinkingBudget: budget,
-    thinkingLevel: effort,
-    thinkingLevel2: effort === 'high' ? 'high' : 'low',
-    thinkingLevel3: effort,
-    thinkingLevel4: effort === 'high' ? 'high' : 'minimal',
-    thinkingLevel5: effort,
-  };
-};
-
 const NUMBER_PARAMS = ['temperature', 'top_p', 'frequency_penalty', 'presence_penalty'] as const;
+
+/** Поля рассуждений, которые ступень одного запроса заменяет целиком. */
+const REASONING_FIELDS = [
+  'effort',
+  'reasoning_effort',
+  'thinking',
+  'thinkingBudget',
+  'thinkingLevel',
+] as const satisfies ReadonlyArray<keyof ServerModelParams>;
 
 /**
  * Полный набор параметров вызова для `call_llm`: числовые параметры помощника (как в браузере —
  * `max_tokens` только при `enableMaxTokens`, `reasoning_effort` из params только при
  * `enableReasoningEffort`) плюс параметры рассуждений по `extendParams` модели из model-bank.
+ * Ступень одного запроса (`chatConfig[ARCKEP_REASONING_LEVEL_KEY]`) заменяет параметры рассуждений
+ * помощника: берётся ближайшая из ступеней модели (`reasoningLevels.ts`).
  */
 export const resolveServerModelParams = async (
   agentConfig:
@@ -174,17 +155,34 @@ export const resolveServerModelParams = async (
 
   if (!model || !provider) return out;
 
-  let extendParams: readonly string[] | undefined;
+  const extendParams = await findModelExtendParams(model, provider);
+  const resolved: ServerModelParams = { ...out, ...resolveExtendParams(extendParams, chatConfig) };
+
+  // Ступень рассуждений одного запроса (`/responses` → `reasoning.effort`) перекрывает настройки помощника.
+  const level = (chatConfig as Record<string, unknown>)[ARCKEP_REASONING_LEVEL_KEY];
+  if (!isReasoningLevel(level)) return resolved;
+  const profile = resolveReasoningProfile(model, provider, extendParams);
+  const snapped = profile && snapReasoningLevel(level, profile.levels);
+  if (!profile || !snapped) return resolved;
+  for (const key of REASONING_FIELDS) delete resolved[key];
+  log('reasoning level %s → %s (%s) for %s/%s', level, snapped, profile.kind, provider, model);
+  return { ...resolved, ...reasoningCallParams(profile, snapped) };
+};
+
+/** `settings.extendParams` карточки model-bank; нет справочника или карточки — `undefined`. */
+export const findModelExtendParams = async (
+  model: string,
+  provider: string,
+): Promise<readonly string[] | undefined> => {
   try {
     const bank: any = await import('model-bank');
     const card = (bank.LOBE_DEFAULT_MODEL_LIST ?? []).find(
       (item: any) => item.id === model && item.providerId === provider,
     );
-    extendParams = card?.settings?.extendParams;
+    return card?.settings?.extendParams;
   } catch (error) {
     // Нет справочника моделей (например, подменён в тестах) — только числовые параметры.
     log('model-bank unavailable, extend params skipped: %O', error);
+    return undefined;
   }
-
-  return { ...out, ...resolveExtendParams(extendParams, chatConfig) };
 };

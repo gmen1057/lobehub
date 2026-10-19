@@ -1,8 +1,9 @@
 import type * as ModelBankModule from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ARCKEP_REASONING_LEVEL_KEY } from '../reasoningLevels';
 import {
-  applyEffortToChatConfig,
+  findModelExtendParams,
   resolveExtendParams,
   resolveServerModelParams,
 } from '../serverModelParams';
@@ -23,6 +24,23 @@ vi.mock('model-bank', async (importOriginal) => {
         settings: {
           extendParams: ['disableContextCaching', 'enableReasoning', 'reasoningBudgetToken'],
         },
+      },
+      {
+        id: 'claude-legacy',
+        providerId: 'anthropic',
+        settings: {
+          extendParams: [
+            'enableAdaptiveThinking',
+            'enableReasoning',
+            'reasoningBudgetToken',
+            'effort',
+          ],
+        },
+      },
+      {
+        id: 'gpt-card',
+        providerId: 'openai',
+        settings: { extendParams: ['gpt5_2ReasoningEffort'] },
       },
       { id: 'plain-model', providerId: 'openai' },
     ],
@@ -85,38 +103,6 @@ describe('resolveExtendParams (arckep: порт клиентского резо�
   });
 });
 
-describe('applyEffortToChatConfig (arckep: «думать дольше» одним словом)', () => {
-  it('заполняет поля всех семейств, не теряя остальное', () => {
-    const cfg = applyEffortToChatConfig({ historyCount: 8, searchMode: 'off' }, 'high');
-    expect(cfg).toMatchObject({
-      effort: 'high',
-      enableReasoning: true,
-      historyCount: 8,
-      reasoningBudgetToken: 24_000,
-      reasoningEffort: 'high',
-      searchMode: 'off',
-      thinkingLevel: 'high',
-      thinkingLevel2: 'high',
-      thinkingLevel4: 'high',
-    });
-    expect(applyEffortToChatConfig(undefined, 'low')).toMatchObject({
-      reasoningBudgetToken: 1024,
-      thinkingLevel2: 'low',
-      thinkingLevel4: 'minimal',
-    });
-  });
-
-  it('сходится с резолвером: Gemini получает thinkingLevel, Claude — бюджет', () => {
-    const cfg = applyEffortToChatConfig({}, 'medium');
-    expect(resolveExtendParams(['thinkingLevel3', 'urlContext'], cfg)).toEqual({
-      thinkingLevel: 'medium',
-    });
-    expect(resolveExtendParams(['enableReasoning', 'reasoningBudgetToken'], cfg)).toEqual({
-      thinking: { budget_tokens: 8000, type: 'enabled' },
-    });
-  });
-});
-
 describe('resolveServerModelParams (arckep: параметры серверного вызова)', () => {
   it('числовые параметры помощника; max_tokens и reasoning_effort из params — только по тумблерам', async () => {
     const params = {
@@ -151,7 +137,7 @@ describe('resolveServerModelParams (arckep: параметры серверно�
   it('extendParams модели берутся из model-bank', async () => {
     expect(
       await resolveServerModelParams(
-        { chatConfig: applyEffortToChatConfig({}, 'high'), params: { temperature: 1 } },
+        { chatConfig: { thinkingLevel3: 'high' }, params: { temperature: 1 } },
         'gemini-flash',
         'google',
       ),
@@ -170,5 +156,68 @@ describe('resolveServerModelParams (arckep: параметры серверно�
     expect(
       await resolveServerModelParams({ params: { temperature: 'hot' as any } }, 'x', 'y'),
     ).toEqual({});
+  });
+});
+
+describe('ступень рассуждений одного запроса (arckep, 19.10)', () => {
+  const withLevel = (level: string, chatConfig: Record<string, unknown> = {}) => ({
+    chatConfig: { ...chatConfig, [ARCKEP_REASONING_LEVEL_KEY]: level } as any,
+    params: { temperature: 1 },
+  });
+
+  it('заменяет рассуждения помощника и сохраняет остальные параметры', async () => {
+    expect(
+      await resolveServerModelParams(
+        withLevel('low', { enableReasoning: true, reasoningBudgetToken: 2000 }),
+        'claude-sonnet',
+        'anthropic',
+      ),
+    ).toEqual({ temperature: 1, thinking: { budget_tokens: 1024, type: 'enabled' } });
+  });
+
+  it('Claude 4.6: адаптивное мышление и effort; «не думать» выключает мышление', async () => {
+    expect(await resolveServerModelParams(withLevel('max'), 'claude-legacy', 'anthropic')).toEqual({
+      effort: 'max',
+      temperature: 1,
+      thinking: { type: 'adaptive' },
+    });
+    expect(await resolveServerModelParams(withLevel('none'), 'claude-legacy', 'anthropic')).toEqual(
+      {
+        temperature: 1,
+        thinking: { budget_tokens: 0, type: 'disabled' },
+      },
+    );
+  });
+
+  it('ступени, которой нет у модели, — ближайшая', async () => {
+    expect(await resolveServerModelParams(withLevel('max'), 'gpt-card', 'openai')).toEqual({
+      reasoning_effort: 'xhigh',
+      temperature: 1,
+    });
+    expect(await resolveServerModelParams(withLevel('none'), 'gemini-flash', 'google')).toEqual({
+      temperature: 1,
+      thinkingLevel: 'low',
+    });
+  });
+
+  it('модели без карточки — по таблице студии; без ступеней — как было', async () => {
+    expect(
+      await resolveServerModelParams(withLevel('xhigh'), 'claude-opus-5', 'anthropic'),
+    ).toEqual({
+      effort: 'xhigh',
+      temperature: 1,
+      thinking: { type: 'adaptive' },
+    });
+    expect(await resolveServerModelParams(withLevel('high'), 'plain-model', 'openai')).toEqual({
+      temperature: 1,
+    });
+    expect(await resolveServerModelParams(withLevel('loud'), 'gpt-card', 'openai')).toEqual({
+      temperature: 1,
+    });
+  });
+
+  it('findModelExtendParams — поля карточки или undefined', async () => {
+    expect(await findModelExtendParams('gpt-card', 'openai')).toEqual(['gpt5_2ReasoningEffort']);
+    expect(await findModelExtendParams('nope', 'openai')).toBeUndefined();
   });
 });

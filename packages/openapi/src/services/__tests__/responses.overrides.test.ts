@@ -38,20 +38,9 @@ describe('buildExecOverrides (arckep: настройки одного запро
     ).toEqual({ model: 'gemini-3.6-pro', provider: 'google' });
   });
 
-  it('reasoning.effort раскладывается по полям chatConfig под все семейства моделей', () => {
-    const out = buildExecOverrides({ ...base, reasoning: { effort: 'high' } });
-    expect(out.chatConfigOverride).toMatchObject({
-      effort: 'high',
-      enableReasoning: true,
-      enableReasoningEffort: true,
-      reasoningBudgetToken: 24_000,
-      reasoningEffort: 'high',
-      thinking: 'enabled',
-      thinkingBudget: 24_000,
-      thinkingLevel: 'high',
-      thinkingLevel3: 'high',
-    });
-    expect(out.model).toBeUndefined();
+  it('reasoning.effort — ступень в chatConfig, перевод в параметр модели делает серверный вызов', () => {
+    const out = buildExecOverrides({ ...base, reasoning: { effort: 'xhigh' } });
+    expect(out).toEqual({ chatConfigOverride: { arckepReasoningLevel: 'xhigh' } });
   });
 
   it('search → searchMode в chatConfig', () => {

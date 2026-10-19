@@ -1,7 +1,7 @@
 import type { AgentState } from '@lobechat/agent-runtime';
 
 import { FileModel } from '@/database/models/file';
-import { applyEffortToChatConfig } from '@/server/modules/AgentRuntime/serverModelParams';
+import { ARCKEP_REASONING_LEVEL_KEY } from '@/server/modules/AgentRuntime/reasoningLevels';
 import type {
   StreamChunkData,
   StreamEvent,
@@ -25,8 +25,8 @@ import { type HubOperation, responsesStreamHub } from './responsesStreamHub';
 
 /**
  * arckep (план chat-next-redesign, E1): настройки одного запроса поверх помощника.
- * `model_override`/`provider_override` — модель на одно сообщение; `reasoning.effort` — «думать
- * дольше» (раскладывается по полям chatConfig, серверный резолвер выберет нужное для модели);
+ * `model_override`/`provider_override` — модель на одно сообщение; `reasoning.effort` — ступень
+ * рассуждений (серверный резолвер переведёт её в параметр модели, `reasoningLevels.ts`);
  * `search` — режим встроенного поиска; `temperature`/`top_p` — параметры вызова;
  * `disabled_tools` — инструменты помощника, выключенные на этот запрос.
  */
@@ -43,13 +43,8 @@ export const buildExecOverrides = (params: CreateResponseRequest): ExecOverrides
   if (params.model_override) out.model = params.model_override;
   if (params.provider_override) out.provider = params.provider_override;
 
-  let chatConfig: Record<string, unknown> = {};
-  if (params.reasoning?.effort) {
-    chatConfig = applyEffortToChatConfig(chatConfig, params.reasoning.effort) as Record<
-      string,
-      unknown
-    >;
-  }
+  const chatConfig: Record<string, unknown> = {};
+  if (params.reasoning?.effort) chatConfig[ARCKEP_REASONING_LEVEL_KEY] = params.reasoning.effort;
   if (params.search) chatConfig.searchMode = params.search;
   if (Object.keys(chatConfig).length > 0) out.chatConfigOverride = chatConfig;
 

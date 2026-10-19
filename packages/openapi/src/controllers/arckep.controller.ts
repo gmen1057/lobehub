@@ -16,6 +16,8 @@ import {
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, knowledgeBases } from '@/database/schemas';
 import { getServerGlobalConfig } from '@/server/globalConfig';
+import { resolveReasoningProfile } from '@/server/modules/AgentRuntime/reasoningLevels';
+import { findModelExtendParams } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
 import type { ProviderConfig } from '@/types/user/settings';
 
@@ -176,15 +178,25 @@ export class ArckepController extends BaseController {
       const repos = new AiInfraRepos(db, userId, aiProvider as Record<string, ProviderConfig>);
       const models = await repos.getEnabledModels(true);
 
-      const chatModels = models
-        .filter((item) => item.type === 'chat')
-        .map((item) => ({
-          abilities: item.abilities || {},
-          contextWindowTokens: item.contextWindowTokens ?? null,
-          displayName: item.displayName || item.id,
-          id: item.id,
-          providerId: item.providerId,
-        }));
+      const chatModels = await Promise.all(
+        models
+          .filter((item) => item.type === 'chat')
+          .map(async (item) => ({
+            abilities: item.abilities || {},
+            contextWindowTokens: item.contextWindowTokens ?? null,
+            displayName: item.displayName || item.id,
+            id: item.id,
+            providerId: item.providerId,
+            // Ступени рассуждений для поля ввода студии: тот же расчёт, что у серверного вызова.
+            reasoningLevels: item.abilities?.reasoning
+              ? (resolveReasoningProfile(
+                  item.id,
+                  item.providerId,
+                  await findModelExtendParams(item.id, item.providerId),
+                )?.levels ?? [])
+              : [],
+          })),
+      );
 
       return this.success(c, { models: chatModels, total: chatModels.length }, 'runtime models');
     } catch (error) {
