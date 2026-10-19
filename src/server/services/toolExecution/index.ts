@@ -378,7 +378,9 @@ export class ToolExecutionService {
       if (!marked) throw new Error('topic not marked');
     } catch (error) {
       log('user MCP: topic mark failed for %s: %O', identifier, error);
-      throw new Error('Не удалось отметить чат перед запуском чужого инструмента, повторите вызов.');
+      throw new Error('Не удалось отметить чат перед запуском чужого инструмента, повторите вызов.', {
+        cause: error,
+      });
     }
 
     log('MCP connection %s: user MCP, arckep user %s', identifier, arckepUserId);

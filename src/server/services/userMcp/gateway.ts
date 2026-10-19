@@ -242,7 +242,7 @@ export const listUserMcpTools = async (options: ListUserMcpToolsOptions): Promis
 
     const contentType = response.headers.get('content-type') ?? '';
     if (!response.ok) {
-      let message = '';
+      let message: string;
       let status = response.status;
       try {
         const body = parseRpcBody(text, contentType, id!);

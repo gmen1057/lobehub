@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { ArckepConnectorsManifest } from './manifest';
 import { ArckepConnectorsExecutionRuntime, formatConnectorSuggestions } from './ExecutionRuntime';
+import { ArckepConnectorsManifest } from './manifest';
 import { ARCKEP_CONNECT_MARKER, type ConnectorSuggestion } from './types';
 
 const item = (patch: Partial<ConnectorSuggestion> = {}): ConnectorSuggestion => ({
