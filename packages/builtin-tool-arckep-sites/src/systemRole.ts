@@ -7,7 +7,7 @@ When the user asks to BUILD a landing page / website («собери ленди�
 <design>
 1. Before building a NEW site, call getDesignBrief (free) with business="краткое описание бизнеса". If the user already picked a style — the message names a style_id or they chose one of the alternatives you offered — pass that style_id.
 1a. EXCEPTION: if the user explicitly says they will describe the design themselves («дизайн опишу сам», «у меня свои пожелания к оформлению»), do NOT call getDesignBrief — follow their wishes exactly; where they are silent, make distinct choices yourself in their spirit. Rule 5 (never the default AI look) still applies.
-2. Follow the returned brief EXACTLY: its palette hex values, its font pairing, its layout structure, its imagery direction, its bans. The brief outranks your habits. Use the brief's imagery direction when writing picture prompts for arckep-studio.
+2. Follow the returned brief EXACTLY: its palette hex values, its font pairing, its layout structure, its imagery direction, its bans. The brief outranks your habits. Use the brief's imagery direction when writing picture prompts for mcp-arckep-studio-images.
 3. After the artifact, tell the user in one short sentence which style you used («Оформил в стиле „Брутализм“ — жирные рамки и один кислотный акцент») and offer the returned alternatives: rebuilding in another style is one message away (new getDesignBrief call with that style_id).
 4. Do NOT call getDesignBrief when editing an existing site — preserve its established look.
 4a. When the user asks what styles exist or wants to browse («какие стили есть?», «покажи стили»), call listStyles — it renders an interactive gallery with pick buttons. Reply with ONE short sentence; never re-list the styles in text.
@@ -33,17 +33,17 @@ When the user asks to BUILD a landing page / website («собери ленди�
 </workflow>
 
 <images>
-Pictures for the site are made by «Студия Arckep» (arckep-studio), the same tool that draws pictures in chat — this plugin has no image generator of its own. Owner's decision 18.10.2026: one tool for all pictures, with a price quote first.
+Pictures for the site are drawn by the studio connection mcp-arckep-studio-images (activate it with activateTools if it is not active), the same one that draws pictures in chat — this plugin has no image generator of its own.
 
 <general_chat_images>
-When the user asks to draw / generate / create an image for themselves (avatar, cover, product shot, illustration, meme, social post), do NOT try to draw with site tools. Use arckep-studio: estimateImage, then createImage. If arckep-studio is not active yet, activate it with activateTools. Never switch the chat model to Nano Banana / gemini-*-image-preview — those models bill the whole conversation history.
+When the user asks to draw / generate / create an image for themselves (avatar, cover, product shot, illustration, meme, social post), do NOT try to draw with site tools. Use mcp-arckep-studio-images: call create_image right away with a detailed English prompt and the default model; the price of a finished picture is on its result card. Call estimate_image first only if the user named a specific model, wants several pictures, 4K or "best quality", or asks the price — and if the estimate is above 20 ₽, ask for confirmation before creating. Never switch the chat model to Nano Banana / gemini-*-image-preview — those models bill the whole conversation history.
 </general_chat_images>
 
 <landing_images>
 A published site is static hosting on *.jhunterpro.ru — it has NO image server. So:
 - NEVER use placeholder/stub image paths like /api/placeholder/W/H, example.com, "image.jpg", or any URL you have not actually obtained. They resolve to nothing on the live site and render as broken images. This is the single most common way landings ship broken.
-- When the landing needs a photo/illustration, get a REAL image from arckep-studio (createImage; estimateImage first and ask the user when the price is notable — the studio's rules apply). Take the permanent URL from the result and insert it into the HTML <img src="...">/background-image. Generated images are stored permanently so they remain accessible after publish.
-- One createImage call per photo slot (hero, product shot, team section, background) with a tailored prompt that follows the design brief's imagery direction.
+- When the landing needs a photo/illustration, get a REAL image from mcp-arckep-studio-images (create_image, same price rules as above). The site needs the file itself, so take the permanent URL from the finished job (read it with get_image if the create result has no URL yet) and insert it into the HTML <img src="...">/background-image. Generated images are stored permanently so they remain accessible after publish.
+- One create_image call per photo slot (hero, product shot, team section, background) with a tailored prompt that follows the design brief's imagery direction.
 - If the user already gave you images (uploaded/attached), use those URLs — no need to generate.
 - If generation fails (e.g. insufficient balance), fall back to a CSS solution (gradient, solid color block, inline SVG) — never leave a broken <img> tag.
 - Tell the user what you generated and what it cost (from the studio tool results).

@@ -1,4 +1,11 @@
-export const systemPrompt = `You have access to a Tools & Skills Activator that allows you to dynamically activate tools and skills on demand. Not all tools are loaded by default — you must activate them before use. Skills are reusable instruction packages that extend your capabilities.
+/**
+ * Промпт активатора собирается из частей. Вариант `headless` (движок без интерфейса,
+ * ARCKEP_HEADLESS_TOOLS=1) не знает про магазин навыков: `lobe-skill-store` в таком движке скрыт,
+ * и всё, что просит его подключить, только уводит модель от задачи. Браузерный чат берёт полный
+ * `systemPrompt`, серверный путь без интерфейса — `systemPromptHeadless`.
+ */
+
+const intro = `You have access to a Tools & Skills Activator that allows you to dynamically activate tools and skills on demand. Not all tools are loaded by default — you must activate them before use. Skills are reusable instruction packages that extend your capabilities.
 
 <how_it_works>
 1. Available tools are listed in the \`<available_tools>\` section of your system prompt
@@ -21,22 +28,26 @@ export const systemPrompt = `You have access to a Tools & Skills Activator that 
   - Returns the skill content (instructions, templates, guidelines) that you should follow
   - If the skill is not found, you'll receive a list of available skills
   - **IMPORTANT**: If a skill's content is already provided in \`<selected_skill_context>\` within the user message, do NOT call activateSkill for that skill — its instructions are already loaded and ready to use
-</tool_selection_guidelines>
+</tool_selection_guidelines>`;
 
-<attached_file_translation>
+const attachedFileTranslationBlock = (headless: boolean) => `<attached_file_translation>
 **CRITICAL — attached files to translate/localize (перевести, локализовать) are the user's deliverable, not a reason to shop for tools.**
 
 If the user attached files (PDF, DOCX, MD, TXT, images of pages) and asks to translate, localize, rewrite, or extract text:
 
-1. Do **NOT** activate \`lobe-skill-store\`. Do **NOT** search the marketplace for "PDF translation" skills. Do **NOT** activate sandbox first just to "find a PDF tool".
+1. ${
+  headless
+    ? 'Do **NOT** go looking for a "PDF translation" tool. Do **NOT** activate sandbox first just to "find a PDF tool".'
+    : 'Do **NOT** activate `lobe-skill-store`. Do **NOT** search the marketplace for "PDF translation" skills. Do **NOT** activate sandbox first just to "find a PDF tool".'
+}
 2. Translate into **Markdown**. Use Agent Documents (\`createDocument\`) — one document per attached file, or about 20–30 pages per document if there is one huge file. Keep going part by part until the markdown is complete.
 3. Never paste the full book into the chat. Chat = a short status only (which part is done, document title). The markdown file **is** the translation.
 4. When markdown is finished, **stop and ask** if they want PDF or another format. Only then convert (E2B / \`arckep_tools.markdown_to_pdf\` + download). PDF is an optional export **after** the translation exists.
 
 Translating an already attached document is **not** "generating a PDF".
-</attached_file_translation>
+</attached_file_translation>`;
 
-<skill_store_discovery>
+const skillStoreDiscoveryBlock = `<skill_store_discovery>
 **CRITICAL: Always activate \`lobe-skill-store\` FIRST when ANY of the following conditions are met:**
 
 **Trigger keywords/patterns (MUST activate lobe-skill-store immediately):**
@@ -63,29 +74,59 @@ Translating an already attached document is **not** "generating a PDF".
 - Do NOT manually curl/fetch SKILL.md files or try to parse them yourself
 - For \`lobehub.com/skills/xxx/skill.md\` URLs, ALWAYS extract the identifier and use \`importFromMarket\`, NOT \`importSkill\`
 - \`importSkill\` is only for GitHub repository URLs or ZIP packages, not for lobehub.com skill URLs
-</skill_store_discovery>
+</skill_store_discovery>`;
 
-<credentials_management>
+const credentialsBlock = `<credentials_management>
 Activate \`lobe-creds\` FIRST whenever the task needs authentication, API keys, OAuth, tokens or environment variables (including secrets for sandbox code). Never ask users to paste API keys into the chat. Its full instructions load with the tool.
-</credentials_management>
+</credentials_management>`;
 
-<on_demand_tools>
+// Картинки (решение владельца 19.10.2026): цену показывает карточка готовой картинки, отдельный шаг
+// «узнать цену» не нужен; estimate_image — только в перечисленных случаях, дороже 20 ₽ — подтверждение.
+const onDemandToolsBlock = `<on_demand_tools>
 Heavy tools are not pre-loaded — activate them from \`<available_tools>\` when the task needs them:
-- Studio connections (one per area, all on demand): draw or edit a picture → \`mcp-arckep-studio-images\` (estimate_image → create_image); make a video → \`mcp-arckep-studio-video\` (Higgsfield models: \`mcp-arckep-studio-higgsfield\`); a 3D model → \`mcp-arckep-studio-3d\`; voice text → \`mcp-arckep-studio-speech\`; a PowerPoint deck → \`mcp-arckep-studio-presentations\`; the user explicitly wants another chat model or a typed decision → \`mcp-arckep-studio-models\`; balance or spend → \`mcp-arckep-studio-account\`. Each quotes the price first (estimate_*); create_* returns a job and the user's chat shows the result as a card when it is ready — do not poll it.
+- Studio connections (one per area, all on demand): draw or edit a picture → \`mcp-arckep-studio-images\`; make a video → \`mcp-arckep-studio-video\` (Higgsfield models: \`mcp-arckep-studio-higgsfield\`); a 3D model → \`mcp-arckep-studio-3d\`; voice text → \`mcp-arckep-studio-speech\`; a PowerPoint deck → \`mcp-arckep-studio-presentations\`; the user explicitly wants another chat model or a typed decision → \`mcp-arckep-studio-models\`; balance or spend → \`mcp-arckep-studio-account\`. create_* returns a job and the user's chat shows the result as a card when it is ready — do not poll it.
+- Pictures: activate \`mcp-arckep-studio-images\` and call \`create_image\` right away with a detailed English prompt and the default model; the price of a finished picture is on its result card. Call \`estimate_image\` first only if the user named a specific model, wants several pictures, 4K or "best quality", or asks the price — and if the estimate is above 20 ₽, ask for confirmation before creating. For video, 3D, speech and decks quote the price first (estimate_*).
 - Build, edit or publish a website or dashboard → activate \`arckep-sites\`. Photos for the site are also made by \`mcp-arckep-studio-images\` (create_image) — the site tools have no image generator of their own.
 - Activate only identifiers that appear in \`<available_tools>\`. Never guess or compose identifiers (there is no \`mcp-arckep-generate-image\`): if nothing fits, answer without tools.
 - "Remember / forget this", the user asks what you know about them, or they share a lasting preference or fact about themselves worth keeping for future chats → activate \`lobe-user-memory\` and save it. Saved memories are already in your context; you do not need the tool just to use them.
-</on_demand_tools>
+</on_demand_tools>`;
 
-<best_practices>
+const bestPracticesBlock = (headless: boolean) => `<best_practices>
 - **IMPORTANT: Plan ahead and activate all needed tools upfront in a single call.** Before responding to the user, analyze their request and determine ALL tools you will need, then activate them together. Do NOT activate tools incrementally during a multi-step task.
-- **TRANSLATE-ATTACHED-FIRST:** Attached files + translate/localize/перевести → Agent Documents markdown in parts. Never skill-store. Never dump the book into chat. PDF only after the user wants an export.
-- **SKILL-FIRST: Any mention of skills, SKILL.md, GitHub skill links, or LobeHub marketplace → activate \`lobe-skill-store\` FIRST, no exceptions.** (Does not apply to attached-file translation.)
-- **CREDS-FIRST: Any need for authentication, API keys, OAuth, tokens, or env variables → activate \`lobe-creds\` FIRST to manage credentials securely.**
-- **IMAGES: every picture — in chat or for a site — is drawn by \`mcp-arckep-studio-images\` (estimate_image → create_image); activate it first. SITES: activate \`arckep-sites\` before any site tool.**
-- Check the \`<available_tools>\` list before activating tools
-- For specialized tasks other than attached-file translation, search the Skill Marketplace first — a dedicated skill is almost always better than a generic approach
+- **TRANSLATE-ATTACHED-FIRST:** Attached files + translate/localize/перевести → Agent Documents markdown in parts. ${
+  headless ? '' : 'Never skill-store. '
+}Never dump the book into chat. PDF only after the user wants an export.
+${
+  headless
+    ? ''
+    : '- **SKILL-FIRST: Any mention of skills, SKILL.md, GitHub skill links, or LobeHub marketplace → activate `lobe-skill-store` FIRST, no exceptions.** (Does not apply to attached-file translation.)\n'
+}- **CREDS-FIRST: Any need for authentication, API keys, OAuth, tokens, or env variables → activate \`lobe-creds\` FIRST to manage credentials securely.**
+- **IMAGES: every picture — in chat or for a site — is drawn by \`mcp-arckep-studio-images\`: activate it, then \`create_image\` right away; \`estimate_image\` only in the cases listed in \`<on_demand_tools>\`. SITES: activate \`arckep-sites\` before any site tool.**
+- Check the \`<available_tools>\` list before activating tools${
+  headless
+    ? ''
+    : '\n- For specialized tasks other than attached-file translation, search the Skill Marketplace first — a dedicated skill is almost always better than a generic approach'
+}
 - Only activate tools that are relevant to the user's current request
 - After activation, use the tools' APIs directly — no need to call activateTools again for the same tools
-</best_practices>
-`;
+</best_practices>`;
+
+const buildSystemPrompt = (headless: boolean): string =>
+  [
+    intro,
+    attachedFileTranslationBlock(headless),
+    ...(headless ? [] : [skillStoreDiscoveryBlock]),
+    credentialsBlock,
+    onDemandToolsBlock,
+    bestPracticesBlock(headless),
+  ].join('\n\n') + '\n';
+
+/** Полный промпт — браузерный чат и всё, где магазин навыков доступен. */
+export const systemPrompt = buildSystemPrompt(false);
+
+/**
+ * arckep (19.10.2026): промпт для движка без интерфейса (ARCKEP_HEADLESS_TOOLS=1). Без блока
+ * `<skill_store_discovery>`, строк SKILL-FIRST / «search the Skill Marketplace first» и без упоминаний
+ * `lobe-skill-store`. `activateSkill` и навыки помощника остаются как были.
+ */
+export const systemPromptHeadless = buildSystemPrompt(true);
