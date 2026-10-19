@@ -10,6 +10,7 @@ import type {
 import type { OpenAIChatMessage, UIChatMessage } from '@/types/index';
 
 import type { AgentInfo } from '../../processors/GroupRoleTransform';
+import type { ToolResultImage } from '../../processors/ToolResultImages';
 import type { AgentBuilderContext } from '../../providers/AgentBuilderContextInjector';
 import type { AgentContextDocument } from '../../providers/AgentDocumentInjector';
 import type { AgentManagementContext } from '../../providers/AgentManagementContextInjector';
@@ -238,6 +239,17 @@ export interface MessagesEngineParams {
   // ========== Capability injection (dependency injection) ==========
   /** Model capability checker */
   capabilities?: ModelCapabilityChecker;
+  /**
+   * arckep (19.10.2026): картинки из результатов инструментов текущего хода — моделям со зрением, отдельным
+   * user-сообщением после группы tool-сообщений (см. ToolResultImagesProcessor). Не передан — процессор
+   * не добавляется (клиентский контур: картинки инструментов там не проходят через этот конвейер).
+   */
+  toolResultImages?: {
+    /** Предел картинок за запрос (по умолчанию 4, самые свежие) */
+    maxImages?: number;
+    /** Адрес картинки, доступный провайдеру моделей (подписанная ссылка хранилища) */
+    resolveImageUrl: (image: ToolResultImage) => Promise<string | undefined>;
+  };
   /** Variable generators for placeholder replacement */
   variableGenerators?: VariableGenerators;
 

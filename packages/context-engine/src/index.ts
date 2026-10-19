@@ -17,8 +17,10 @@ export { ContextEngine } from './pipeline';
 export * from './providers';
 // Processors
 export type { PlaceholderValue, PlaceholderValueMap } from './processors';
+export type { ToolResultImage, ToolResultImagesConfig } from './processors';
 export {
   buildPlaceholderGenerators,
+  extractToolResultImages,
   formatPlaceholderValues,
   GroupMessageFlattenProcessor,
   HistoryTruncateProcessor,
@@ -27,6 +29,8 @@ export {
   MessageContentProcessor,
   PlaceholderVariablesProcessor,
   renderPlaceholderTemplate,
+  TOOL_RESULT_IMAGES_LIMIT,
   ToolCallProcessor,
   ToolMessageReorder,
+  ToolResultImagesProcessor,
 } from './processors';

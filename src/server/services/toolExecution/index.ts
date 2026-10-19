@@ -5,7 +5,12 @@ import debug from 'debug';
 
 import { PluginModel } from '@/database/models/plugin';
 import { type CloudMCPParams, type ToolCallContent } from '@/libs/mcp';
-import { contentBlocksToString } from '@/server/services/mcp/contentProcessor';
+import { FileService } from '@/server/services/file';
+import {
+  contentBlocksToString,
+  processContentBlocks,
+  replaceMediaBlocksWithText,
+} from '@/server/services/mcp/contentProcessor';
 import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   truncateToolResult,
@@ -210,7 +215,8 @@ export class ToolExecutionService {
       const token = process.env.ARCKEP_INTERNAL_TOKEN || process.env.LOBECHAT_BACKEND_KEY;
       // Ошибка уходит модели текстом (executeMCPTool), а не в API без доступа: там был бы голый 401.
       if (!token) throw new Error('Подключение студии не настроено: нет служебного токена');
-      if (!arckepUserId) throw new Error('Подключение студии доступно только аккаунтам студии Arckep');
+      if (!arckepUserId)
+        throw new Error('Подключение студии доступно только аккаунтам студии Arckep');
       log('MCP connection %s: trusted, arckep user %s', identifier, arckepUserId);
       // Адрес и заголовки — только серверные: манифест (в том числе свой плагин человека с таким же
       // префиксом) не решает, куда уйдёт служебный токен. Номер человека тоже выведен сервером, так что
@@ -234,6 +240,40 @@ export class ToolExecutionService {
         ...settings,
         ...(arckepUserId ? { 'X-Arckep-User': String(arckepUserId) } : {}),
       },
+    };
+  }
+
+  /**
+   * arckep (19.10.2026): блоки image/audio из ответа MCP-инструмента (например, `get_screenshot` у Figma —
+   * `{type: 'image', data: <base64>, mimeType}`) уходят в хранилище через FileService этого пользователя,
+   * как в браузерном пути (routers/tools/mcp.ts), и заменяются адресом `${APP_URL}/f/:id` (+ fileId записи).
+   * Base64 не остаётся ни в тексте для модели, ни в pluginState, ни в базе. Нет пользователя или базы,
+   * либо загрузка упала — блок заменяется строкой «[картинка не сохранена: причина]», инструмент не падает.
+   */
+  private createMediaProcessor(context: ToolExecutionContext) {
+    return async (blocks: ToolCallContent[]): Promise<ToolCallContent[]> => {
+      // Текстовые ответы (подключения студии, базы данных и т. д.) хранилища не касаются.
+      const needsStorage = blocks.some(
+        (block) =>
+          block.type === 'image' ||
+          block.type === 'audio' ||
+          (block.type === 'text' && block.text.includes('content_base64')),
+      );
+      if (!needsStorage) return blocks;
+
+      if (!context.serverDB || !context.userId) {
+        return replaceMediaBlocksWithText(blocks, 'нет пользователя или хранилища');
+      }
+
+      let fileService: FileService;
+      try {
+        fileService = new FileService(context.serverDB, context.userId);
+      } catch (error) {
+        log('FileService is not available for MCP media: %O', error);
+        return replaceMediaBlocksWithText(blocks, 'хранилище файлов не настроено');
+      }
+
+      return processContentBlocks(blocks, fileService, { degradeOnError: true });
     };
   }
 
@@ -290,14 +330,23 @@ export class ToolExecutionService {
       const result = await this.mcpService.callTool({
         argsStr: args,
         clientParams: await this.withUserConnectionParams(identifier, mcpParams, context),
+        processContentBlocks: this.createMediaProcessor(context),
         toolName: apiName,
       });
 
       log('MCP tool execution successful for: %s:%s', identifier, apiName);
 
+      // arckep (19.10.2026): модели уходит ТЕКСТ ответа (`result.content`), а не JSON-обёртка
+      // `{content, state, success}`: раньше текст повторялся дважды (content + state.content), а картинка
+      // — сырым base64 — тоже дважды. Структура ответа (блоки MCP, адреса загруженных картинок) лежит в
+      // `state` — это pluginState сообщения, как в браузерном пути (routers/tools/mcp.ts). Для сообщений,
+      // сохранённых до правки (обёртка в content), экран студии разворачивает оба вида: studioJob.ts parseJson.
+      // success остаётся true даже при isError ответа сервера — иначе сработают повторы инструмента
+      // (executeToolWithRetry); текст ошибки модель получает как есть.
+      if (typeof result === 'string') return { content: result, success: true };
       return {
-        content: typeof result === 'string' ? result : JSON.stringify(result),
-        state: typeof result === 'object' ? result : undefined,
+        content: typeof result?.content === 'string' ? result.content : JSON.stringify(result),
+        state: result?.state && typeof result.state === 'object' ? result.state : undefined,
         success: true,
       };
     } catch (error) {
@@ -340,7 +389,13 @@ export class ToolExecutionService {
         toolName: apiName,
       });
 
-      const cloudResultContent = (cloudResult?.content ?? []) as ToolCallContent[];
+      const cloudResultBlocks = (cloudResult?.content ?? []) as ToolCallContent[];
+
+      // arckep (19.10.2026): картинки облачных подключений тоже в хранилище, а не base64 в тексте
+      // (как в market.callCloudMcpEndpoint браузерного пути; при isError блоки не трогаем).
+      const cloudResultContent = cloudResult?.isError
+        ? cloudResultBlocks
+        : await this.createMediaProcessor(context)(cloudResultBlocks);
 
       // Convert content blocks to string (same as market router does)
       const content = contentBlocksToString(cloudResultContent);

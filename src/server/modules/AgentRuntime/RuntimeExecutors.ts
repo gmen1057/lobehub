@@ -20,6 +20,7 @@ import {
   type AgentContextDocument,
   buildStepSkillDelta,
   buildStepToolDelta,
+  extractToolResultImages,
   type LobeToolManifest,
   type OperationToolSet,
   type ResolvedToolSet,
@@ -40,6 +41,7 @@ import { TopicModel } from '@/database/models/topic';
 import { type LobeChatDatabase } from '@/database/type';
 import { fileEnv } from '@/envs/file';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
+import { createToolImageUrlResolver } from '@/server/modules/Mecha/ContextEngineering/toolResultImageUrl';
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -491,6 +493,16 @@ export const createRuntimeExecutors = (
             manifests: Object.values(resolved.manifestMap),
             tools: resolved.enabledToolIds,
           },
+          // arckep (19.10.2026): картинки из результатов инструментов текущего хода (Figma get_screenshot и т. п.)
+          // — моделям со зрением, отдельным user-сообщением после группы tool-сообщений; адрес — подписанная
+          // ссылка хранилища. Без пользователя или базы картинки не передаются (в тексте остаётся ссылка).
+          ...(ctx.serverDB && ctx.userId
+            ? {
+                toolResultImages: {
+                  resolveImageUrl: createToolImageUrlResolver(ctx.serverDB, ctx.userId),
+                },
+              }
+            : {}),
           userMemory: state.metadata?.userMemory,
 
           // Skills configuration for <available_skills> injection
@@ -511,6 +523,7 @@ export const createRuntimeExecutors = (
         // Keep output (processedMessages) — needed by inspect CLI for --env, --system-role, -m
         const {
           messages: _inputMsgs,
+          toolResultImages: _toolResultImages,
           toolsConfig: _toolsConfig,
           ...contextEngineInputLite
         } = contextEngineInput;
@@ -1542,8 +1555,24 @@ export const createRuntimeExecutors = (
 
       const newState = structuredClone(state);
 
+      // arckep (19.10.2026): картинки из результата инструмента (блоки MCP `{type: 'image', data, fileId}`)
+      // нужны ToolResultImagesProcessor на следующем шаге: после одиночного вызова состояние собирается здесь,
+      // а не из базы (как в call_tools_batch), поэтому кладём в pluginState сообщения только сами блоки-картинки,
+      // а не весь state инструмента — он бывает большим и раздувает состояние операции.
+      const toolImages = extractToolResultImages(executionResult.state);
+
       newState.messages.push({
         content: executionResult.content,
+        ...(toolImages.length > 0 && {
+          pluginState: {
+            content: toolImages.map((image) => ({
+              data: image.url,
+              fileId: image.fileId,
+              mimeType: image.mimeType,
+              type: 'image',
+            })),
+          },
+        }),
         role: 'tool',
         tool_call_id: chatToolPayload.id,
       });
