@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as ContextEngineering from '@/server/modules/Mecha/ContextEngineering';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
-import { createRuntimeExecutors, type RuntimeExecutorContext, resolveServerEnabledSearch } from '../RuntimeExecutors';
+import {
+  createRuntimeExecutors,
+  resolveServerEnabledSearch,
+  type RuntimeExecutorContext,
+} from '../RuntimeExecutors';
 
 const mockCreateCompressionGroup = vi.fn();
 const mockFinalizeCompression = vi.fn();
@@ -45,14 +49,15 @@ vi.mock('@lobechat/model-runtime', () => ({
 }));
 
 // model-bank is a TypeScript source file that cannot be dynamically imported in vitest
+// The real model-bank index does NOT export DEFAULT_MODEL_PROVIDER_LIST (19.10.2026: a mock that had it hid a
+// bug that left search off for 27 of 48 chat models), so the mock must not either.
 vi.mock('model-bank', () => ({
-  DEFAULT_MODEL_PROVIDER_LIST: [
-    { id: 'google', settings: { searchMode: 'params' } },
-    { id: 'openai', settings: { searchMode: 'params' } },
-    { id: 'openrouter', settings: { searchMode: 'params' } },
-    { id: 'test-provider', settings: {} },
-  ],
   LOBE_DEFAULT_MODEL_LIST: [
+    {
+      abilities: { functionCall: true, search: true },
+      id: 'searchy-model',
+      providerId: 'test-provider',
+    },
     {
       abilities: { functionCall: true, search: true, vision: true },
       id: 'gemini-3.6-flash',
@@ -3269,7 +3274,11 @@ describe('RuntimeExecutors', () => {
 describe('resolveServerEnabledSearch (arckep: native search for server runs)', () => {
   it('is off when the agent search mode is off or builtin search is declined', async () => {
     expect(
-      await resolveServerEnabledSearch({ chatConfig: { searchMode: 'off' } }, 'gemini-3.6-flash', 'google'),
+      await resolveServerEnabledSearch(
+        { chatConfig: { searchMode: 'off' } },
+        'gemini-3.6-flash',
+        'google',
+      ),
     ).toBe(false);
     expect(
       await resolveServerEnabledSearch(
@@ -3281,12 +3290,80 @@ describe('resolveServerEnabledSearch (arckep: native search for server runs)', (
     expect(await resolveServerEnabledSearch(undefined, undefined, 'google')).toBe(false);
   });
 
-  it('is on for providers with native search (google, openai, openrouter) by default', async () => {
-    expect(await resolveServerEnabledSearch(undefined, 'gemini-3.6-flash', 'google')).toBe(true);
-    expect(await resolveServerEnabledSearch({ chatConfig: {} }, 'openrouter/auto', 'openrouter')).toBe(true);
+  it('is on for every model of the five providers with native search, with or without a model card', async () => {
+    // Models without a card in model-bank (our own *_MODEL_LIST entries) used to get no search.
+    const cases: Array<[string, string]> = [
+      ['anthropic', 'claude-opus-5'],
+      ['anthropic', 'claude-fable-5'],
+      ['google', 'gemini-3.1-flash-lite'],
+      ['google', 'gemini-3.6-flash'],
+      ['openai', 'gpt-5.6-luna'],
+      ['openai', 'gpt-5.6-sol'],
+      ['qwen', 'qwen3.7-flash'],
+      ['xai', 'grok-4.3'],
+      ['xai', 'grok-build-0.1'],
+    ];
+    for (const [provider, model] of cases) {
+      expect(
+        await resolveServerEnabledSearch(undefined, model, provider),
+        `${provider}/${model}`,
+      ).toBe(true);
+      expect(
+        await resolveServerEnabledSearch({ chatConfig: { searchMode: 'on' } }, model, provider),
+        `${provider}/${model} (on)`,
+      ).toBe(true);
+    }
   });
 
-  it('is off for a provider and model without native search', async () => {
-    expect(await resolveServerEnabledSearch(undefined, 'no-such-model', 'no-such-provider')).toBe(false);
+  it('stays off for OpenRouter (:online would search on every message and is not in the price)', async () => {
+    for (const model of [
+      'openrouter/auto',
+      'z-ai/glm-5.3-flash',
+      'moonshotai/kimi-k3',
+      'z-ai/glm-4.5-air:free',
+    ]) {
+      expect(await resolveServerEnabledSearch({ chatConfig: {} }, model, 'openrouter'), model).toBe(
+        false,
+      );
+      expect(
+        await resolveServerEnabledSearch({ chatConfig: { searchMode: 'on' } }, model, 'openrouter'),
+        `${model} (on)`,
+      ).toBe(false);
+    }
+  });
+
+  it('stays off for DeepSeek (no built-in search)', async () => {
+    expect(await resolveServerEnabledSearch(undefined, 'deepseek-v4-flash', 'deepseek')).toBe(
+      false,
+    );
+  });
+
+  it('other providers follow the model card (abilities.search)', async () => {
+    expect(await resolveServerEnabledSearch(undefined, 'searchy-model', 'test-provider')).toBe(
+      true,
+    );
+    expect(await resolveServerEnabledSearch(undefined, 'no-tools-model', 'test-provider')).toBe(
+      false,
+    );
+    expect(await resolveServerEnabledSearch(undefined, 'no-such-model', 'no-such-provider')).toBe(
+      false,
+    );
+  });
+
+  it('the off switches win over the provider list', async () => {
+    expect(
+      await resolveServerEnabledSearch(
+        { chatConfig: { searchMode: 'off' } },
+        'claude-opus-5',
+        'anthropic',
+      ),
+    ).toBe(false);
+    expect(
+      await resolveServerEnabledSearch(
+        { chatConfig: { useModelBuiltinSearch: false } },
+        'grok-4.3',
+        'xai',
+      ),
+    ).toBe(false);
   });
 });
