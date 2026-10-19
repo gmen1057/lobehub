@@ -49,7 +49,9 @@ describe('отложенные инструменты: движок → activate
       expect(manifestMap[id], id).toBeDefined();
       expect(manifestMap[id].identifier).toBe(id);
     }
-    expect(manifestMap['mcp-arckep-wordstat']).toMatchObject({ mcpParams: mcpManifest.mcpParams });
+    expect(manifestMap['mcp-arckep-wordstat']).toMatchObject({
+      mcpParams: (mcpManifest as any).mcpParams,
+    });
   });
 
   it('у базы знаний и ссылок на темы есть серверные runtime — вызов после подключения исполняется', () => {
