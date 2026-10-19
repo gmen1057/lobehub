@@ -3,6 +3,7 @@ import { AgentBuilderManifest } from '@lobechat/builtin-tool-agent-builder';
 import { AgentDocumentsManifest } from '@lobechat/builtin-tool-agent-documents';
 import { AgentManagementManifest } from '@lobechat/builtin-tool-agent-management';
 import { ArckepBotManifest } from '@lobechat/builtin-tool-arckep-bot';
+import { ArckepLayoutManifest } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepSitesManifest } from '@lobechat/builtin-tool-arckep-sites';
 import { ArckepStudioManifest } from '@lobechat/builtin-tool-arckep-studio';
 import { BriefManifest } from '@lobechat/builtin-tool-brief';
@@ -318,6 +319,15 @@ export const builtinTools: LobeBuiltinTool[] = [
     hidden: true,
     identifier: ArckepConnectorsManifest.identifier,
     manifest: ArckepConnectorsManifest,
+    type: 'builtin',
+  },
+  {
+    // arckep (19.10.2026): сверка письма с макетом PDF и правки артефакта кусками. Не в списке для подключения:
+    // execAgent включает инструмент сам, когда в теме есть PDF или HTML-артефакт (схема ≈ 0,5 тыс. токенов)
+    discoverable: false,
+    hidden: true,
+    identifier: ArckepLayoutManifest.identifier,
+    manifest: ArckepLayoutManifest,
     type: 'builtin',
   },
   {

@@ -153,6 +153,9 @@ importers:
       '@lobechat/builtin-tool-arckep-bot':
         specifier: workspace:*
         version: link:packages/builtin-tool-arckep-bot
+      '@lobechat/builtin-tool-arckep-layout':
+        specifier: workspace:*
+        version: link:packages/builtin-tool-arckep-layout
       '@lobechat/builtin-tool-arckep-sites':
         specifier: workspace:*
         version: link:packages/builtin-tool-arckep-sites
@@ -1272,6 +1275,12 @@ importers:
         specifier: workspace:*
         version: link:../types
 
+  packages/builtin-tool-arckep-layout:
+    devDependencies:
+      '@lobechat/types':
+        specifier: workspace:*
+        version: link:../types
+
   packages/builtin-tool-arckep-sites:
     dependencies:
       '@lobehub/ui':
@@ -1799,6 +1808,9 @@ importers:
       '@lobechat/builtin-tool-arckep-bot':
         specifier: workspace:*
         version: link:../builtin-tool-arckep-bot
+      '@lobechat/builtin-tool-arckep-layout':
+        specifier: workspace:*
+        version: link:../builtin-tool-arckep-layout
       '@lobechat/builtin-tool-arckep-sites':
         specifier: workspace:*
         version: link:../builtin-tool-arckep-sites

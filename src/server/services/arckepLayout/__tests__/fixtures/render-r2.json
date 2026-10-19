@@ -1,0 +1,1207 @@
+{
+  "failed_images": [],
+  "height": 5561,
+  "images": [
+    {
+      "src": "https://arckep.ru/chat/f/file_test0002/",
+      "x": 27,
+      "y": 37,
+      "w": 48,
+      "h": 41,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0001/",
+      "x": 0,
+      "y": 104,
+      "w": 600,
+      "h": 604,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0003/",
+      "x": 159,
+      "y": 845,
+      "w": 22,
+      "h": 22,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0004/",
+      "x": 44,
+      "y": 1131,
+      "w": 92,
+      "h": 79,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0005/",
+      "x": 206,
+      "y": 1662,
+      "w": 22,
+      "h": 21,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0006/",
+      "x": 305,
+      "y": 1370,
+      "w": 295,
+      "h": 348,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0007/",
+      "x": 0,
+      "y": 1733,
+      "w": 295,
+      "h": 301,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0005/",
+      "x": 511,
+      "y": 1978,
+      "w": 22,
+      "h": 21,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0005/",
+      "x": 206,
+      "y": 2341,
+      "w": 22,
+      "h": 21,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0008/",
+      "x": 305,
+      "y": 2049,
+      "w": 295,
+      "h": 348,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0009/",
+      "x": 54,
+      "y": 2597,
+      "w": 78,
+      "h": 74,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0010/",
+      "x": 20,
+      "y": 2956,
+      "w": 150,
+      "h": 150,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0011/",
+      "x": 20,
+      "y": 3461,
+      "w": 150,
+      "h": 150,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0012/",
+      "x": 20,
+      "y": 3891,
+      "w": 150,
+      "h": 150,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0013/",
+      "x": 20,
+      "y": 4371,
+      "w": 150,
+      "h": 150,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0005/",
+      "x": 147,
+      "y": 5020,
+      "w": 22,
+      "h": 21,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0014/",
+      "x": 368,
+      "y": 4843,
+      "w": 163,
+      "h": 238,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0015/",
+      "x": 201,
+      "y": 5263,
+      "w": 47,
+      "h": 45,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0016/",
+      "x": 277,
+      "y": 5264,
+      "w": 46,
+      "h": 43,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0017/",
+      "x": 354,
+      "y": 5264,
+      "w": 42,
+      "h": 43,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0018/",
+      "x": 243,
+      "y": 5376,
+      "w": 40,
+      "h": 40,
+      "loaded": true,
+      "origin": "ours"
+    },
+    {
+      "src": "https://arckep.ru/chat/f/file_test0019/",
+      "x": 317,
+      "y": 5376,
+      "w": 40,
+      "h": 40,
+      "loaded": true,
+      "origin": "ours"
+    }
+  ],
+  "lines": [
+    {
+      "text": "Примеро",
+      "found": true,
+      "x": 76,
+      "y": 45,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Текст",
+      "found": true,
+      "x": 193,
+      "y": 45,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Строка",
+      "found": true,
+      "x": 283,
+      "y": 45,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Макета об",
+      "found": true,
+      "x": 379,
+      "y": 45,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Образ",
+      "found": true,
+      "x": 517,
+      "y": 45,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Надпись раздел описаниео",
+      "found": true,
+      "x": 20,
+      "y": 741,
+      "h": 28,
+      "font_size": 25,
+      "font_weight": "700"
+    },
+    {
+      "text": "Раздел описание подписьо",
+      "found": true,
+      "x": 20,
+      "y": 786,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Описание п",
+      "found": true,
+      "x": 45,
+      "y": 845,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Подпись заметка заголово",
+      "found": true,
+      "x": 20,
+      "y": 941,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заметка заголовок абзацо",
+      "found": true,
+      "x": 20,
+      "y": 966,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заголовок абзац пункт сс",
+      "found": true,
+      "x": 20,
+      "y": 991,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "абзац пункт ссылка кнопк",
+      "found": true,
+      "x": 20,
+      "y": 1016,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Пункт ссылка кнопка стра",
+      "found": true,
+      "x": 155,
+      "y": 1096,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "ссылка кнопка страницы П",
+      "found": true,
+      "x": 155,
+      "y": 1121,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "кнопка страницы Пример т",
+      "found": true,
+      "x": 155,
+      "y": 1146,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "страницы Пример текста с",
+      "found": true,
+      "x": 155,
+      "y": 1171,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "пример текста строка мак",
+      "found": true,
+      "x": 155,
+      "y": 1196,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "текста строка",
+      "found": true,
+      "x": 155,
+      "y": 1221,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Строка макета образец на",
+      "found": true,
+      "x": 107.921875,
+      "y": 1301,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "макета образец надпись р",
+      "found": true,
+      "x": 100.75,
+      "y": 1329,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Образец надп",
+      "found": true,
+      "x": 25,
+      "y": 1397,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Надпись раздел оп",
+      "found": true,
+      "x": 25,
+      "y": 1440,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "раздел описание подп",
+      "found": true,
+      "x": 25,
+      "y": 1465,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "описание п",
+      "found": true,
+      "x": 25,
+      "y": 1490,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "подпись заметка",
+      "found": true,
+      "x": 25,
+      "y": 1515,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заметка заголовок а",
+      "found": true,
+      "x": 25,
+      "y": 1540,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заголовок абзац п",
+      "found": true,
+      "x": 25,
+      "y": 1565,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "абзац пункт ссылка к",
+      "found": true,
+      "x": 25,
+      "y": 1590,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "пункт",
+      "found": true,
+      "x": 25,
+      "y": 1615,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Ссылка кнопка",
+      "found": true,
+      "x": 60,
+      "y": 1661,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Кнопка страницы Пр",
+      "found": true,
+      "x": 330,
+      "y": 1760,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Стр",
+      "found": true,
+      "x": 330,
+      "y": 1788,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Пример текста строка м",
+      "found": true,
+      "x": 330,
+      "y": 1831,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "текста строка м",
+      "found": true,
+      "x": 330,
+      "y": 1856,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "строка макета о",
+      "found": true,
+      "x": 330,
+      "y": 1881,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "макета образец надпис",
+      "found": true,
+      "x": 330,
+      "y": 1906,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "образец надп",
+      "found": true,
+      "x": 330,
+      "y": 1931,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Надпись разде",
+      "found": true,
+      "x": 365,
+      "y": 1977,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Раздел описание под",
+      "found": true,
+      "x": 25,
+      "y": 2076,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Описание подпись",
+      "found": true,
+      "x": 25,
+      "y": 2119,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "подпись заметка з",
+      "found": true,
+      "x": 25,
+      "y": 2144,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заметка заголово",
+      "found": true,
+      "x": 25,
+      "y": 2169,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заголовок абзац пунк",
+      "found": true,
+      "x": 25,
+      "y": 2194,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "абзац пункт ссыл",
+      "found": true,
+      "x": 25,
+      "y": 2219,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "пункт ссылк",
+      "found": true,
+      "x": 25,
+      "y": 2244,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "ссылка кнопка стран",
+      "found": true,
+      "x": 25,
+      "y": 2269,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "кнопка страницы П",
+      "found": true,
+      "x": 25,
+      "y": 2294,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Страницы Прим",
+      "found": true,
+      "x": 60,
+      "y": 2340,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Пример текста строка мак",
+      "found": true,
+      "x": 20,
+      "y": 2424,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "текста строка макета обр",
+      "found": true,
+      "x": 20,
+      "y": 2449,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "строка мак",
+      "found": true,
+      "x": 20,
+      "y": 2474,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Макета образец надпись р",
+      "found": true,
+      "x": 160,
+      "y": 2554,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "образец надпис",
+      "found": true,
+      "x": 160,
+      "y": 2582,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Надпись раздел описаниео",
+      "found": true,
+      "x": 160,
+      "y": 2620,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "раздел описание подписьо",
+      "found": true,
+      "x": 160,
+      "y": 2645,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "описание подпи",
+      "found": true,
+      "x": 160,
+      "y": 2671,
+      "h": 20,
+      "font_size": 18,
+      "font_weight": "700"
+    },
+    {
+      "text": ", дпись заметка заголово",
+      "found": true,
+      "x": 296,
+      "y": 2694,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заметка заголовок абзацо",
+      "found": true,
+      "x": 160,
+      "y": 2720,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Заголовок абз",
+      "found": true,
+      "x": 230.484375,
+      "y": 2784,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Абзац пункт ссылка кнопк",
+      "found": true,
+      "x": 54.921875,
+      "y": 2880,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Пункт ссылка кнопка стра",
+      "found": true,
+      "x": 190,
+      "y": 2972,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Ссылка кнопка страницы П",
+      "found": true,
+      "x": 190,
+      "y": 3010,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "кнопка ст",
+      "found": true,
+      "x": 190,
+      "y": 3035,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Страницы Пр",
+      "found": true,
+      "x": 190,
+      "y": 3070,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "Пример текста строка мак",
+      "found": true,
+      "x": 40,
+      "y": 3148,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "текста строка макета обр",
+      "found": true,
+      "x": 40,
+      "y": 3173,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "строка макета образец на",
+      "found": true,
+      "x": 40,
+      "y": 3198,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "макета образец надпись р",
+      "found": true,
+      "x": 40,
+      "y": 3223,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "образец надпись раздел о",
+      "found": true,
+      "x": 40,
+      "y": 3248,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "надпись раздел описа",
+      "found": true,
+      "x": 40,
+      "y": 3273,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Раздел описание подписьо",
+      "found": true,
+      "x": 143.609375,
+      "y": 3352,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Описание подпись заметка",
+      "found": true,
+      "x": 190,
+      "y": 3477,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Подпись заметка заголово",
+      "found": true,
+      "x": 190,
+      "y": 3515,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "заметка заголовок а",
+      "found": true,
+      "x": 190,
+      "y": 3540,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Заголовок а",
+      "found": true,
+      "x": 190,
+      "y": 3575,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "Абзац пункт ссылка кнопк",
+      "found": true,
+      "x": 40,
+      "y": 3653,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "пункт ссылка кнопка стра",
+      "found": true,
+      "x": 40,
+      "y": 3678,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "ссылка кнопка страницы П",
+      "found": true,
+      "x": 40,
+      "y": 3703,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Кнопка страницы Пример т",
+      "found": true,
+      "x": 133.46875,
+      "y": 3782,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Страницы Пример текста с",
+      "found": true,
+      "x": 190,
+      "y": 3907,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Пример текста строка мак",
+      "found": true,
+      "x": 190,
+      "y": 3945,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "текста ст",
+      "found": true,
+      "x": 190,
+      "y": 3970,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Строка маке",
+      "found": true,
+      "x": 190,
+      "y": 4005,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "Макета образец надпись р",
+      "found": true,
+      "x": 40,
+      "y": 4083,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "образец надпись раздел о",
+      "found": true,
+      "x": 40,
+      "y": 4108,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "надпись раздел описаниео",
+      "found": true,
+      "x": 40,
+      "y": 4133,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "раздел описание подписьо",
+      "found": true,
+      "x": 40,
+      "y": 4158,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "описание подпи",
+      "found": true,
+      "x": 40,
+      "y": 4183,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Подпись заметка заголово",
+      "found": true,
+      "x": 135.515625,
+      "y": 4262,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Заметка заголовок а",
+      "found": true,
+      "x": 190,
+      "y": 4385,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Заголовок абз",
+      "found": true,
+      "x": 190,
+      "y": 4413,
+      "h": 25,
+      "font_size": 22,
+      "font_weight": "700"
+    },
+    {
+      "text": "Абзац пункт ссылка кнопк",
+      "found": true,
+      "x": 190,
+      "y": 4451,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Пункт ссылк",
+      "found": true,
+      "x": 190,
+      "y": 4486,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "Ссылка кнопка страницы П",
+      "found": true,
+      "x": 40,
+      "y": 4563,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "700"
+    },
+    {
+      "text": "кнопка страницы Пример т",
+      "found": true,
+      "x": 40,
+      "y": 4588,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "страницы Пример текста с",
+      "found": true,
+      "x": 40,
+      "y": 4613,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "примеро",
+      "found": true,
+      "x": 40,
+      "y": 4638,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Текста строка макета обр",
+      "found": true,
+      "x": 146.8125,
+      "y": 4717,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Строка макета образец на",
+      "found": true,
+      "x": 35,
+      "y": 4866,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "макета образец надпись р",
+      "found": true,
+      "x": 35,
+      "y": 4891,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "образец надпись раздел о",
+      "found": true,
+      "x": 35,
+      "y": 4916,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "надпись раздел описаниео",
+      "found": true,
+      "x": 35,
+      "y": 4941,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "раздел описание подписьо",
+      "found": true,
+      "x": 35,
+      "y": 4966,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Описани",
+      "found": true,
+      "x": 60,
+      "y": 5019,
+      "h": 22,
+      "font_size": 20,
+      "font_weight": "400"
+    },
+    {
+      "text": "Подпись заметка з",
+      "found": true,
+      "x": 79.765625,
+      "y": 5161,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Заметка заголовоко",
+      "found": true,
+      "x": 369.890625,
+      "y": 5161,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Заголовок абзац пункт сс",
+      "found": true,
+      "x": 49.578125,
+      "y": 5230,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Абзац пункт ссылка кнопк",
+      "found": true,
+      "x": 138.15625,
+      "y": 5340,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Пункт ссылка кнопка стра",
+      "found": true,
+      "x": 89.046875,
+      "y": 5454,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Ссылка кнопка страницы П",
+      "found": true,
+      "x": 48.9375,
+      "y": 5481,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    },
+    {
+      "text": "Кнопка страницы Пример",
+      "found": true,
+      "x": 209.203125,
+      "y": 5509,
+      "h": 17,
+      "font_size": 16,
+      "font_weight": "400"
+    }
+  ],
+  "scroll_width": 600,
+  "width": 600
+}
