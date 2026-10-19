@@ -47,7 +47,7 @@ export interface SkillContextProviderConfig {
 /**
  * Skill Context Provider
  * Injects lightweight skill metadata into the system prompt so the LLM knows
- * which skills are available and can invoke them via `runSkill`.
+ * which skills are available and can load them via `activateSkill` (lobe-activator).
  */
 export class SkillContextProvider extends BaseSystemRoleProvider {
   readonly name = 'SkillContextProvider';

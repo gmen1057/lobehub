@@ -1037,7 +1037,7 @@ describe('ChatService', () => {
         );
         expect(requestMessages[0].content).toContain('<available_skills>');
         expect(requestMessages[0].content).toContain(
-          'Use the runSkill tool to activate a skill when needed.',
+          "Call the `activateSkill` tool (lobe-activator) with a skill's exact name to load its instructions when the task matches it.",
         );
         expect(requestMessages[0].content).toContain('<tool name="SEO">');
         expect(requestMessages[1]).toEqual(
