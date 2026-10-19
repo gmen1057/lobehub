@@ -74,9 +74,15 @@ interface RpcError {
 
 const PASSTHROUGH_STATUSES = new Set([400, 402, 404, 409, 422, 429]);
 
-const statusForRpcError = (error: RpcError): number => {
+/** Статус, который шлюз подсказал сам: `error.data.status` (например 402 — нет денег). */
+const hintedStatus = (error: RpcError): number | undefined => {
   const hinted = Number(error.data?.status ?? error.data?.httpStatus);
-  if (Number.isInteger(hinted) && PASSTHROUGH_STATUSES.has(hinted)) return hinted;
+  return Number.isInteger(hinted) && PASSTHROUGH_STATUSES.has(hinted) ? hinted : undefined;
+};
+
+const statusForRpcError = (error: RpcError): number => {
+  const hinted = hintedStatus(error);
+  if (hinted) return hinted;
   // Параметры вызова не те — человек может исправить; всё остальное — сбой шлюза.
   if (error.code === -32_600 || error.code === -32_602) return 400;
   return 502;
@@ -108,12 +114,34 @@ const parseRpcBody = (text: string, contentType: string, id: number): any => {
   }
 };
 
+/**
+ * Тело ответа не больше MAX_RESPONSE_BYTES: читается потоком и обрывается, как только предел пройден (а не
+ * целиком в память и потом проверка длины); заявленный `Content-Length` сверх предела отклоняется сразу.
+ */
 const readLimited = async (response: Response): Promise<string> => {
-  const text = await response.text();
-  if (text.length > MAX_RESPONSE_BYTES) {
-    throw new UserMcpGatewayError('Ответ сервера слишком большой', 502);
+  const tooBig = () => new UserMcpGatewayError('Ответ сервера слишком большой', 502);
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw tooBig();
   }
-  return text;
+  if (!response.body) return '';
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    received += value.byteLength;
+    if (received > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw tooBig();
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
 };
 
 /** Сжать описание и схему инструмента чужого сервера и отбросить то, что сломает вызов функций у модели. */
@@ -193,8 +221,8 @@ export const listUserMcpTools = async (options: ListUserMcpToolsOptions): Promis
 
     sessionId = response.headers.get('mcp-session-id') ?? sessionId;
     if (notification) {
-      // тело читаем до конца, иначе соединение остаётся занятым
-      await response.arrayBuffer().catch(() => undefined);
+      // у уведомления тела нет; отпускаем соединение, ничего не читая
+      await response.body?.cancel().catch(() => undefined);
       if (!response.ok && response.status !== 202) {
         throw new UserMcpGatewayError('Шлюз подключений отклонил запрос', 502);
       }
@@ -219,7 +247,8 @@ export const listUserMcpTools = async (options: ListUserMcpToolsOptions): Promis
       try {
         const body = parseRpcBody(text, contentType, id!);
         message = errorText(body?.error, '');
-        status = body?.error ? statusForRpcError(body.error) : status;
+        // на HTTP-ошибке верим коду ответа, если шлюз не подсказал статус сам
+        status = (body?.error && hintedStatus(body.error)) || status;
       } catch {
         message = text.slice(0, 300);
       }

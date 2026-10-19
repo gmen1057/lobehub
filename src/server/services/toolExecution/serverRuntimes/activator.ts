@@ -10,6 +10,7 @@ import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionR
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { filterBuiltinSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
 
+import { markTopicIfUserMcp } from '../topicTrust';
 import { withSkillTools } from './skillTools';
 import { type ServerRuntimeRegistration } from './types';
 
@@ -67,6 +68,15 @@ export const activatorRuntime: ServerRuntimeRegistration = {
             systemRole: manifest.systemRole,
           });
         }
+
+        // arckep (19.10.2026, этап 3, п. 3.Д): описания инструментов чужого сервера (`umcp-*`) идут модели
+        // с этим ответом — с этого момента платные запуски студии в теме ждут подтверждения человеком.
+        await markTopicIfUserMcp(
+          context.serverDB,
+          context.userId,
+          context.topicId,
+          results.map((item) => item.identifier),
+        );
 
         return results;
       },

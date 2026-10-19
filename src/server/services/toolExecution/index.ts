@@ -101,7 +101,13 @@ export class ToolExecutionService {
     try {
       // arckep (19.10.2026, этап 3, п. 3.Д): платные запуски студии в теме с чужим инструментом ждут человека.
       const blocked = await this.gatePaidCall(payload, context);
-      if (blocked) return { ...blocked, executionTime: Date.now() - startTime };
+      if (blocked) {
+        return {
+          ...blocked,
+          error: normalizeExecutionError(blocked.error, blocked.content),
+          executionTime: Date.now() - startTime,
+        };
+      }
 
       const typeStr = type as string;
       let data: ToolExecutionResult;

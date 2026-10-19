@@ -86,6 +86,7 @@ import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
 import { MarketService } from '@/server/services/market';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
+import { markTopicIfUserMcp } from '@/server/services/toolExecution/topicTrust';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
@@ -1124,6 +1125,10 @@ export class AiAgentService {
       tools = toolsResult.tools;
 
       log('execAgent: enabled tool ids: %O (lazy: %O)', toolsResult.enabledToolIds, lazyToolIds);
+
+      // arckep (19.10.2026, этап 3, п. 3.Д): свой инструмент человека (`umcp-*`), включённый сразу (выбран на
+      // сообщение), несёт чужие описания в первый же шаг — тема помечается до ответа модели.
+      await markTopicIfUserMcp(this.db, this.userId, topicId, toolsResult.enabledToolIds);
 
       const enabledManifests = toolsResult.enabledManifests ?? [];
       enabledManifests.forEach((manifest) => {

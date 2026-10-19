@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { ARCKEP_CONFIRM_MARKER } from '@lobechat/builtin-tools';
+import { ARCKEP_CONFIRM_MARKER, isArckepUserMcpId } from '@lobechat/builtin-tools';
 import { and, eq, sql } from 'drizzle-orm';
 
 import { messagePlugins, messages, topics } from '@/database/schemas';
@@ -45,7 +45,9 @@ interface TopicMetadataShape {
 }
 
 /** metadata как объект: пустая или не-объект (JSON null) читается как `{}`. */
-const baseMetadata = sql`(CASE WHEN jsonb_typeof(${topics.metadata}) = 'object' THEN ${topics.metadata} ELSE '{}'::jsonb END)`;
+// Функция, а не константа: схема читается при вызове, а не при импорте модуля (тесты маршрутов подменяют её).
+const baseMetadata = () =>
+  sql`(CASE WHEN jsonb_typeof(${topics.metadata}) = 'object' THEN ${topics.metadata} ELSE '{}'::jsonb END)`;
 
 const topicWhere = (userId: string, topicId: string) =>
   and(eq(topics.id, topicId), eq(topics.userId, userId));
@@ -80,11 +82,33 @@ export const markTopicUntrusted = async (
   const rows = await db
     .update(topics)
     .set({
-      metadata: sql`jsonb_set(${baseMetadata}, '{arckepUntrusted}', COALESCE(${baseMetadata}->'arckepUntrusted', ${fresh}::jsonb), true)`,
+      metadata: sql`jsonb_set(${baseMetadata()}, '{arckepUntrusted}', COALESCE(${baseMetadata()}->'arckepUntrusted', ${fresh}::jsonb), true)`,
     })
     .where(topicWhere(userId, topicId))
     .returning({ id: topics.id });
   return rows.length > 0;
+};
+
+/**
+ * Описания и схемы инструментов чужого сервера попадают к модели уже при подключении инструмента (шаг
+ * `activateTools` или включение на сообщение), а не только при вызове, — и могут содержать чужие указания.
+ * Поэтому тема помечается, как только среди подключённых инструментов есть свой `umcp-*`; метка при самом
+ * вызове (`userMcpConnectionParams`) остаётся и там отказывает, если пометить не удалось. Здесь сбой базы не
+ * пробрасывается: подключение инструмента не должно падать из-за метки, а вызов пометит тему заново.
+ */
+export const markTopicIfUserMcp = async (
+  db: LobeChatDatabase | undefined,
+  userId: string | undefined,
+  topicId: string | undefined,
+  identifiers: readonly string[],
+): Promise<void> => {
+  const identifier = identifiers.find((id) => isArckepUserMcpId(id));
+  if (!identifier || !db || !userId || !topicId) return;
+  try {
+    await markTopicUntrusted(db, userId, topicId, identifier);
+  } catch (error) {
+    console.error('[arckep] marking topic for user MCP failed:', error);
+  }
 };
 
 /**
@@ -186,16 +210,16 @@ export const swapConfirmation = async (
   const cutoff = new Date(Date.now() - CONFIRMATION_KEEP_MS).toISOString();
   const prevJson = prev ? JSON.stringify(prev) : null;
   const nextJson = JSON.stringify(next);
-  const pruned = sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(COALESCE(${baseMetadata}->'arckepConfirmations', '{}'::jsonb)) AS e WHERE COALESCE(e.value->>'decidedAt', e.value->>'createdAt') > ${cutoff}), '{}'::jsonb)`;
+  const pruned = sql`COALESCE((SELECT jsonb_object_agg(e.key, e.value) FROM jsonb_each(COALESCE(${baseMetadata()}->'arckepConfirmations', '{}'::jsonb)) AS e WHERE COALESCE(e.value->>'decidedAt', e.value->>'createdAt') > ${cutoff}), '{}'::jsonb)`;
   const rows = await db
     .update(topics)
     .set({
-      metadata: sql`jsonb_set(jsonb_set(${baseMetadata}, '{arckepConfirmations}', ${pruned}, true), ARRAY['arckepConfirmations', ${id}::text], ${nextJson}::jsonb, true)`,
+      metadata: sql`jsonb_set(jsonb_set(${baseMetadata()}, '{arckepConfirmations}', ${pruned}, true), ARRAY['arckepConfirmations', ${id}::text], ${nextJson}::jsonb, true)`,
     })
     .where(
       and(
         topicWhere(userId, topicId),
-        sql`(${baseMetadata}->'arckepConfirmations'->${id}::text) IS NOT DISTINCT FROM ${prevJson}::jsonb`,
+        sql`(${baseMetadata()}->'arckepConfirmations'->${id}::text) IS NOT DISTINCT FROM ${prevJson}::jsonb`,
       ),
     )
     .returning({ id: topics.id });

@@ -13,6 +13,7 @@ import {
   gatePaidToolCall,
   hashToolArguments,
   isTopicUntrusted,
+  markTopicIfUserMcp,
   markTopicUntrusted,
   readConfirmation,
   summarizeToolCall,
@@ -82,6 +83,22 @@ describe('метка темы и подтверждения (topics.metadata)', 
       await db.update(topics).set({ metadata: sql`'null'::jsonb` as any }).where(eq(topics.id, 'tpc_second'));
       expect(await markTopicUntrusted(db, me, 'tpc_second', 'umcp-aaaaaaaaaaaa')).toBe(true);
       expect((await metadataOf('tpc_second'))?.arckepUntrusted).toBeTruthy();
+    });
+
+    it('markTopicIfUserMcp: помечает по первому umcp-*, прочие инструменты и пустые данные не трогает, сбой не пробрасывает', async () => {
+      await markTopicIfUserMcp(db, me, topicId, ['mcp-arckep-wordstat', 'lobe-user-memory']);
+      expect((await metadataOf())?.arckepUntrusted).toBeUndefined();
+      await markTopicIfUserMcp(db, me, undefined, ['umcp-aaaaaaaaaaaa']);
+      await markTopicIfUserMcp(undefined, me, topicId, ['umcp-aaaaaaaaaaaa']);
+      expect((await metadataOf())?.arckepUntrusted).toBeUndefined();
+
+      await markTopicIfUserMcp(db, me, topicId, ['lobe-activator', 'umcp-aaaaaaaaaaaa', 'umcp-bbbbbbbbbbbb']);
+      expect((await metadataOf())?.arckepUntrusted?.identifier).toBe('umcp-aaaaaaaaaaaa');
+
+      const broken = { update: () => { throw new Error('db down'); } } as any;
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      await expect(markTopicIfUserMcp(broken, me, topicId, ['umcp-aaaaaaaaaaaa'])).resolves.toBeUndefined();
+      spy.mockRestore();
     });
 
     it('чужая и несуществующая тема не помечается', async () => {
