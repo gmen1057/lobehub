@@ -85,7 +85,7 @@ describe('метка темы и подтверждения (topics.metadata)', 
       expect((await metadataOf('tpc_second'))?.arckepUntrusted).toBeTruthy();
     });
 
-    it('markTopicIfUserMcp: помечает по первому umcp-*, прочие инструменты и пустые данные не трогает, сбой не пробрасывает', async () => {
+    it('markTopicIfUserMcp: помечает по первому umcp-*; прочие инструменты и пустые данные не трогает; сбой — отказ (закрыто)', async () => {
       await markTopicIfUserMcp(db, me, topicId, ['mcp-arckep-wordstat', 'lobe-user-memory']);
       expect((await metadataOf())?.arckepUntrusted).toBeUndefined();
       await markTopicIfUserMcp(db, me, undefined, ['umcp-aaaaaaaaaaaa']);
@@ -95,10 +95,48 @@ describe('метка темы и подтверждения (topics.metadata)', 
       await markTopicIfUserMcp(db, me, topicId, ['lobe-activator', 'umcp-aaaaaaaaaaaa', 'umcp-bbbbbbbbbbbb']);
       expect((await metadataOf())?.arckepUntrusted?.identifier).toBe('umcp-aaaaaaaaaaaa');
 
-      const broken = { update: () => { throw new Error('db down'); } } as any;
       const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-      await expect(markTopicIfUserMcp(broken, me, topicId, ['umcp-aaaaaaaaaaaa'])).resolves.toBeUndefined();
+      // сбой базы и чужая/пропавшая тема — исключение, а не тихий пропуск
+      const broken = {
+        update: () => {
+          throw new Error('db down');
+        },
+      } as any;
+      await expect(markTopicIfUserMcp(broken, me, topicId, ['umcp-aaaaaaaaaaaa'])).rejects.toThrow(
+        'Не удалось подготовить чат',
+      );
+      await expect(markTopicIfUserMcp(db, me, 'tpc_theirs', ['umcp-aaaaaaaaaaaa'])).rejects.toThrow(
+        'Не удалось подготовить чат',
+      );
       spy.mockRestore();
+    });
+
+    it('подключение инструмента (шаг activateTools) в истории темы — тоже «чужой инструмент», даже без метки', async () => {
+      await db.insert(messages).values({ id: 'msg_act', role: 'tool', topicId, userId: me });
+      await db.insert(messagePlugins).values({
+        id: 'msg_act',
+        identifier: 'lobe-activator',
+        state: { activatedTools: [{ identifier: 'mcp-arckep-wordstat', name: 'W' }] } as any,
+        type: 'builtin',
+        userId: me,
+      });
+      // подключили только своё «обычное» — тема чистая
+      expect(await isTopicUntrusted(db, me, topicId)).toBe(false);
+
+      await db.insert(messages).values({ id: 'msg_act2', role: 'tool', topicId, userId: me });
+      await db.insert(messagePlugins).values({
+        id: 'msg_act2',
+        identifier: 'lobe-activator',
+        state: { activatedTools: [{ identifier: 'umcp-aaaaaaaaaaaa', name: 'N' }] } as any,
+        type: 'builtin',
+        userId: me,
+      });
+      expect(await isTopicUntrusted(db, me, topicId)).toBe(true);
+      // другая тема, другой человек
+      expect(await isTopicUntrusted(db, me, 'tpc_second')).toBe(false);
+      expect(await isTopicUntrusted(db, other, topicId)).toBe(false);
+      // платный запуск в такой теме ждёт человека, хотя метки в metadata нет
+      expect(await gate(args({ prompt: 'z' }))).toMatchObject({ code: 'ARCKEP_CONFIRMATION_REQUIRED' });
     });
 
     it('чужая и несуществующая тема не помечается', async () => {

@@ -214,6 +214,18 @@ describe('AiAgentService.execAgent — arckep: свои подключения u
     expect(mockMarkIfUserMcp).toHaveBeenCalledWith(expect.anything(), 'test-user-id', 'topic-1', [UMCP]);
   });
 
+  it('не удалось пометить тему — ответ не начинается (закрыто), а не идёт без метки', async () => {
+    mockMarkIfUserMcp.mockRejectedValueOnce(new Error('Не удалось подготовить чат к чужому инструменту, повторите.'));
+    vi.mocked(createServerAgentToolsEngine).mockReturnValueOnce({
+      generateToolsDetailed: vi.fn().mockReturnValue({ enabledToolIds: [UMCP], tools: [] }),
+      getEnabledPluginManifests: vi.fn().mockReturnValue(new Map()),
+    } as any);
+    await expect(
+      service.execAgent({ agentId: 'agent-1', additionalPluginIds: [UMCP], prompt: 'Привет' }),
+    ).rejects.toThrow('Не удалось подготовить чат');
+    expect(mockCreateOperation).not.toHaveBeenCalled();
+  });
+
   it('выключено человеком на сообщение (disabled_tools) — в набор движка не попадает', async () => {
     await service.execAgent({ agentId: 'agent-1', excludePluginIds: [UMCP], prompt: 'Привет' });
 

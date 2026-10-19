@@ -92,9 +92,10 @@ export const markTopicUntrusted = async (
 /**
  * Описания и схемы инструментов чужого сервера попадают к модели уже при подключении инструмента (шаг
  * `activateTools` или включение на сообщение), а не только при вызове, — и могут содержать чужие указания.
- * Поэтому тема помечается, как только среди подключённых инструментов есть свой `umcp-*`; метка при самом
- * вызове (`userMcpConnectionParams`) остаётся и там отказывает, если пометить не удалось. Здесь сбой базы не
- * пробрасывается: подключение инструмента не должно падать из-за метки, а вызов пометит тему заново.
+ * Поэтому тема помечается, как только среди подключённых инструментов есть свой `umcp-*`. Отказ закрывающий:
+ * не удалось пометить — исключение, и инструмент не подключается (activateTools вернёт ошибку модели, execAgent
+ * не начнёт ответ): без метки платный запуск по чужому указанию прошёл бы без подтверждения. Нет базы, человека
+ * или темы — помечать нечего (и платных запусков в такой операции нет), это не отказ.
  */
 export const markTopicIfUserMcp = async (
   db: LobeChatDatabase | undefined,
@@ -105,16 +106,20 @@ export const markTopicIfUserMcp = async (
   const identifier = identifiers.find((id) => isArckepUserMcpId(id));
   if (!identifier || !db || !userId || !topicId) return;
   try {
-    await markTopicUntrusted(db, userId, topicId, identifier);
+    if (!(await markTopicUntrusted(db, userId, topicId, identifier))) {
+      throw new Error('topic not found');
+    }
   } catch (error) {
     console.error('[arckep] marking topic for user MCP failed:', error);
+    throw new Error('Не удалось подготовить чат к чужому инструменту, повторите.', { cause: error });
   }
 };
 
 /**
- * В теме работает чужой инструмент? Два источника: метка в metadata темы и вызовы `umcp-*` в истории темы.
- * Второй страхует от потери метки: другие записи metadata (разбор памяти) перезаписывают объект целиком по
- * снимку, и метка могла пропасть. Платные вызовы редкие, лишний запрос по теме им не мешает.
+ * В теме работает чужой инструмент? Два источника: метка в metadata темы и история темы — вызов `umcp-*` или шаг
+ * `activateTools`, подключивший такой инструмент (`pluginState.activatedTools`). История страхует от потери
+ * метки: другие записи metadata (разбор памяти) перезаписывают объект целиком по снимку, и метка могла пропасть.
+ * Платные вызовы редкие, лишний запрос по теме им не мешает.
  */
 export const isTopicUntrusted = async (
   db: LobeChatDatabase,
@@ -132,7 +137,7 @@ export const isTopicUntrusted = async (
       and(
         eq(messages.topicId, topicId),
         eq(messages.userId, userId),
-        sql`${messagePlugins.identifier} LIKE 'umcp-%'`,
+        sql`(${messagePlugins.identifier} LIKE 'umcp-%' OR (${messagePlugins.identifier} IN ('lobe-activator', 'lobe-tools') AND jsonb_path_exists(${messagePlugins.state}, '$.activatedTools[*] ? (@.identifier like_regex "^umcp-")')))`,
       ),
     )
     .limit(1);

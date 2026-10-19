@@ -117,6 +117,24 @@ describe('свои подключения umcp-*: как они попадают
     expect(mockMarkIfUserMcp).toHaveBeenCalledWith({ db: true }, 'u1', 'tpc_1', [UMCP, WORDSTAT]);
   });
 
+  it('не удалось пометить тему — чужой инструмент не подключается, модель получает ошибку', async () => {
+    mockMarkIfUserMcp.mockRejectedValueOnce(new Error('Не удалось подготовить чат к чужому инструменту, повторите.'));
+    const runtime = (await activatorRuntime.factory({
+      serverDB: {} as any,
+      toolManifestMap: manifestMap,
+      topicId: 'tpc_1',
+      userId: 'u1',
+    } as any)) as any;
+
+    const result = await runtime.activateTools({ identifiers: [UMCP] });
+    expect(result.success).toBe(false);
+    expect(result.content).toContain('Не удалось подготовить чат');
+    // подключённым не помечен: повторный activateTools снова пройдёт через метку
+    const again = await runtime.activateTools({ identifiers: [UMCP] });
+    expect(again.success).toBe(true);
+    expect(mockMarkIfUserMcp).toHaveBeenCalledTimes(2);
+  });
+
   it('следующее сообщение темы: подключённое возвращается из истории и в первом шаге функция идёт в MCP', async () => {
     const { seedActivatedStepToolsFromHistory } = await import('@/server/services/agentRuntime/activatedToolsFromHistory');
     const runtime = (await activatorRuntime.factory({ toolManifestMap: manifestMap } as any)) as any;
