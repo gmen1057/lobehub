@@ -1,4 +1,4 @@
-import { INBOX_SESSION_ID } from '@lobechat/const';
+import { DEFAULT_AGENT_CHAT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
 import { LayersEnum } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 import type { Context } from 'hono';
@@ -16,8 +16,16 @@ import {
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, knowledgeBases } from '@/database/schemas';
 import { getServerGlobalConfig } from '@/server/globalConfig';
-import { resolveReasoningProfile } from '@/server/modules/AgentRuntime/reasoningLevels';
-import { findModelExtendParams } from '@/server/modules/AgentRuntime/serverModelParams';
+import {
+  type ReasoningAuto,
+  type ReasoningLevel,
+  resolveReasoningAuto,
+  resolveReasoningProfile,
+} from '@/server/modules/AgentRuntime/reasoningLevels';
+import {
+  findModelExtendParams,
+  resolveServerModelParams,
+} from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
 import type { ProviderConfig } from '@/types/user/settings';
 
@@ -28,6 +36,30 @@ import { PluginService } from '../services/plugin.service';
  * arckep: маршруты REST, которых не хватает студийному экрану
  * (план lobechat-engine-studio-chat, Phase 2, D5 — только добавления).
  */
+/**
+ * Ступени рассуждений для поля ввода студии и что на деле значит «Авто» у модели: тот же расчёт, что у
+ * серверного вызова (`reasoningLevels.ts`), с настройками помощника по умолчанию.
+ */
+const reasoningInfo = async (
+  model: string,
+  provider: string,
+): Promise<{ reasoningAuto: ReasoningAuto | null; reasoningLevels: readonly ReasoningLevel[] }> => {
+  const profile = resolveReasoningProfile(
+    model,
+    provider,
+    await findModelExtendParams(model, provider),
+  );
+  const callParams = await resolveServerModelParams(
+    { chatConfig: DEFAULT_AGENT_CHAT_CONFIG, params: {} },
+    model,
+    provider,
+  );
+  return {
+    reasoningAuto: resolveReasoningAuto(model, provider, callParams) ?? null,
+    reasoningLevels: profile?.levels ?? [],
+  };
+};
+
 export class ArckepController extends BaseController {
   /**
    * GET /api/v1/agents/inbox
@@ -187,14 +219,9 @@ export class ArckepController extends BaseController {
             displayName: item.displayName || item.id,
             id: item.id,
             providerId: item.providerId,
-            // Ступени рассуждений для поля ввода студии: тот же расчёт, что у серверного вызова.
-            reasoningLevels: item.abilities?.reasoning
-              ? (resolveReasoningProfile(
-                  item.id,
-                  item.providerId,
-                  await findModelExtendParams(item.id, item.providerId),
-                )?.levels ?? [])
-              : [],
+            ...(item.abilities?.reasoning
+              ? await reasoningInfo(item.id, item.providerId)
+              : { reasoningAuto: null, reasoningLevels: [] }),
           })),
       );
 

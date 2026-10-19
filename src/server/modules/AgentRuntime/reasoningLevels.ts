@@ -171,6 +171,36 @@ const BUDGET_TOKENS: Record<ReasoningLevel, number> = {
   xhigh: 24_000,
 };
 
+/**
+ * Что на деле значит «Авто» (ступень не выбрана): ступень, на которой модель думает, или `auto` — думает,
+ * глубину выбирает сама. Нужно экрану, чтобы писать как есть (владелец 19.10.2026).
+ */
+export type ReasoningAuto = ReasoningLevel | 'auto';
+
+/**
+ * Умолчания провайдеров, когда вызов не несёт параметров рассуждений. Проверено 19.10.2026 одним
+ * запросом на модель без ступени: Responses API OpenAI возвращает применённую `reasoning.effort`
+ * (GPT-5.4 / Mini / Nano — none; Astra, 5.5, 5.6, o3 — medium); xAI и OpenRouter — по токенам
+ * рассуждений (думают все, ступень не сообщают). Anthropic (Fable 5, Opus 5 — high; Opus 5.5,
+ * Haiku 5.5 — medium), DeepSeek (high), Gemini 4 Argon и 3.7 Flash (medium) — по документации.
+ * Порядок важен: первая подходящая строка.
+ */
+const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provider: string }> = [
+  { auto: 'none', match: /^gpt-5\.4(?:-|$)/, provider: 'openai' },
+  {
+    auto: 'medium',
+    match: /^(?:gpt-6-astra|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
+    provider: 'openai',
+  },
+  { auto: 'medium', match: /^claude-(?:opus-5-5|haiku-5-5)(?:-|$)/, provider: 'anthropic' },
+  { auto: 'high', match: /^claude-(?:fable|mythos|opus|sonnet)-5(?:-|$)/, provider: 'anthropic' },
+  { auto: 'high', match: /^deepseek-(?:flash|v4)/, provider: 'deepseek' },
+  { auto: 'medium', match: /^gemini-(?:4-argon|3\.7-flash)$/, provider: 'google' },
+  { auto: 'auto', match: /^gemini-/, provider: 'google' },
+  { auto: 'auto', match: /^grok-4/, provider: 'xai' },
+  { auto: 'auto', match: /./, provider: 'openrouter' },
+];
+
 export const isReasoningLevel = (value: unknown): value is ReasoningLevel =>
   typeof value === 'string' && (REASONING_LEVELS as readonly string[]).includes(value);
 
@@ -247,3 +277,24 @@ export const reasoningCallParams = (
     }
   }
 };
+
+/** Ступень, которую параметры вызова уже несут без выбора человека (умолчания движка и помощника). */
+export const levelFromCallParams = (params: ReasoningCallParams): ReasoningLevel | undefined => {
+  if (params.thinking?.type === 'disabled') return 'none';
+  if (isReasoningLevel(params.reasoning_effort)) return params.reasoning_effort;
+  if (isReasoningLevel(params.effort)) return params.effort;
+  if (isReasoningLevel(params.thinkingLevel)) return params.thinkingLevel;
+  return undefined;
+};
+
+/**
+ * «Авто» у модели: то, что шлёт сам движок (например, Claude 4.6 и Qwen по умолчанию с выключенными
+ * рассуждениями, Grok 4.7 — high), иначе умолчание провайдера; `undefined` — не знаем.
+ */
+export const resolveReasoningAuto = (
+  model: string,
+  provider: string,
+  callParams: ReasoningCallParams,
+): ReasoningAuto | undefined =>
+  levelFromCallParams(callParams) ??
+  PROVIDER_AUTO.find((item) => item.provider === provider && item.match.test(model))?.auto;
