@@ -203,6 +203,8 @@ export class MessageContentProcessor extends BaseProcessor {
         fileList,
         fileBudget: fileBudget.remaining,
         imageList: message.imageList || [],
+        // arckep (19.10.2026): описание макета PDF — execAgent кладёт его в память хода (в базу не пишется)
+        layouts: Array.isArray(message.metadata?.layouts) ? message.metadata.layouts : undefined,
         videoList: message.videoList || [],
       });
       for (const file of fileList || []) {

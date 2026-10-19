@@ -44,29 +44,52 @@ const PDF_IMAGE_TARGET_BYTES = 640 * 1024;
 const PAGE_TIMEOUT_MS = 180_000;
 const TOTAL_BUDGET_MS = 420_000;
 const PARALLEL_PAGES = 2;
+/** Сколько байт PNG целых страниц держим в памяти для описания макета; сверх — у страницы описания не будет. */
+const RASTER_KEEP_BYTES = 160 * 1024 * 1024;
 
 export interface PdfPageImage {
   buffer: Buffer;
+  /** Где кусок лежит на странице: от и до по вертикали, пункты страницы (у куска нарезанной страницы) */
+  fromPt?: number;
   height: number;
   /** Номер куска страницы с 1; у страницы целиком — 1 */
   index: number;
   mimeType: string;
   /** Номер страницы с 1 */
   page: number;
+  toPt?: number;
   /** Сколько кусков у этой страницы */
   total: number;
   width: number;
+}
+
+/**
+ * Страница целиком одной PNG-картинкой — так, как её нарисовал pdftoppm, до нарезки на куски. Нужна описанию
+ * макета (pdfLayout.ts), чтобы не рисовать страницу второй раз.
+ */
+export interface PdfPageRaster {
+  png: Buffer;
+  /** Размер страницы в пунктах (из pdfinfo) */
+  ptHeight: number;
+  ptWidth: number;
+  /** Размер картинки в точках экрана */
+  pxHeight: number;
+  pxWidth: number;
 }
 
 export interface PdfRenderResult {
   images: PdfPageImage[];
   /** Сколько страниц в файле */
   pageCount: number;
+  /** Целые страницы (только при keepRasters), по номеру страницы с 1; только нарисованные */
+  rasters?: Map<number, PdfPageRaster>;
   /** Сколько страниц нарисовано (по порядку с первой) */
   renderedPages: number;
 }
 
 export interface PdfRenderOptions {
+  /** Оставить целые страницы в результате (для описания макета); сверх RASTER_KEEP_BYTES не копим */
+  keepRasters?: boolean;
   maxImages?: number;
   maxPages?: number;
   /** Тайм-аут одной страницы, мс */
@@ -148,6 +171,8 @@ export const renderPdfPages = async (
 
     const deadline = Date.now() + TOTAL_BUDGET_MS;
     const perPage = new Map<number, PdfPageImage[]>();
+    const rasters = new Map<number, PdfPageRaster>();
+    let rasterBytes = 0;
 
     const renderPage = async ({ page, slices, width }: (typeof plans)[number]) => {
       if (Date.now() > deadline) return;
@@ -172,14 +197,34 @@ export const renderPdfPages = async (
           pageTimeout,
         );
         const png = await readFile(`${prefix}.png`);
+        const size = info.sizes.get(page);
+        if (options.keepRasters && size && rasterBytes + png.length <= RASTER_KEEP_BYTES) {
+          // размер картинки — из заголовка PNG (IHDR: ширина и высота по 4 байта с 16-го)
+          rasters.set(page, {
+            png,
+            ptHeight: size.height,
+            ptWidth: size.width,
+            pxHeight: png.readUInt32BE(20),
+            pxWidth: png.readUInt32BE(16),
+          });
+          rasterBytes += png.length;
+        }
         const prepared = await prepareImageForModel(png, 'image/png', {
           maxBytes: PDF_IMAGE_TARGET_BYTES,
           maxSlices: slices,
         });
+        // масштаб (px на пт) — по ширине куска: подпись «часть 2 из 8 (y 740–1544)» в точках страницы
+        const scale = size && prepared.parts[0]?.width ? prepared.parts[0].width / size.width : 0;
         perPage.set(
           page,
-          prepared.parts.map((part, position) => ({
+          prepared.parts.map(({ top, ...part }, position) => ({
             ...part,
+            ...(prepared.parts.length > 1 && scale > 0 && top !== undefined
+              ? {
+                  fromPt: Math.round(top / scale),
+                  toPt: Math.min(Math.round(size!.height), Math.round((top + part.height) / scale)),
+                }
+              : {}),
             index: position + 1,
             page,
             total: prepared.parts.length,
@@ -209,7 +254,13 @@ export const renderPdfPages = async (
     }
 
     log('pdf: %d page(s), rendered %d → %d image(s)', info.pageCount, renderedPages, images.length);
-    return { images, pageCount: info.pageCount, renderedPages };
+    for (const page of rasters.keys()) if (page > renderedPages) rasters.delete(page);
+    return {
+      images,
+      pageCount: info.pageCount,
+      ...(options.keepRasters ? { rasters } : {}),
+      renderedPages,
+    };
   } finally {
     await rm(dir, { force: true, recursive: true }).catch(() => {});
   }

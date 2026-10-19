@@ -1,10 +1,20 @@
 import type { LobeChatDatabase } from '@lobechat/database';
+import type { LayoutBlock, LayoutLine, LayoutPage } from '@lobechat/prompts';
 import debug from 'debug';
 
 import { FileModel } from '@/database/models/file';
 import { FileService } from '@/server/services/file';
 
 import { extractPdfImages } from './pdfImages';
+import {
+  analysePdfLayout,
+  LAYOUT_MAX_BLOCKS_PER_PAGE,
+  LAYOUT_MAX_CROPS,
+  LAYOUT_MAX_LINES,
+  LAYOUT_MAX_LINES_PER_PAGE,
+  LAYOUT_MAX_PAGES,
+  matchImagePlaces,
+} from './pdfLayout';
 import { renderPdfPages } from './pdfPages';
 
 const log = debug('lobe-server:pdf-prepare');
@@ -30,14 +40,20 @@ const log = debug('lobe-server:pdf-prepare');
  * (`inflight`), остальное — в базе. Тяжёлая работа ограничена: не больше ARCKEP_PDF_PREPARE_PARALLEL (2) задач
  * одновременно, остальные ждут очереди.
  *
- * execAgent (index.ts) ждёт готовности не дольше ARCKEP_PDF_PREPARE_WAIT_MS (5000 мс); не успело — модель получает
+ * execAgent (index.ts) ждёт готовности не дольше ARCKEP_PDF_PREPARE_WAIT_MS (45 000 мс); не успело — модель получает
  * только текстовый слой с пометкой «страницы ещё рисуются», а готовые вшитые картинки (они делаются первыми) идут
  * в список вложений сразу. На следующем ходе страницы подхватываются из записи (index.ts, обогащение истории).
+ * Ждём долго: 19.10 первый ход по PDF ушёл без страниц (5 с не хватило), и модель сочинила другое письмо.
+ *
+ * Версия 2 (19.10.2026): после страниц считается «описание макета» (pdfLayout.ts, `layout` в записи): строки
+ * текста, блоки, вырезки картинок и значков (файлами человека), подсказка шрифта. Страницы пишутся в запись сразу,
+ * до описания: описание занимает до двух минут, а страницы нужны модели раньше. Записи версии 1 не используются
+ * и пересчитываются (как любая неподходящая запись).
  */
 
-export const PDF_PREP_VERSION = 1;
+export const PDF_PREP_VERSION = 2;
 /** Сколько ждать готовности в execAgent по умолчанию, мс. */
-export const PDF_PREPARE_WAIT_MS = 5000;
+export const PDF_PREPARE_WAIT_MS = 45_000;
 /** После сбоя повторная попытка не раньше, мс. */
 const RETRY_AFTER_FAILURE_MS = 60_000;
 
@@ -47,6 +63,8 @@ export const PDF_PAGES_PENDING_NOTE =
 
 export interface PdfPrepPage {
   fileId: string;
+  /** Где кусок лежит на странице (по вертикали, пункты страницы): у кусков нарезанной страницы */
+  fromPt?: number;
   height: number;
   /** Номер куска страницы с 1 */
   index: number;
@@ -54,9 +72,18 @@ export interface PdfPrepPage {
   mime: string;
   /** Номер страницы с 1 */
   page: number;
+  toPt?: number;
   /** Сколько кусков у этой страницы */
   total: number;
   width: number;
+}
+
+/** Место вшитой картинки на странице, пункты страницы. */
+export interface PdfPrepPlace {
+  h: number;
+  w: number;
+  x: number;
+  y: number;
 }
 
 export interface PdfPrepImage {
@@ -67,7 +94,27 @@ export interface PdfPrepImage {
   mime: string;
   /** Страница, с 1 */
   page: number;
+  /** Где картинка на странице, если удалось определить (pdfLayout.ts) */
+  place?: PdfPrepPlace;
   width: number;
+}
+
+/** Вырезка макета (фото или значок) — файл человека. */
+export interface PdfPrepCrop {
+  fileId: string;
+  h: number;
+  kind: 'icon' | 'photo';
+  mime: string;
+  w: number;
+  x: number;
+  y: number;
+}
+
+/** Страница описания макета: как LayoutPage (packages/prompts), но вырезки — со ссылкой на файл, а не адресом. */
+export type PdfPrepLayoutPage = Omit<LayoutPage, 'crops'> & { crops: PdfPrepCrop[] };
+
+export interface PdfPrepLayout {
+  pages: PdfPrepLayoutPage[];
 }
 
 export interface PdfPrepRecord {
@@ -75,6 +122,8 @@ export interface PdfPrepRecord {
   finishedAt?: number;
   /** Вшитые картинки: есть, как только готовы (раньше страниц) */
   images?: PdfPrepImage[];
+  /** Описание макета (pdfLayout.ts): есть, когда готово и файл похож на макет */
+  layout?: PdfPrepLayout;
   /** Сколько страниц в файле */
   pageCount?: number;
   /** Страницы картинками: есть, когда готовы */
@@ -143,6 +192,8 @@ export const isPdfMime = (mime?: string | null, name?: string | null) =>
 /** Настройки из окружения (читаются при каждом запуске, чтобы выключатель действовал без перезапуска тестов). */
 export const pdfPrepareOptions = () => ({
   embeddedImages: process.env.ARCKEP_PDF_EMBEDDED_IMAGES !== '0',
+  /** Описание макета; нужны страницы-картинки (берёт их отрисовку), без них не работает */
+  layout: process.env.ARCKEP_PDF_LAYOUT !== '0',
   onUpload: process.env.ARCKEP_PDF_PREPARE_ON_UPLOAD !== '0',
   pageImages: process.env.ARCKEP_PDF_PAGE_IMAGES !== '0',
   waitMs: (() => {
@@ -156,6 +207,187 @@ const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value) && value >= 0;
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+// ---- Проверка описания макета (запись из базы недоверенная) ----
+
+const COLOR = /^#[\dA-F]{6}$/;
+const MAX_LAYOUT_TEXT = 300;
+/** Координаты в пунктах страницы: конечные числа в разумных пределах. */
+const isCoord = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1_000_000;
+const isSize = (value: unknown): value is number => isCoord(value) && value >= 0;
+const isColor = (value: unknown): value is string => typeof value === 'string' && COLOR.test(value);
+const isShortText = (value: unknown): value is string =>
+  typeof value === 'string' && value.length <= MAX_LAYOUT_TEXT;
+const isOptional = <T>(
+  value: unknown,
+  check: (item: unknown) => item is T,
+): value is T | undefined => value === undefined || check(value);
+
+const verifyPlace = (raw: unknown): PdfPrepPlace | undefined | 'bad' => {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || !isCoord(raw.x) || !isCoord(raw.y) || !isSize(raw.w) || !isSize(raw.h)) {
+    return 'bad';
+  }
+  return { h: raw.h, w: raw.w, x: raw.x, y: raw.y };
+};
+
+const verifyLine = (raw: unknown): LayoutLine | undefined => {
+  if (!isRecord(raw)) return undefined;
+  if (!isCoord(raw.x) || !isCoord(raw.y) || !isSize(raw.w)) return undefined;
+  if (!isSize(raw.size) || raw.size < 1 || raw.size > 500) return undefined;
+  if (!isShortText(raw.text) || raw.text === '') return undefined;
+  if (!isOptional(raw.color, isColor) || !isOptional(raw.link, isShortText)) return undefined;
+  if (raw.bold !== undefined && typeof raw.bold !== 'boolean') return undefined;
+  if (raw.center !== undefined && typeof raw.center !== 'boolean') return undefined;
+  return {
+    ...(raw.bold ? { bold: true } : {}),
+    ...(raw.center ? { center: true } : {}),
+    ...(raw.color ? { color: raw.color } : {}),
+    ...(raw.link ? { link: raw.link } : {}),
+    size: raw.size,
+    text: raw.text,
+    w: raw.w,
+    x: raw.x,
+    y: raw.y,
+  };
+};
+
+const verifyBlock = (raw: unknown): LayoutBlock | undefined => {
+  if (!isRecord(raw)) return undefined;
+  if (raw.kind !== 'fill' && raw.kind !== 'frame' && raw.kind !== 'line') return undefined;
+  if (!isColor(raw.color)) return undefined;
+  if (!isCoord(raw.x) || !isCoord(raw.y) || !isSize(raw.w) || !isSize(raw.h)) return undefined;
+  if (raw.thickness !== undefined && !(isSize(raw.thickness) && raw.thickness <= 1000))
+    return undefined;
+  let radii: LayoutBlock['radii'];
+  if (raw.radii !== undefined) {
+    if (
+      !Array.isArray(raw.radii) ||
+      raw.radii.length !== 4 ||
+      !raw.radii.every((value) => isCoord(value) && value >= -1 && value <= 10_000)
+    ) {
+      return undefined;
+    }
+    radii = raw.radii as [number, number, number, number];
+  }
+  return {
+    color: raw.color,
+    h: raw.h,
+    kind: raw.kind,
+    ...(radii ? { radii } : {}),
+    ...(raw.thickness === undefined ? {} : { thickness: raw.thickness }),
+    w: raw.w,
+    x: raw.x,
+    y: raw.y,
+  };
+};
+
+/** fileId вырезок записи описания (формат уже проверен выше: страницы и вырезки — массивы записей со строкой). */
+const layoutFileIds = (raw: unknown): string[] | undefined => {
+  if (raw === undefined) return [];
+  if (!isRecord(raw) || !Array.isArray(raw.pages) || raw.pages.length > LAYOUT_MAX_PAGES)
+    return undefined;
+  const ids: string[] = [];
+  for (const page of raw.pages) {
+    if (!isRecord(page) || !Array.isArray(page.crops) || page.crops.length > LAYOUT_MAX_CROPS) {
+      return undefined;
+    }
+    for (const crop of page.crops) {
+      if (!isRecord(crop) || typeof crop.fileId !== 'string' || crop.fileId === '')
+        return undefined;
+      ids.push(crop.fileId);
+    }
+  }
+  return ids;
+};
+
+/** Описание макета: типы, конечные числа, строки ≤300 знаков, пределы количеств, чужие вырезки — всё или ничего. */
+const verifyLayout = (
+  raw: unknown,
+  owned: Map<string, string>,
+): PdfPrepLayout | undefined | 'bad' => {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw) || !Array.isArray(raw.pages)) return 'bad';
+
+  const pages: PdfPrepLayoutPage[] = [];
+  let totalLines = 0;
+  let totalCrops = 0;
+  for (const page of raw.pages as unknown[]) {
+    if (!isRecord(page)) return 'bad';
+    if (!isCount(page.page) || page.page < 1) return 'bad';
+    if (!isSize(page.width) || !isSize(page.height) || !isColor(page.background)) return 'bad';
+    if (!isOptional(page.textColor, isColor)) return 'bad';
+    if (
+      page.fontRatio !== undefined &&
+      !(isCoord(page.fontRatio) && page.fontRatio > 0 && page.fontRatio < 20)
+    ) {
+      return 'bad';
+    }
+    if (page.omittedLines !== undefined && !isCount(page.omittedLines)) return 'bad';
+    let fontNames: string[] | undefined;
+    if (page.fontNames !== undefined) {
+      if (
+        !Array.isArray(page.fontNames) ||
+        page.fontNames.length > 5 ||
+        !page.fontNames.every((name) => typeof name === 'string' && name.length <= 60)
+      ) {
+        return 'bad';
+      }
+      fontNames = page.fontNames as string[];
+    }
+    if (!Array.isArray(page.lines) || page.lines.length > LAYOUT_MAX_LINES_PER_PAGE) return 'bad';
+    if (!Array.isArray(page.blocks) || page.blocks.length > LAYOUT_MAX_BLOCKS_PER_PAGE)
+      return 'bad';
+    if (!Array.isArray(page.crops)) return 'bad';
+
+    const lines: LayoutLine[] = [];
+    for (const item of page.lines) {
+      const line = verifyLine(item);
+      if (!line) return 'bad';
+      lines.push(line);
+    }
+    const blocks: LayoutBlock[] = [];
+    for (const item of page.blocks) {
+      const block = verifyBlock(item);
+      if (!block) return 'bad';
+      blocks.push(block);
+    }
+    const crops: PdfPrepCrop[] = [];
+    for (const item of page.crops as Array<Record<string, unknown>>) {
+      if (item.kind !== 'icon' && item.kind !== 'photo') return 'bad';
+      if (!isCoord(item.x) || !isCoord(item.y) || !isSize(item.w) || !isSize(item.h)) return 'bad';
+      if (!IMAGE_MIMES.has(item.mime as string) || !owned.has(item.fileId as string)) return 'bad';
+      crops.push({
+        fileId: item.fileId as string,
+        h: item.h,
+        kind: item.kind,
+        mime: item.mime as string,
+        w: item.w,
+        x: item.x,
+        y: item.y,
+      });
+    }
+    totalLines += lines.length;
+    totalCrops += crops.length;
+    if (totalLines > LAYOUT_MAX_LINES || totalCrops > LAYOUT_MAX_CROPS) return 'bad';
+
+    pages.push({
+      background: page.background,
+      blocks,
+      crops,
+      ...(fontNames ? { fontNames } : {}),
+      ...(page.fontRatio === undefined ? {} : { fontRatio: page.fontRatio as number }),
+      height: page.height,
+      lines,
+      ...(page.omittedLines === undefined ? {} : { omittedLines: page.omittedLines as number }),
+      page: page.page,
+      ...(page.textColor ? { textColor: page.textColor as string } : {}),
+      width: page.width,
+    });
+  }
+  return { pages };
+};
 
 export class PdfPrepareService {
   constructor(
@@ -271,8 +503,10 @@ export class PdfPrepareService {
         isRecord(item) ? item.fileId : undefined,
       );
       if (ids.some((id) => typeof id !== 'string' || id === '')) return undefined;
-      const owned =
-        ids.length > 0 ? await this.store.owned(ids as string[]) : new Map<string, string>();
+      const cropIds = layoutFileIds(raw.layout);
+      if (!cropIds) return undefined;
+      const allIds = [...(ids as string[]), ...cropIds];
+      const owned = allIds.length > 0 ? await this.store.owned(allIds) : new Map<string, string>();
 
       const size = (item: Record<string, unknown>) =>
         isCount(item.width) && isCount(item.height) && isCount(item.page) && isCount(item.index)
@@ -288,11 +522,15 @@ export class PdfPrepareService {
           if (!key || !dims || !isCount(item.total) || !IMAGE_MIMES.has(item.mime as string)) {
             return undefined;
           }
+          if (!isOptional(item.fromPt, isCoord) || !isOptional(item.toPt, isCoord))
+            return undefined;
           pages.push({
             ...dims,
             fileId: item.fileId as string,
+            ...(item.fromPt === undefined ? {} : { fromPt: item.fromPt }),
             key,
             mime: item.mime as string,
+            ...(item.toPt === undefined ? {} : { toPt: item.toPt }),
             total: item.total,
           });
         }
@@ -306,14 +544,25 @@ export class PdfPrepareService {
           if (!owned.has(item.fileId as string) || !dims || !IMAGE_MIMES.has(item.mime as string)) {
             return undefined;
           }
-          images.push({ ...dims, fileId: item.fileId as string, mime: item.mime as string });
+          const place = verifyPlace(item.place);
+          if (place === 'bad') return undefined;
+          images.push({
+            ...dims,
+            fileId: item.fileId as string,
+            mime: item.mime as string,
+            ...(place ? { place } : {}),
+          });
         }
       }
+
+      const layout = verifyLayout(raw.layout, owned);
+      if (layout === 'bad') return undefined;
 
       return {
         error: typeof raw.error === 'string' ? raw.error.slice(0, 300) : undefined,
         finishedAt: isCount(raw.finishedAt) ? raw.finishedAt : undefined,
         images,
+        layout,
         pageCount: isCount(raw.pageCount) ? raw.pageCount : undefined,
         pages,
         renderedPages: isCount(raw.renderedPages) ? raw.renderedPages : undefined,
@@ -362,6 +611,53 @@ export class PdfPrepareService {
       log('prepare %s failed: %s', fileId, errorText(error));
       return failed(error);
     }
+  }
+
+  /** Описание макета → запись: вырезки сохраняются файлами человека, места вшитых картинок дописываются. */
+  private async prepareLayout(
+    record: PdfPrepRecord,
+    pdf: Buffer,
+    rasters: NonNullable<Awaited<ReturnType<typeof renderPdfPages>>['rasters']>,
+    folder: string,
+    name: string,
+  ) {
+    const draft = await analysePdfLayout(pdf, rasters);
+    if (!draft) return;
+
+    const pages: PdfPrepLayoutPage[] = [];
+    let counter = 0;
+    for (const page of draft.pages) {
+      const crops: PdfPrepCrop[] = [];
+      for (const crop of page.crops) {
+        const ext = crop.mime === 'image/jpeg' ? 'jpg' : 'png';
+        const uploaded = await this.storage.upload(
+          crop.buffer,
+          crop.mime,
+          `${folder}/${name}.crop-${pad(++counter)}.p${page.page}.${ext}`,
+        );
+        crops.push({
+          fileId: uploaded.fileId,
+          h: crop.h,
+          kind: crop.kind,
+          mime: crop.mime,
+          w: crop.w,
+          x: crop.x,
+          y: crop.y,
+        });
+      }
+      pages.push({ ...page, crops }); // crops перекрывает черновые вырезки с буферами
+    }
+    record.layout = { pages };
+
+    // место вшитых картинок на странице — в список вложений («картинка 3 … стр. 1, x305 y1370 295×348»)
+    if (record.images && record.images.length > 0) {
+      const places = matchImagePlaces(record.images, draft.places);
+      for (const image of record.images) {
+        const place = places.get(image.index);
+        if (place) image.place = place;
+      }
+    }
+    log('layout → %d page(s), %d crop(s)', pages.length, counter);
   }
 
   private async persist(fileId: string, record: PdfPrepRecord) {
@@ -421,10 +717,13 @@ export class PdfPrepareService {
       }
 
       // 2. Страницы картинками
+      let rasters: Awaited<ReturnType<typeof renderPdfPages>>['rasters'];
       if (options.pageImages) {
         record.pages = [];
         try {
-          const rendered = await renderPdfPages(pdf);
+          // целые страницы нужны описанию макета (шаг 3): отдельно рисовать их второй раз не надо
+          const rendered = await renderPdfPages(pdf, { keepRasters: options.layout });
+          rasters = rendered.rasters;
           record.pageCount = rendered.pageCount;
           record.renderedPages = rendered.renderedPages;
           for (const image of rendered.images) {
@@ -440,11 +739,13 @@ export class PdfPrepareService {
             );
             record.pages.push({
               fileId: uploaded.fileId,
+              ...(image.fromPt === undefined ? {} : { fromPt: image.fromPt }),
               height: image.height,
               index: image.index,
               key: uploaded.key,
               mime: image.mimeType,
               page: image.page,
+              ...(image.toPt === undefined ? {} : { toPt: image.toPt }),
               total: image.total,
               width: image.width,
             });
@@ -459,8 +760,22 @@ export class PdfPrepareService {
         } catch (error) {
           log('page images of %s failed: %s', fileId, errorText(error));
           record.pages = [];
+          rasters = undefined;
+        }
+        // страницы — в базу сразу: описание макета ещё считается, а ждущий в execAgent берёт то, что записано
+        await this.persist(fileId, record);
+      }
+
+      // 3. Описание макета: строки, блоки, вырезки (pdfLayout.ts); любая ошибка — описания нет
+      if (options.layout && rasters && rasters.size > 0) {
+        try {
+          await this.prepareLayout(record, pdf, rasters, folder, name);
+        } catch (error) {
+          log('layout of %s failed: %s', fileId, errorText(error));
+          record.layout = undefined;
         }
       }
+      rasters = undefined;
 
       const done: PdfPrepRecord = { ...record, finishedAt: Date.now(), status: 'done' };
       await this.persist(fileId, done);

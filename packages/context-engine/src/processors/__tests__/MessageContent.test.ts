@@ -336,6 +336,110 @@ describe('MessageContentProcessor', () => {
       }
     });
 
+    // arckep (19.10.2026): описание макета PDF — в памяти хода (metadata.layouts), блоком <layout> после <attachments>
+    it('should render the PDF layout from message metadata as <layout> after <attachments>', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        model: 'gpt-4',
+        provider: 'openai',
+        isCanUseVision: mockIsCanUseVision,
+        fileContext: { enabled: true },
+      });
+
+      const result = await processor.process(
+        createContext([
+          {
+            id: 'test',
+            role: 'user',
+            content: 'Сделай письмо по макету',
+            fileList: [
+              {
+                content: 'текст макета',
+                fileType: 'application/pdf',
+                id: 'pdf_1',
+                name: 'new.pdf',
+                size: 1,
+                url: 'https://s3/new.pdf',
+              },
+            ],
+            metadata: {
+              attachments: [
+                {
+                  mime: 'application/pdf',
+                  name: 'new.pdf',
+                  url: 'https://arckep.ru/chat/f/pdf_1/',
+                },
+              ],
+              layouts: [
+                {
+                  file: 'new.pdf',
+                  pageCount: 1,
+                  pages: [
+                    {
+                      background: '#FFFFFF',
+                      blocks: [],
+                      crops: [
+                        {
+                          h: 22,
+                          kind: 'icon',
+                          url: 'https://arckep.ru/chat/f/crop_1/',
+                          w: 22,
+                          x: 159,
+                          y: 845,
+                        },
+                      ],
+                      height: 5532,
+                      lines: [{ size: 20, text: 'Профиль', w: 83, x: 76, y: 46 }],
+                      page: 1,
+                      width: 603,
+                    },
+                  ],
+                },
+              ],
+            },
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          } as unknown as UIChatMessage,
+        ]),
+      );
+
+      const text = (result.messages[0].content as any[])[0].text as string;
+      expect(text).toContain('<layout file="new.pdf">');
+      expect(text).toContain('y46 x76 20px | Профиль');
+      expect(text).toContain('- значок 1: https://arckep.ru/chat/f/crop_1/ — x159 y845 22×22');
+      expect(text.indexOf('<attachments>')).toBeLessThan(text.indexOf('<layout file='));
+      expect(text).toContain('Сделай письмо по макету');
+    });
+
+    it('should not render <layout> when metadata has none or has a wrong shape', async () => {
+      mockIsCanUseVision.mockReturnValue(false);
+
+      const processor = new MessageContentProcessor({
+        model: 'gpt-4',
+        provider: 'openai',
+        isCanUseVision: mockIsCanUseVision,
+        fileContext: { enabled: true },
+      });
+
+      for (const metadata of [undefined, {}, { layouts: [] }, { layouts: 'oops' }]) {
+        const result = await processor.process(
+          createContext([
+            {
+              id: 'test',
+              role: 'user',
+              content: 'Hello',
+              imageList: [{ id: 'img1', url: 'http://example.com/image.jpg', alt: 'a.png' }],
+              metadata,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            } as unknown as UIChatMessage,
+          ]),
+        );
+        expect((result.messages[0].content as any[])[0].text).not.toContain('<layout');
+      }
+    });
+
     it('should not add file context when disabled', async () => {
       mockIsCanUseVision.mockReturnValue(false);
 

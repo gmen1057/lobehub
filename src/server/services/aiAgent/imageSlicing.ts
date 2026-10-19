@@ -110,6 +110,8 @@ export interface PreparedImage {
   buffer: Buffer;
   height: number;
   mimeType: string;
+  /** Верх куска в картинке после сжатия (точки); у нарезанной картинки — для подписи «y от–до» */
+  top?: number;
   width: number;
 }
 
@@ -263,7 +265,7 @@ export const prepareImageForModel = async (
         }).extract({ height, left: 0, top: slice.top, width: info.width }),
         partBytes,
       );
-      parts.push({ ...encoded, height, width: info.width });
+      parts.push({ ...encoded, height, top: slice.top, width: info.width });
     }
 
     log(

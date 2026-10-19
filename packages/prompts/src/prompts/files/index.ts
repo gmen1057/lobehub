@@ -3,6 +3,7 @@ import type { ChatFileItem, ChatImageItem, ChatVideoItem } from '@lobechat/types
 import { type AttachmentRef, attachmentsPrompts } from './attachments';
 import { filePrompts } from './file';
 import { imagesPrompts } from './image';
+import { type LayoutInfo, layoutsPrompts } from './layout';
 import { videosPrompts } from './video';
 
 export { type AttachmentRef, attachmentsPrompts } from './attachments';
@@ -17,6 +18,8 @@ export {
 } from './context';
 export type { KnowledgeBaseInfo, PromptKnowledgeOptions } from './knowledgeBase';
 export { promptAgentKnowledge } from './knowledgeBase';
+export type { LayoutBlock, LayoutCrop, LayoutInfo, LayoutLine, LayoutPage } from './layout';
+export { LAYOUT_MAX_CHARS, layoutPrompt, layoutsPrompts } from './layout';
 
 export const filesPrompts = ({
   attachments,
@@ -25,6 +28,7 @@ export const filesPrompts = ({
   videoList,
   addUrl = true,
   fileBudget,
+  layouts,
 }: {
   addUrl?: boolean;
   /**
@@ -35,6 +39,11 @@ export const filesPrompts = ({
   fileBudget?: number;
   fileList?: ChatFileItem[];
   imageList?: ChatImageItem[];
+  /**
+   * arckep (19.10.2026): описание макета PDF (layout.ts) — идёт блоком `<layout>` после `<attachments>`.
+   * Собирается из записи подготовки файла при каждом ходе и нигде не хранится.
+   */
+  layouts?: LayoutInfo[];
   videoList?: ChatVideoItem[];
 }) => {
   const hasImages = (imageList || []).length > 0;
@@ -52,6 +61,7 @@ export const filesPrompts = ({
     hasFiles ? filePrompts(fileList!, copyUrls, fileBudget) : '',
     hasVideos ? videosPrompts(videoList!, addUrl) : '',
     attachmentsPrompts(attachments),
+    layoutsPrompts(layouts),
   ].filter(Boolean);
 
   const prompt = `<!-- SYSTEM CONTEXT (NOT PART OF USER QUERY) -->
