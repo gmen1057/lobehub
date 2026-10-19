@@ -16,6 +16,7 @@ import {
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, knowledgeBases } from '@/database/schemas';
 import { getServerGlobalConfig } from '@/server/globalConfig';
+import { modelHasBuiltinSearch } from '@/server/modules/AgentRuntime/arckepSearch';
 import {
   type ReasoningAuto,
   type ReasoningLevel,
@@ -218,6 +219,8 @@ export class ArckepController extends BaseController {
             contextWindowTokens: item.contextWindowTokens ?? null,
             displayName: item.displayName || item.id,
             id: item.id,
+            // arckep (19.10): есть ли у модели встроенный поиск; нет — чат даёт ей платный «Поиск Arckep».
+            nativeSearch: await modelHasBuiltinSearch(item.id, item.providerId),
             providerId: item.providerId,
             ...(item.abilities?.reasoning
               ? await reasoningInfo(item.id, item.providerId)

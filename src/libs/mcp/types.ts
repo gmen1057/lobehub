@@ -43,6 +43,11 @@ export interface ImageContent {
   _meta?: any;
   data: string;
   // base64
+  /**
+   * arckep (19.10.2026): запись файла в хранилище, когда `data` уже заменена адресом (processContentBlocks).
+   * По ней контекст модели получает подписанную ссылку на картинку, а не адрес `/f/:id`.
+   */
+  fileId?: string;
   mimeType: string;
   type: 'image';
 }
@@ -51,6 +56,8 @@ export interface AudioContent {
   _meta?: any;
   data: string;
   // base64
+  /** arckep (19.10.2026): запись файла в хранилище после загрузки, см. ImageContent.fileId */
+  fileId?: string;
   mimeType: string;
   type: 'audio';
 }
@@ -82,11 +89,7 @@ export interface ResourceLinkContent {
 }
 
 export type ToolCallContent =
-  | TextContent
-  | ImageContent
-  | AudioContent
-  | ResourceContent
-  | ResourceLinkContent;
+  TextContent | ImageContent | AudioContent | ResourceContent | ResourceLinkContent;
 
 export interface ToolCallResult {
   content: ToolCallContent[];

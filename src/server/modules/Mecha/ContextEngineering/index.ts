@@ -63,6 +63,7 @@ export const serverMessagesEngine = async ({
   skillsConfig,
   toolDiscoveryConfig,
   toolsConfig,
+  toolResultImages,
   capabilities,
   userMemory,
   agentBuilderContext,
@@ -118,6 +119,9 @@ export const serverMessagesEngine = async ({
 
     // Timezone for system date provider
     timezone: userTimezone,
+
+    // arckep (19.10.2026): картинки результатов инструментов — моделям со зрением
+    ...(toolResultImages && { toolResultImages }),
 
     // Tools configuration
     toolDiscoveryConfig,

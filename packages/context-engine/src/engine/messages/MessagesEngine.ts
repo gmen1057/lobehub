@@ -20,6 +20,7 @@ import {
   TasksFlattenProcessor,
   ToolCallProcessor,
   ToolMessageReorder,
+  ToolResultImagesProcessor,
 } from '../../processors';
 import {
   AgentBuilderContextInjector,
@@ -162,6 +163,7 @@ export class MessagesEngine {
       topicReferences,
       enableSystemDate,
       timezone,
+      toolResultImages,
     } = this.params;
 
     const isAgentBuilderEnabled = !!agentBuilderContext;
@@ -191,8 +193,7 @@ export class MessagesEngine {
     const currentUserMessage = [...messages]
       .reverse()
       .find((m) => m.role === 'user' && typeof m.content === 'string')?.content as
-      | string
-      | undefined;
+      string | undefined;
 
     // Shared config for all agent document injectors
     const agentDocConfig = {
@@ -409,6 +410,19 @@ export class MessagesEngine {
 
       // Tool message reordering
       new ToolMessageReorder(),
+      // arckep (19.10.2026): картинки результатов инструментов текущего хода — моделям со зрением, user-сообщением
+      // сразу после группы tool-сообщений. Строго после ToolMessageReorder: порядок «assistant → его tool» уже final.
+      ...(toolResultImages
+        ? [
+            new ToolResultImagesProcessor({
+              isCanUseVision: capabilities?.isCanUseVision,
+              maxImages: toolResultImages.maxImages,
+              model,
+              provider,
+              resolveImageUrl: toolResultImages.resolveImageUrl,
+            }),
+          ]
+        : []),
       // Force finish summary (when maxSteps exceeded)
       new ForceFinishSummaryInjector({ enabled: !!forceFinish }),
       // Message cleanup (final step)

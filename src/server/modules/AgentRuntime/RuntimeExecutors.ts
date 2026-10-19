@@ -20,6 +20,7 @@ import {
   type AgentContextDocument,
   buildStepSkillDelta,
   buildStepToolDelta,
+  extractToolResultImages,
   type LobeToolManifest,
   type OperationToolSet,
   type ResolvedToolSet,
@@ -40,6 +41,7 @@ import { TopicModel } from '@/database/models/topic';
 import { type LobeChatDatabase } from '@/database/type';
 import { fileEnv } from '@/envs/file';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
+import { createToolImageUrlResolver } from '@/server/modules/Mecha/ContextEngineering/toolResultImageUrl';
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
@@ -52,6 +54,7 @@ import {
 import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
+import { resolveServerEnabledSearch } from './arckepSearch';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { resolveServerModelParams } from './serverModelParams';
@@ -128,52 +131,8 @@ const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
   }
 };
 
-/**
- * arckep (19.10.2026): провайдеры, у которых ВСЕ наши чат-модели ищут встроенным поиском, когда ему
- * передан enabledSearch. Проверено живыми вызовами 19.10 (прямые запросы с вопросом про свежий факт):
- * OpenAI gpt-5.4-nano и gpt-5.6 luna/terra/sol (web_search_call), xAI grok-4.3 / 4.20 / build
- * (web_search_call), Google gemini-3.1-flash-lite и 3.7-flash (groundingMetadata), Qwen
- * qwen3.7-flash / 3.5-flash (ответ со свежим фактом и ссылкой); Claude — Models API Anthropic отдаёт
- * web_search.supported=true для всех наших шести. Раньше список провайдеров брался из model-bank
- * (DEFAULT_MODEL_PROVIDER_LIST), но индекс model-bank его не экспортирует: список был пуст, и поиск
- * включался только у моделей с пометкой в карточке (21 из 48).
- */
-const ARCKEP_NATIVE_SEARCH_PROVIDERS = new Set(['anthropic', 'google', 'openai', 'qwen', 'xai']);
-
-/**
- * arckep (17.10.2026): встроенный поиск провайдера для серверных прогонов (REST-движок студии,
- * боты, cron). searchMode агента не 'off', useModelBuiltinSearch ?? true, и либо провайдер из
- * ARCKEP_NATIVE_SEARCH_PROVIDERS, либо у карточки модели есть abilities.search / settings.searchImpl.
- * Раньше серверный контур поиск не включал вовсе, и модель уходила в «skills/runCommand» (curl), который
- * ждёт подтверждения человеком.
- *
- * OpenRouter сознательно без поиска: суффикс :online запускает поиск в КАЖДОМ сообщении (не по выбору
- * модели), стоит ≈0,007 $ за сообщение (проба 19.10: usage.cost 0,0072 $ при ответе на копейки) и в
- * цену ответа не входит. Таким моделям поиск даёт инструмент «Поиск Arckep» (платный, по вызову).
- */
-export const resolveServerEnabledSearch = async (
-  agentConfig:
-    { chatConfig?: { searchMode?: string; useModelBuiltinSearch?: boolean } } | undefined,
-  model: string | undefined,
-  provider: string | undefined,
-): Promise<boolean> => {
-  if (!model || !provider) return false;
-  const chatConfig = agentConfig?.chatConfig;
-  if ((chatConfig?.searchMode ?? 'auto') === 'off') return false;
-  if (!(chatConfig?.useModelBuiltinSearch ?? true)) return false;
-  if (ARCKEP_NATIVE_SEARCH_PROVIDERS.has(provider)) return true;
-  if (provider === 'openrouter') return false;
-  try {
-    const bank: any = await import('model-bank');
-    const modelCard = (bank.LOBE_DEFAULT_MODEL_LIST ?? []).find(
-      (item: any) => item.id === model && item.providerId === provider,
-    );
-    return !!(modelCard?.abilities?.search || modelCard?.settings?.searchImpl);
-  } catch {
-    // Нет справочника моделей (например, подменён в тестах) — без поиска, как раньше.
-    return false;
-  }
-};
+// Встроенный поиск моделей и «Поиск Arckep» — в ./arckepSearch (здесь остаётся реэкспорт для тестов и вызовов).
+export { resolveServerEnabledSearch };
 
 const executeToolWithRetry = async (
   execute: () => Promise<ToolExecutionResultResponse>,
@@ -534,6 +493,16 @@ export const createRuntimeExecutors = (
             manifests: Object.values(resolved.manifestMap),
             tools: resolved.enabledToolIds,
           },
+          // arckep (19.10.2026): картинки из результатов инструментов текущего хода (Figma get_screenshot и т. п.)
+          // — моделям со зрением, отдельным user-сообщением после группы tool-сообщений; адрес — подписанная
+          // ссылка хранилища. Без пользователя или базы картинки не передаются (в тексте остаётся ссылка).
+          ...(ctx.serverDB && ctx.userId
+            ? {
+                toolResultImages: {
+                  resolveImageUrl: createToolImageUrlResolver(ctx.serverDB, ctx.userId),
+                },
+              }
+            : {}),
           userMemory: state.metadata?.userMemory,
 
           // Skills configuration for <available_skills> injection
@@ -554,6 +523,7 @@ export const createRuntimeExecutors = (
         // Keep output (processedMessages) — needed by inspect CLI for --env, --system-role, -m
         const {
           messages: _inputMsgs,
+          toolResultImages: _toolResultImages,
           toolsConfig: _toolsConfig,
           ...contextEngineInputLite
         } = contextEngineInput;
@@ -1585,8 +1555,24 @@ export const createRuntimeExecutors = (
 
       const newState = structuredClone(state);
 
+      // arckep (19.10.2026): картинки из результата инструмента (блоки MCP `{type: 'image', data, fileId}`)
+      // нужны ToolResultImagesProcessor на следующем шаге: после одиночного вызова состояние собирается здесь,
+      // а не из базы (как в call_tools_batch), поэтому кладём в pluginState сообщения только сами блоки-картинки,
+      // а не весь state инструмента — он бывает большим и раздувает состояние операции.
+      const toolImages = extractToolResultImages(executionResult.state);
+
       newState.messages.push({
         content: executionResult.content,
+        ...(toolImages.length > 0 && {
+          pluginState: {
+            content: toolImages.map((image) => ({
+              data: image.url,
+              fileId: image.fileId,
+              mimeType: image.mimeType,
+              type: 'image',
+            })),
+          },
+        }),
         role: 'tool',
         tool_call_id: chatToolPayload.id,
       });

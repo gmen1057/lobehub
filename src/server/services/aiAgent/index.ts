@@ -52,6 +52,7 @@ import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
+import { resolveArckepSearchPluginIds } from '@/server/modules/AgentRuntime/arckepSearch';
 import {
   createServerAgentToolsEngine,
   type EvalContext,
@@ -500,6 +501,11 @@ export class AiAgentService {
     const model = agentConfig.model!;
     const provider = agentConfig.provider!;
 
+    // arckep (19.10.2026): модели без встроенного поиска (OpenRouter, DeepSeek) получают платный «Поиск Arckep»
+    // сразу, а не по activateTools: модель сама решает, звать ли его, и платит человек по 0,10 ₽ за вызов.
+    const arckepSearchPluginIds = await resolveArckepSearchPluginIds(agentConfig, model, provider);
+    const pickedPluginIds = [...(additionalPluginIds || []), ...arckepSearchPluginIds];
+
     // 4. Fetch user settings (memory config + timezone)
     // Agent-level memory config takes priority; fallback to user-level setting
     const agentMemoryEnabled = agentConfig.chatConfig?.memory?.enabled;
@@ -551,7 +557,7 @@ export class AiAgentService {
     const dropExcluded = (ids: string[]) => ids.filter((id) => !excludedPluginIds.has(id));
     let agentPlugins: string[] = dropExcluded([
       ...(agentConfig?.plugins ?? []),
-      ...(additionalPluginIds || []),
+      ...pickedPluginIds,
     ]);
 
     // model-bank is needed both for tool support check and model metadata
@@ -694,7 +700,7 @@ export class AiAgentService {
         ...(isBotConversation ? [] : [MessageToolIdentifier]),
         ...(hideCron ? [CronManifest.identifier] : []),
       ];
-      const pickedToolIds = new Set(additionalPluginIds || []);
+      const pickedToolIds = new Set(pickedPluginIds);
       // Подключения студии mcp-arckep-studio-* (F6) — по требованию, как и встроенные тяжёлые инструменты.
       // Подключения студии откладываются и у ботов (F7, 19.10): их 51 инструмент сразу — это десятки тысяч
       // токенов на каждое сообщение, а помощник по умолчанию с ботом — тот же, что и в чате студии.
@@ -744,7 +750,7 @@ export class AiAgentService {
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),
-        ...(additionalPluginIds || []),
+        ...pickedPluginIds,
         LocalSystemManifest.identifier,
         RemoteDeviceManifest.identifier,
         ...(isBotConversation ? [MessageToolIdentifier] : []),
