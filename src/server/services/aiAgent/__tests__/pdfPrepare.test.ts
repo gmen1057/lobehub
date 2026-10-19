@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   isPdfMime,
   PDF_PREP_VERSION,
+  PDF_PREPARE_WAIT_MS,
+  pdfPrepareOptions,
   PdfPrepareService,
   type PdfPrepareStorage,
   type PdfPrepareStore,
@@ -24,7 +26,7 @@ vi.mock('../pdfPages', () => ({ renderPdfPages: mockRender }));
 vi.mock('../pdfImages', () => ({ extractPdfImages: mockExtract }));
 // описание макета: настоящий разбор — в pdfLayout.test.ts; здесь только как подготовка его вызывает и записывает
 vi.mock('../pdfLayout', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../pdfLayout')>()),
+  ...(await importOriginal<Record<string, unknown>>()),
   analysePdfLayout: mockAnalyse,
 }));
 
@@ -964,6 +966,33 @@ describe('ожидание готовности', () => {
 
     expect([...records.keys()]).toEqual(['pdf_1']);
     expect(mockRender).not.toHaveBeenCalled();
+  });
+});
+
+describe('настройки подготовки', () => {
+  it('ожидание в execAgent по умолчанию 45 000 мс (было 5000: первый ход ушёл без страниц); ARCKEP_PDF_PREPARE_WAIT_MS меняет', () => {
+    delete process.env.ARCKEP_PDF_PREPARE_WAIT_MS;
+    expect(PDF_PREPARE_WAIT_MS).toBe(45_000);
+    expect(pdfPrepareOptions().waitMs).toBe(45_000);
+
+    process.env.ARCKEP_PDF_PREPARE_WAIT_MS = '1200';
+    expect(pdfPrepareOptions().waitMs).toBe(1200);
+    process.env.ARCKEP_PDF_PREPARE_WAIT_MS = '0';
+    expect(pdfPrepareOptions().waitMs).toBe(0);
+    // мусор и отрицательное — по умолчанию
+    process.env.ARCKEP_PDF_PREPARE_WAIT_MS = 'много';
+    expect(pdfPrepareOptions().waitMs).toBe(45_000);
+    process.env.ARCKEP_PDF_PREPARE_WAIT_MS = '-5';
+    expect(pdfPrepareOptions().waitMs).toBe(45_000);
+    delete process.env.ARCKEP_PDF_PREPARE_WAIT_MS;
+  });
+
+  it('описание макета включено по умолчанию, ARCKEP_PDF_LAYOUT=0 выключает', () => {
+    delete process.env.ARCKEP_PDF_LAYOUT;
+    expect(pdfPrepareOptions().layout).toBe(true);
+    process.env.ARCKEP_PDF_LAYOUT = '0';
+    expect(pdfPrepareOptions().layout).toBe(false);
+    delete process.env.ARCKEP_PDF_LAYOUT;
   });
 });
 

@@ -17,6 +17,7 @@ import {
   parsePdfHtmlXml,
 } from '../pdfLayout';
 import { renderPdfPages } from '../pdfPages';
+import { popplerBin } from '../popplerRunner';
 
 // arckep (19.10.2026): описание макета PDF — разбор pdftohtml, подсказка шрифта, выравнивание, места картинок и
 // целиком на настоящем poppler (простой PDF, нарисованный вручную: карточка со скруглением, фото под рамкой,
@@ -31,6 +32,16 @@ const hasTool = (name: string) => {
   }
 };
 const hasPoppler = hasTool('pdftoppm') && hasTool('pdfinfo') && hasTool('pdftohtml');
+
+describe('pdftohtml в popplerRunner', () => {
+  it('программа pdftohtml; путь — переменная PDFTOHTML_BIN', () => {
+    delete process.env.PDFTOHTML_BIN;
+    expect(popplerBin('pdftohtml')).toBe('pdftohtml');
+    process.env.PDFTOHTML_BIN = '/opt/poppler/bin/pdftohtml';
+    expect(popplerBin('pdftohtml')).toBe('/opt/poppler/bin/pdftohtml');
+    delete process.env.PDFTOHTML_BIN;
+  });
+});
 
 // ---- Разбор XML ----
 
