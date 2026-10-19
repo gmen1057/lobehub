@@ -36,6 +36,8 @@ const STOP_WORDS: Record<NonNullable<CheckLayoutResult['stopped']>, string> = {
   clean: 'письмо совпало с макетом по замерам и по картинке',
   editor_failed: 'правщик недоступен',
   render_failed: 'отрисовка недоступна',
+  rolled_back:
+    'правки сделали хуже и откачены, новых кругов не было (эту же версию заново не сверяй — выйдет то же)',
   rounds: 'использованы все круги',
   time: 'вышло время',
 };
@@ -55,7 +57,9 @@ const roundLine = (round: CheckRoundSummary) => {
 
 const techniqueList = (items: TechniqueSummary[]) =>
   items
-    .map((item) => `${item.label} ×${item.count}${item.example ? ` (пример: ${item.example})` : ''}`)
+    .map(
+      (item) => `${item.label} ×${item.count}${item.example ? ` (пример: ${item.example})` : ''}`,
+    )
     .join('; ');
 
 const REWRITE =

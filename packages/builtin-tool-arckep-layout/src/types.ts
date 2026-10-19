@@ -74,7 +74,7 @@ export interface CheckLayoutResult {
   /** Адрес файла: `https://arckep.ru/chat/f/<id>/` */
   src?: string;
   status: 'checked' | 'unavailable';
-  stopped?: 'clean' | 'editor_failed' | 'render_failed' | 'rounds' | 'time';
+  stopped?: 'clean' | 'editor_failed' | 'render_failed' | 'rolled_back' | 'rounds' | 'time';
   /** Готовый тег для показа версии */
   tag?: string;
   /**

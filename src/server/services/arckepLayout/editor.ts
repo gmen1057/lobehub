@@ -142,7 +142,7 @@ export const summarizeIssues = (
 
 export interface EditorInput {
   blocks: MockupBlock[];
-  /** Что сделали прошлые правки, если они откатились */
+  /** Что не вышло у прошлых правок (не применились) */
   failedAttempt?: string;
   /** Имя PDF с макетом */
   file: string;

@@ -28,9 +28,10 @@ const log = debug('lobe-server:arckep-layout:check');
  * Круг: правщик (отдельный короткий вызов той же модели) → правки «найти → заменить» → отрисовка → сравнение.
  * Версия принимается, только если похожесть по картинке выросла И нигде не стало хуже (нет новых расхождений в
  * строках и картинках, которые были на месте, и нет заметного роста прежних): проба 19.10 — один круг «сверить и
- * поправить» исправил названное, но сломал соседнее (+28 px ниже). Иначе откат к лучшей версии и ещё круг, с пометкой
- * правщику, что прошлые правки сделали хуже и что именно. Кругов не больше `ARCKEP_LAYOUT_CHECK_ROUNDS` (3), общий
- * бюджет времени ~240 с (`ARCKEP_LAYOUT_CHECK_BUDGET_MS`), стоп раньше при похожести ≥ 97 % и пустом списке.
+ * поправить» исправил названное, но сломал соседнее (+28 px ниже). Иначе откат к лучшей версии и стоп: живой прогон
+ * 19.10 — после отката круги 2 и 3 повторили ту же правку и снова откатились (~10 ₽ человека впустую). Кругов не больше
+ * `ARCKEP_LAYOUT_CHECK_ROUNDS` (3), общий бюджет времени ~240 с (`ARCKEP_LAYOUT_CHECK_BUDGET_MS`), стоп раньше при
+ * похожести ≥ 97 % и пустом списке.
  */
 
 export const DEFAULT_ROUNDS = 3;
@@ -99,7 +100,13 @@ export interface RoundLog {
 
 export type StopReason =
   /** похожесть ≥ 97 % и список пуст */
-  'clean' | 'editor_failed' | 'render_failed' | 'rounds' | 'time';
+  | 'clean'
+  | 'editor_failed'
+  | 'render_failed'
+  /** правки круга сделали хуже — откат, следующий круг не запускается */
+  | 'rolled_back'
+  | 'rounds'
+  | 'time';
 
 export interface CheckOutcome {
   best: Measure & { html: string };
@@ -379,7 +386,9 @@ export const runLayoutCheck = async (
     } else {
       entry.status = 'rolled_back';
       entry.note = verdict.reason;
-      failedAttempt = `прошлые правки сделали хуже и откачены (${verdict.reason}). Не повторяй их: найди другую причину.`;
+      stopped = 'rolled_back';
+      finish();
+      break;
     }
     finish();
   }

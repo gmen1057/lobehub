@@ -71,12 +71,15 @@ const v0 = page([good[0], { x: 60, y: 83 }, good[2]]);
 const v1 = page(good);
 /** «Абзац» починен, но «Кнопка» уехала вниз — новое расхождение там, где было на месте */
 const v2 = page([good[0], good[1], { x: 20, y: 183 }]);
+/** «Абзац» уехал по x, «Кнопка» вниз — два расхождения */
+const v3 = page([good[0], { x: 60, y: 83 }, { x: 20, y: 183 }]);
 
-const HTML = { v0: '<p>v0</p>', v1: '<p>v1</p>', v2: '<p>v2</p>' };
+const HTML = { v0: '<p>v0</p>', v1: '<p>v1</p>', v2: '<p>v2</p>', v3: '<p>v3</p>' };
 const renders: Record<string, RenderResult> = {
   [HTML.v0]: v0,
   [HTML.v1]: v1,
   [HTML.v2]: v2,
+  [HTML.v3]: v3,
 };
 
 const input = (extra: Partial<CheckInput> = {}): CheckInput => ({
@@ -139,18 +142,28 @@ describe('цикл сверки', () => {
     expect(asked[0].system).toMatch(/Тебя вызывает программа сверки/);
   });
 
-  it('исправило названное, но сломало соседнее — не принимается, откат, второй круг получает пометку что и почему', async () => {
+  it('исправило названное, но сломало соседнее — не принимается, откат и стоп: второго круга нет', async () => {
     const { asked, deps: d } = deps([edit('v0', 'v2'), edit('v0', 'v1')]);
     const outcome = await runLayoutCheck(input(), d);
 
-    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back', 'accepted']);
+    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back']);
     expect(outcome.rounds[0].note).toMatch(/появились новые расхождения там, где было на месте/);
     expect(outcome.rounds[0].note).toContain('«Кнопка»');
-    // откатились к лучшей версии, правщик второго круга исходил из неё (v0), а не из v2
-    expect(text(asked[1].parts)).toContain('<p>v0</p>');
-    expect(text(asked[1].parts)).toContain('ВАЖНО: прошлые правки сделали хуже и откачены');
-    expect(outcome.best.html).toBe(HTML.v1);
-    expect(outcome.stopped).toBe('clean');
+    // откатились к лучшей версии (v0), а не к v2; правщика второй раз не звали — живой прогон 19.10: круги 2 и 3
+    // после отката повторили ту же правку и снова откатились
+    expect(asked).toHaveLength(1);
+    expect(outcome.best.html).toBe(HTML.v0);
+    expect(outcome.stopped).toBe('rolled_back');
+  });
+
+  it('круг принят, следующий откатился — стоп, третьего круга нет, остаётся принятая версия', async () => {
+    const { asked, deps: d } = deps([edit('v3', 'v0'), edit('v0', 'v2'), edit('v0', 'v1')]);
+    const outcome = await runLayoutCheck(input({ html: HTML.v3 }), d);
+
+    expect(outcome.rounds.map((round) => round.status)).toEqual(['accepted', 'rolled_back']);
+    expect(asked).toHaveLength(2);
+    expect(outcome.best.html).toBe(HTML.v0);
+    expect(outcome.stopped).toBe('rolled_back');
   });
 
   it('битый JSON — круг пропускается, версия не меняется; кругов не больше трёх', async () => {
@@ -234,7 +247,7 @@ describe('цикл сверки', () => {
     const { asked, deps: d } = deps([], {
       askEditor: vi.fn(async () => {
         clock += 100_000;
-        return '[{"find": "v0", "replace": "v2"}]';
+        return '[{"find": "v3", "replace": "v0"}]';
       }),
       now: () => clock,
       render: vi.fn(async (html) => {
@@ -242,8 +255,11 @@ describe('цикл сверки', () => {
         return renders[html];
       }),
     });
-    const outcome = await runLayoutCheck(input(), d, { budgetMs: 240_000, rounds: 3 });
-    // круг 1: 120 с (правщик + отрисовка); к круг 2 осталось 100 с < 120 с → стоп
+    const outcome = await runLayoutCheck(input({ html: HTML.v3 }), d, {
+      budgetMs: 240_000,
+      rounds: 3,
+    });
+    // круг 1 принят (v3 → v0, не чисто): 120 с (правщик + отрисовка); к кругу 2 осталось 100 с < 120 с → стоп
     expect(outcome.rounds).toHaveLength(1);
     expect(outcome.stopped).toBe('time');
     expect(asked).toHaveLength(0);
@@ -298,11 +314,12 @@ describe('приём версии: похожесть по картинке', ()
       [HTML.v0]: { ...v0, screenshot_jpeg_base64: await shot(200) },
       [HTML.v2]: { ...v2, screenshot_jpeg_base64: await shot(40) },
     };
-    const { deps: d } = deps([edit('v0', 'v2'), '[]', '[]'], {
+    const { deps: d } = deps([edit('v0', 'v2')], {
       render: vi.fn(async (html) => withShots[html]),
     });
     const outcome = await runLayoutCheck(input({ mockPicture: solid(300, 400, 255) }), d);
-    expect(outcome.rounds[0].status).toBe('rolled_back');
+    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back']);
+    expect(outcome.stopped).toBe('rolled_back');
     expect(outcome.rounds[0].similarityAfter!).toBeGreaterThan(outcome.rounds[0].similarityBefore!);
     expect(outcome.best.html).toBe(HTML.v0);
   });
@@ -427,10 +444,11 @@ describe('сломанное соседнее на данных пробы 19.10
     );
     expect(outcome.rounds[0].note).toMatch(/по высоте \+2[3-8]/);
     expect(outcome.best.html).toBe('<main>R1</main>');
-    // правщик второго круга получил пометку, что прошлые правки сделали хуже
-    expect(text(asked[1])).toContain('прошлые правки сделали хуже и откачены');
-    // и список расхождений первой версии: каскад +28 в нём не фигурирует, 13 сдвигов по x — да
-    expect(text(asked[1])).toContain('по горизонтали +22');
+    // после отката второго круга нет
+    expect(outcome.stopped).toBe('rolled_back');
+    expect(asked).toHaveLength(1);
+    // правщик получил список расхождений первой версии: каскада +28 в нём нет, 13 сдвигов по x — есть
+    expect(text(asked[0])).toContain('по горизонтали +22');
   });
 
   it('r1 после r2 тоже не принимается: сдвиги по x вернулись бы (новые расхождения там, где r2 было на месте)', () => {
@@ -598,22 +616,20 @@ describe('приёмы в цикле сверки', () => {
     expect(outcome.stopped).toBe('clean');
   });
 
-  it('правка, которая улучшила картинку, но оставила position:absolute, откатывается', async () => {
+  it('правка, которая улучшила картинку, но оставила position:absolute, откатывается — и цикл останавливается', async () => {
     const { asked, deps: d } = loopDeps([
       '[{"find": "v0", "replace": "v1"}]',
       '[{"find": "v0", "replace": "v1"}]',
     ]);
     const outcome = await runLayoutCheck(input({ html: ABS }), d, { rounds: 2 });
-    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back', 'rolled_back']);
+    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back']);
     expect(outcome.rounds[0].note).toBe(
       'приёмы, которые выбросит почта, не убрались (было 1, стало 1)',
     );
-    expect(text(asked[1].parts)).toContain(
-      'ВАЖНО: прошлые правки сделали хуже и откачены (приёмы, которые выбросит почта',
-    );
+    expect(asked).toHaveLength(1);
     expect(outcome.best.html).toBe(ABS);
     expect(outcome.best.techniques).toHaveLength(1);
-    expect(outcome.stopped).toBe('rounds');
+    expect(outcome.stopped).toBe('rolled_back');
   });
 
   it('приёмы остаются «не чисто»: цикл не останавливается досрочно, даже если расхождений положения нет', async () => {
@@ -658,10 +674,10 @@ describe('приёмы в цикле сверки', () => {
     ]);
     expect(text(asked[0])).toContain('Приёмы, которые выбросит почта (77;');
     expect(text(asked[0])).toContain('- position:absolute/fixed ×77');
-    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back', 'rolled_back']);
+    expect(outcome.rounds.map((round) => round.status)).toEqual(['rolled_back']);
     expect(outcome.rounds[0].note).toMatch(/не убрались \(было 77, стало 77\)/);
     expect(outcome.best.html).toBe(live);
-    expect(outcome.stopped).toBe('rounds');
+    expect(outcome.stopped).toBe('rolled_back');
   });
 
   it('ARCKEP_LAYOUT_TECHNIQUES=0 — приёмы не проверяются, версия принимается по похожести', async () => {

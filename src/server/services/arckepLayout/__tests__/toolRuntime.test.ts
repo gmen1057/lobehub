@@ -36,7 +36,7 @@ const checked = (extra: Partial<CheckLayoutResult> = {}): CheckLayoutResult => (
   ],
   src: 'https://arckep.ru/chat/f/file_NEW/',
   status: 'checked',
-  stopped: 'rounds',
+  stopped: 'rolled_back',
   tag: TAG,
   title: 'Письмо',
   ...extra,
@@ -62,7 +62,9 @@ describe('ответ модели после checkLayout', () => {
     expect(result.content).toContain(
       '2) откат (стало хуже), правок применено 2, не применено 0 — появились новые расхождения',
     );
-    expect(result.content).toContain('Остановка: использованы все круги.');
+    expect(result.content).toContain(
+      'Остановка: правки сделали хуже и откачены, новых кругов не было (эту же версию заново не сверяй — выйдет то же).',
+    );
     expect(result.content).toContain('- «Абзац» (макет y80 x20): по горизонтали +60');
     expect(result.content).toContain(
       'Правщик заметил то, чего линейка не меряет: У кнопки другой оттенок.',
