@@ -2,7 +2,7 @@ import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AiAgentService } from '../index';
-import { PDF_PAGES_PENDING_NOTE } from '../pdfPrepare';
+import { PDF_PAGES_PENDING_NOTE, PDF_PREP_VERSION } from '../pdfPrepare';
 
 // arckep (19.10.2026): вложения для модели со зрением. Длинная картинка приходит кусками — все куски сообщению
 // по порядку, с подписью; PDF: текстовый слой остаётся, а страницы картинками добавляются, если у модели есть
@@ -865,7 +865,7 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       renderedPages: 1,
       startedAt: 1,
       status: 'done',
-      version: 1,
+      version: PDF_PREP_VERSION,
     };
 
     beforeEach(() => {
@@ -1040,6 +1040,206 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       });
       ({ initialMessages } = mockCreateOperation.mock.calls[0][0]);
       expect(initialMessages[0].imageList).toEqual([]);
+    });
+
+    // arckep (19.10.2026): описание макета и места на странице
+    describe('описание макета', () => {
+      const layoutPage = {
+        background: '#FFFFFF',
+        blocks: [{ color: '#F6F7FA', h: 120, kind: 'fill', w: 400, x: 0, y: 20 }],
+        crops: [
+          { fileId: 'crop_a', h: 100, kind: 'photo', mime: 'image/jpeg', w: 150, x: 230, y: 40 },
+        ],
+        height: 300,
+        lines: [{ size: 20, text: 'Профиль', w: 83, x: 76, y: 46 }],
+        page: 1,
+        textColor: '#2D3C82',
+        width: 400,
+      };
+      const layoutRecord = () => ({ ...readyRecord, layout: { pages: [layoutPage] } });
+      const expectedInfo = {
+        file: 'tmpl.pdf',
+        pageCount: 1,
+        pages: [
+          {
+            ...layoutPage,
+            crops: [{ h: 100, kind: 'photo', url: addr('crop_a'), w: 150, x: 230, y: 40 }],
+          },
+        ],
+      };
+
+      beforeEach(() => {
+        ownedFiles.set('page_x', 'files/user-1/tmpl.pdf.page-01.png');
+        ownedFiles.set('img_a', 'files/user-1/tmpl.pdf.image-01.p1.png');
+        ownedFiles.set('crop_a', 'files/user-1/tmpl.pdf.crop-01.p1.jpg');
+        delete process.env.ARCKEP_PDF_LAYOUT;
+      });
+
+      it('текущее сообщение: описание идёт модели в памяти (metadata.layouts) с адресами вырезок, а в базу сообщения не пишется', async () => {
+        prepStore.set('pdf_1', layoutRecord());
+
+        const { attachments, initialMessages, messageArgs } = await runWith([pdfFile]);
+
+        expect(initialMessages.at(-1).metadata.layouts).toEqual([expectedInfo]);
+        // список вложений в памяти и в базе один и тот же; описания в базе нет вовсе
+        expect(initialMessages.at(-1).metadata.attachments).toEqual(attachments);
+        expect(messageArgs.metadata.layouts).toBeUndefined();
+        expect(JSON.stringify(messageArgs.metadata)).not.toContain('Профиль');
+        expect(JSON.stringify(messageArgs.metadata)).not.toContain('crop_a');
+      });
+
+      it('модель без зрения и выключатель ARCKEP_PDF_LAYOUT=0: описания нет', async () => {
+        prepStore.set('pdf_1', layoutRecord());
+
+        const textOnly = await runWith([pdfFile], 'text-only');
+        expect(textOnly.initialMessages.at(-1).metadata?.layouts).toBeUndefined();
+
+        vi.clearAllMocks();
+        mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+        mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+        mockParseFile.mockResolvedValue({ content: 'текст', id: 'doc-1' });
+        process.env.ARCKEP_PDF_LAYOUT = '0';
+        prepStore.set('pdf_1', layoutRecord());
+        const off = await runWith([pdfFile]);
+        expect(off.initialMessages.at(-1).metadata?.layouts).toBeUndefined();
+        // страницы и вшитые картинки при этом на месте
+        expect(off.initialMessages.at(-1).imageList).toHaveLength(1);
+      });
+
+      it('запись без описания (не макет): metadata без layouts', async () => {
+        prepStore.set('pdf_1', readyRecord);
+        const { initialMessages } = await runWith([pdfFile]);
+        expect(initialMessages.at(-1).metadata.layouts).toBeUndefined();
+      });
+
+      it('история: описание берётся из записи в память, повторно не добавляется, в базу не пишется', async () => {
+        prepStore.set('pdf_1', layoutRecord());
+        const pdfItem = {
+          fileType: 'application/pdf',
+          id: 'pdf_1',
+          name: 'tmpl.pdf',
+          size: 1,
+          url: 'u',
+        };
+        mockMessageQuery.mockResolvedValue([
+          {
+            content: 'a',
+            fileList: [pdfItem],
+            id: 'm1',
+            imageList: [],
+            metadata: { attachments: [{ name: 'tmpl.pdf', url: addr('pdf_1') }] },
+            role: 'user',
+          },
+          // сообщение уже с описанием (подставлено раньше в этой же памяти): не дублируется
+          {
+            content: 'b',
+            fileList: [pdfItem],
+            id: 'm2',
+            imageList: [],
+            metadata: { layouts: [expectedInfo] },
+            role: 'user',
+          },
+        ]);
+        mockGetAgentConfig.mockResolvedValue(agent());
+
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: { topicId: 'topic-existing' },
+          prompt: 'ещё по макету',
+        });
+
+        const { initialMessages } = mockCreateOperation.mock.calls[0][0];
+        expect(initialMessages[0].metadata.layouts).toEqual([expectedInfo]);
+        expect(initialMessages[0].metadata.attachments).toEqual(
+          expect.arrayContaining([expect.objectContaining({ name: 'tmpl.pdf' })]),
+        );
+        expect(initialMessages[1].metadata.layouts).toEqual([expectedInfo]);
+        // в базу история не пишется: create — только новое сообщение и заготовка ответа
+        expect(
+          mockMessageCreate.mock.calls.every(
+            (call) => !JSON.stringify(call[0]).includes('Профиль'),
+          ),
+        ).toBe(true);
+      });
+
+      it('история: модель без зрения описания макета не получает', async () => {
+        prepStore.set('pdf_1', layoutRecord());
+        mockMessageQuery.mockResolvedValue([
+          {
+            content: 'a',
+            fileList: [
+              { fileType: 'application/pdf', id: 'pdf_1', name: 'tmpl.pdf', size: 1, url: 'u' },
+            ],
+            id: 'm1',
+            imageList: [],
+            role: 'user',
+          },
+        ]);
+        mockGetAgentConfig.mockResolvedValue(agent('text-only'));
+
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: { topicId: 'topic-existing' },
+          prompt: 'ещё',
+        });
+
+        expect(mockCreateOperation.mock.calls[0][0].initialMessages[0].metadata).toBeUndefined();
+      });
+
+      it('подделанное описание (вырезка — чужой файл): запись отвергнута, в сообщение и историю оно не попадает', async () => {
+        prepStore.set('pdf_1', {
+          ...layoutRecord(),
+          layout: {
+            pages: [{ ...layoutPage, crops: [{ ...layoutPage.crops[0], fileId: 'foreign_crop' }] }],
+          },
+        });
+
+        const { initialMessages } = await runWith([pdfFile]);
+
+        expect(JSON.stringify(initialMessages.at(-1))).not.toContain('foreign_crop');
+        expect(initialMessages.at(-1).metadata?.layouts).toBeUndefined();
+      });
+
+      it('место вшитой картинки на странице — в строке списка вложений', async () => {
+        prepStore.set('pdf_1', {
+          ...layoutRecord(),
+          images: [{ ...readyRecord.images[0], place: { h: 348, w: 295, x: 305, y: 1370 } }],
+        });
+
+        const { attachments } = await runWith([pdfFile]);
+
+        expect(attachments![1]).toMatchObject({
+          name: 'картинка 1 из tmpl.pdf',
+          note: 'стр. 1, на странице x305 y1370 295×348 пт',
+        });
+      });
+
+      it('куски страницы: в подписи указано, где кусок на странице (y в точках страницы)', async () => {
+        ownedFiles.set('page_y', 'files/user-1/tmpl.pdf.page-01.part-02-of-02.png');
+        prepStore.set('pdf_1', {
+          ...readyRecord,
+          pages: [
+            { ...readyRecord.pages[0], fromPt: 0, total: 2 },
+            {
+              ...readyRecord.pages[0],
+              fileId: 'page_y',
+              fromPt: 740,
+              index: 2,
+              key: 'files/user-1/tmpl.pdf.page-01.part-02-of-02.png',
+              toPt: 1544,
+              total: 2,
+            },
+          ].map((item, i) => (i === 0 ? { ...item, toPt: 800 } : item)),
+        });
+
+        const { initialMessages } = await runWith([pdfFile]);
+
+        const alts = initialMessages.at(-1).imageList.map((image: any) => image.alt);
+        expect(alts[0]).toBe(
+          'tmpl.pdf — страница 1 из 1, часть 1 из 2 (y 0–800 в точках страницы) (страница разрезана на 2 частей сверху вниз, читай по порядку)',
+        );
+        expect(alts[1]).toContain('часть 2 из 2 (y 740–1544 в точках страницы)');
+      });
     });
 
     it('подделанная запись подготовки (страница — чужой файл) не попадает ни в сообщение, ни в историю', async () => {
