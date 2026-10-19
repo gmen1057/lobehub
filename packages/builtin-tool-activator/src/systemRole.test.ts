@@ -105,3 +105,47 @@ describe.each([
     expect(prompt).not.toContain('estimateImage');
   });
 });
+
+// arckep (19.10.2026): ссылка на Figma → mcp-arckep-figma; порядок работы — по шлюзу (get_design_context принимает
+// node_ids до 10 в одном запросе к Figma, значки — export_images format svg)
+describe.each([
+  ['full', systemPrompt],
+  ['headless', systemPromptHeadless],
+])('activator prompt (%s) — Figma link', (_name, prompt) => {
+  it('sends a Figma link to mcp-arckep-figma and forbids "cannot open Figma links"', () => {
+    expect(prompt).toContain(
+      'A Figma link (figma.com/design, /file, /proto, /board, /slides, /make)',
+    );
+    expect(prompt).toContain('`mcp-arckep-figma`');
+    expect(prompt).toContain('Never answer that you cannot open Figma links');
+  });
+
+  it('plans the calls: get_metadata once, ONE get_design_context with all node_ids, get_screenshot to look', () => {
+    expect(prompt).toContain('`get_metadata` once');
+    expect(prompt).toContain('ONE `get_design_context` with all the `node_ids` you need');
+    expect(prompt).toContain('`get_screenshot` to actually look at a frame');
+  });
+
+  it('exports icons as svg in one call and says what to do about fonts', () => {
+    expect(prompt).toContain('one `export_images` call with `format: svg`');
+    expect(prompt).toContain('Figma does not give out font files');
+    expect(prompt).toContain('Google Fonts or a free substitute with Cyrillic');
+    expect(prompt).toContain('tell the user which font you chose');
+  });
+
+  it('tells the model what to say when Figma is not connected, and warns about Figma limits', () => {
+    expect(prompt).toContain('Подключите Figma: Подключения → Figma → вставьте личный токен');
+    expect(prompt).toContain('about 20 a month');
+    expect(prompt).toContain('never re-read a node you already have');
+    expect(prompt).toContain('never call Figma tools in parallel');
+  });
+
+  it('stays inside <on_demand_tools> and keeps the "only identifiers from <available_tools>" rule', () => {
+    const block = prompt.slice(
+      prompt.indexOf('<on_demand_tools>'),
+      prompt.indexOf('</on_demand_tools>'),
+    );
+    expect(block).toContain('mcp-arckep-figma');
+    expect(block).toContain('Activate only identifiers that appear in `<available_tools>`');
+  });
+});
