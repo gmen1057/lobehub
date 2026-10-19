@@ -23,6 +23,7 @@ const {
   mockFileFindByKey,
   mockFileMergeMetadata,
   mockMessageQuery,
+  ownedFiles,
   prepStore,
   mockGetFileByteArray,
   mockUploadFromBuffer,
@@ -37,6 +38,8 @@ const {
   mockMessageQuery: vi.fn(),
   // подготовка PDF, записанная в files.metadata.pdfPrep: id файла → запись
   prepStore: new Map<string, any>(),
+  // файлы этого человека (страницы и картинки, созданные подготовкой): id → ключ в хранилище
+  ownedFiles: new Map<string, string>(),
   mockGetFileByteArray: vi.fn(),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
@@ -206,7 +209,11 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
     });
     mockFileFindById.mockImplementation(async (id: string) => row(id));
     mockFileFindByIds.mockImplementation(async (ids: string[]) =>
-      ids.filter((id) => prepStore.has(id)).map(row),
+      ids
+        .filter((id) => prepStore.has(id) || ownedFiles.has(id))
+        .map((id) =>
+          prepStore.has(id) ? row(id) : { id, metadata: null, name: id, url: ownedFiles.get(id)! },
+        ),
     );
     mockFileMergeMetadata.mockImplementation(async (id: string, patch: { pdfPrep: unknown }) => {
       prepStore.set(id, structuredClone(patch.pdfPrep));
@@ -263,13 +270,15 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
     });
     mockParseFile.mockResolvedValue({ content: 'Текст шаблона из слоя PDF', id: 'doc-1' });
     prepStore.clear();
+    ownedFiles.clear();
     installFileMocks();
     mockMessageQuery.mockResolvedValue([]);
     mockGetFileByteArray.mockResolvedValue(new Uint8Array([37, 80, 68, 70]));
-    mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => ({
-      fileId: `page_file_${++pageCounter}`,
-      key: pathname,
-    }));
+    mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => {
+      const fileId = `page_file_${++pageCounter}`;
+      ownedFiles.set(fileId, pathname);
+      return { fileId, key: pathname };
+    });
     mockRenderPdfPages.mockResolvedValue({ images: [], pageCount: 0, renderedPages: 0 });
     mockExtractPdfImages.mockResolvedValue([]);
     mockFileFindByKey.mockResolvedValue(undefined);
@@ -803,10 +812,11 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       prepStore.clear();
       installFileMocks();
       mockGetFileByteArray.mockResolvedValue(new Uint8Array([1]));
-      mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => ({
-        fileId: `page_file_${++pageCounter}`,
-        key: pathname,
-      }));
+      mockUploadFromBuffer.mockImplementation(async (_b: Buffer, _m: string, pathname: string) => {
+        const fileId = `page_file_${++pageCounter}`;
+        ownedFiles.set(fileId, pathname);
+        return { fileId, key: pathname };
+      });
       mockRenderPdfPages.mockRejectedValue(new Error('pdftoppm crashed'));
       mockExtractPdfImages.mockResolvedValue([embedded(1, 1)]);
       result = await runWith([pdfFile]);
@@ -856,6 +866,11 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       status: 'done',
       version: 1,
     };
+
+    beforeEach(() => {
+      ownedFiles.set('page_x', 'files/user-1/tmpl.pdf.page-01.png');
+      ownedFiles.set('img_a', 'files/user-1/tmpl.pdf.image-01.p1.png');
+    });
 
     it('уже подготовлено при загрузке: ничего не рисуется заново, страницы и картинки берутся из записи файла', async () => {
       prepStore.set('pdf_1', readyRecord);
@@ -1024,6 +1039,61 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       });
       ({ initialMessages } = mockCreateOperation.mock.calls[0][0]);
       expect(initialMessages[0].imageList).toEqual([]);
+    });
+
+    it('подделанная запись подготовки (страница — чужой файл) не попадает ни в сообщение, ни в историю', async () => {
+      const forgedRecord = {
+        ...readyRecord,
+        images: [{ ...readyRecord.images[0], fileId: 'foreign_img' }],
+        pages: [
+          { ...readyRecord.pages[0], fileId: 'foreign_page', key: 'files/other-user/secret.png' },
+        ],
+      };
+      prepStore.set('pdf_1', forgedRecord);
+
+      // текущее сообщение: запись отвергнута, PDF готовится заново (подмена пуста), чужое не используется
+      const { attachments, fileIds, initialMessages } = await runWith([pdfFile]);
+      expect(fileIds).toEqual(['pdf_1']);
+      expect(initialMessages.at(-1).imageList).toBeUndefined();
+      expect(JSON.stringify(attachments)).not.toContain('foreign');
+      expect(mockGetFileByteArray).toHaveBeenCalledTimes(1);
+
+      // история: запись отвергнута и там
+      vi.clearAllMocks();
+      mockCreateOperation.mockResolvedValue({ operationId: 'op-1', success: true });
+      mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
+      prepStore.set('pdf_1', forgedRecord);
+      mockMessageQuery.mockResolvedValue([
+        {
+          content: 'a',
+          fileList: [
+            { fileType: 'application/pdf', id: 'pdf_1', name: 'tmpl.pdf', size: 1, url: 'u' },
+          ],
+          id: 'm1',
+          imageList: [],
+          metadata: { attachments: [{ name: 'tmpl.pdf', url: addr('pdf_1') }] },
+          role: 'user',
+        },
+      ]);
+      mockGetAgentConfig.mockResolvedValue(agent());
+      mockFileFindByIds.mockImplementation(async (ids: string[]) =>
+        ids
+          .filter((id) => prepStore.has(id))
+          .map((id) => ({
+            id,
+            metadata: { pdfPrep: structuredClone(prepStore.get(id)) },
+            name: 'tmpl.pdf',
+            url: 'files/user-1/tmpl.pdf',
+          })),
+      );
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'ещё',
+      });
+      const history = mockCreateOperation.mock.calls[0][0].initialMessages[0];
+      expect(history.imageList).toEqual([]);
+      expect(JSON.stringify(history.metadata)).not.toContain('foreign');
     });
 
     it('сбой чтения записей истории не мешает отправке', async () => {

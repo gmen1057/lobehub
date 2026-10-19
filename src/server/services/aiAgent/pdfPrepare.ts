@@ -21,6 +21,11 @@ const log = debug('lobe-server:pdf-prepare');
  * `done` и версия совпала, берём её. `processing` без живой задачи в этом процессе (после перезапуска движка) —
  * значит задача умерла, запускаем заново; `failed` повторяется не раньше чем через минуту.
  *
+ * Запись лежит в `files.metadata`, а metadata клиент способен записать сам (tRPC `file.createFile` принимает любой
+ * `metadata`): ей нельзя верить. Любая запись, прочитанная из базы (готовая, частичная, из истории), проходит
+ * `verify`: формат строго проверяется, каждый `fileId` обязан быть файлом ЭТОГО человека, а ключ хранилища берётся
+ * из его записи файла, а не из подделываемой записи подготовки. Не прошла — считается, что записи нет.
+ *
  * Движок работает одним процессом (`node server.js`): живые задачи и ожидание — в памяти процесса
  * (`inflight`), остальное — в базе. Тяжёлая работа ограничена: не больше ARCKEP_PDF_PREPARE_PARALLEL (2) задач
  * одновременно, остальные ждут очереди.
@@ -87,6 +92,8 @@ export interface PdfPrepareStore {
     fileId: string,
   ) => Promise<{ key: string; name: string; prep?: PdfPrepRecord } | undefined>;
   loadMany: (fileIds: string[]) => Promise<Map<string, PdfPrepRecord>>;
+  /** Какие из этих файлов принадлежат человеку: id → ключ в хранилище. Чужие и несуществующие не возвращаются. */
+  owned: (fileIds: string[]) => Promise<Map<string, string>>;
   save: (fileId: string, prep: PdfPrepRecord) => Promise<void>;
 }
 
@@ -144,6 +151,12 @@ export const pdfPrepareOptions = () => ({
   })(),
 });
 
+const IMAGE_MIMES = new Set(['image/jpeg', 'image/png']);
+const isCount = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= 0;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 export class PdfPrepareService {
   constructor(
     private readonly userId: string,
@@ -173,6 +186,10 @@ export class PdfPrepareService {
             if (prep) records.set(file.id, prep);
           }
           return records;
+        },
+        owned: async (fileIds) => {
+          const rows = fileIds.length > 0 ? await fileModel.findByIds(fileIds) : [];
+          return new Map(rows.map((file) => [file.id, file.url]));
         },
         save: async (fileId, prep) => {
           await fileModel.mergeMetadata(fileId, { pdfPrep: prep });
@@ -217,16 +234,96 @@ export class PdfPrepareService {
     if (result !== 'timeout') return { pending: false, record: result };
 
     const partial = (await this.store.load(fileId).catch(() => undefined))?.prep;
-    return { pending: true, record: partial?.version === PDF_PREP_VERSION ? partial : undefined };
+    return { pending: true, record: await this.verify(partial) };
   }
 
   /** Записи подготовки уже известных файлов (для истории); ничего не запускает. */
   async peek(fileIds: string[]): Promise<Map<string, PdfPrepRecord>> {
+    const records = new Map<string, PdfPrepRecord>();
     try {
-      return await this.store.loadMany(fileIds);
+      for (const [fileId, raw] of await this.store.loadMany(fileIds)) {
+        const record = await this.verify(raw);
+        if (record) records.set(fileId, record);
+      }
     } catch (error) {
       log('peek failed: %s', errorText(error));
-      return new Map();
+    }
+    return records;
+  }
+
+  /**
+   * Проверка записи подготовки, прочитанной из базы (см. шапку файла). Возвращает очищенную копию: только
+   * известные поля нужных типов, а ключ каждой страницы взят из записи файла этого человека. Любая неправильность
+   * (чужой или неизвестный fileId, не тот формат, не та версия) — `undefined`, запись не используется целиком.
+   */
+  private async verify(raw: unknown): Promise<PdfPrepRecord | undefined> {
+    try {
+      if (!isRecord(raw) || raw.version !== PDF_PREP_VERSION) return undefined;
+      if (raw.status !== 'done' && raw.status !== 'failed' && raw.status !== 'processing') {
+        return undefined;
+      }
+      const rawPages = raw.pages === undefined ? undefined : raw.pages;
+      const rawImages = raw.images === undefined ? undefined : raw.images;
+      if (rawPages !== undefined && !Array.isArray(rawPages)) return undefined;
+      if (rawImages !== undefined && !Array.isArray(rawImages)) return undefined;
+
+      const ids = [...(rawPages ?? []), ...(rawImages ?? [])].map((item) =>
+        isRecord(item) ? item.fileId : undefined,
+      );
+      if (ids.some((id) => typeof id !== 'string' || id === '')) return undefined;
+      const owned =
+        ids.length > 0 ? await this.store.owned(ids as string[]) : new Map<string, string>();
+
+      const size = (item: Record<string, unknown>) =>
+        isCount(item.width) && isCount(item.height) && isCount(item.page) && isCount(item.index)
+          ? { height: item.height, index: item.index, page: item.page, width: item.width }
+          : undefined;
+
+      let pages: PdfPrepPage[] | undefined;
+      if (rawPages) {
+        pages = [];
+        for (const item of rawPages as Record<string, unknown>[]) {
+          const key = owned.get(item.fileId as string);
+          const dims = size(item);
+          if (!key || !dims || !isCount(item.total) || !IMAGE_MIMES.has(item.mime as string)) {
+            return undefined;
+          }
+          pages.push({
+            ...dims,
+            fileId: item.fileId as string,
+            key,
+            mime: item.mime as string,
+            total: item.total,
+          });
+        }
+      }
+
+      let images: PdfPrepImage[] | undefined;
+      if (rawImages) {
+        images = [];
+        for (const item of rawImages as Record<string, unknown>[]) {
+          const dims = size(item);
+          if (!owned.has(item.fileId as string) || !dims || !IMAGE_MIMES.has(item.mime as string)) {
+            return undefined;
+          }
+          images.push({ ...dims, fileId: item.fileId as string, mime: item.mime as string });
+        }
+      }
+
+      return {
+        error: typeof raw.error === 'string' ? raw.error.slice(0, 300) : undefined,
+        finishedAt: isCount(raw.finishedAt) ? raw.finishedAt : undefined,
+        images,
+        pageCount: isCount(raw.pageCount) ? raw.pageCount : undefined,
+        pages,
+        renderedPages: isCount(raw.renderedPages) ? raw.renderedPages : undefined,
+        startedAt: isCount(raw.startedAt) ? raw.startedAt : 0,
+        status: raw.status,
+        version: PDF_PREP_VERSION,
+      };
+    } catch (error) {
+      log('verify failed: %s', errorText(error));
+      return undefined;
     }
   }
 
@@ -243,8 +340,9 @@ export class PdfPrepareService {
       const file = await this.store.load(fileId);
       if (!file) return failed('file not found');
 
-      const prep = file.prep;
-      if (prep?.version === PDF_PREP_VERSION) {
+      // запись из базы — недоверенная: подделанная или битая считается отсутствующей, и файл готовится заново
+      const prep = await this.verify(file.prep);
+      if (prep) {
         if (prep.status === 'done') return prep;
         if (
           prep.status === 'failed' &&
