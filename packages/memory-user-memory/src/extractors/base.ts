@@ -44,7 +44,22 @@ export interface BaseMemoryExtractorConfig {
   onUsage?: GenerateObjectOptions['onUsage'];
   /** arckep (20.10.2026): ступень рассуждений модели разбора (`MEMORY_USER_MEMORY_REASONING_EFFORT`). */
   reasoningEffort?: string;
+  /** arckep (20.10.2026): `MEMORY_USER_MEMORY_SERVICE_TIER` — `flex` у OpenAI: цена Batch (−50 %), медленнее. */
+  serviceTier?: string;
 }
+
+/**
+ * arckep (20.10.2026): у Flex бывает «429 Resource Unavailable» — мощностей нет, денег не берут. Тогда повторяем тот же
+ * запрос обычной обработкой (так советует OpenAI), иначе суточный разбор человека пропал бы до завтра.
+ */
+const isCapacityUnavailable = (error: unknown): boolean => {
+  const e = error as
+    | { error?: { code?: string; message?: string; status?: number }; errorType?: string }
+    | undefined;
+  if (e?.errorType === 'QuotaLimitReached' || e?.error?.status === 429) return true;
+  const text = `${e?.error?.code ?? ''} ${e?.error?.message ?? ''}`.toLowerCase();
+  return text.includes('resource unavailable') || text.includes('resource_unavailable');
+};
 
 /**
  * arckep (20.10.2026): шаблоны привратника и слоёв рисуются и в системное сообщение, и в пользовательское —
@@ -64,6 +79,7 @@ export abstract class BaseMemoryExtractor<
   protected readonly runtime: ModelRuntime;
   protected readonly reasoningEffort: string | undefined;
   protected readonly onUsage: GenerateObjectOptions['onUsage'];
+  protected readonly serviceTier: string | undefined;
 
   protected promptTemplate: string | undefined;
 
@@ -73,6 +89,7 @@ export abstract class BaseMemoryExtractor<
     this.runtime = config.modelRuntime;
     this.reasoningEffort = config.reasoningEffort;
     this.onUsage = config.onUsage;
+    this.serviceTier = config.serviceTier;
   }
 
   protected abstract getPrompt(): string;
@@ -110,7 +127,11 @@ export abstract class BaseMemoryExtractor<
         ? buildShortTask(this.getPromptName())
         : renderedUserPrompt;
 
+    // arckep: общий контекст суточного разбора — первым сообщением, одинаковым у всех шести вызовов (кэш OpenAI).
+    const shared = options?.sharedContext?.trim();
+
     return [
+      ...(shared ? [{ content: shared, role: 'system' as const }] : []),
       { content: systemPrompt, role: 'system' as const },
       // TODO: additional messages typing issue
       ...((options?.additionalMessages || []) as GenerateObjectPayload['messages']),
@@ -139,6 +160,7 @@ export abstract class BaseMemoryExtractor<
         messages,
         model: this.model,
         ...(this.reasoningEffort && { reasoningEffort: this.reasoningEffort }),
+        ...(this.serviceTier && { serviceTier: this.serviceTier }),
         schema: this.getSchema(options as unknown as TExtractorTemplateProps),
         tools: this.getTools(options as unknown as TExtractorTemplateProps),
       };
@@ -178,10 +200,19 @@ export abstract class BaseMemoryExtractor<
               }
 
               span.addEvent('gen_ai.request.send');
-              const result = await this.runtime.generateObject(payload, {
+              const callOptions = {
                 metadata: { trigger: RequestTrigger.Memory },
                 ...(this.onUsage && { onUsage: this.onUsage }),
-              });
+              };
+              let result: unknown;
+              try {
+                result = await this.runtime.generateObject(payload, callOptions);
+              } catch (error) {
+                if (!payload.serviceTier || !isCapacityUnavailable(error)) throw error;
+                span.addEvent('gen_ai.service_tier_unavailable_retry_standard');
+                const { serviceTier: _flex, ...standard } = payload;
+                result = await this.runtime.generateObject(standard, callOptions);
+              }
               span.addEvent('gen_ai.response.receive');
 
               span.setAttributes({

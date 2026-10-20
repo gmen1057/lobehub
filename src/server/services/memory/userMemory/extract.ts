@@ -461,6 +461,7 @@ export class MemoryExtractionExecutor {
     layerModels: Partial<Record<LayersEnum, string>>;
     observabilityS3: MemoryExtractionConfig['observabilityS3'];
     reasoningEffort?: string;
+    serviceTier?: string;
   };
   private readonly embeddingContextLimit?: number;
 
@@ -498,6 +499,7 @@ export class MemoryExtractionExecutor {
       ),
       observabilityS3: privateConfig.observabilityS3,
       reasoningEffort: privateConfig.reasoningEffort,
+      serviceTier: privateConfig.serviceTier,
     };
 
     this.embeddingContextLimit =
@@ -1586,6 +1588,214 @@ export class MemoryExtractionExecutor {
     );
 
     await s3.uploadContent(key, JSON.stringify(payload, null, 2));
+  }
+
+  /**
+   * arckep (20.10.2026): вся прежняя память человека (кроме «О вас» — она идёт отдельным блоком) одним текстом для
+   * сравнения. Не поиск похожих (тот даёт до 10 записей на слой): владелец — «пусть грузит … факты из прошлой памяти
+   * и сравнивает». Новые первыми, не больше `maxMemories`.
+   */
+  private async formatAllUserMemories(userId: string, maxMemories: number): Promise<string> {
+    const db = await this.db;
+    const model = new UserMemoryModel(db, userId);
+    const escape = (value: unknown) =>
+      String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll(/\s+/g, ' ')
+        .trim();
+    const textOf: Record<string, (entry: Record<string, unknown>) => unknown[]> = {
+      [LayersEnum.Activity]: (e) => [e.narrative, e.feedback],
+      [LayersEnum.Context]: (e) => [e.description, e.currentStatus],
+      [LayersEnum.Experience]: (e) => [e.situation, e.keyLearning],
+      [LayersEnum.Preference]: (e) => [e.conclusionDirectives],
+    };
+    const lines: string[] = [];
+    for (const layer of [
+      LayersEnum.Preference,
+      LayersEnum.Context,
+      LayersEnum.Experience,
+      LayersEnum.Activity,
+    ]) {
+      for (let page = 1; lines.length < maxMemories; page += 1) {
+        const { items, total } = await model.queryMemories({
+          layer,
+          order: 'desc',
+          page,
+          pageSize: 100,
+        });
+        for (const item of items as unknown as Record<string, Record<string, unknown>>[]) {
+          if (lines.length >= maxMemories) break;
+          const memory = item.memory ?? {};
+          const entry = item[layer] ?? {};
+          const text = textOf[layer](entry).map(escape).filter(Boolean).join(' — ');
+          const created = memory.createdAt
+            ? new Date(memory.createdAt as string).toISOString().slice(0, 10)
+            : '';
+          lines.push(
+            `<memory layer="${layer}" id="${escape(entry.id)}" date="${created}">${escape(memory.title)}${text ? ` — ${text}` : ''}</memory>`,
+          );
+        }
+        if (!items.length || page * 100 >= total) break;
+      }
+    }
+    return `<existing_memories count="${lines.length}">\n${lines.join('\n')}\n</existing_memories>`;
+  }
+
+  /**
+   * arckep (20.10.2026): суточный разбор человека. Вместо шести вызовов модели на КАЖДУЮ переписку — шесть на человека
+   * за сутки: только НОВЫЕ сообщения его затихших переписок (у продолженной — после прошлого разбора, `after`) и вся
+   * прежняя память одним общим контекстом. Он идёт первым сообщением всех шести вызовов — OpenAI берёт его из кэша.
+   * Переписки берутся по порядку (свежие первыми), пока хватает `contextLimit` токенов (оценка tokenx); не влезшие — в
+   * следующий раз. Ошибка не бросается: её текст и разобранные темы возвращаются, чтобы автосбор пометил их.
+   */
+  async extractUserDigest(params: {
+    contextLimit: number;
+    maxMemories: number;
+    topics: { after?: Date; topicId: string }[];
+    userId: string;
+  }): Promise<{ error?: string; extracted: boolean; memoryIds: string[]; topicIds: string[] }> {
+    const { contextLimit, maxMemories, userId } = params;
+    const db = await this.db;
+    const topicRows = params.topics.length
+      ? await db.query.topics.findMany({
+          columns: { createdAt: true, id: true, metadata: true, title: true, updatedAt: true },
+          where: and(
+            eq(topics.userId, userId),
+            inArray(
+              topics.id,
+              params.topics.map((item) => item.topicId),
+            ),
+          ),
+        })
+      : [];
+    const byId = new Map(topicRows.map((row) => [row.id, row]));
+
+    type Conversation = Awaited<ReturnType<MemoryExtractionExecutor['listConversationsForTopic']>>;
+    const included: { conversations: Conversation; topic: (typeof topicRows)[number] }[] = [];
+    let budget = contextLimit;
+    for (const { after, topicId } of params.topics) {
+      const topic = byId.get(topicId);
+      if (!topic || budget <= 0) continue;
+      const all = await this.listConversationsForTopic(userId, topicId, topic.updatedAt);
+      const fresh = after ? all.filter((message) => message.createdAt > after) : all;
+      if (!fresh.length) continue;
+      let size = 0;
+      for (const message of fresh) size += await this.countTokens(message.content as string);
+      let conversations = fresh;
+      if (size > budget) {
+        if (included.length > 0) break; // не влезла целиком — разберём в следующий раз
+        conversations = await this.trimConversationsToTokenLimit(fresh, budget); // одна огромная — её свежая часть
+      }
+      if (!conversations.length) continue;
+      budget -= Math.min(size, budget);
+      included.push({ conversations, topic });
+    }
+    const topicIds = included.map(({ topic }) => topic.id);
+    if (!included.length) return { extracted: false, memoryIds: [], topicIds };
+
+    const now = new Date();
+    const extractionJob: MemoryExtractionJob = {
+      force: true,
+      layers: [],
+      source: MemorySourceType.ChatTopic,
+      sourceId: `digest:${now.toISOString().slice(0, 10)}`,
+      sourceUpdatedAt: new Date(
+        Math.max(...included.map(({ conversations }) => conversations.at(-1)!.createdAt.getTime())),
+      ),
+      userId,
+    };
+
+    try {
+      const userModel = new UserModel(db, userId);
+      const [userState, aiProviderRuntimeState] = await Promise.all([
+        userModel.getUserState(KeyVaultsGateKeeper.getUserKeyVaults),
+        this.getAiProviderRuntimeState(userId),
+      ]);
+      const keyVaults = await this.resolveRuntimeKeyVaults(aiProviderRuntimeState);
+      const runtimes = await this.getRuntime(userId, keyVaults);
+      const language = this.privateConfig.language || userState.settings?.general?.responseLanguage;
+
+      const topicContexts = await Promise.all(
+        included.map(({ conversations, topic }) =>
+          new LobeChatTopicContextProvider({
+            conversations,
+            topic,
+            topicId: topic.id,
+          }).buildContext(userId),
+        ),
+      );
+      const identities = await this.listUserMemoryIdentities(extractionJob, userId);
+      const identityContext = await new RetrievalUserMemoryIdentitiesProvider({
+        retrievedIdentities: identities,
+      }).buildContext(userId, extractionJob.sourceId);
+      const sharedContext = [
+        `<new_conversations count="${included.length}">`,
+        ...topicContexts.map((item) => item.context),
+        '</new_conversations>',
+        await this.formatAllUserMemories(userId, maxMemories),
+        `<existing_identities>\n${identityContext.context}\n</existing_identities>`,
+      ].join('\n');
+      const pointer =
+        'The first system message holds the NEW messages of the user conversations (<new_conversations>, one <chat_topic> each) and ALL memories already stored about the user (<existing_memories>, <existing_identities>). Compare with the existing memories: extract only what is new or materially updated, never repeat what is already stored.';
+      const taxonomyOptions = await new UserMemoryModel(db, userId).queryTaxonomyOptions({
+        include: ['categories', 'labels', 'tags'],
+        limit: 20,
+      });
+
+      const service = new MemoryExtractionService({
+        config: this.modelConfig,
+        db,
+        language,
+        onUsage: this.usageListener,
+        runtimes,
+      });
+      const extraction = await service.run(extractionJob, {
+        availableCategories: taxonomyOptions.categories.map((item) => item.value),
+        availableLabels: taxonomyOptions.labels.map((item) => item.value),
+        availableTags: taxonomyOptions.tags.map((item) => item.value),
+        contextProvider: { buildContext: async () => topicContexts[0] } as any,
+        gatekeeperLanguage: this.privateConfig.agentGateKeeper.language || 'English',
+        language,
+        retrievedContexts: [pointer],
+        retrievedIdentitiesContext: pointer,
+        sessionDate: now.toISOString(),
+        sharedContext,
+        topK: maxMemories,
+        username:
+          userState.fullName || `${userState.firstName} ${userState.lastName}`.trim() || 'User',
+      });
+
+      const messageIds = included.flatMap(({ conversations }) =>
+        conversations.map((item) => item.id),
+      );
+      const persisted: PersistedMemoryResult = extraction
+        ? await this.persistExtraction(extractionJob, messageIds, extraction, runtimes, db)
+        : { createdIds: [], layers: {} };
+      for (const { conversations, topic } of included) {
+        await new LobeChatTopicResultRecorder({
+          currentMetadata: (topic.metadata as ChatTopicMetadata | null) ?? {},
+          database: db,
+          lastMessageAt: conversations.at(-1)!.createdAt.toISOString(),
+          messageCount: conversations.length,
+          topicId: topic.id,
+          traceId: extractionJob.sourceId,
+        }).recordComplete(extractionJob, {
+          ...persisted,
+          processedMemoryCount: persisted.createdIds.length,
+        });
+      }
+      return { extracted: true, memoryIds: persisted.createdIds, topicIds };
+    } catch (error) {
+      console.error('[memory-digest] user digest failed', userId, error);
+      return {
+        error: error instanceof Error ? error.message : String(error),
+        extracted: false,
+        memoryIds: [],
+        topicIds,
+      };
+    }
   }
 
   async runDirect(payload: MemoryExtractionNormalizedPayload) {

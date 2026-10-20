@@ -30,11 +30,18 @@ export const MemorySettingsSchema = z
     message: 'enabled or autoExtract is required',
   });
 
-export const MemoryExtractBodySchema = z.object({
-  days: z.number().int().min(1).max(90).optional(),
-  idleMinutes: z.number().int().min(0).max(1440).optional(),
-  limit: z.number().int().min(1).max(10).optional(),
-});
+// arckep (20.10.2026): mode=digest — суточный разбор (все новые переписки + вся память одним заходом); limit там —
+// сколько переписок взять (до 100, дальше режет бюджет токенов), в почасовом режиме — до 10.
+export const MemoryExtractBodySchema = z
+  .object({
+    days: z.number().int().min(1).max(90).optional(),
+    idleMinutes: z.number().int().min(0).max(1440).optional(),
+    limit: z.number().int().min(1).max(100).optional(),
+    mode: z.enum(['topics', 'digest']).optional(),
+  })
+  .refine((body) => body.mode === 'digest' || (body.limit ?? 0) <= 10, {
+    message: 'limit above 10 is only for mode=digest',
+  });
 
 // arckep (F7): память для всего аккаунта — объявлено до '/:id', иначе «settings» прочтётся как номер записи.
 // GET /api/v1/memories/settings

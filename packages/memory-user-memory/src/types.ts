@@ -44,6 +44,12 @@ export interface ExtractorOptions extends ExtractorTemplateProps {
     ) => Promise<void> | void;
   };
   messageIds?: string[];
+  /**
+   * arckep (20.10.2026, суточный разбор): переписки и вся прежняя память человека одним текстом. Идёт ПЕРВЫМ
+   * сообщением всех шести вызовов (привратник и слои) — общее начало запроса OpenAI берёт из кэша со скидкой;
+   * в шаблонах на месте `{{ retrievedContext }}` тогда стоит ссылка на него.
+   */
+  sharedContext?: string;
   sourceId?: string;
   userId?: string;
 }
@@ -64,7 +70,10 @@ export interface GatekeeperTemplateProps extends ExtractorTemplateProps {
   gateKeeperLanguage?: string;
 }
 
-export type GatekeeperOptions = Pick<ExtractorOptions, 'retrievedContexts' | 'topK'> & {
+export type GatekeeperOptions = Pick<
+  ExtractorOptions,
+  'retrievedContexts' | 'sharedContext' | 'topK'
+> & {
   additionalMessages?: OpenAIChatMessage[];
   callbacks?: ExtractorOptions['callbacks'];
   gateKeeperLanguage?: string;
@@ -77,6 +86,7 @@ export interface BaseExtractorDependencies {
   /** arckep (20.10.2026): токены каждого вызова модели — для учёта расхода автосбора. */
   onUsage?: GenerateObjectOptions['onUsage'];
   reasoningEffort?: string;
+  serviceTier?: string;
 }
 
 export interface MemoryExtractionLLMConfig {
@@ -86,6 +96,8 @@ export interface MemoryExtractionLLMConfig {
   provider?: string;
   /** arckep (20.10.2026): ступень рассуждений привратника и слоёв; не задано — по умолчанию модели. */
   reasoningEffort?: string;
+  /** arckep (20.10.2026): `flex` — OpenAI считает по цене Batch (−50 %), отвечает медленнее. */
+  serviceTier?: string;
 }
 
 export interface MemoryExtractionJob {

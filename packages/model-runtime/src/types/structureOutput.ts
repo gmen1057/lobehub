@@ -30,6 +30,11 @@ export interface GenerateObjectPayload {
   reasoningEffort?: string;
   responseApi?: boolean;
   schema?: GenerateObjectSchema;
+  /**
+   * arckep (20.10.2026): OpenAI `service_tier` (`flex` — цена Batch, ответ медленнее, бывает 429 «нет мощностей»,
+   * за который не берут денег). Не задано — обычная обработка.
+   */
+  serviceTier?: string;
   tools?: ChatCompletionTool[];
 }
 

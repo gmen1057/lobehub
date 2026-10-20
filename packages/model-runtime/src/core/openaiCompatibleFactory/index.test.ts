@@ -1779,6 +1779,31 @@ describe('LobeOpenAICompatibleFactory', () => {
       expect(create.mock.calls[1][0]).not.toHaveProperty('reasoning_effort');
     });
 
+    it('passes serviceTier as service_tier on both paths and omits it when unset', async () => {
+      const responses = vi.spyOn(instance['client'].responses, 'create').mockResolvedValue({
+        output_text: '{"ok": true}',
+      } as any);
+      const completions = vi
+        .spyOn(instance['client'].chat.completions, 'create')
+        .mockResolvedValue({ choices: [{ message: { content: '{"ok": true}' } }] } as any);
+
+      const schema = { name: 's', schema: { properties: {}, type: 'object' as const } };
+      const messages = [{ content: 'x', role: 'user' as const }];
+      await instance.generateObject({
+        messages,
+        model: 'gpt-6-luna',
+        responseApi: true,
+        schema,
+        serviceTier: 'flex',
+      });
+      await instance.generateObject({ messages, model: 'gpt-6-luna', schema, serviceTier: 'flex' });
+      await instance.generateObject({ messages, model: 'gpt-6-luna', schema });
+
+      expect(responses.mock.calls[0][0]).toMatchObject({ service_tier: 'flex' });
+      expect(completions.mock.calls[0][0]).toMatchObject({ service_tier: 'flex' });
+      expect(completions.mock.calls[1][0]).not.toHaveProperty('service_tier');
+    });
+
     it('should return undefined when JSON parsing fails', async () => {
       const mockResponse = {
         output_text: 'invalid json string',

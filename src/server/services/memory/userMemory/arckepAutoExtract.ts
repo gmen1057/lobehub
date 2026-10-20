@@ -135,3 +135,96 @@ export const runAutoExtract = async (
 
   return result;
 };
+
+// ── суточный разбор (20.10.2026) ─────────────────────────────────────────────────────────────
+
+/**
+ * Владелец 20.10.2026: «кэш и отказ от повторов точно надо сделать. Пусть грузит все новые и с ними факты из прошлой
+ * памяти и сравнивает… раз в день». Раз в сутки — один разбор на человека: все новые сообщения его затихших переписок
+ * и вся прежняя память одним контекстом (`MemoryExtractionExecutor.extractUserDigest`). У продолженной переписки
+ * берутся только сообщения после прошлого разбора — повторно ничего не разбирается.
+ */
+export interface DigestOptions {
+  contextLimit: number;
+  days: number;
+  idleMinutes: number;
+  maxMemories: number;
+  maxTopics: number;
+}
+
+// Разбор раз в сутки: упавшую тему повторяем на следующий день (20 ч — чтобы следующий ночной запуск её взял).
+const DIGEST_FAILED_RETRY_HOURS = 20;
+
+export const listDigestTopics = async (
+  db: LobeChatDatabase,
+  userId: string,
+  { days, idleMinutes, maxTopics }: Pick<DigestOptions, 'days' | 'idleMinutes' | 'maxTopics'>,
+): Promise<{ after?: Date; topicId: string }[]> => {
+  // Тот же отбор, что у ежечасного разбора, плюс «курсор»: до какого сообщения тема уже разобрана.
+  const result = await db.execute(sql`
+    SELECT t.id,
+      CASE WHEN t.metadata ->> 'userMemoryExtractStatus' = 'completed'
+        THEN t.metadata -> 'userMemoryExtractRunState' ->> 'lastMessageAt' END AS after
+    FROM topics t
+    JOIN messages m
+      ON m.topic_id = t.id AND m.user_id = t.user_id AND m.role IN ('user', 'assistant')
+    WHERE t.user_id = ${userId}
+      AND COALESCE((t.metadata ->> ${AUTO_EXTRACT_FAILED_KEY})::timestamptz, 'epoch'::timestamptz)
+          < now() - make_interval(hours => ${DIGEST_FAILED_RETRY_HOURS})
+    GROUP BY t.id, t.metadata
+    HAVING bool_or(m.role = 'user')
+      AND max(m.created_at) <= now() - make_interval(mins => ${idleMinutes})
+      AND max(m.created_at) >= now() - make_interval(days => ${days})
+      AND (
+        t.metadata ->> 'userMemoryExtractStatus' IS DISTINCT FROM 'completed'
+        OR max(m.created_at) > COALESCE(
+          (t.metadata -> 'userMemoryExtractRunState' ->> 'lastMessageAt')::timestamptz,
+          'epoch'::timestamptz
+        ) + interval '1 second'
+      )
+    ORDER BY max(m.created_at) DESC
+    LIMIT ${maxTopics}
+  `);
+
+  return (result.rows as { after: string | null; id: string }[]).map((row) => ({
+    after: row.after ? new Date(row.after) : undefined,
+    topicId: row.id,
+  }));
+};
+
+export const runDailyDigest = async (
+  db: LobeChatDatabase,
+  userId: string,
+  options: DigestOptions,
+): Promise<AutoExtractResult> => {
+  const usage: AutoExtractUsage = {
+    calls: 0,
+    inputCachedTokens: 0,
+    inputTokens: 0,
+    outputReasoningTokens: 0,
+    outputTokens: 0,
+  };
+  const result: AutoExtractResult = { extracted: 0, failed: 0, memories: 0, topics: 0, usage };
+
+  const topics = await listDigestTopics(db, userId, options);
+  if (!topics.length) return result;
+
+  const executor = await MemoryExtractionExecutor.create();
+  executor.setUsageListener((item) => addUsage(usage, item));
+  const digest = await executor.extractUserDigest({
+    contextLimit: options.contextLimit,
+    maxMemories: options.maxMemories,
+    topics,
+    userId,
+  });
+
+  result.topics = digest.topicIds.length;
+  if (digest.error) {
+    result.failed = digest.topicIds.length;
+    for (const topicId of digest.topicIds) await markAutoExtractFailed(db, userId, topicId);
+    return result;
+  }
+  result.extracted = digest.extracted ? digest.topicIds.length : 0;
+  result.memories = digest.memoryIds.length;
+  return result;
+};

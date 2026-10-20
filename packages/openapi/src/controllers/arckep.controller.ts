@@ -29,7 +29,10 @@ import {
   resolveServerModelParams,
 } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
-import { runAutoExtract } from '@/server/services/memory/userMemory/arckepAutoExtract';
+import {
+  runAutoExtract,
+  runDailyDigest,
+} from '@/server/services/memory/userMemory/arckepAutoExtract';
 import { resolveArckepUserId } from '@/server/services/toolExecution/serverRuntimes/arckepStudio';
 import { UserMcpGatewayError } from '@/server/services/userMcp/gateway';
 import type { ProviderConfig } from '@/types/user/settings';
@@ -382,7 +385,8 @@ export class ArckepController extends BaseController {
 
   /**
    * POST /api/v1/memories/extract — автосбор фактов из затихших переписок человека (20.10.2026). Только служебный
-   * вход студии: её цикл зовёт ручку раз в час на каждого, у кого включено «Запоминать автоматически». Память
+   * вход студии: её цикл зовёт ручку на каждого, у кого включено «Запоминать автоматически» — с 20.10 раз в сутки
+   * `mode=digest` (все новые переписки + вся память одним разбором), прежний почасовой режим — `mode=topics`. Память
    * выключена или автосбор не включён — ничего не делаем. Модели и ключ — `MEMORY_USER_MEMORY_*`; токены в ответе (`usage`) студия списывает с человека.
    */
   async extractMemories(c: Context): Promise<Response> {
@@ -392,11 +396,27 @@ export class ArckepController extends BaseController {
       }
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
-      const body = await this.getBody<{ days?: number; idleMinutes?: number; limit?: number }>(c);
+      const body = await this.getBody<{
+        days?: number;
+        idleMinutes?: number;
+        limit?: number;
+        mode?: 'digest' | 'topics';
+      }>(c);
       const settings = await new UserModel(db, userId).getUserSettings();
       const memory = memorySettingsOf(settings?.memory);
       if (!memory.enabled || !memory.autoExtract) {
         return this.success(c, { skipped: 'disabled', topics: 0 }, 'auto extraction is off');
+      }
+
+      if (body.mode === 'digest') {
+        const digest = await runDailyDigest(db, userId, {
+          contextLimit: Number(process.env.MEMORY_USER_MEMORY_DIGEST_CONTEXT_LIMIT) || 60_000,
+          days: body.days ?? 30,
+          idleMinutes: body.idleMinutes ?? 60,
+          maxMemories: Number(process.env.MEMORY_USER_MEMORY_DIGEST_MAX_MEMORIES) || 300,
+          maxTopics: body.limit ?? 50,
+        });
+        return this.success(c, digest, 'memories extracted (daily digest)');
       }
 
       const result = await runAutoExtract(db, userId, {

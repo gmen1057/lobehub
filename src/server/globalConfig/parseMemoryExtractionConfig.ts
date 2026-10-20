@@ -69,6 +69,8 @@ export interface MemoryExtractionPrivateConfig {
   };
   /** arckep (20.10.2026): `MEMORY_USER_MEMORY_REASONING_EFFORT` — ступень рассуждений привратника и слоёв. */
   reasoningEffort?: string;
+  /** arckep (20.10.2026): `MEMORY_USER_MEMORY_SERVICE_TIER` — `flex`: цена Batch у OpenAI, ответ медленнее. */
+  serviceTier?: string;
   upstashWorkflowExtraHeaders?: Record<string, string>;
   webhook: {
     baseUrl?: string;
@@ -299,6 +301,7 @@ export const parseMemoryExtractionConfig = (): MemoryExtractionPrivateConfig => 
     observabilityS3: extractorObservabilityS3,
     language: process.env.MEMORY_USER_MEMORY_LANGUAGE || undefined,
     reasoningEffort: process.env.MEMORY_USER_MEMORY_REASONING_EFFORT || undefined,
+    serviceTier: process.env.MEMORY_USER_MEMORY_SERVICE_TIER || undefined,
     upstashWorkflowExtraHeaders,
     webhook: {
       baseUrl: process.env.MEMORY_USER_MEMORY_WEBHOOK_BASE_URL,

@@ -101,6 +101,7 @@ export class MemoryExtractionService<RO> {
       modelRuntime: this.gatekeeperRuntime,
       onUsage: options.onUsage,
       reasoningEffort: this.config.reasoningEffort,
+      serviceTier: this.config.serviceTier,
     };
 
     this.gatekeeper = new UserMemoryGateKeeper(gatekeeperConfig);
@@ -120,6 +121,7 @@ export class MemoryExtractionService<RO> {
         modelRuntime: this.layerRuntime,
         onUsage: options.onUsage,
         reasoningEffort: this.config.reasoningEffort,
+        serviceTier: this.config.serviceTier,
       } satisfies BaseExtractorDependencies;
     };
 
@@ -277,6 +279,7 @@ export class MemoryExtractionService<RO> {
         callbacks: options.callbacks,
         gateKeeperLanguage: options.gateKeeperLanguage || 'English',
         retrievedContexts: options.retrievedContexts,
+        sharedContext: options.sharedContext,
         topK: options.topK,
       });
       this.recordGatekeeperMetrics(job, Date.now() - start, 'ok');

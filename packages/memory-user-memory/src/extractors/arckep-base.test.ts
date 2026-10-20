@@ -98,5 +98,87 @@ describe('BaseMemoryExtractor (arckep)', () => {
     const [payload, options] = (runtime.generateObject as any).mock.calls[0];
     expect(payload).not.toHaveProperty('reasoningEffort');
     expect(options).not.toHaveProperty('onUsage');
+    expect(payload).not.toHaveProperty('serviceTier');
+    expect(payload.messages[0].content).not.toBe('');
+  });
+
+  // ── суточный разбор: общий контекст для кэша и Flex ──────────────────────────────────────
+
+  it('общий контекст — первым сообщением, одинаковым у привратника и слоя (общее начало запроса для кэша)', async () => {
+    const shared =
+      '<new_conversations count="1"><chat_topic id="t1">…</chat_topic></new_conversations>';
+    (runtime.generateObject as any).mockResolvedValueOnce({
+      activity: { reasoning: '', shouldExtract: false },
+      context: { reasoning: '', shouldExtract: true },
+      experience: { reasoning: '', shouldExtract: false },
+      identity: { reasoning: '', shouldExtract: false },
+      preference: { reasoning: '', shouldExtract: false },
+    });
+    const gatekeeper = new UserMemoryGateKeeper({
+      agent: 'gatekeeper',
+      model: 'gpt-6-luna',
+      modelRuntime: runtime,
+    });
+    const layer = new ContextExtractor({
+      agent: 'layer-context',
+      model: 'gpt-6-luna',
+      modelRuntime: runtime,
+    });
+    await gatekeeper.check({
+      retrievedContexts: ['see first message'],
+      sharedContext: shared,
+      topK: 10,
+    });
+    await layer.structuredCall({
+      ...templateOptions,
+      retrievedContexts: ['see first message'],
+      sharedContext: shared,
+    });
+
+    const [gateCall, layerCall] = (runtime.generateObject as any).mock.calls.map(
+      (call: any[]) => call[0],
+    );
+    expect(gateCall.messages[0]).toEqual({ content: shared, role: 'system' });
+    expect(layerCall.messages[0]).toEqual({ content: shared, role: 'system' });
+    // инструкции слоя — вторым сообщением, общего контекста в них нет
+    expect(layerCall.messages[1].content).toContain('context');
+    expect(layerCall.messages[1].content).not.toContain(shared);
+  });
+
+  it('Flex: serviceTier уходит в запрос; 429 «нет мощностей» — тот же запрос повторяется обычной обработкой', async () => {
+    const unavailable = {
+      error: { message: 'Resource Unavailable' },
+      errorType: 'QuotaLimitReached',
+    };
+    (runtime.generateObject as any)
+      .mockRejectedValueOnce(unavailable)
+      .mockResolvedValueOnce({ memories: [] });
+    const extractor = new ContextExtractor({
+      agent: 'layer-context',
+      model: 'gpt-6-luna',
+      modelRuntime: runtime,
+      serviceTier: 'flex',
+    });
+    await extractor.structuredCall(templateOptions);
+
+    const calls = (runtime.generateObject as any).mock.calls.map((call: any[]) => call[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].serviceTier).toBe('flex');
+    expect(calls[1]).not.toHaveProperty('serviceTier');
+    expect(calls[1].messages).toEqual(calls[0].messages);
+  });
+
+  it('Flex: другая ошибка не повторяется', async () => {
+    (runtime.generateObject as any).mockRejectedValueOnce({ error: { message: 'Invalid schema' } });
+    const extractor = new ContextExtractor({
+      agent: 'layer-context',
+      model: 'gpt-6-luna',
+      modelRuntime: runtime,
+      serviceTier: 'flex',
+    });
+    await expect(extractor.structuredCall(templateOptions)).rejects.toEqual({
+      error: { message: 'Invalid schema' },
+    });
+    expect(runtime.generateObject).toHaveBeenCalledTimes(1);
   });
 });

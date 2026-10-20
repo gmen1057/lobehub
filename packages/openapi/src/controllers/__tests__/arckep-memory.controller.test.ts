@@ -11,6 +11,7 @@ import MemoriesRoutes from '../../routes/memories.route';
 const mocks = vi.hoisted(() => ({
   memory: undefined as Record<string, unknown> | undefined,
   runAutoExtract: vi.fn(),
+  runDailyDigest: vi.fn(),
   updateSetting: vi.fn(),
   userIds: [] as string[],
 }));
@@ -58,6 +59,7 @@ vi.mock('@/database/models/user', () => ({
 }));
 vi.mock('@/server/services/memory/userMemory/arckepAutoExtract', () => ({
   runAutoExtract: mocks.runAutoExtract,
+  runDailyDigest: mocks.runDailyDigest,
 }));
 vi.mock('../../middleware/auth', () => ({
   requireAuth: async (c: any, next: () => Promise<void>) => {
@@ -185,5 +187,42 @@ describe('POST /extract', () => {
     const { status } = await call('POST', '/extract', { limit: 11 });
     expect(status).toBe(400);
     expect(mocks.runAutoExtract).not.toHaveBeenCalled();
+  });
+
+  it('mode=digest — суточный разбор: до 50 тем, тишина 60 мин, бюджет и память из окружения', async () => {
+    mocks.memory = { autoExtract: true };
+    mocks.runDailyDigest.mockResolvedValue({
+      extracted: 4,
+      failed: 0,
+      memories: 3,
+      topics: 4,
+      usage: {},
+    });
+    const { body, status } = await call('POST', '/extract', { mode: 'digest' });
+    expect(status).toBe(200);
+    expect(mocks.runDailyDigest).toHaveBeenCalledWith(expect.anything(), USER, {
+      contextLimit: 60_000,
+      days: 30,
+      idleMinutes: 60,
+      maxMemories: 300,
+      maxTopics: 50,
+    });
+    expect(mocks.runAutoExtract).not.toHaveBeenCalled();
+    expect(body.data.memories).toBe(3);
+  });
+
+  it('mode=digest принимает limit до 100; почасовой — до 10', async () => {
+    mocks.memory = { autoExtract: true };
+    mocks.runDailyDigest.mockResolvedValue({
+      extracted: 0,
+      failed: 0,
+      memories: 0,
+      topics: 0,
+      usage: {},
+    });
+    expect((await call('POST', '/extract', { limit: 80, mode: 'digest' })).status).toBe(200);
+    expect(mocks.runDailyDigest.mock.calls[0][2].maxTopics).toBe(80);
+    expect((await call('POST', '/extract', { limit: 101, mode: 'digest' })).status).toBe(400);
+    expect((await call('POST', '/extract', { limit: 11, mode: 'topics' })).status).toBe(400);
   });
 });
