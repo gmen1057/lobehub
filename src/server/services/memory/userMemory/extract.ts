@@ -12,9 +12,15 @@ import {
 } from '@lobechat/memory-user-memory';
 import {
   BenchmarkLocomoContextProvider,
+  ContextMemorySchema,
+  DIGEST_LAYERS,
+  DigestMemoryExtractor,
+  ExperienceMemorySchema,
+  IdentityActionsSchema,
   LobeChatTopicContextProvider,
   LobeChatTopicResultRecorder,
   MemoryExtractionService,
+  PreferenceMemorySchema,
   RetrievalUserMemoryContextProvider,
   RetrievalUserMemoryIdentitiesProvider,
 } from '@lobechat/memory-user-memory';
@@ -1644,6 +1650,78 @@ export class MemoryExtractionExecutor {
   }
 
   /**
+   * arckep (20.10.2026): суточный разбор одним вызовом (`DigestMemoryExtractor`): схема всех пяти слоёв и одинаковые у
+   * всех людей инструкции — первыми (кэш OpenAI между людьми), новые переписки и вся прежняя память — в конце. Ответ
+   * раскладывается в привычный `MemoryExtractionResult`, запись — тем же `persistExtraction`. Слой, не прошедший свою
+   * схему, не пишется (ошибка слоя), остальные пишутся.
+   */
+  private async runDigestSingleCall(params: {
+    availableCategories: string[];
+    digestContext: string;
+    language?: string;
+    runtimes: RuntimeBundle;
+    sessionDate: string;
+  }): Promise<MemoryExtractionResult> {
+    const extractor = new DigestMemoryExtractor({
+      model: this.modelConfig.layerModels[LayersEnum.Context] ?? this.modelConfig.gateModel,
+      modelRuntime: params.runtimes.layerExtractor,
+      onUsage: this.usageListener,
+      reasoningEffort: this.modelConfig.reasoningEffort,
+      serviceTier: this.modelConfig.serviceTier,
+    });
+    const output = ((await extractor.structuredCall({
+      availableCategories: params.availableCategories,
+      digestContext: params.digestContext,
+      language: params.language,
+      sessionDate: params.sessionDate,
+    })) ?? {}) as Record<string, unknown>;
+
+    const validators: Partial<Record<LayersEnum, { safeParse: (value: unknown) => any }>> = {
+      [LayersEnum.Context]: ContextMemorySchema,
+      [LayersEnum.Experience]: ExperienceMemorySchema,
+      [LayersEnum.Identity]: IdentityActionsSchema,
+      [LayersEnum.Preference]: PreferenceMemorySchema,
+    };
+    const outputs: Record<string, { data?: unknown; error?: unknown }> = {};
+    const zero = Object.fromEntries(DIGEST_LAYERS.map((layer) => [layer, 0])) as Record<
+      LayersEnum,
+      number
+    >;
+    const errorsCount = { ...zero };
+    for (const layer of DIGEST_LAYERS) {
+      const value = output[layer];
+      const validator = validators[layer];
+      if (!validator) {
+        outputs[layer] = { data: value };
+        continue;
+      }
+      const parsed = validator.safeParse(value);
+      if (parsed.success) {
+        outputs[layer] = { data: parsed.data };
+      } else {
+        errorsCount[layer] = 1;
+        outputs[layer] = { error: parsed.error };
+        console.warn('[memory-digest] layer output does not match its schema', layer);
+      }
+    }
+
+    return {
+      decision: Object.fromEntries(
+        DIGEST_LAYERS.map((layer) => [
+          layer,
+          { reasoning: 'single-call digest', shouldExtract: true },
+        ]),
+      ) as unknown as MemoryExtractionResult['decision'],
+      inputs: {},
+      layers: [...DIGEST_LAYERS],
+      outputs: outputs as MemoryExtractionResult['outputs'],
+      processedCounts: 0,
+      processedErrorsCount: errorsCount,
+      processedLayersCount: { ...zero },
+    };
+  }
+
+  /**
    * arckep (20.10.2026): суточный разбор человека. Вместо шести вызовов модели на КАЖДУЮ переписку — шесть на человека
    * за сутки: только НОВЫЕ сообщения его затихших переписок (у продолженной — после прошлого разбора, `after`) и вся
    * прежняя память одним общим контекстом. Он идёт первым сообщением всех шести вызовов — OpenAI берёт его из кэша.
@@ -1744,28 +1822,40 @@ export class MemoryExtractionExecutor {
         limit: 20,
       });
 
-      const service = new MemoryExtractionService({
-        config: this.modelConfig,
-        db,
-        language,
-        onUsage: this.usageListener,
-        runtimes,
-      });
-      const extraction = await service.run(extractionJob, {
-        availableCategories: taxonomyOptions.categories.map((item) => item.value),
-        availableLabels: taxonomyOptions.labels.map((item) => item.value),
-        availableTags: taxonomyOptions.tags.map((item) => item.value),
-        contextProvider: { buildContext: async () => topicContexts[0] } as any,
-        gatekeeperLanguage: this.privateConfig.agentGateKeeper.language || 'English',
-        language,
-        retrievedContexts: [pointer],
-        retrievedIdentitiesContext: pointer,
-        sessionDate: now.toISOString(),
-        sharedContext,
-        topK: maxMemories,
-        username:
-          userState.fullName || `${userState.firstName} ${userState.lastName}`.trim() || 'User',
-      });
+      const availableCategories = taxonomyOptions.categories.map((item) => item.value);
+      // Один вызов на человека (по умолчанию) или прежние шесть (привратник + слои) — MEMORY_USER_MEMORY_DIGEST_SINGLE_CALL=0.
+      const extraction =
+        process.env.MEMORY_USER_MEMORY_DIGEST_SINGLE_CALL === '0'
+          ? await new MemoryExtractionService({
+              config: this.modelConfig,
+              db,
+              language,
+              onUsage: this.usageListener,
+              runtimes,
+            }).run(extractionJob, {
+              availableCategories,
+              availableLabels: taxonomyOptions.labels.map((item) => item.value),
+              availableTags: taxonomyOptions.tags.map((item) => item.value),
+              contextProvider: { buildContext: async () => topicContexts[0] } as any,
+              gatekeeperLanguage: this.privateConfig.agentGateKeeper.language || 'English',
+              language,
+              retrievedContexts: [pointer],
+              retrievedIdentitiesContext: pointer,
+              sessionDate: now.toISOString(),
+              sharedContext,
+              topK: maxMemories,
+              username:
+                userState.fullName ||
+                `${userState.firstName} ${userState.lastName}`.trim() ||
+                'User',
+            })
+          : await this.runDigestSingleCall({
+              availableCategories,
+              digestContext: sharedContext,
+              language,
+              runtimes,
+              sessionDate: now.toISOString(),
+            });
 
       const messageIds = included.flatMap(({ conversations }) =>
         conversations.map((item) => item.id),

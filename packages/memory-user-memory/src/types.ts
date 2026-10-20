@@ -15,6 +15,7 @@ import type {
 } from './extractors';
 
 export type MemoryExtractionAgent =
+  | 'arckep-digest'
   | 'gatekeeper'
   | 'layer-activity'
   | 'layer-context'
