@@ -51,6 +51,11 @@ export interface MemoryExtractionPrivateConfig {
   featureFlags: {
     enableBenchmarkLoCoMo: boolean;
   };
+  /**
+   * arckep (20.10.2026): `MEMORY_USER_MEMORY_LANGUAGE` — язык записей, если человек не выбрал язык ответов
+   * (`settings.general.responseLanguage`). Без него слои пишут по-английски: первая живая проба 20.10 так и записала.
+   */
+  language?: string;
   observabilityS3?: {
     accessKeyId?: string;
     bucketName?: string;
@@ -291,6 +296,7 @@ export const parseMemoryExtractionConfig = (): MemoryExtractionPrivateConfig => 
     embeddingPreferredProviders,
     featureFlags,
     observabilityS3: extractorObservabilityS3,
+    language: process.env.MEMORY_USER_MEMORY_LANGUAGE || undefined,
     reasoningEffort: process.env.MEMORY_USER_MEMORY_REASONING_EFFORT || undefined,
     upstashWorkflowExtraHeaders,
     webhook: {
