@@ -1249,7 +1249,7 @@ export class MemoryExtractionExecutor {
           ]);
           const keyVaults = await this.resolveRuntimeKeyVaults(aiProviderRuntimeState);
           const language =
-            userState.settings?.general?.responseLanguage || this.privateConfig.language;
+            this.privateConfig.language || userState.settings?.general?.responseLanguage;
 
           const runtimes = await this.getRuntime(job.userId, keyVaults);
 

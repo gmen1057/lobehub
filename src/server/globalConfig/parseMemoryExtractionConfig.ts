@@ -52,8 +52,9 @@ export interface MemoryExtractionPrivateConfig {
     enableBenchmarkLoCoMo: boolean;
   };
   /**
-   * arckep (20.10.2026): `MEMORY_USER_MEMORY_LANGUAGE` — язык записей, если человек не выбрал язык ответов
-   * (`settings.general.responseLanguage`). Без него слои пишут по-английски: первая живая проба 20.10 так и записала.
+   * arckep (20.10.2026): `MEMORY_USER_MEMORY_LANGUAGE` — язык записей памяти для всех. Важнее
+   * `settings.general.responseLanguage`: в экране студии этой настройки нет, а у 9 человек (и у владельца) от старого
+   * интерфейса LobeChat остался `en-US` — первые живые пробы 20.10 записали по-английски. Не задан — язык ответов.
    */
   language?: string;
   observabilityS3?: {
