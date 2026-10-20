@@ -78,8 +78,8 @@ export interface MemoryExtractionPrivateConfig {
 }
 
 /**
- * arckep (20.10.2026): разбор памяти оплачивает студия — вызовы идут прямо в OpenAI (`*_BASE_URL`), мимо прокси
- * списаний. Ключ не дублируем в .env: без своего `*_API_KEY` у провайдера openai берём серверный `OPENAI_API_KEY`.
+ * arckep (20.10.2026): разбор памяти ходит прямо в OpenAI (`*_BASE_URL`) ключом студии, мимо прокси списаний: прокси
+ * не знает, чей это фоновый вызов. С человека списывает студия по токенам из ответа `/memories/extract`. Ключ не дублируем в .env: без своего `*_API_KEY` у провайдера openai берём серверный `OPENAI_API_KEY`.
  */
 const resolveAgentApiKey = (explicit: string | undefined, provider: string) =>
   explicit || (provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
