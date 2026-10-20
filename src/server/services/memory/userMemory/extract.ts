@@ -45,6 +45,7 @@ import type {
   MemoryExtractionAgentCallTrace,
   MemoryExtractionTraceError,
   MemoryExtractionTracePayload,
+  ModelUsage,
 } from '@lobechat/types';
 import { RequestTrigger } from '@lobechat/types';
 import { type FlowControl } from '@upstash/qstash';
@@ -459,11 +460,18 @@ export class MemoryExtractionExecutor {
     gateModel: string;
     layerModels: Partial<Record<LayersEnum, string>>;
     observabilityS3: MemoryExtractionConfig['observabilityS3'];
+    reasoningEffort?: string;
   };
   private readonly embeddingContextLimit?: number;
 
   private readonly runtimeCache = new Map<string, RuntimeBundle>();
   private readonly db = getServerDB();
+  /** arckep (20.10.2026): токены вызовов модели этого исполнителя — автосбор складывает их в отчёт запуска. */
+  private usageListener?: (usage: ModelUsage) => void | Promise<void>;
+
+  setUsageListener(listener: ((usage: ModelUsage) => void | Promise<void>) | undefined) {
+    this.usageListener = listener;
+  }
 
   private constructor(serverConfig: ServerConfig, privateConfig: MemoryExtractionConfig) {
     this.privateConfig = privateConfig;
@@ -489,6 +497,7 @@ export class MemoryExtractionExecutor {
         privateConfig.agentLayerExtractor.layers,
       ),
       observabilityS3: privateConfig.observabilityS3,
+      reasoningEffort: privateConfig.reasoningEffort,
     };
 
     this.embeddingContextLimit =
@@ -1025,7 +1034,16 @@ export class MemoryExtractionExecutor {
         role: messages.role,
       })
       .from(messages)
-      .where(and(eq(messages.userId, userId), eq(messages.topicId, topicId)))
+      // arckep (20.10.2026): в разбор идут только вопросы человека и ответы помощника. Выводы инструментов
+      // (поиск, MCP, студия) — 62 % текста переписок за 30 дней против 2,5 % слов людей: фактов о человеке
+      // в них почти нет, а платили бы за них в каждом вызове.
+      .where(
+        and(
+          eq(messages.userId, userId),
+          eq(messages.topicId, topicId),
+          inArray(messages.role, ['user', 'assistant']),
+        ),
+      )
       .orderBy(asc(messages.createdAt));
 
     const conversation = rows
@@ -1391,6 +1409,7 @@ export class MemoryExtractionExecutor {
             config: this.modelConfig,
             db,
             language,
+            onUsage: this.usageListener,
             runtimes,
           });
 

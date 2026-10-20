@@ -23,6 +23,11 @@ export interface GenerateObjectSchema {
 export interface GenerateObjectPayload {
   messages: GenerateObjectMessage[];
   model: string;
+  /**
+   * arckep (20.10.2026): ступень рассуждений для моделей, которые думают (OpenAI `reasoning.effort` /
+   * `reasoning_effort`). Не задано — по умолчанию провайдера (у GPT-6 Luna это `medium`).
+   */
+  reasoningEffort?: string;
   responseApi?: boolean;
   schema?: GenerateObjectSchema;
   tools?: ChatCompletionTool[];

@@ -29,6 +29,7 @@ import {
   resolveServerModelParams,
 } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
+import { runAutoExtract } from '@/server/services/memory/userMemory/arckepAutoExtract';
 import { resolveArckepUserId } from '@/server/services/toolExecution/serverRuntimes/arckepStudio';
 import { UserMcpGatewayError } from '@/server/services/userMcp/gateway';
 import type { ProviderConfig } from '@/types/user/settings';
@@ -62,6 +63,15 @@ const reasoningInfo = async (
     reasoningAuto: resolveReasoningAuto(model, provider, callParams) ?? null,
     reasoningLevels: profile?.levels ?? [],
   };
+};
+
+/**
+ * Память аккаунта из `userSettings.memory`: `enabled` не задано — включена (так читает execAgent);
+ * `autoExtract` (автосбор фактов из переписок) не задано — выключен: человек включает его сам.
+ */
+const memorySettingsOf = (memory: unknown): { autoExtract: boolean; enabled: boolean } => {
+  const value = (memory ?? {}) as { autoExtract?: boolean; enabled?: boolean };
+  return { autoExtract: value.autoExtract === true, enabled: value.enabled !== false };
 };
 
 export class ArckepController extends BaseController {
@@ -338,26 +348,63 @@ export class ArckepController extends BaseController {
     try {
       const db = await this.getDatabase();
       const settings = await new UserModel(db, this.getUserId(c)!).getUserSettings();
-      const memory = settings?.memory as { enabled?: boolean } | null | undefined;
-      return this.success(c, { enabled: memory?.enabled !== false }, 'memory settings');
+      return this.success(c, memorySettingsOf(settings?.memory), 'memory settings');
     } catch (error) {
       return this.handleError(c, error);
     }
   }
 
   /**
-   * PATCH /api/v1/memories/settings — включить или выключить память для аккаунта; остальные поля
-   * `memory` (effort) не трогаются.
+   * PATCH /api/v1/memories/settings — включить или выключить память для аккаунта и автосбор фактов из
+   * переписок (`autoExtract`, 20.10.2026); можно прислать одно поле. Остальные поля `memory` (effort) не трогаются.
    */
   async updateMemorySettings(c: Context): Promise<Response> {
     try {
       const db = await this.getDatabase();
-      const { enabled } = await this.getBody<{ enabled: boolean }>(c);
+      const { autoExtract, enabled } = await this.getBody<{
+        autoExtract?: boolean;
+        enabled?: boolean;
+      }>(c);
       const userModel = new UserModel(db, this.getUserId(c)!);
       const settings = await userModel.getUserSettings();
       const current = (settings?.memory as Record<string, unknown> | null | undefined) ?? {};
-      await userModel.updateSetting({ memory: { ...current, enabled } });
-      return this.success(c, { enabled }, 'memory settings updated');
+      const next = {
+        ...current,
+        ...(enabled !== undefined && { enabled }),
+        ...(autoExtract !== undefined && { autoExtract }),
+      };
+      await userModel.updateSetting({ memory: next });
+      return this.success(c, memorySettingsOf(next), 'memory settings updated');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * POST /api/v1/memories/extract — автосбор фактов из затихших переписок человека (20.10.2026). Только служебный
+   * вход студии: её цикл зовёт ручку раз в час на каждого, у кого включено «Запоминать автоматически». Память
+   * выключена или автосбор не включён — ничего не делаем. Модели и ключ — `MEMORY_USER_MEMORY_*` (платит студия).
+   */
+  async extractMemories(c: Context): Promise<Response> {
+    try {
+      if (this.getAuthType(c) !== 'arckep-service') {
+        return this.error(c, 'Только служебный вход студии', 403);
+      }
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const body = await this.getBody<{ days?: number; idleMinutes?: number; limit?: number }>(c);
+      const settings = await new UserModel(db, userId).getUserSettings();
+      const memory = memorySettingsOf(settings?.memory);
+      if (!memory.enabled || !memory.autoExtract) {
+        return this.success(c, { skipped: 'disabled', topics: 0 }, 'auto extraction is off');
+      }
+
+      const result = await runAutoExtract(db, userId, {
+        days: body.days ?? 30,
+        idleMinutes: body.idleMinutes ?? 30,
+        limit: body.limit ?? 3,
+      });
+      return this.success(c, result, 'memories extracted');
     } catch (error) {
       return this.handleError(c, error);
     }

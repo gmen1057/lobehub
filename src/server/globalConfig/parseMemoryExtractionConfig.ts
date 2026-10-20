@@ -61,6 +61,8 @@ export interface MemoryExtractionPrivateConfig {
     region?: string;
     secretAccessKey?: string;
   };
+  /** arckep (20.10.2026): `MEMORY_USER_MEMORY_REASONING_EFFORT` — ступень рассуждений привратника и слоёв. */
+  reasoningEffort?: string;
   upstashWorkflowExtraHeaders?: Record<string, string>;
   webhook: {
     baseUrl?: string;
@@ -69,11 +71,18 @@ export interface MemoryExtractionPrivateConfig {
   whitelistUsers?: string[];
 }
 
+/**
+ * arckep (20.10.2026): разбор памяти оплачивает студия — вызовы идут прямо в OpenAI (`*_BASE_URL`), мимо прокси
+ * списаний. Ключ не дублируем в .env: без своего `*_API_KEY` у провайдера openai берём серверный `OPENAI_API_KEY`.
+ */
+const resolveAgentApiKey = (explicit: string | undefined, provider: string) =>
+  explicit || (provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
+
 const parseGateKeeperAgent = (): MemoryAgentConfig => {
-  const apiKey = process.env.MEMORY_USER_MEMORY_GATEKEEPER_API_KEY;
-  const baseURL = process.env.MEMORY_USER_MEMORY_GATEKEEPER_BASE_URL;
   const model = process.env.MEMORY_USER_MEMORY_GATEKEEPER_MODEL || DEFAULT_MINI_MODEL;
   const provider = process.env.MEMORY_USER_MEMORY_GATEKEEPER_PROVIDER || DEFAULT_MINI_PROVIDER;
+  const apiKey = resolveAgentApiKey(process.env.MEMORY_USER_MEMORY_GATEKEEPER_API_KEY, provider);
+  const baseURL = process.env.MEMORY_USER_MEMORY_GATEKEEPER_BASE_URL;
   const language = process.env.MEMORY_USER_MEMORY_GATEKEEPER_LANGUAGE || 'English';
 
   return {
@@ -86,10 +95,13 @@ const parseGateKeeperAgent = (): MemoryAgentConfig => {
 };
 
 const parseLayerExtractorAgent = (fallbackModel: string): MemoryLayerExtractorConfig => {
-  const apiKey = process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_API_KEY;
   const baseURL = process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_BASE_URL;
   const model = process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_MODEL || fallbackModel;
   const provider = process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_PROVIDER || DEFAULT_MINI_PROVIDER;
+  const apiKey = resolveAgentApiKey(
+    process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_API_KEY,
+    provider,
+  );
   const contextLimit = parseTokenLimitEnv(
     process.env.MEMORY_USER_MEMORY_LAYER_EXTRACTOR_CONTEXT_LIMIT,
   );
@@ -279,6 +291,7 @@ export const parseMemoryExtractionConfig = (): MemoryExtractionPrivateConfig => 
     embeddingPreferredProviders,
     featureFlags,
     observabilityS3: extractorObservabilityS3,
+    reasoningEffort: process.env.MEMORY_USER_MEMORY_REASONING_EFFORT || undefined,
     upstashWorkflowExtraHeaders,
     webhook: {
       baseUrl: process.env.MEMORY_USER_MEMORY_WEBHOOK_BASE_URL,

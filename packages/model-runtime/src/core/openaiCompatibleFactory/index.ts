@@ -706,7 +706,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
     async generateObject(payload: GenerateObjectPayload, options?: GenerateObjectOptions) {
       try {
-        const { messages, schema, model, responseApi, tools } = payload;
+        const { messages, schema, model, reasoningEffort, responseApi, tools } = payload;
 
         const log = debug(`${this.logPrefix}:generateObject`);
         log(
@@ -804,6 +804,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
             {
               input: messages,
               model,
+              ...(reasoningEffort && { reasoning: { effort: reasoningEffort as any } }),
               text: { format: { strict: true, type: 'json_schema', ...processedSchema } },
               user: options?.user,
             },
@@ -832,6 +833,7 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
           {
             messages,
             model,
+            ...(reasoningEffort && { reasoning_effort: reasoningEffort as any }),
             response_format: { json_schema: processedSchema, type: 'json_schema' },
             user: options?.user,
           },

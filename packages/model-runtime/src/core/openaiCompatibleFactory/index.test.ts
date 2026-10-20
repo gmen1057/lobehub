@@ -1739,6 +1739,46 @@ describe('LobeOpenAICompatibleFactory', () => {
       expect(result).toEqual({ status: 'success' });
     });
 
+    // arckep (20.10.2026): ступень рассуждений автосбора памяти доходит до OpenAI на обоих путях.
+    it('passes reasoningEffort as reasoning.effort to the Responses API', async () => {
+      vi.spyOn(instance['client'].responses, 'create').mockResolvedValue({
+        output_text: '{"ok": true}',
+      } as any);
+
+      const schema = { name: 's', schema: { properties: {}, type: 'object' as const } };
+      await instance.generateObject({
+        messages: [{ content: 'x', role: 'user' as const }],
+        model: 'gpt-6-luna',
+        reasoningEffort: 'medium',
+        responseApi: true,
+        schema,
+      });
+
+      expect(instance['client'].responses.create).toHaveBeenCalledWith(
+        expect.objectContaining({ reasoning: { effort: 'medium' } }),
+        expect.anything(),
+      );
+    });
+
+    it('passes reasoningEffort as reasoning_effort to Chat Completions and omits it when unset', async () => {
+      const create = vi.spyOn(instance['client'].chat.completions, 'create').mockResolvedValue({
+        choices: [{ message: { content: '{"ok": true}' } }],
+      } as any);
+
+      const schema = { name: 's', schema: { properties: {}, type: 'object' as const } };
+      const messages = [{ content: 'x', role: 'user' as const }];
+      await instance.generateObject({
+        messages,
+        model: 'gpt-6-luna',
+        reasoningEffort: 'low',
+        schema,
+      });
+      await instance.generateObject({ messages, model: 'gpt-6-luna', schema });
+
+      expect(create.mock.calls[0][0]).toMatchObject({ reasoning_effort: 'low' });
+      expect(create.mock.calls[1][0]).not.toHaveProperty('reasoning_effort');
+    });
+
     it('should return undefined when JSON parsing fails', async () => {
       const mockResponse = {
         output_text: 'invalid json string',

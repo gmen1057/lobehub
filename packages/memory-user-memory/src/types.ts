@@ -1,4 +1,5 @@
 import type {
+  GenerateObjectOptions,
   GenerateObjectPayload,
   ModelRuntime,
   OpenAIChatMessage,
@@ -73,6 +74,9 @@ export interface BaseExtractorDependencies {
   agent: MemoryExtractionAgent;
   model: string;
   modelRuntime: ModelRuntime;
+  /** arckep (20.10.2026): токены каждого вызова модели — для учёта расхода автосбора. */
+  onUsage?: GenerateObjectOptions['onUsage'];
+  reasoningEffort?: string;
 }
 
 export interface MemoryExtractionLLMConfig {
@@ -80,6 +84,8 @@ export interface MemoryExtractionLLMConfig {
   gateModel: string;
   layerModels: Partial<Record<LayersEnum, string>>;
   provider?: string;
+  /** arckep (20.10.2026): ступень рассуждений привратника и слоёв; не задано — по умолчанию модели. */
+  reasoningEffort?: string;
 }
 
 export interface MemoryExtractionJob {

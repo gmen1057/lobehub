@@ -1,6 +1,7 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
 import type {
   ChatCompletionTool,
+  GenerateObjectOptions,
   GenerateObjectPayload,
   GenerateObjectSchema,
   ModelRuntime,
@@ -39,7 +40,19 @@ export interface BaseMemoryExtractorConfig {
   agent: MemoryExtractionAgent;
   model: string;
   modelRuntime: ModelRuntime;
+  /** arckep (20.10.2026): токены каждого вызова модели — для учёта расхода автосбора. */
+  onUsage?: GenerateObjectOptions['onUsage'];
+  /** arckep (20.10.2026): ступень рассуждений модели разбора (`MEMORY_USER_MEMORY_REASONING_EFFORT`). */
+  reasoningEffort?: string;
 }
+
+/**
+ * arckep (20.10.2026): шаблоны привратника и слоёв рисуются и в системное сообщение, и в пользовательское —
+ * вместе с перепиской внутри `{{ retrievedContext }}`, то есть всё уходило в модель дважды (так и в upstream).
+ * Совпавшее пользовательское сообщение заменяем коротким заданием: инструкция и переписка идут один раз.
+ */
+const buildShortTask = (agent: string) =>
+  `Follow the instructions above for the "${agent}" step: read the conversation inside <chat_topic> and the retrieved memories, then answer strictly with JSON matching the provided schema.`;
 
 export abstract class BaseMemoryExtractor<
   TOutput,
@@ -49,6 +62,8 @@ export abstract class BaseMemoryExtractor<
   protected readonly model: string;
   protected readonly agent: MemoryExtractionAgent;
   protected readonly runtime: ModelRuntime;
+  protected readonly reasoningEffort: string | undefined;
+  protected readonly onUsage: GenerateObjectOptions['onUsage'];
 
   protected promptTemplate: string | undefined;
 
@@ -56,6 +71,8 @@ export abstract class BaseMemoryExtractor<
     this.model = config.model;
     this.agent = config.agent;
     this.runtime = config.modelRuntime;
+    this.reasoningEffort = config.reasoningEffort;
+    this.onUsage = config.onUsage;
   }
 
   protected abstract getPrompt(): string;
@@ -87,7 +104,11 @@ export abstract class BaseMemoryExtractor<
 
   private buildMessages(options: TExtractorOptions): GenerateObjectPayload['messages'] {
     const systemPrompt = this.buildSystemPrompt(options as unknown as TExtractorTemplateProps);
-    const userPrompt = this.buildUserPrompt(options as unknown as TExtractorTemplateProps);
+    const renderedUserPrompt = this.buildUserPrompt(options as unknown as TExtractorTemplateProps);
+    const userPrompt =
+      renderedUserPrompt === systemPrompt
+        ? buildShortTask(this.getPromptName())
+        : renderedUserPrompt;
 
     return [
       { content: systemPrompt, role: 'system' as const },
@@ -117,6 +138,7 @@ export abstract class BaseMemoryExtractor<
       const payload: GenerateObjectPayload = {
         messages,
         model: this.model,
+        ...(this.reasoningEffort && { reasoningEffort: this.reasoningEffort }),
         schema: this.getSchema(options as unknown as TExtractorTemplateProps),
         tools: this.getTools(options as unknown as TExtractorTemplateProps),
       };
@@ -158,6 +180,7 @@ export abstract class BaseMemoryExtractor<
               span.addEvent('gen_ai.request.send');
               const result = await this.runtime.generateObject(payload, {
                 metadata: { trigger: RequestTrigger.Memory },
+                ...(this.onUsage && { onUsage: this.onUsage }),
               });
               span.addEvent('gen_ai.response.receive');
 

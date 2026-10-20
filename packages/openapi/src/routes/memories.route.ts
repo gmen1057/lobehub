@@ -23,7 +23,18 @@ export const MemoryDeleteQuerySchema = z.object({
   layer: z.enum(['activity', 'context', 'experience', 'identity', 'preference']),
 });
 
-export const MemorySettingsSchema = z.object({ enabled: z.boolean() });
+// arckep (20.10.2026): + autoExtract — автосбор фактов из переписок; можно прислать одно поле из двух.
+export const MemorySettingsSchema = z
+  .object({ autoExtract: z.boolean().optional(), enabled: z.boolean().optional() })
+  .refine((body) => body.enabled !== undefined || body.autoExtract !== undefined, {
+    message: 'enabled or autoExtract is required',
+  });
+
+export const MemoryExtractBodySchema = z.object({
+  days: z.number().int().min(1).max(90).optional(),
+  idleMinutes: z.number().int().min(0).max(1440).optional(),
+  limit: z.number().int().min(1).max(10).optional(),
+});
 
 // arckep (F7): память для всего аккаунта — объявлено до '/:id', иначе «settings» прочтётся как номер записи.
 // GET /api/v1/memories/settings
@@ -32,7 +43,18 @@ MemoriesRoutes.get('/settings', requireAuth, async (c) => {
   return await controller.getMemorySettings(c);
 });
 
-// PATCH /api/v1/memories/settings  { enabled: boolean }
+// POST /api/v1/memories/extract  { days?, idleMinutes?, limit? } — автосбор, только служебный вход студии
+MemoriesRoutes.post(
+  '/extract',
+  requireAuth,
+  zValidator('json', MemoryExtractBodySchema),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.extractMemories(c);
+  },
+);
+
+// PATCH /api/v1/memories/settings  { enabled?: boolean, autoExtract?: boolean }
 MemoriesRoutes.patch(
   '/settings',
   requireAuth,
