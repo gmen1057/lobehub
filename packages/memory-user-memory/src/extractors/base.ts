@@ -80,6 +80,11 @@ export abstract class BaseMemoryExtractor<
   protected readonly reasoningEffort: string | undefined;
   protected readonly onUsage: GenerateObjectOptions['onUsage'];
   protected readonly serviceTier: string | undefined;
+  /**
+   * arckep (20.10.2026): в каком режиме прошёл последний вызов — `flex` или `default` (Flex не задан или OpenAI
+   * отказал и ушёл обычный запрос). По нему студия решает, по какой цене списывать с человека.
+   */
+  lastServiceTier: string | undefined;
 
   protected promptTemplate: string | undefined;
 
@@ -207,11 +212,13 @@ export abstract class BaseMemoryExtractor<
               let result: unknown;
               try {
                 result = await this.runtime.generateObject(payload, callOptions);
+                this.lastServiceTier = payload.serviceTier ?? 'default';
               } catch (error) {
                 if (!payload.serviceTier || !isCapacityUnavailable(error)) throw error;
                 span.addEvent('gen_ai.service_tier_unavailable_retry_standard');
                 const { serviceTier: _flex, ...standard } = payload;
                 result = await this.runtime.generateObject(standard, callOptions);
+                this.lastServiceTier = 'default';
               }
               span.addEvent('gen_ai.response.receive');
 

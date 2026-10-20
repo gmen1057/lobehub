@@ -476,6 +476,9 @@ export class MemoryExtractionExecutor {
   /** arckep (20.10.2026): токены вызовов модели этого исполнителя — автосбор складывает их в отчёт запуска. */
   private usageListener?: (usage: ModelUsage) => void | Promise<void>;
 
+  /** arckep (20.10.2026): режим последнего суточного разбора одним вызовом (`flex` / `default`) — для цены в студии. */
+  private lastDigestServiceTier?: string;
+
   setUsageListener(listener: ((usage: ModelUsage) => void | Promise<void>) | undefined) {
     this.usageListener = listener;
   }
@@ -1675,6 +1678,7 @@ export class MemoryExtractionExecutor {
       language: params.language,
       sessionDate: params.sessionDate,
     })) ?? {}) as Record<string, unknown>;
+    this.lastDigestServiceTier = extractor.lastServiceTier;
 
     const validators: Partial<Record<LayersEnum, { safeParse: (value: unknown) => any }>> = {
       [LayersEnum.Context]: ContextMemorySchema,
@@ -1733,7 +1737,14 @@ export class MemoryExtractionExecutor {
     maxMemories: number;
     topics: { after?: Date; topicId: string }[];
     userId: string;
-  }): Promise<{ error?: string; extracted: boolean; memoryIds: string[]; topicIds: string[] }> {
+  }): Promise<{
+    error?: string;
+    extracted: boolean;
+    memoryIds: string[];
+    serviceTier?: string;
+    topicIds: string[];
+  }> {
+    this.lastDigestServiceTier = undefined;
     const { contextLimit, maxMemories, userId } = params;
     const db = await this.db;
     const topicRows = params.topics.length
@@ -1876,7 +1887,12 @@ export class MemoryExtractionExecutor {
           processedMemoryCount: persisted.createdIds.length,
         });
       }
-      return { extracted: true, memoryIds: persisted.createdIds, topicIds };
+      return {
+        extracted: true,
+        memoryIds: persisted.createdIds,
+        serviceTier: this.lastDigestServiceTier,
+        topicIds,
+      };
     } catch (error) {
       console.error('[memory-digest] user digest failed', userId, error);
       return {

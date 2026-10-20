@@ -143,7 +143,12 @@ describe('runDailyDigest (суточный разбор)', () => {
         totalInputTokens: 12_000,
         totalOutputTokens: 400,
       });
-      return { extracted: true, memoryIds: ['m1', 'm2'], topicIds: ['tpc_new', 'tpc_continued'] };
+      return {
+        extracted: true,
+        memoryIds: ['m1', 'm2'],
+        serviceTier: 'flex',
+        topicIds: ['tpc_new', 'tpc_continued'],
+      };
     });
 
     const result = await runDailyDigest(db, 'user-1', DIGEST);
@@ -159,7 +164,12 @@ describe('runDailyDigest (суточный разбор)', () => {
       userId: 'user-1',
     });
     expect(result).toMatchObject({ extracted: 2, failed: 0, memories: 2, topics: 2 });
-    expect(result.usage).toMatchObject({ calls: 1, inputCachedTokens: 9000, inputTokens: 12_000 });
+    expect(result.usage).toMatchObject({
+      calls: 1,
+      inputCachedTokens: 9000,
+      inputTokens: 12_000,
+      serviceTier: 'flex',
+    });
   });
 
   it('разбор упал — включённые темы помечены, чтобы следующий ночной запуск их повторил', async () => {

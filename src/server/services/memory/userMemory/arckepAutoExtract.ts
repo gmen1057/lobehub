@@ -28,6 +28,11 @@ export interface AutoExtractUsage {
   inputTokens: number;
   outputReasoningTokens: number;
   outputTokens: number;
+  /**
+   * Режим, в котором прошёл суточный разбор одним вызовом: `flex` (цена Batch, −50 %) или `default`. Нет поля —
+   * обычная цена. Студия списывает с человека по нему.
+   */
+  serviceTier?: string;
 }
 
 export interface AutoExtractResult {
@@ -226,5 +231,6 @@ export const runDailyDigest = async (
   }
   result.extracted = digest.extracted ? digest.topicIds.length : 0;
   result.memories = digest.memoryIds.length;
+  if (digest.serviceTier) usage.serviceTier = digest.serviceTier;
   return result;
 };

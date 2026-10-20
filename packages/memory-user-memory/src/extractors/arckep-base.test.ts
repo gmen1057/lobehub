@@ -166,6 +166,7 @@ describe('BaseMemoryExtractor (arckep)', () => {
     expect(calls[0].serviceTier).toBe('flex');
     expect(calls[1]).not.toHaveProperty('serviceTier');
     expect(calls[1].messages).toEqual(calls[0].messages);
+    expect(extractor.lastServiceTier).toBe('default'); // ушло обычной обработкой — цена обычная
   });
 
   it('Flex: другая ошибка не повторяется', async () => {
