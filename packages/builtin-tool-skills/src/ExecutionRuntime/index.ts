@@ -191,17 +191,29 @@ export class SkillsExecutionRuntime {
     }
 
     try {
-      // Check builtin skills first
-      const builtinSkill = this.builtinSkills.find((s) => s.name === id);
-      if (builtinSkill?.resources) {
-        const meta = builtinSkill.resources[path];
+      // Check builtin skills first (in-memory dictionary: support `./` or relative basename from nested REFERENCE.md)
+      const builtinSkill = this.builtinSkills.find((s) => s.name === id || s.identifier === id);
+      if (builtinSkill?.resources && !path.includes('..')) {
+        const normalized = path.replace(/^\.\//, '');
+        let resolvedKey = builtinSkill.resources[path]
+          ? path
+          : builtinSkill.resources[normalized]
+            ? normalized
+            : undefined;
+        if (!resolvedKey && !normalized.includes('/')) {
+          const matches = Object.keys(builtinSkill.resources).filter((k) =>
+            k.endsWith(`/${normalized}`),
+          );
+          if (matches.length === 1) resolvedKey = matches[0];
+        }
+        const meta = resolvedKey ? builtinSkill.resources[resolvedKey] : undefined;
         if (meta?.content !== undefined) {
           return {
             content: meta.content,
             state: {
               encoding: 'utf8',
               fileType: 'text/plain',
-              path,
+              path: resolvedKey ?? path,
               size: meta.size,
             },
             success: true,

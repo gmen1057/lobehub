@@ -1,4 +1,4 @@
-import { builtinSkills } from '@lobechat/builtin-skills';
+import { builtinSkills, RemotionVideoIdentifier } from '@lobechat/builtin-skills';
 import { type CommandResult } from '@lobechat/builtin-tool-skills';
 import {
   type ExportFileResult,
@@ -44,12 +44,20 @@ interface ResolvedSkillFiles {
   identifier: string;
 }
 
+/** Команда или путь относится к видеопесочнице Remotion (`/workspace/project`, `/opt/remotion`, `.runtime/`). */
+export const isRemotionTarget = (text: string): boolean =>
+  /\/workspace\/project|\/opt\/remotion|(?:^|[\s"'/])\.runtime\/|Composition\.tsx|preview\.html|video\.mp4|still\.png/.test(
+    text,
+  );
+
 /**
  * arckep (19.10.2026): инструменты навыков для движка без интерфейса. Справочники и поиск навыков — как в
  * апстриме (делегируются базовой службе), а команды и файлы идут в песочницу человека (E2B) через шлюз
  * коннекторов. Подтверждений нет: песочница изолирована и платная для человека.
  */
 export class HeadlessSkillRuntimeService implements SkillRuntimeService {
+  private remotionActive = false;
+
   constructor(
     private readonly deps: {
       base: Pick<SkillRuntimeService, 'findAll' | 'findById' | 'findByName' | 'readResource'>;
@@ -76,7 +84,15 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
   runCommand = async (options: { command: string }): Promise<CommandResult> => {
     const sandbox = this.sandboxOrReason();
-    return typeof sandbox === 'string' ? failure(sandbox) : sandbox.runCommand(options.command);
+    if (typeof sandbox === 'string') return failure(sandbox);
+    if (this.remotionActive || isRemotionTarget(options.command)) {
+      this.remotionActive = true;
+      return sandbox.runCommand(options.command, {
+        cwd: '/workspace/project',
+        template: 'remotion',
+      });
+    }
+    return sandbox.runCommand(options.command);
   };
 
   execScript = async (
@@ -104,6 +120,12 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
     // Файлы всех названных навыков раскладываются рядом: ~/skills/<навык>/…; команда идёт из папки первого.
     const [first, ...rest] = resolved as ResolvedSkillFiles[];
+    if (first.identifier === RemotionVideoIdentifier) {
+      // Навык Remotion Video работает в видеопесочнице `arckep-remotion-v1` (`/workspace/project`), а его
+      // 81 справочник читается моделью через `readReference` бесплатно — не копируем мегабайты документации в ящик.
+      this.remotionActive = true;
+      return sandbox.runCommand(command, { cwd: '/workspace/project', template: 'remotion' });
+    }
     const firstFolder = `skills/${skillFolderName(first.identifier)}`;
     const files: SandboxFile[] = [
       ...first.files,
@@ -122,7 +144,10 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
     const sandbox = this.sandboxOrReason();
     if (typeof sandbox === 'string') return { error: sandbox, filename, success: false };
 
-    const read = await sandbox.readFile(path);
+    const useRemotion = this.remotionActive || isRemotionTarget(path);
+    const read = useRemotion
+      ? await sandbox.readFile(path, { template: 'remotion' })
+      : await sandbox.readFile(path);
     if (!read.ok) return { error: read.message, filename, success: false };
 
     // Размер — по длине base64, до декодирования: буфер для файла сверх предела не создаётся.
@@ -192,8 +217,13 @@ export class HeadlessSkillRuntimeService implements SkillRuntimeService {
 
   /** Файлы навыка для песочницы: SKILL.md и справочники. Встроенные берутся из пакета, остальные — из хранилища. */
   private async resolveSkillFiles(name: string): Promise<ResolvedSkillFiles | null> {
-    const builtin = filterBuiltinSkills(builtinSkills).find((skill) => skill.name === name);
+    const builtin = filterBuiltinSkills(builtinSkills).find(
+      (skill) => skill.name === name || skill.identifier === name,
+    );
     if (builtin) {
+      if (builtin.identifier === RemotionVideoIdentifier) {
+        return { files: [], identifier: builtin.identifier };
+      }
       const files: SandboxFile[] = [
         { content: encoder.encode(builtin.content), path: 'SKILL.md' },
         ...Object.entries(builtin.resources ?? {}).flatMap(([path, meta]) => {

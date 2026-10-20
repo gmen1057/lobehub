@@ -15,7 +15,10 @@ const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:8410/mcp/e2b-sandbox';
 
 /** Предел одной команды в песочнице; шлюз выполняет код с таймаутом E2B около 60 с, оставляем запас. */
 export const SANDBOX_COMMAND_TIMEOUT_SEC = 55;
+/** Предел одной команды в видеопесочнице Remotion (сборка и рендер MP4 в Chromium + FFmpeg занимают до 2–3 мин). */
+export const SANDBOX_REMOTION_TIMEOUT_SEC = 170;
 const GATEWAY_TIMEOUT_MS = 110_000;
+const GATEWAY_REMOTION_TIMEOUT_MS = 200_000;
 
 /** Сколько байт файлов навыка можно скопировать в песочницу одним вызовом (они едут в коде base64). */
 export const SANDBOX_MAX_UPLOAD_BYTES = 6 * 1024 * 1024;
@@ -116,14 +119,16 @@ const b64 = (value: string | Uint8Array) => Buffer.from(value).toString('base64'
  */
 export const buildCommandProgram = (options: {
   command: string;
-  /** Папка запуска относительно домашней; без неё — домашняя */
+  /** Папка запуска (относительно домашней или абсолютный путь вида `/workspace/project`); без неё — домашняя */
   cwd?: string;
   files?: SandboxFile[];
   timeoutSec?: number;
 }): string => {
   const timeoutSec = options.timeoutSec ?? SANDBOX_COMMAND_TIMEOUT_SEC;
   const root = options.cwd
-    ? `os.path.join(os.path.expanduser("~"), ${JSON.stringify(options.cwd)})`
+    ? options.cwd.startsWith('/')
+      ? JSON.stringify(options.cwd)
+      : `os.path.join(os.path.expanduser("~"), ${JSON.stringify(options.cwd)})`
     : 'os.path.expanduser("~")';
   const payload = (options.files ?? []).map((file) => [file.path, b64(file.content)]);
 
@@ -200,6 +205,16 @@ export class SkillSandbox {
     args: Record<string, unknown>,
     maxResponseBytes: number = GATEWAY_COMMAND_RESPONSE_LIMIT,
   ): Promise<{ ok: true; text: string } | { message: string; ok: false }> {
+    const isRemotion = args.template === 'remotion';
+    const timeoutMs = isRemotion ? GATEWAY_REMOTION_TIMEOUT_MS : GATEWAY_TIMEOUT_MS;
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Arckep-Topic': this.options.topicId,
+      'X-Arckep-User': this.options.arckepUserId,
+    };
+    if (isRemotion) {
+      headers['X-Arckep-Sandbox-Template'] = 'remotion';
+    }
     try {
       const response = await this.fetchImpl(this.gatewayUrl, {
         body: JSON.stringify({
@@ -208,13 +223,9 @@ export class SkillSandbox {
           method: 'tools/call',
           params: { arguments: { ...args, session_id: this.options.topicId }, name: toolName },
         }),
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Arckep-Topic': this.options.topicId,
-          'X-Arckep-User': this.options.arckepUserId,
-        },
+        headers,
         method: 'POST',
-        signal: AbortSignal.timeout(GATEWAY_TIMEOUT_MS),
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok) {
@@ -245,7 +256,12 @@ export class SkillSandbox {
   /** Команда в песочнице темы; файлы навыка (если есть) раскладываются в папку `cwd` перед запуском. */
   async runCommand(
     command: string,
-    options: { cwd?: string; files?: SandboxFile[] } = {},
+    options: {
+      cwd?: string;
+      files?: SandboxFile[];
+      template?: 'remotion';
+      timeoutSec?: number;
+    } = {},
   ): Promise<CommandResult> {
     const total = (options.files ?? []).reduce((sum, file) => sum + file.content.byteLength, 0);
     if (total > SANDBOX_MAX_UPLOAD_BYTES) {
@@ -257,17 +273,32 @@ export class SkillSandbox {
       };
     }
 
-    const result = await this.call('execute_code', {
-      code: buildCommandProgram({ command, ...options }),
-    });
+    const isRemotion = options.template === 'remotion';
+    const timeoutSec =
+      options.timeoutSec ??
+      (isRemotion ? SANDBOX_REMOTION_TIMEOUT_SEC : SANDBOX_COMMAND_TIMEOUT_SEC);
+    const cwd = options.cwd ?? (isRemotion ? '/workspace/project' : undefined);
+    const callArgs: Record<string, unknown> = {
+      code: buildCommandProgram({ command, cwd, files: options.files, timeoutSec }),
+    };
+    if (isRemotion) {
+      callArgs.template = 'remotion';
+      callArgs.timeout_ms = (timeoutSec + 10) * 1000;
+    }
+
+    const result = await this.call('execute_code', callArgs);
     if (!result.ok) return { exitCode: 1, output: '', stderr: result.message, success: false };
 
     return parseCommandOutput(result.text);
   }
 
   /** Файл из песочницы (base64). */
-  async readFile(path: string): Promise<SandboxFileRead> {
-    const result = await this.call('read_file', { path }, GATEWAY_FILE_RESPONSE_LIMIT);
+  async readFile(path: string, options: { template?: 'remotion' } = {}): Promise<SandboxFileRead> {
+    const callArgs: Record<string, unknown> = { path };
+    if (options.template === 'remotion') {
+      callArgs.template = 'remotion';
+    }
+    const result = await this.call('read_file', callArgs, GATEWAY_FILE_RESPONSE_LIMIT);
     if (!result.ok) {
       const tooLarge = result.message === 'The sandbox response is too large to read.';
       return {

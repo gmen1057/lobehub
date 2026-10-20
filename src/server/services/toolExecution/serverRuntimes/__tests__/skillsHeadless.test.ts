@@ -361,4 +361,41 @@ describe('SkillsExecutionRuntime поверх HeadlessSkillRuntimeService', () =
     expect(result.success).toBe(true);
     expect(result.state).toMatchObject({ path: 'references/structure' });
   });
+
+  it('Remotion Video: readReference читает вложенные справочники и по полному пути, и по короткому имени', async () => {
+    const { service } = make();
+    const full = await runtimeFor(service).readReference({
+      id: 'Remotion Video',
+      path: './remotion-markup/timing.md',
+    });
+    expect(full.success).toBe(true);
+    expect(full.content).toContain('interpolate');
+
+    const short = await runtimeFor(service).readReference({
+      id: 'Remotion Video',
+      path: 'timing.md',
+    });
+    expect(short.success).toBe(true);
+    expect(short.state).toMatchObject({ path: 'remotion-markup/timing.md' });
+  });
+
+  it('Remotion Video: execScript, runCommand и exportFile идут в видеопесочницу (/workspace/project) без копирования 81 справочника', async () => {
+    const { sandbox, service } = make();
+    const runtime = runtimeFor(service);
+
+    await runtime.execScript({
+      command: 'node /opt/remotion/runtime/preview.mjs',
+      description: 'Собрать предпросмотр',
+      skill: 'Remotion Video',
+    });
+    expect(sandbox.runCommand).toHaveBeenCalledWith('node /opt/remotion/runtime/preview.mjs', {
+      cwd: '/workspace/project',
+      template: 'remotion',
+    });
+
+    await runtime.exportFile({ filename: 'preview.html', path: '.runtime/preview.html' });
+    expect(sandbox.readFile).toHaveBeenCalledWith('.runtime/preview.html', {
+      template: 'remotion',
+    });
+  });
 });

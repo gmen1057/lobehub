@@ -116,9 +116,11 @@ describe('buildCommandProgram', () => {
     expect(program).toContain('timeout=55');
   });
 
-  it('папка запуска задаётся относительно домашней', () => {
+  it('папка запуска задаётся относительно домашней или абсолютным путём', () => {
     const program = buildCommandProgram({ command: 'ls', cwd: 'skills/pdf' });
     expect(program).toContain('os.path.join(os.path.expanduser("~"), "skills/pdf")');
+    const abs = buildCommandProgram({ command: 'ls', cwd: '/workspace/project' });
+    expect(abs).toContain('_root = "/workspace/project"');
   });
 
   it.runIf(hasPython)('выполняет команду и печатает результат с меткой (живой python3)', () => {
@@ -309,5 +311,27 @@ describe('SkillSandbox', () => {
       message: 'File not found: out/b.txt',
       ok: false,
     });
+  });
+
+  it('template: remotion передаёт заголовок X-Arckep-Sandbox-Template, рабочую папку /workspace/project и увеличенный таймаут', async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonRpc(`${MARKER}${JSON.stringify({ exit: 0, stderr: '', stdout: 'built' })}`),
+    );
+    const sandbox = make(fetchImpl as unknown as typeof fetch);
+
+    const res = await sandbox.runCommand('node /opt/remotion/runtime/preview.mjs', {
+      template: 'remotion',
+    });
+    expect(res.success).toBe(true);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.headers).toMatchObject({
+      'X-Arckep-Sandbox-Template': 'remotion',
+      'X-Arckep-Topic': 'tpc_1',
+      'X-Arckep-User': '15',
+    });
+    const body = JSON.parse(init.body as string);
+    expect(body.params.arguments.template).toBe('remotion');
+    expect(body.params.arguments.timeout_ms).toBe(180_000);
+    expect(body.params.arguments.code).toContain('_root = "/workspace/project"');
   });
 });
