@@ -320,14 +320,13 @@ export const createRuntimeExecutors = (
     }
 
     // Resolve skills via SkillResolver (unified skill injection)
+    // arckep (21.10.2026): навыки, подключённые шагом activateSkill, уже возвращены модели
+    // в сообщении роли tool — не дублируем их второй раз в верхний системный промпт и не
+    // перестраиваем <available_skills>, чтобы не сбивать префиксный кэш провайдера.
     const skillResolver = new SkillResolver();
     const stepSkillDelta = buildStepSkillDelta();
     const resolvedSkills = state.metadata?.operationSkillSet
-      ? skillResolver.resolve(
-          state.metadata.operationSkillSet,
-          stepSkillDelta,
-          state.activatedStepSkills ?? [],
-        )
+      ? skillResolver.resolve(state.metadata.operationSkillSet, stepSkillDelta, [])
       : undefined;
 
     if (!model || !provider) {

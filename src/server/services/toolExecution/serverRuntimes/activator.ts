@@ -8,7 +8,7 @@ import {
 import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionRuntime';
 
 import { AgentSkillModel } from '@/database/models/agentSkill';
-import { filterBuiltinSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
+import { filterBuiltinSkills, filterUserSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
 
 import { markTopicIfUserMcp } from '../topicTrust';
 import { withSkillTools } from './skillTools';
@@ -29,7 +29,11 @@ export const activatorRuntime: ServerRuntimeRegistration = {
       skillsRuntime = new SkillsExecutionRuntime({
         builtinSkills: filterBuiltinSkills(builtinSkills),
         service: {
-          findAll: () => skillModel.findAll(),
+          findAll: async () => {
+            const res = await skillModel.findAll();
+            const data = filterUserSkills(res.data);
+            return { data, total: data.length };
+          },
           findById: (id) => skillModel.findById(id),
           findByName: (name) => skillModel.findByName(name),
           readResource: async () => {

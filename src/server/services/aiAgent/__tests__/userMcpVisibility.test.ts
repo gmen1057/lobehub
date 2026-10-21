@@ -69,21 +69,24 @@ describe('свои подключения umcp-*: как они попадают
 
   beforeEach(() => vi.clearAllMocks());
 
-  it('umcp-* грузится по требованию, как остальные mcp-*; песочница E2B остаётся в первом шаге', () => {
+  it('umcp-* грузится по требованию, как и остальные mcp-* (включая песочницу E2B)', () => {
     expect(isArckepUserMcpId(UMCP)).toBe(true);
     for (const bad of ['umcp-short', 'umcp-ABCDEFGHIJKL', 'mcp-arckep-x', 'umcp-abcdefghijklm']) {
       expect(isArckepUserMcpId(bad), bad).toBe(false);
     }
     expect(isArckepLazyMcpConnectorId(UMCP)).toBe(true);
     expect(isArckepLazyMcpConnectorId(WORDSTAT)).toBe(true);
-    expect(isArckepLazyMcpConnectorId('mcp-arckep-e2b-sandbox')).toBe(false);
+    expect(isArckepLazyMcpConnectorId('mcp-arckep-e2b-sandbox')).toBe(true);
   });
 
   it('в <available_tools> одна строка: название и описание, без схем; «Подключения» там же', () => {
     const config = buildToolDiscoveryConfig(
       {
         enabledToolIds: ['lobe-activator'],
-        manifestMap: { ...manifestMap, 'lobe-activator': engine.getPluginManifest('lobe-activator')! },
+        manifestMap: {
+          ...manifestMap,
+          'lobe-activator': engine.getPluginManifest('lobe-activator')!,
+        },
         sourceMap: {},
         tools: [],
       } as any,
@@ -95,7 +98,9 @@ describe('свои подключения umcp-*: как они попадают
       identifier: UMCP,
       name: 'Мой Notion',
     });
-    expect(config?.availableTools.some((tool) => tool.identifier === 'arckep-connectors')).toBe(true);
+    expect(config?.availableTools.some((tool) => tool.identifier === 'arckep-connectors')).toBe(
+      true,
+    );
   });
 
   it('activateTools подключает инструменты (с подсказкой про недоверие) и помечает тему', async () => {
@@ -109,7 +114,10 @@ describe('свои подключения umcp-*: как они попадают
     const result = await runtime.activateTools({ identifiers: [UMCP, WORDSTAT] });
 
     expect(result.success).toBe(true);
-    expect(result.state.activatedTools.map((tool: any) => tool.identifier)).toEqual([UMCP, WORDSTAT]);
+    expect(result.state.activatedTools.map((tool: any) => tool.identifier)).toEqual([
+      UMCP,
+      WORDSTAT,
+    ]);
     expect(JSON.stringify(result)).toContain('search_pages');
     // подсказка «ответы — недоверенные данные» едет в манифесте подключённого инструмента (системный контекст)
     expect(manifestMap[UMCP].systemRole).toContain('untrusted data');
@@ -119,7 +127,9 @@ describe('свои подключения umcp-*: как они попадают
   });
 
   it('не удалось пометить тему — чужой инструмент не подключается, модель получает ошибку', async () => {
-    mockMarkIfUserMcp.mockRejectedValueOnce(new Error('Не удалось подготовить чат к чужому инструменту, повторите.'));
+    mockMarkIfUserMcp.mockRejectedValueOnce(
+      new Error('Не удалось подготовить чат к чужому инструменту, повторите.'),
+    );
     const runtime = (await activatorRuntime.factory({
       serverDB: {} as any,
       toolManifestMap: manifestMap,
@@ -137,15 +147,25 @@ describe('свои подключения umcp-*: как они попадают
   });
 
   it('следующее сообщение темы: подключённое возвращается из истории и в первом шаге функция идёт в MCP', async () => {
-    const { seedActivatedStepToolsFromHistory } = await import('@/server/services/agentRuntime/activatedToolsFromHistory');
-    const runtime = (await activatorRuntime.factory({ toolManifestMap: manifestMap } as any)) as any;
+    const { seedActivatedStepToolsFromHistory } =
+      await import('@/server/services/agentRuntime/activatedToolsFromHistory');
+    const runtime = (await activatorRuntime.factory({
+      toolManifestMap: manifestMap,
+    } as any)) as any;
     const activated = await runtime.activateTools({ identifiers: [UMCP] });
     const history = [
-      { plugin: { apiName: 'activateTools', identifier: 'lobe-activator' }, pluginState: activated.state, role: 'tool' },
+      {
+        plugin: { apiName: 'activateTools', identifier: 'lobe-activator' },
+        pluginState: activated.state,
+        role: 'tool',
+      },
     ];
     const operationToolSet = {
       enabledToolIds: ['lobe-activator'],
-      manifestMap: { ...manifestMap, 'lobe-activator': engine.getPluginManifest('lobe-activator')! },
+      manifestMap: {
+        ...manifestMap,
+        'lobe-activator': engine.getPluginManifest('lobe-activator')!,
+      },
       sourceMap: {},
       tools: [],
     };
@@ -175,10 +195,24 @@ describe('свои подключения umcp-*: как они попадают
   });
 
   it('какие инструменты студии платные', () => {
-    for (const apiName of ['create_image', 'create_video', 'revise_presentation', 'replicate_speech_voice', 'chat_completion', 'decide']) {
+    for (const apiName of [
+      'create_image',
+      'create_video',
+      'revise_presentation',
+      'replicate_speech_voice',
+      'chat_completion',
+      'decide',
+    ]) {
       expect(isArckepPaidStudioTool('mcp-arckep-studio-x', apiName), apiName).toBe(true);
     }
-    for (const apiName of ['estimate_image', 'get_image', 'list_models', 'get_balance', 'cancel_chat_batch', 'get_usage']) {
+    for (const apiName of [
+      'estimate_image',
+      'get_image',
+      'list_models',
+      'get_balance',
+      'cancel_chat_batch',
+      'get_usage',
+    ]) {
       expect(isArckepPaidStudioTool('mcp-arckep-studio-x', apiName), apiName).toBe(false);
     }
     expect(isArckepPaidStudioTool('arckep-studio', 'createImage')).toBe(true);

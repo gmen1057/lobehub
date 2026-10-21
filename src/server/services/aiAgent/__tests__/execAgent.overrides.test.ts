@@ -213,7 +213,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(generateArgs.excludeDefaultToolIds).toContain('arckep-studio');
   });
 
-  it('подключения студии mcp-arckep-studio-* (F6) тоже откладываются до activateTools', async () => {
+  it('подключения студии mcp-arckep-studio-* (F6) и песочница E2B откладываются до activateTools', async () => {
     mockGetAgentConfig.mockResolvedValue({
       ...agentConfig(),
       plugins: ['mcp-arckep-studio-images', 'mcp-arckep-e2b-sandbox', 'lobe-artifacts'],
@@ -224,10 +224,10 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     const generateArgs = toolsEngine.generateToolsDetailed.mock.calls[0][0];
     expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
     expect(generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-studio-images');
-    // песочница E2B (исключение из ленивых подключений MCP, 19.10) и артефакты — сразу, как и раньше
-    expect(generateArgs.toolIds).toContain('mcp-arckep-e2b-sandbox');
+    // песочница E2B с 21.10 тоже по требованию, как остальные mcp-*
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-e2b-sandbox');
+    expect(generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-e2b-sandbox');
     expect(generateArgs.toolIds).toContain('lobe-artifacts');
-    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-e2b-sandbox');
   });
 
   it('у бота подключения студии тоже по требованию, а свои инструменты — сразу (F7)', async () => {
@@ -411,7 +411,7 @@ describe('AiAgentService.execAgent — arckep: облегчённая загру
     vi.unstubAllEnvs();
   });
 
-  it('подключения MCP — по требованию, кроме E2B: он остаётся сразу', async () => {
+  it('все подключения MCP (включая E2B) и документы агента — по требованию', async () => {
     const { generateArgs, manifestIds } = await run({
       plugins: [
         'mcp-arckep-wordstat',
@@ -421,17 +421,26 @@ describe('AiAgentService.execAgent — arckep: облегчённая загру
       ],
     });
 
-    expect(generateArgs.toolIds).toContain('mcp-arckep-e2b-sandbox');
+    expect(generateArgs.toolIds).not.toContain('mcp-arckep-e2b-sandbox');
     expect(generateArgs.toolIds).toContain('lobe-artifacts');
     expect(generateArgs.toolIds).not.toContain('mcp-arckep-wordstat');
     expect(generateArgs.toolIds).not.toContain('mcp-arckep-studio-images');
     expect(generateArgs.excludeDefaultToolIds).toEqual(
-      expect.arrayContaining(['mcp-arckep-wordstat', 'mcp-arckep-studio-images']),
+      expect.arrayContaining([
+        'mcp-arckep-wordstat',
+        'mcp-arckep-e2b-sandbox',
+        'mcp-arckep-studio-images',
+        'lobe-agent-documents',
+      ]),
     );
-    expect(generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-e2b-sandbox');
     // ленивые перечисляются в <available_tools>: их манифесты лежат в карте операции
     expect(manifestIds).toEqual(
-      expect.arrayContaining(['mcp-arckep-wordstat', 'mcp-arckep-studio-images']),
+      expect.arrayContaining([
+        'mcp-arckep-wordstat',
+        'mcp-arckep-e2b-sandbox',
+        'mcp-arckep-studio-images',
+        'lobe-agent-documents',
+      ]),
     );
   });
 

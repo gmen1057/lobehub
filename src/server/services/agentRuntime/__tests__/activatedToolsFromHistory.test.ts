@@ -78,6 +78,28 @@ describe('collectActivatedToolIdsFromMessages', () => {
     expect(collectActivatedToolIdsFromMessages([])).toEqual([]);
     expect(collectActivatedToolIdsFromMessages(undefined)).toEqual([]);
   });
+
+  it('отцепляет инструмент, который не подключался и не вызывался за последние 3 хода человека (+ текущий запрос)', () => {
+    const messages = [
+      { content: 'Ход 1: нарисуй и сделай сайт', role: 'user' },
+      activatorMessage(['mcp-arckep-studio-images', 'arckep-sites']),
+      { content: 'Готово', role: 'assistant' },
+      { content: 'Ход 2', role: 'user' },
+      { content: 'Ответ 2', role: 'assistant' },
+      { content: 'Ход 3: обнови сайт', role: 'user' },
+      {
+        content: 'Обновляю',
+        role: 'assistant',
+        tools: [{ identifier: 'arckep-sites' }],
+      },
+      { content: 'Ход 4', role: 'user' },
+      { content: 'Ответ 4', role: 'assistant' },
+      { content: 'Ход 5 (текущий)', role: 'user' },
+    ];
+
+    // mcp-arckep-studio-images не вызывался с 1-го хода — отцепляется; arckep-sites вызывался на 3-м ходе — остаётся
+    expect(collectActivatedToolIdsFromMessages(messages)).toEqual(['arckep-sites']);
+  });
 });
 
 describe('seedActivatedStepToolsFromHistory', () => {

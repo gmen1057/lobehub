@@ -95,6 +95,7 @@ export const arckepLazyToolIds = [
   ArckepStudioManifest.identifier,
   CalculatorManifest.identifier,
   NotebookManifest.identifier,
+  AgentDocumentsManifest.identifier,
 ];
 
 /**
@@ -109,16 +110,15 @@ export const isArckepLazyToolId = (id: string): boolean =>
   arckepLazyToolIds.includes(id) || id.startsWith(ARCKEP_STUDIO_CONNECTOR_PREFIX);
 
 /**
- * arckep (19.10.2026, серверный путь): остальные подключения MCP человека (`mcp-*`) тоже грузятся по
- * требованию — схемы их инструментов уходили в каждое сообщение. Статистика за 60 дней: Wordstat вызывали
- * 1 раз (при этом он грузился сразу у 284 помощников). Исключение — песочница E2B: ею пользуются чаще
- * (89 вызовов от 4 человек за те же 60 дней), поэтому она остаётся в первом шаге. Сюда же добавлять
- * подключения, которые должны быть под рукой с первого сообщения.
+ * arckep (19.10.2026, серверный путь; 21.10.2026 — включая песочницу E2B): подключения MCP человека (`mcp-*`)
+ * грузятся по требованию — схемы их инструментов уходили в каждое сообщение. Статистика за 60 дней: Wordstat
+ * вызывали 1 раз (у 284 помощников), песочницу E2B — 89 раз от 4 человек при включении у 283 помощников.
+ * Сюда добавлять только подключения, которые должны быть под рукой с первого сообщения без activateTools.
  */
 export const ARCKEP_MCP_CONNECTOR_PREFIX = 'mcp-';
 /** Подключение песочницы E2B (шлюз коннекторов, execute_code / read_file). */
 export const ARCKEP_E2B_CONNECTOR_ID = 'mcp-arckep-e2b-sandbox';
-export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = [ARCKEP_E2B_CONNECTOR_ID];
+export const ARCKEP_EAGER_MCP_TOOL_IDS: readonly string[] = [];
 /**
  * arckep (19.10.2026, этап 3 «свои инструменты»): свои подключения людей — `umcp-` + 12 знаков [a-z0-9], их
  * выдаёт бэкенд студии. Префикс `mcp-arckep-` у них запрещён: каталог движка — свежие строки `mcp-arckep-*`

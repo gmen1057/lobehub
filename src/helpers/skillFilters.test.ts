@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { filterBuiltinSkills, shouldEnableBuiltinSkill } from './skillFilters';
+import { filterBuiltinSkills, filterUserSkills, shouldEnableBuiltinSkill } from './skillFilters';
 
 afterEach(() => {
   vi.unstubAllEnvs();
@@ -99,6 +99,19 @@ describe('skillFilters', () => {
       );
 
       expect(filtered.map((skill) => skill.identifier)).toEqual(['lobe-artifacts', 'seo-demand']);
+    });
+
+    it('filterUserSkills скрывает навыки из магазина LobeHub (source=market) в режиме без интерфейса', () => {
+      const items = [
+        { identifier: 'seo-demand', source: 'user' },
+        { identifier: 'anthropics-skills-pdf', source: 'market' },
+      ];
+      expect(
+        filterUserSkills(items, { isDesktop: false, isHeadless: true }).map((s) => s.identifier),
+      ).toEqual(['seo-demand']);
+      expect(
+        filterUserSkills(items, { isDesktop: false, isHeadless: false }).map((s) => s.identifier),
+      ).toEqual(['seo-demand', 'anthropics-skills-pdf']);
     });
   });
 });

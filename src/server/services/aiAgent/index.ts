@@ -59,7 +59,7 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
-import { shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
+import { filterUserSkills, shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import {
   hasReadyLinkConnector,
@@ -96,6 +96,7 @@ import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { markTopicIfUserMcp } from '@/server/services/toolExecution/topicTrust';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
+import { compactHistoryMessages } from './compactHistoryMessages';
 import { fileAddress } from './fileAddress';
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
 import { modelHasVision } from './modelVision';
@@ -1701,7 +1702,8 @@ export class AiAgentService {
     };
 
     // Combine history messages with user message
-    const allMessages = resume ? historyMessages : [...historyMessages, userMessage];
+    const compactedHistory = compactHistoryMessages(historyMessages);
+    const allMessages = resume ? compactedHistory : [...compactedHistory, userMessage];
 
     log('execAgent: prepared evalContext for executor');
 
@@ -1756,7 +1758,7 @@ export class AiAgentService {
       }));
       const skillModel = new AgentSkillModel(this.db, this.userId);
       const { data: dbSkills } = await skillModel.findAll();
-      const dbMetas = dbSkills.map((s) => ({
+      const dbMetas = filterUserSkills(dbSkills).map((s) => ({
         description: s.description ?? '',
         identifier: s.identifier,
         name: s.name,
@@ -1766,7 +1768,10 @@ export class AiAgentService {
         enableChecker: (skill) => shouldEnableBuiltinSkill(skill.identifier),
         skills: [...builtinMetas, ...dbMetas],
       });
-      operationSkillSet = skillEngine.generate(agentPlugins ?? []);
+      // arckep (21.10.2026): навыки из agentConfig.plugins (например, lobe-artifacts на 317 помощниках)
+      // не разворачиваем в системный промпт каждого сообщения (~2,6 тыс. токенов), они остаются в
+      // <available_skills> и подгружаются по требованию через activateSkill либо при явном выборе на сообщение.
+      operationSkillSet = skillEngine.generate(dropExcluded(additionalPluginIds ?? []));
     } catch (error) {
       log('execAgent: failed to build operationSkillSet: %O', error);
     }

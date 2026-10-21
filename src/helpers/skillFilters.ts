@@ -59,3 +59,17 @@ export const filterBuiltinSkills = (
 ): BuiltinSkill[] => {
   return skills.filter((skill) => shouldEnableBuiltinSkill(skill.identifier, context));
 };
+
+/**
+ * arckep (21.10.2026): в движке без интерфейса магазин навыков LobeHub отключён, поэтому
+ * ранее установленные из него навыки (`source = 'market'`, например pdf/docx/pptx) не
+ * показываем в `<available_skills>`, чтобы модель не тратила на них шаги и песочницу.
+ */
+export const filterUserSkills = <T extends { source?: string | null }>(
+  skills: T[],
+  context: BuiltinSkillFilterContext = DEFAULT_CONTEXT,
+): T[] => {
+  const resolvedContext = resolveBuiltinSkillFilterContext(context);
+  if (!resolvedContext.isHeadless) return skills;
+  return skills.filter((skill) => skill.source !== 'market');
+};
