@@ -197,6 +197,30 @@ const openrouterChatModels: AIChatModelCard[] = [
     releasedAt: '2026-06-12',
     type: 'chat',
   },
+  // arckep: Moonshot Kimi K3.1 Pro (paid; rates match image-studio chat_models: $2 in / $10 out / $0.20 cache read per 1M)
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576,
+    description:
+      'Kimi K3.1 Pro — 2.8T/104B multimodal flagship from Moonshot AI, 1M context, mandatory reasoning, agentic coding, Office QA and 3D/game-engine scripting.',
+    displayName: 'Kimi K3.1 Pro',
+    enabled: true,
+    id: 'moonshotai/kimi-k3.1-pro',
+    maxOutput: 943_718,
+    pricing: {
+      units: [
+        { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput_cacheRead', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 10, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-10-23',
+    type: 'chat',
+  },
   // arckep: Moonshot Kimi K3 (paid; rates match image-studio chat_models)
   {
     abilities: {
