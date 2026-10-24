@@ -46,6 +46,7 @@ import { createToolImageUrlResolver } from '@/server/modules/Mecha/ContextEngine
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistoryMessages';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import {
@@ -1953,16 +1954,26 @@ export const createRuntimeExecutors = (
     // Query latest messages from database
     // Must pass agentId to ensure correct query scope, otherwise when topicId is undefined,
     // the query will use isNull(topicId) condition which won't find messages with actual topicId
-    const latestMessages = await ctx.messageModel.query({
-      agentId: state.metadata?.agentId,
-      threadId: state.metadata?.threadId,
-      topicId: state.metadata?.topicId,
-    });
+    // arckep (24.10.2026): pass postProcessUrl so imageList/fileList S3 keys (files/user_...) are resolved
+    // to presigned URLs instead of breaking subsequent OpenRouter/vision LLM steps with HTTP 400 Invalid URL format.
+    const fileService =
+      ctx.serverDB && ctx.userId ? new FileService(ctx.serverDB, ctx.userId) : undefined;
+    const postProcessUrl = fileService
+      ? (path: string | null) => fileService.getFullFileUrl(path)
+      : undefined;
+    const latestMessages = await ctx.messageModel.query(
+      {
+        agentId: state.metadata?.agentId,
+        threadId: state.metadata?.threadId,
+        topicId: state.metadata?.topicId,
+      },
+      postProcessUrl ? { postProcessUrl } : undefined,
+    );
 
     // Use conversation-flow parse to resolve branching into linear flat list
     // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
     const { flatList } = parse(latestMessages);
-    newState.messages = flatList;
+    newState.messages = compactHistoryMessages(flatList);
 
     log(
       `[${operationLogId}][call_tools_batch] Refreshed ${newState.messages.length} messages from database`,

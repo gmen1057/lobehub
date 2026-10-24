@@ -30,9 +30,13 @@ vi.mock('@/server/services/message', () => ({
 }));
 
 const mockUploadBase64 = vi.fn();
+const mockGetFullFileUrl = vi.fn(async (path: string | null) =>
+  path ? `https://s3.example/presigned/${path}` : '',
+);
 
 vi.mock('@/server/services/file', () => ({
   FileService: vi.fn().mockImplementation(() => ({
+    getFullFileUrl: mockGetFullFileUrl,
     uploadBase64: mockUploadBase64,
   })),
 }));
@@ -2410,12 +2414,22 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.call_tools_batch!(instruction, state);
 
-      // Should query messages from database with agentId, threadId, and topicId
-      expect(mockMessageModel.query).toHaveBeenCalledWith({
-        agentId: 'agent-123',
-        threadId: 'thread-123',
-        topicId: 'topic-123',
-      });
+      // Should query messages from database with agentId, threadId, topicId, and postProcessUrl
+      expect(mockMessageModel.query).toHaveBeenCalledWith(
+        {
+          agentId: 'agent-123',
+          threadId: 'thread-123',
+          topicId: 'topic-123',
+        },
+        {
+          postProcessUrl: expect.any(Function),
+        },
+      );
+
+      const queryOpts = mockMessageModel.query.mock.calls[0][1];
+      await expect(queryOpts.postProcessUrl('files/user_123/c1Ci1S8W/image')).resolves.toBe(
+        'https://s3.example/presigned/files/user_123/c1Ci1S8W/image',
+      );
 
       // Messages should be refreshed from database (4 messages from mock)
       expect(result.newState.messages).toHaveLength(4);
@@ -2772,11 +2786,16 @@ describe('RuntimeExecutors', () => {
       await executors.call_tools_batch!(instruction, state);
 
       // Should query messages with agentId, threadId, and topicId from state.metadata
-      expect(mockMessageModel.query).toHaveBeenCalledWith({
-        agentId: 'agent-abc',
-        threadId: 'thread-xyz',
-        topicId: 'topic-abc-123',
-      });
+      expect(mockMessageModel.query).toHaveBeenCalledWith(
+        {
+          agentId: 'agent-abc',
+          threadId: 'thread-xyz',
+          topicId: 'topic-abc-123',
+        },
+        {
+          postProcessUrl: expect.any(Function),
+        },
+      );
     });
 
     // LOBE-5143: After DB refresh, state.messages stores raw UIChatMessage[]
@@ -2908,11 +2927,16 @@ describe('RuntimeExecutors', () => {
       const result = await executors.call_tools_batch!(instruction, state);
 
       // Verify agentId is passed in the query
-      expect(mockMessageModel.query).toHaveBeenCalledWith({
-        agentId: 'agent-123',
-        threadId: 'thread-123',
-        topicId: undefined,
-      });
+      expect(mockMessageModel.query).toHaveBeenCalledWith(
+        {
+          agentId: 'agent-123',
+          threadId: 'thread-123',
+          topicId: undefined,
+        },
+        {
+          postProcessUrl: expect.any(Function),
+        },
+      );
 
       // Expected: newState.messages should NOT be empty
       // The next call_llm step needs messages to work properly
