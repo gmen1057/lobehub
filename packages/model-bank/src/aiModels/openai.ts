@@ -99,6 +99,65 @@ export const openaiChatModels: AIChatModelCard[] = [
     },
     contextWindowTokens: 1_050_000,
     description:
+      'GPT-6.1 Terra — быстрая и недорогая модель для работы с текстом, картинками и документами.',
+    displayName: 'GPT-6.1 Terra',
+    enabled: true,
+    id: 'gpt-6.1-terra',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        {
+          name: 'textInput',
+          lookup: {
+            prices: { '[0, 0.272]': 1, '[0.272, infinity]': 2 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textInput_cacheRead',
+          lookup: {
+            prices: { '[0, 0.272]': 0.05, '[0.272, infinity]': 0.1 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textInput_cacheWrite',
+          lookup: {
+            prices: { '[0, 0.272]': 1.25, '[0.272, infinity]': 2.5 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+        {
+          name: 'textOutput',
+          lookup: {
+            prices: { '[0, 0.272]': 5, '[0.272, infinity]': 7.5 },
+            pricingParams: ['textInput'],
+          },
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-10-26',
+    settings: { extendParams: ['gpt5_2ReasoningEffort', 'textVerbosity'], searchImpl: 'params' },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_050_000,
+    description:
       'GPT-6 Astra is the OpenAI flagship for hard end-to-end work: coding, research, computer use, long documents. Image-in, text-out. reasoning.effort: low / medium / high / xhigh / max (no none).',
     displayName: 'GPT-6 Astra',
     enabled: true,

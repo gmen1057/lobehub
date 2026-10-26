@@ -297,6 +297,30 @@ describe('LobeOpenAI', () => {
       expect(createCall.tools[0].name).toBe('weather');
     });
 
+    it('uses Responses and preserves none effort for GPT-6.1 Terra tools', async () => {
+      const payload = {
+        messages: [{ content: 'Hello', role: 'user' as const }],
+        model: 'gpt-6.1-terra',
+        temperature: 0.4,
+        reasoning_effort: 'none' as const,
+        tools: [
+          {
+            type: 'function' as const,
+            function: { name: 'weather', parameters: { type: 'object' } },
+          },
+        ],
+      };
+
+      await instance.chat(payload);
+
+      expect(instance['client'].responses.create).toHaveBeenCalled();
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.model).toBe('gpt-6.1-terra');
+      expect(createCall.temperature).toBe(0.4);
+      expect(createCall.reasoning.effort).toBe('none');
+      expect(createCall.tools[0].name).toBe('weather');
+    });
+
     it('should use responses API for responsesAPIModels without enabledSearch', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

@@ -52,6 +52,7 @@ export const responsesAPIModels = new Set([
   'gpt-5.4-pro',
   'gpt-6-astra',
   'gpt-6.1-sol',
+  'gpt-6.1-terra',
 ]);
 
 /**

@@ -185,10 +185,12 @@ export const params = {
           reasoning.effort = 'high';
         }
         if (model.startsWith('gpt-6')) {
-          // Astra: no `none` / `minimal`. Docs: start at low.
+          // Astra and GPT-6.1 Sol: no `none` / `minimal`. GPT-6.1 Terra allows `none`.
           const effort = reasoning.effort || payload.reasoning_effort;
-          if (!effort || effort === 'none' || effort === 'minimal') {
-            reasoning.effort = model === 'gpt-6.1-sol' ? 'medium' : 'low';
+          const allowsNone =
+            model === 'gpt-6.1-terra' || model === 'gpt-6-sol' || model === 'gpt-6-luna';
+          if (!effort || effort === 'minimal' || (effort === 'none' && !allowsNone)) {
+            reasoning.effort = model.startsWith('gpt-6.1') ? 'medium' : 'low';
           } else {
             reasoning.effort = effort;
           }
@@ -198,7 +200,7 @@ export const params = {
           model,
           reasoning,
           // The factory otherwise lets the stale top-level value override normalization.
-          ...(model === 'gpt-6.1-sol' && { reasoning_effort: undefined }),
+          ...(model.startsWith('gpt-6.1') && { reasoning_effort: undefined }),
           ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
           stream: payload.stream ?? true,
           tools: openaiTools as any,
