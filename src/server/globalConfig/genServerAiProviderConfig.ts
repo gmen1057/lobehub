@@ -6,6 +6,8 @@ import * as AiModels from 'model-bank';
 import { getLLMConfig } from '@/envs/llm';
 import { extractEnabledModels, transformToAiModelList } from '@/utils/server/parseModels';
 
+import { resolveArckepModelList } from './arckepModelLists';
+
 interface ProviderSpecificConfig {
   enabled?: boolean;
   enabledKey?: string;
@@ -31,8 +33,10 @@ export const genServerAiProvidersConfig = async (
         );
 
       const providerConfig = specificConfig[provider as keyof typeof specificConfig] || {};
-      const modelString =
-        process.env[providerConfig.modelListKey ?? `${providerUpperCase}_MODEL_LIST`];
+      const modelString = resolveArckepModelList(
+        provider,
+        process.env[providerConfig.modelListKey ?? `${providerUpperCase}_MODEL_LIST`],
+      );
 
       // Process extractEnabledModels and transformToAiModelList concurrently
       const [enabledModels, serverModelLists] = await Promise.all([
