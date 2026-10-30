@@ -74,6 +74,26 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
       'xhigh',
       'max',
     ]);
+    for (const id of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6.1-terra']) {
+      expect(resolveReasoningProfile(id, 'openai', undefined)?.levels).toEqual([
+        'none',
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ]);
+    }
+    expect(resolveReasoningProfile('gpt-6.1-sol', 'openai', undefined)?.levels).toEqual([
+      'low',
+      'medium',
+      'high',
+      'xhigh',
+      'max',
+    ]);
+    expect(
+      resolveReasoningProfile('mistralai/mistral-large-4-0', 'openrouter', [])?.levels,
+    ).toEqual(['none', 'high']);
     // У карточки Gemini 3.7 Flash бюджет токенов, студия проверила уровни.
     expect(
       resolveReasoningProfile('gemini-3.7-flash', 'google', ['thinkingBudget', 'urlContext']),
@@ -182,13 +202,19 @@ describe('resolveReasoningAuto (что значит «Авто», 19.10)', () =>
     expect(auto('gpt-5.4-nano', 'openai')).toBe('none');
     expect(auto('gpt-5.5', 'openai')).toBe('medium');
     expect(auto('gpt-6-astra', 'openai')).toBe('medium');
+    expect(auto('gpt-6-sol', 'openai')).toBe('medium');
+    expect(auto('gpt-6.1-sol', 'openai')).toBe('medium');
+    expect(auto('gpt-6.1-terra', 'openai')).toBe('medium');
     expect(auto('gpt-5.6-luna', 'openai')).toBe('medium');
     expect(auto('o3', 'openai')).toBe('medium');
     expect(auto('claude-fable-5', 'anthropic')).toBe('high');
+    expect(auto('claude-fable-5-1', 'anthropic')).toBe('high');
+    expect(auto('claude-sonnet-5-5', 'anthropic')).toBe('high');
     expect(auto('claude-opus-5', 'anthropic')).toBe('high');
     expect(auto('claude-opus-5-5', 'anthropic')).toBe('medium');
     expect(auto('deepseek-v4-pro', 'deepseek')).toBe('high');
     expect(auto('gemini-4-argon', 'google')).toBe('medium');
+    expect(auto('gemini-3.8-flash', 'google')).toBe('medium');
     expect(auto('gemini-3.6-flash', 'google')).toBe('auto');
     expect(auto('grok-4.6', 'xai')).toBe('auto');
     expect(auto('moonshotai/kimi-k3', 'openrouter')).toBe('auto');

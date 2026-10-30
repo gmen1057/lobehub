@@ -200,7 +200,7 @@ export const params = {
           model,
           reasoning,
           // The factory otherwise lets the stale top-level value override normalization.
-          ...(model.startsWith('gpt-6.1') && { reasoning_effort: undefined }),
+          ...(model.startsWith('gpt-6') && { reasoning_effort: undefined }),
           ...(enableServiceTierFlex && supportsFlexTier(model) && { service_tier: 'flex' }),
           stream: payload.stream ?? true,
           tools: openaiTools as any,
