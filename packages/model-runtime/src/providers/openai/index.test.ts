@@ -321,6 +321,21 @@ describe('LobeOpenAI', () => {
       expect(createCall.tools[0].name).toBe('weather');
     });
 
+    it.each(['gpt-6-sol', 'gpt-6-luna'])(
+      'uses Responses and preserves none effort for %s',
+      async (model) => {
+        await instance.chat({
+          messages: [{ content: 'Hello', role: 'user' as const }],
+          model,
+          reasoning_effort: 'none' as const,
+        });
+        expect(instance['client'].responses.create).toHaveBeenCalled();
+        const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+        expect(createCall.model).toBe(model);
+        expect(createCall.reasoning.effort).toBe('none');
+      },
+    );
+
     it('should use responses API for responsesAPIModels without enabledSearch', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

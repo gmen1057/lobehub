@@ -113,10 +113,15 @@ const ARCKEP_PROFILES: ReadonlyArray<{
     profile: { kind: 'anthropicEffort', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
     provider: 'anthropic',
   },
-  // GPT-5.6 Sol / Terra / Luna: none…max (студия, пакет мониторинга 22.09.2026).
+  // GPT-5.6, GPT-6 Sol/Luna, GPT-6.1 Terra: none…max; GPT-6.1 Sol: low…max (без none).
   {
-    match: /^gpt-5\.6-/,
+    match: /^(?:gpt-5\.6-|gpt-6-(?:sol|luna)$|gpt-6\.1-terra$)/,
     profile: { kind: 'reasoningEffort', levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
+    provider: 'openai',
+  },
+  {
+    match: /^gpt-6\.1-sol$/,
+    profile: { kind: 'reasoningEffort', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
     provider: 'openai',
   },
   // Gemini: уровни мышления проверены студией вживую (GEMINI_THINKING_LEVELS); выключить нельзя.
@@ -150,6 +155,12 @@ const ARCKEP_PROFILES: ReadonlyArray<{
       kind: 'reasoningEffort',
       levels: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     },
+    provider: 'openrouter',
+  },
+  // Mistral Large 4 (OpenRouter): принимает только none и high.
+  {
+    match: /^mistralai\/mistral-large-4(?:-0)?(?:-\d{8})?$/,
+    profile: { kind: 'reasoningEffort', levels: ['none', 'high'] },
     provider: 'openrouter',
   },
 ];
@@ -189,13 +200,13 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
   { auto: 'none', match: /^gpt-5\.4(?:-|$)/, provider: 'openai' },
   {
     auto: 'medium',
-    match: /^(?:gpt-6-astra|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
+    match: /^(?:gpt-6-astra|gpt-6-(?:sol|luna)|gpt-6\.1-(?:sol|terra)|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
     provider: 'openai',
   },
   { auto: 'medium', match: /^claude-(?:opus-5-5|haiku-5-5)(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^claude-(?:fable|mythos|opus|sonnet)-5(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^deepseek-(?:flash|v4)/, provider: 'deepseek' },
-  { auto: 'medium', match: /^gemini-(?:4-argon|3\.7-flash)$/, provider: 'google' },
+  { auto: 'medium', match: /^gemini-(?:4-argon|3\.8-flash|3\.7-flash)$/, provider: 'google' },
   { auto: 'auto', match: /^gemini-/, provider: 'google' },
   { auto: 'auto', match: /^grok-4/, provider: 'xai' },
   { auto: 'auto', match: /./, provider: 'openrouter' },
