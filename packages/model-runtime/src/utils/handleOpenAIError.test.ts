@@ -17,7 +17,7 @@ describe('handleOpenAIError', () => {
       const result = handleOpenAIError(apiError);
 
       expect(result).toEqual({
-        errorResult: { error: { message: 'API error', type: 'invalid_request' } },
+        errorResult: { error: { message: 'API error', type: 'invalid_request' }, status: 472 },
       });
       expect(result.RuntimeError).toBeUndefined();
     });
@@ -32,7 +32,7 @@ describe('handleOpenAIError', () => {
       const result = handleOpenAIError(apiError);
 
       expect(result).toEqual({
-        errorResult: cause,
+        errorResult: { ...cause, status: 472 },
       });
       expect(result.RuntimeError).toBeUndefined();
     });
@@ -65,8 +65,36 @@ describe('handleOpenAIError', () => {
 
       // Should prioritize error over cause
       expect(result).toEqual({
-        errorResult: { error: errorObject },
+        errorResult: { error: errorObject, status: 472 },
       });
+    });
+
+    it('preserves the HTTP status without mutating the provider body', () => {
+      const body = { message: 'Model unavailable', status: 'NOT_FOUND' };
+      const apiError = new OpenAI.APIError(404, body, 'not found', {});
+      expect(handleOpenAIError(apiError).errorResult).toEqual({
+        message: 'Model unavailable',
+        status: 404,
+      });
+      expect(body.status).toBe('NOT_FOUND');
+    });
+
+    it('keeps a plain-text rejection readable and preserves its HTTP status', () => {
+      const apiError = new OpenAI.APIError(403, 'Access denied', undefined, {});
+      expect(handleOpenAIError(apiError).errorResult).toEqual({
+        message: 'Access denied',
+        status: 403,
+      });
+    });
+
+    it('does not introduce an HTTP status when the SDK has none', () => {
+      const apiError = new OpenAI.APIError(
+        undefined,
+        { message: 'Connection failed' },
+        undefined,
+        undefined,
+      );
+      expect(handleOpenAIError(apiError).errorResult).toEqual({ message: 'Connection failed' });
     });
   });
 

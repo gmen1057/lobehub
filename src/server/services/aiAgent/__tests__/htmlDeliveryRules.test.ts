@@ -1,6 +1,7 @@
-import { builtinSkills } from '@lobechat/builtin-skills';
-import { DEFAULT_AGENT_CONFIG } from '@lobechat/const';
 import { describe, expect, it } from 'vitest';
+
+import { builtinSkills } from '../../../../../packages/builtin-skills/src';
+import { DEFAULT_AGENT_CONFIG } from '../../../../../packages/const/src/settings/agent';
 
 // arckep (19.10.2026): как модель отдаёт готовую HTML-страницу. Правила в системном промпте помощника (картинки из
 // вложений, шрифты) не должны спорить с навыком Artifacts: он подключается в тот же запрос.

@@ -169,7 +169,10 @@ describe('useSignIn', () => {
         await result.current.handleCheckUser({ email: 'myusername' });
       });
 
-      expect(mockFetch).toHaveBeenCalledWith('/api/auth/resolve-username', expect.any(Object));
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/chat/api/auth/resolve-username',
+        expect.any(Object),
+      );
       expect(result.current.step).toBe('password');
       expect(result.current.email).toBe('resolved@example.com');
     });

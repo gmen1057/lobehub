@@ -22,7 +22,7 @@ describe('MarketOIDC.buildAuthUrl', () => {
 
     const url = await client.buildAuthUrl();
 
-    expect(url).toContain('https://market.lobehub.com/lobehub-oidc/auth?');
+    expect(url).toContain('https://market.lobehub.com/chat/lobehub-oidc/auth?');
     expect(url).toContain(`client_id=${encodeURIComponent('lobehub-desktop')}`);
     expect(url).toContain(
       `redirect_uri=${encodeURIComponent('https://market.lobehub.com/lobehub-oidc/callback/desktop')}`,
@@ -34,7 +34,7 @@ describe('MarketOIDC.buildAuthUrl', () => {
     expect(parsed.searchParams.get('scope')).toBe('openid profile email');
 
     // The auth endpoint must be a plain path; it is opened in a real browser.
-    expect(MARKET_OIDC_ENDPOINTS.auth).toBe('/lobehub-oidc/auth');
+    expect(MARKET_OIDC_ENDPOINTS.auth).toBe('/chat/lobehub-oidc/auth');
   });
 });
 

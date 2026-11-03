@@ -20,6 +20,7 @@ vi.mock('@/server/modules/AgentRuntime', () => ({
     releaseStepLock: vi.fn().mockResolvedValue(undefined),
   })),
   createStreamEventManager: vi.fn(() => ({
+    subscribeStreamEvents: vi.fn(async () => undefined),
     publishStreamEvent: vi.fn(),
     publishAgentRuntimeEnd: vi.fn(),
     publishAgentRuntimeInit: vi.fn(),

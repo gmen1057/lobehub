@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { type ChatToolPayload, type UIChatMessage } from '@lobechat/types';
 import i18n from 'i18next';
 

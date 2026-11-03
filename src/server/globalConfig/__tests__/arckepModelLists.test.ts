@@ -45,7 +45,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
         withDeploymentName,
       });
 
-      for (const item of list) {
+      for (const item of list ?? []) {
         if (!enabledIds.has(item.id) || item.type !== 'chat') continue;
         const abilities = item.abilities ?? {};
         if (abilities.imageOutput) continue;

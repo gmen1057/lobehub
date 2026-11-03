@@ -2,6 +2,7 @@ import {
   ArckepLayoutIdentifier,
   type CheckLayoutParams,
   type EditArtifactParams,
+  type WriteArtifactParams,
 } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepLayoutExecutionRuntime } from '@lobechat/builtin-tool-arckep-layout/executionRuntime';
 
@@ -30,6 +31,7 @@ export const arckepLayoutRuntime: ServerRuntimeRegistration = {
     return new ArckepLayoutExecutionRuntime({
       checkLayout: (params: CheckLayoutParams) => service.checkLayout(params),
       editArtifact: (params: EditArtifactParams) => service.editArtifact(params),
+      writeArtifact: (params: WriteArtifactParams) => service.writeArtifact(params),
     });
   },
   identifier: ArckepLayoutIdentifier,

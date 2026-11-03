@@ -161,7 +161,7 @@ describe('AiAgentService.execAgent — arckep: какой поиск у моде
   const run = async (
     config: Record<string, unknown>,
     params: Record<string, unknown> = {},
-  ): Promise<{ chatConfig: any; eager: string[]; lazy: string[] }> => {
+  ): Promise<{ chatConfig: any; eager: string[]; excludedDefaults: string[]; lazy: string[] }> => {
     const engine = {
       generateToolsDetailed: vi.fn().mockReturnValue({
         enabledManifests: [],
@@ -180,6 +180,7 @@ describe('AiAgentService.execAgent — arckep: какой поиск у моде
     return {
       chatConfig: createArgs.agentConfig.chatConfig,
       eager: engine.generateToolsDetailed.mock.calls[0][0].toolIds,
+      excludedDefaults: engine.generateToolsDetailed.mock.calls[0][0].excludeDefaultToolIds ?? [],
       lazy: Object.keys(createArgs.toolSet.manifestMap),
     };
   };
@@ -259,6 +260,31 @@ describe('AiAgentService.execAgent — arckep: какой поиск у моде
   });
 
   describe('обычный чат', () => {
+    it('явно выключенный инструмент не возвращается через выбор на сообщение или defaults', async () => {
+      const id = 'lobe-agent-documents';
+      const { eager, excludedDefaults, lazy } = await run(
+        { chatConfig: { skillActivateMode: 'manual' }, plugins: [id] },
+        { additionalPluginIds: [id], excludePluginIds: [id] },
+      );
+      expect(eager).not.toContain(id);
+      expect(lazy).not.toContain(id);
+      expect(excludedDefaults).toContain(id);
+    });
+
+    it.each(['auto', 'manual'])('%s: учитывает режим для уже выбранных тяжёлых инструментов', async (mode) => {
+      const plugins = ['lobe-agent-documents', 'mcp-arckep-studio-images'];
+      const { eager, lazy } = await run({
+        chatConfig: { skillActivateMode: mode },
+        plugins,
+      });
+
+      for (const id of plugins) {
+        expect(eager.includes(id)).toBe(mode === 'manual');
+        expect(lazy.includes(id)).toBe(mode === 'auto');
+      }
+      expect(eager).not.toContain('lobe-calculator');
+    });
+
     it('модель с платным встроенным поиском: встроенный остаётся, «Поиск Arckep» — по требованию', async () => {
       const { chatConfig, eager, lazy } = await run({
         model: 'claude-opus-5',

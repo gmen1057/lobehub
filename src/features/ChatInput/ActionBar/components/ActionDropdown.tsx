@@ -46,11 +46,9 @@ export type ActionDropdownMenuItem = MenuItemType;
 
 export type ActionDropdownMenuItems = MenuProps<ActionDropdownMenuItem>['items'];
 
-type ActionDropdownMenu = Omit<
-  Pick<MenuProps<ActionDropdownMenuItem>, 'className' | 'onClick' | 'style'>,
-  'items'
-> & {
+type ActionDropdownMenu = Pick<MenuProps<ActionDropdownMenuItem>, 'className' | 'style'> & {
   items: ActionDropdownMenuItems | (() => ActionDropdownMenuItems);
+  onClick?: ActionDropdownMenuItem['onClick'];
 };
 
 export interface ActionDropdownProps extends Omit<DropdownMenuProps, 'items'> {

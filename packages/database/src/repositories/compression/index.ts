@@ -42,31 +42,42 @@ export class CompressionRepository {
    */
   async createCompressionGroup(params: CreateCompressionGroupParams): Promise<string> {
     const { topicId, content, editorData, messageIds, metadata } = params;
+    if (!content.trim()) throw new Error('Compression summary must not be empty');
 
     // Store metadata in the description field as JSON string
     const description = JSON.stringify(metadata);
 
-    // 1. Create compression group
-    const result = (await this.db
-      .insert(messageGroups)
-      .values({
-        content,
-        description,
-        editorData,
-        topicId,
-        type: MessageGroupType.Compression,
-        userId: this.userId,
-      })
-      .returning()) as MessageGroupItem[];
+    return this.db.transaction(async (tx) => {
+      const result = (await tx
+        .insert(messageGroups)
+        .values({
+          content,
+          description,
+          editorData,
+          topicId,
+          type: MessageGroupType.Compression,
+          userId: this.userId,
+        })
+        .returning()) as MessageGroupItem[];
 
-    const group = result[0];
+      const group = result[0];
 
-    // 2. Mark messages as compressed
-    if (messageIds.length > 0) {
-      await this.markMessagesAsCompressed(messageIds, group.id);
-    }
+      // Readers must never observe hidden messages without the stored summary.
+      if (messageIds.length > 0) {
+        await tx
+          .update(messages)
+          .set({ messageGroupId: group.id })
+          .where(
+            and(
+              eq(messages.userId, this.userId),
+              eq(messages.topicId, topicId),
+              inArray(messages.id, messageIds),
+            ),
+          );
+      }
 
-    return group.id;
+      return group.id;
+    });
   }
 
   /**
@@ -108,6 +119,7 @@ export class CompressionRepository {
     content: string,
     metadata?: Partial<CompressionGroupMetadata>,
   ): Promise<void> {
+    if (!content.trim()) throw new Error('Compression summary must not be empty');
     const updateData: Record<string, unknown> = {
       content,
       updatedAt: new Date(),

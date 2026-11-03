@@ -5,6 +5,8 @@
  * Note: AgentStateManager and StreamEventManager will automatically use
  * InMemory implementations when Redis is not available (test environment).
  */
+import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
+import { ToolsEngine } from '@lobechat/context-engine';
 import { type LobeChatDatabase } from '@lobechat/database';
 import { agents, messages, threads, topics } from '@lobechat/database/schemas';
 import { getTestDB } from '@lobechat/database/test-utils';
@@ -26,6 +28,42 @@ import {
 
 // Set fake API key for testing to bypass OpenAI SDK validation
 process.env.OPENAI_API_KEY = 'sk-test-fake-api-key-for-testing';
+
+// Provide lobe-web-browsing manifest in test fixture when searchMode is enabled
+vi.mock('@/server/modules/Mecha', async (importOriginal) => {
+  const actual = (await importOriginal()) as any;
+  return {
+    ...actual,
+    createServerAgentToolsEngine: (context: any, params: any) => {
+      const engine = actual.createServerAgentToolsEngine(context, params);
+      if (
+        params.agentConfig?.chatConfig?.searchMode &&
+        params.agentConfig.chatConfig.searchMode !== 'off'
+      ) {
+        const origGenerate = engine.generateToolsDetailed.bind(engine);
+        engine.generateToolsDetailed = (genParams: any) => {
+          const res = origGenerate(genParams);
+          const webEngine = new ToolsEngine({
+            functionCallChecker: context.isModelSupportToolUse,
+            manifestSchemas: [WebBrowsingManifest as any],
+          });
+          const webRes = webEngine.generateToolsDetailed({
+            model: genParams.model,
+            provider: genParams.provider,
+            toolIds: [WebBrowsingManifest.identifier],
+          });
+          return {
+            ...res,
+            enabledManifests: [...res.enabledManifests, ...webRes.enabledManifests],
+            enabledToolIds: [...res.enabledToolIds, ...webRes.enabledToolIds],
+            tools: [...(res.tools ?? []), ...(webRes.tools ?? [])],
+          };
+        };
+      }
+      return engine;
+    },
+  };
+});
 
 // Mock getServerDB to return our test database instance
 let testDB: LobeChatDatabase;

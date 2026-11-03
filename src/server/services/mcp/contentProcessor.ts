@@ -6,6 +6,8 @@ import { type AudioContent, type ImageContent, type ToolCallContent } from '@/li
 import { type FileService } from '@/server/services/file';
 import { nanoid } from '@/utils/uuid';
 
+import { parseJsonFilePayload } from './fileDelivery';
+
 const log = debug('lobe-mcp:content-processor');
 
 export type ProcessContentBlocksFn = (blocks: ToolCallContent[]) => Promise<ToolCallContent[]>;
@@ -57,27 +59,27 @@ const uploadJsonFilePayload = async (
   text: string,
   fileService: FileService,
   today: string,
-): Promise<string | null> => {
-  if (!text.includes('content_base64')) return null;
-
-  let parsed: { content_base64?: unknown; filename?: unknown; success?: unknown };
-  try {
-    parsed = JSON.parse(text) as typeof parsed;
-  } catch {
-    return null;
-  }
-
-  if (parsed.success === false) return null;
-  if (typeof parsed.content_base64 !== 'string' || parsed.content_base64.length === 0) return null;
-  if (parsed.content_base64.length > MAX_INLINE_BASE64_CHARS) return null;
+  fileImagesAsMedia: boolean,
+): Promise<ToolCallContent[] | null> => {
+  const parsed = parseJsonFilePayload(text);
+  if (!parsed) return null;
+  if (parsed.success === false) throw new Error('инструмент не создал файл');
+  if (typeof parsed.content_base64 !== 'string' || parsed.content_base64.length === 0)
+    throw new Error('нет данных файла');
+  if (parsed.content_base64.length > MAX_INLINE_BASE64_CHARS)
+    throw new Error('файл превышает размер для передачи в чат');
 
   const filename = safeFilename(typeof parsed.filename === 'string' ? parsed.filename : 'file');
   const pathname = `${fileEnv.NEXT_PUBLIC_S3_FILE_PATH}/mcp/files/${today}/${nanoid()}-${filename}`;
 
-  const { url } = await fileService.uploadBase64(parsed.content_base64, pathname);
+  const { fileId, url } = await fileService.uploadBase64(parsed.content_base64, pathname);
   log(`File payload uploaded, proxy URL: ${url} mime=${mimeFromFilename(filename)}`);
 
-  return `Файл готов: [${filename}](${url})`;
+  const blocks: ToolCallContent[] = [{ text: `Файл готов: [${filename}](${url})`, type: 'text' }];
+  const mimeType = mimeFromFilename(filename);
+  if (fileImagesAsMedia && mimeType.startsWith('image/'))
+    blocks.push({ data: url, fileId, mimeType, type: 'image' });
+  return blocks;
 };
 
 /**
@@ -97,6 +99,8 @@ export interface ProcessContentBlocksOptions {
    * Без флага (браузерный путь, tRPC) поведение прежнее: ошибка загрузки пробрасывается.
    */
   degradeOnError?: boolean;
+  /** E2B read_file images also enter the existing owned-file vision path. */
+  fileImagesAsMedia?: boolean;
 }
 
 const UNSAVED_LABELS = {
@@ -118,11 +122,15 @@ export const replaceMediaBlocksWithText = (
   blocks: ToolCallContent[],
   reason: string,
 ): ToolCallContent[] =>
-  blocks.map((block) =>
-    block.type === 'image' || block.type === 'audio'
-      ? { text: `[${UNSAVED_LABELS[block.type]}: ${reason}]`, type: 'text' as const }
-      : block,
-  );
+  blocks.map((block) => {
+    const kind =
+      block.type === 'image' || block.type === 'audio'
+        ? block.type
+        : block.type === 'text' && parseJsonFilePayload(block.text)
+          ? 'file'
+          : undefined;
+    return kind ? { text: `[${UNSAVED_LABELS[kind]}: ${reason}]`, type: 'text' as const } : block;
+  });
 
 /**
  * Process content blocks returned by MCP
@@ -155,34 +163,40 @@ export const processContentBlocks = async (
     return { ...block, data: url, fileId };
   };
 
-  return pMap(blocks, async (block) => {
+  const processed = await pMap(blocks, async (block): Promise<ToolCallContent[]> => {
     if (block.type === 'text') {
       try {
-        const replacement = await uploadJsonFilePayload(block.text, fileService, today);
-        if (replacement) return { ...block, text: replacement };
+        const replacement = await uploadJsonFilePayload(
+          block.text,
+          fileService,
+          today,
+          options.fileImagesAsMedia === true,
+        );
+        if (replacement) return replacement;
       } catch (error) {
         if (!options.degradeOnError) throw error;
         // В тексте лежит файл целиком в base64 — оставлять его нельзя, модели уйдёт мегабайт текста.
         const reason = errorReason(error);
         log(`File payload upload failed: ${reason}`);
-        return { text: `[${UNSAVED_LABELS.file}: ${reason}]`, type: 'text' as const };
+        return [{ text: `[${UNSAVED_LABELS.file}: ${reason}]`, type: 'text' as const }];
       }
-      return block;
+      return [block];
     }
 
     if (block.type === 'image' || block.type === 'audio') {
       try {
-        return await uploadMedia(block);
+        return [await uploadMedia(block)];
       } catch (error) {
         if (!options.degradeOnError) throw error;
         const reason = errorReason(error);
         log(`${block.type} upload failed: ${reason}`);
-        return { text: `[${UNSAVED_LABELS[block.type]}: ${reason}]`, type: 'text' as const };
+        return [{ text: `[${UNSAVED_LABELS[block.type]}: ${reason}]`, type: 'text' as const }];
       }
     }
 
-    return block;
+    return [block];
   });
+  return processed.flat();
 };
 
 /**

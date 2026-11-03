@@ -150,6 +150,8 @@ export type ResponseErrorCode =
 export interface ResponseError {
   code: ResponseErrorCode;
   message: string;
+  /** Original safe HTTP category of a model failure, also persisted on its message. */
+  status?: number;
 }
 
 // ==================== Response Status ====================

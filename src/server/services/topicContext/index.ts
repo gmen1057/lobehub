@@ -3,6 +3,7 @@ import { readFilePage } from '@lobechat/prompts';
 
 import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
+import { messagePlugins } from '@/database/schemas';
 
 export interface TopicContextParams {
   mode?: 'summary' | 'archive';
@@ -31,11 +32,27 @@ export async function getTopicContext(
     const snapshotAt = snapshot.toISOString();
     const originals = await db.query.messages.findMany({
       columns: { id: true, role: true, content: true },
-      where: (fields, { and, eq, lte }) =>
+      where: (fields, { and, eq, lte, notExists }) =>
         and(
           eq(fields.userId, userId),
           eq(fields.topicId, params.topicId),
           lte(fields.createdAt, snapshot),
+          // Archive pages and summaries are derived from this history. Reading
+          // them back recursively multiplies escaped copies of earlier pages.
+          notExists(
+            db
+              .select({ id: messagePlugins.id })
+              .from(messagePlugins)
+              .where(
+                and(
+                  eq(messagePlugins.id, fields.id),
+                  eq(messagePlugins.userId, userId),
+                  eq(fields.role, 'tool'),
+                  eq(messagePlugins.identifier, 'lobe-topic-reference'),
+                  eq(messagePlugins.apiName, 'getTopicContext'),
+                ),
+              ),
+          ),
         ),
       orderBy: (fields, { asc }) => [asc(fields.createdAt), asc(fields.id)],
     });

@@ -439,6 +439,7 @@ export class ArckepController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const id = c.req.param('id');
+      if (!id) return this.error(c, 'Memory id is required', 400);
       const { layer } = this.getQuery<{ layer: LayersEnum }>(c);
 
       switch (layer) {
@@ -481,6 +482,7 @@ export class ArckepController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const agentId = c.req.param('id');
+      if (!agentId) return this.error(c, 'Agent id is required', 400);
       const knowledge = await new AgentModel(db, userId).getAgentAssignedKnowledge(agentId);
       return this.success(c, knowledge, 'agent knowledge');
     } catch (error) {
@@ -497,6 +499,7 @@ export class ArckepController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const agentId = c.req.param('id');
+      if (!agentId) return this.error(c, 'Agent id is required', 400);
       const body = await c.req.json<{ enabled?: boolean; knowledgeBaseId?: string }>();
       const knowledgeBaseId = body?.knowledgeBaseId;
       if (!knowledgeBaseId) return this.error(c, 'knowledgeBaseId is required', 400);
@@ -536,6 +539,9 @@ export class ArckepController extends BaseController {
       const userId = this.getUserId(c)!;
       const agentId = c.req.param('id');
       const knowledgeBaseId = c.req.param('kbId');
+      if (!agentId || !knowledgeBaseId) {
+        return this.error(c, 'agentId and kbId are required', 400);
+      }
       await new AgentModel(db, userId).deleteAgentKnowledgeBase(agentId, knowledgeBaseId);
       return this.success(c, { agentId, knowledgeBaseId }, 'unlinked');
     } catch (error) {

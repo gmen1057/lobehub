@@ -18,6 +18,8 @@ import { AsyncTaskStatus, AsyncTaskType, type IAsyncTaskError } from '@/types/as
 import type { FileListItem, KnowledgeItemStatus } from '@/types/files';
 import { QueryFileListSchema, UploadFileSchema } from '@/types/files';
 
+import { assertValidChatUploadKey } from './upload';
+
 /**
  * Generate file proxy URL
  * Returns a unified proxy URL format: ${APP_URL}/f/:id
@@ -135,6 +137,7 @@ export const fileRouter = router({
       }),
     )
     .mutation(async ({ ctx, input }) => {
+      const storageKey = assertValidChatUploadKey(input.url, ctx.userId);
       const { isExist } = await ctx.fileModel.checkHash(input.hash!);
 
       // Resolve parentId if it's a slug
@@ -148,7 +151,7 @@ export const fileRouter = router({
 
       let actualSize = input.size;
       try {
-        const { contentLength } = await ctx.fileService.getFileMetadata(input.url);
+        const { contentLength } = await ctx.fileService.getFileMetadata(storageKey);
         if (contentLength >= 1) {
           actualSize = contentLength;
         }
@@ -160,7 +163,7 @@ export const fileRouter = router({
         actualSize,
         clientIp: ctx.clientIp ?? undefined,
         inputSize: input.size,
-        url: input.url,
+        url: storageKey,
         userId: ctx.userId,
       });
 
@@ -177,7 +180,7 @@ export const fileRouter = router({
           name: input.name,
           parentId: resolvedParentId,
           size: actualSize,
-          url: input.url,
+          url: storageKey,
         },
         // if the file is not exist in global file, create a new one
         !isExist,

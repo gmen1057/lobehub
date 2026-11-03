@@ -3,15 +3,15 @@ import { describe, expect, it, vi } from 'vitest';
 import { getUILocaleAndResources } from './getUILocaleAndResources';
 
 describe('getUILocaleAndResources', () => {
-  it('should return zh-CN locale and zhCn resources for zh-CN', async () => {
+  it('should fallback to en-US locale for unsupported zh-CN', async () => {
     const result = await getUILocaleAndResources('zh-CN');
-    expect(result.locale).toBe('zh-CN');
+    expect(result.locale).toBe('en-US');
     expect(result.resources).toBeDefined();
   });
 
-  it('should return zh-CN locale and zhCn resources for zh-TW', async () => {
+  it('should fallback to en-US locale for unsupported zh-TW', async () => {
     const result = await getUILocaleAndResources('zh-TW');
-    expect(result.locale).toBe('zh-CN');
+    expect(result.locale).toBe('en-US');
     expect(result.resources).toBeDefined();
   });
 
@@ -33,21 +33,21 @@ describe('getUILocaleAndResources', () => {
     expect(result.resources).toBeDefined();
   });
 
-  it('should return ar locale and custom resources for ar', async () => {
-    const result = await getUILocaleAndResources('ar');
-    expect(result.locale).toBe('ar');
+  it('should return ru-RU locale and custom resources for ru-RU', async () => {
+    const result = await getUILocaleAndResources('ru-RU');
+    expect(result.locale).toBe('ru-RU');
     expect(result.resources).toBeDefined();
   });
 
-  it('should return de-DE locale and custom resources for de-DE', async () => {
-    const result = await getUILocaleAndResources('de-DE');
-    expect(result.locale).toBe('de-DE');
+  it('should return ru-RU locale and custom resources for ru', async () => {
+    const result = await getUILocaleAndResources('ru');
+    expect(result.locale).toBe('ru-RU');
     expect(result.resources).toBeDefined();
   });
 
-  it('should return es-ES locale and custom resources for es-ES', async () => {
+  it('should fallback to en-US locale for unsupported es-ES', async () => {
     const result = await getUILocaleAndResources('es-ES');
-    expect(result.locale).toBe('es-ES');
+    expect(result.locale).toBe('en-US');
     expect(result.resources).toBeDefined();
   });
 

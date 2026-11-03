@@ -2,6 +2,7 @@ import { type AgentState } from '@lobechat/agent-runtime';
 import debug from 'debug';
 
 import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
+import { preserveInterruption } from './agentStateWrite';
 import { type IAgentStateManager } from './types';
 
 const log = debug('lobe-server:agent-runtime:in-memory-state-manager');
@@ -17,6 +18,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
   private events: Map<string, any[][]> = new Map();
 
   async saveAgentState(operationId: string, state: AgentState): Promise<void> {
+    preserveInterruption(this.states.get(operationId), state);
     // Deep clone to avoid reference issues
     this.states.set(operationId, structuredClone(state));
 
@@ -32,6 +34,27 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     log('[%s] Saved state for step %d', operationId, state.stepCount);
   }
 
+  async interruptAgentState(operationId: string): Promise<AgentState | null> {
+    const state = this.states.get(operationId);
+    if (
+      !state ||
+      ['done', 'error'].includes(state.status) ||
+      (state.status === 'interrupted' && !state.interruption?.canResume)
+    )
+      return null;
+    // No await between checking and writing: the in-memory transition is atomic.
+    state.status = 'interrupted';
+    state.lastModified = new Date().toISOString();
+    state.interruption = {
+      canResume: false,
+      interruptedAt: state.lastModified,
+      reason: 'user_cancelled',
+    };
+    const metadata = this.metadata.get(operationId);
+    if (metadata) metadata.status = 'interrupted';
+    return structuredClone(state);
+  }
+
   async loadAgentState(operationId: string): Promise<AgentState | null> {
     const state = this.states.get(operationId);
     if (!state) {
@@ -44,6 +67,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
   }
 
   async saveStepResult(operationId: string, stepResult: StepResult): Promise<void> {
+    preserveInterruption(this.states.get(operationId), stepResult.newState);
     // Save latest state
     // Use JSON round-trip instead of structuredClone to safely handle
     // non-cloneable objects (e.g. DOM ErrorEvent from Neon DB errors)

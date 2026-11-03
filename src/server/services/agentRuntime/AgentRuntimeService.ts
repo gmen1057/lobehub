@@ -11,6 +11,7 @@ import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
 import { type AgentRuntimeCoordinatorOptions } from '@/server/modules/AgentRuntime';
 import { AgentRuntimeCoordinator, createStreamEventManager } from '@/server/modules/AgentRuntime';
+import { getPersistedLLMError } from '@/server/modules/AgentRuntime/persistedLLMError';
 import { type RuntimeExecutorContext } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { createRuntimeExecutors } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { type IStreamEventManager } from '@/server/modules/AgentRuntime/types';
@@ -23,6 +24,7 @@ import { BuiltinToolsExecutor } from '@/server/services/toolExecution/builtin';
 import { isAbortError, throwIfAborted } from './abort';
 import { seedActivatedStepToolsFromHistory } from './activatedToolsFromHistory';
 import { hookDispatcher } from './hooks';
+import { type OperationInterruption, watchOperationInterruption } from './operationInterruption';
 import {
   type AgentExecutionParams,
   type AgentExecutionResult,
@@ -48,6 +50,8 @@ const log = debug('lobe-server:agent-runtime-service');
  * Handles various error formats from LLM execution and other sources
  */
 function formatErrorForState(error: unknown): ChatMessageError {
+  const persisted = getPersistedLLMError(error);
+  if (persisted) return persisted;
   // Handle ChatCompletionErrorPayload format from LLM errors
   // e.g., { errorType: 'InvalidProviderAPIKey', error: { ... }, provider: 'openai' }
   if (error && typeof error === 'object' && 'errorType' in error) {
@@ -185,33 +189,19 @@ export class AgentRuntimeService {
 
   /**
    * Interrupt a running agent operation by setting its state to 'interrupted'.
-   * The agent will stop at the next step boundary (cannot abort an in-flight LLM call).
+   * Persists interruption and signals the worker currently executing the operation.
    * Works with both Redis and InMemory state managers via the coordinator abstraction.
    *
    * @returns true if the operation was interrupted, false if already in a terminal state or not found
    */
   async interruptOperation(operationId: string): Promise<boolean> {
-    const state = await this.coordinator.loadAgentState(operationId);
-    if (!state) return false;
-
-    if (state.status === 'done' || state.status === 'error' || state.status === 'interrupted') {
-      return false;
-    }
-
-    await this.coordinator.saveAgentState(operationId, {
-      ...state,
-      lastModified: new Date().toISOString(),
-      status: 'interrupted',
-    });
-
-    log('[%s] Operation interrupted', operationId);
-    return true;
+    return this.coordinator.interruptOperation(operationId);
   }
 
   /**
    * arckep (chat-next-redesign, E2): остановить все незавершённые операции темы текущего
    * пользователя (кнопка «стоп» в студии). Id операции содержит тему: `op_<ts>_<agent>_<topic>_<rand>`.
-   * Остановка срабатывает на границе шага: идущий вызов модели дорабатывает до конца.
+   * Сохранённая отмена доходит до исполняющего процесса через поток событий операции.
    */
   async interruptTopicOperations(topicId: string): Promise<number> {
     if (!topicId) return 0;
@@ -454,6 +444,7 @@ export class AgentRuntimeService {
       };
     }
 
+    let interruption: OperationInterruption | undefined;
     try {
       log('[%s][%d] Start step executing...', operationId, stepIndex);
 
@@ -519,6 +510,13 @@ export class AgentRuntimeService {
         };
       }
 
+      interruption = await watchOperationInterruption(
+        operationId,
+        this.coordinator.loadAgentState.bind(this.coordinator),
+        this.streamManager,
+      );
+      throwIfAborted(interruption.signal);
+
       // Dispatch beforeStep hooks
       try {
         const beforeStepMetadata = agentState?.metadata || {};
@@ -545,6 +543,7 @@ export class AgentRuntimeService {
       const { runtime } = await this.createAgentRuntime({
         metadata: agentState?.metadata,
         operationId,
+        signal: interruption.signal,
         stepIndex,
       });
 
@@ -581,7 +580,18 @@ export class AgentRuntimeService {
 
       // Execute step
       const startAt = Date.now();
+      throwIfAborted(interruption.signal);
       const stepResult = await runtime.step(currentState, currentContext);
+      // AgentRuntime catches executor failures itself. Normalize before JSON
+      // persistence/SSE, while the original error still has its safe mapping.
+      const persistedError = getPersistedLLMError(stepResult.newState.error);
+      if (persistedError) stepResult.newState.error = persistedError;
+      for (const event of stepResult.events) {
+        if (event.type === 'error') {
+          const persistedEventError = getPersistedLLMError(event.error);
+          if (persistedEventError) event.error = persistedEventError;
+        }
+      }
 
       // Check if the operation was interrupted while the step was executing
       // (e.g., user clicked abort during a long LLM call)
@@ -1040,6 +1050,14 @@ export class AgentRuntimeService {
         success: true,
       };
     } catch (error) {
+      if (isAbortError(error) && interruption?.signal.aborted) {
+        const state = await this.coordinator.loadAgentState(operationId);
+        if (!state) throw error;
+        state.status = 'interrupted';
+        await this.coordinator.saveAgentState(operationId, state);
+        await this.dispatchCompletionHooks(operationId, state, 'interrupted');
+        return { nextStepScheduled: false, state, stepResult: null, success: true };
+      }
       log('Step %d failed for operation %s: %O', stepIndex, operationId, error);
       const formattedError = formatErrorForState(error);
 
@@ -1100,10 +1118,13 @@ export class AgentRuntimeService {
 
       throw error;
     } finally {
-      // Release lock so legitimate retries or next operations can proceed.
-      // If Vercel force-kills the process, this won't execute — the lock
-      // auto-expires after TTL (35s), allowing QStash retries to self-heal.
-      await this.coordinator.releaseStepLock(operationId, stepIndex);
+      try {
+        await interruption?.dispose();
+      } finally {
+        // Release even if subscription cleanup fails. Process death remains
+        // covered by the existing lock TTL.
+        await this.coordinator.releaseStepLock(operationId, stepIndex);
+      }
     }
   }
 
@@ -1433,10 +1454,12 @@ export class AgentRuntimeService {
   private async createAgentRuntime({
     metadata,
     operationId,
+    signal,
     stepIndex,
   }: {
     metadata?: any;
     operationId: string;
+    signal?: AbortSignal;
     stepIndex: number;
   }) {
     // Create Durable Agent instance
@@ -1462,6 +1485,7 @@ export class AgentRuntimeService {
       messageModel: this.messageModel,
       operationId,
       serverDB: this.serverDB,
+      signal,
       stepIndex,
       stream: metadata?.stream,
       streamManager: this.streamManager,
@@ -1839,7 +1863,7 @@ export class AgentRuntimeService {
       });
 
       state = result.state as AgentState;
-      context = result.stepResult.nextContext;
+      context = result.stepResult?.nextContext;
       stepIndex++;
 
       // Callback

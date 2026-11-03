@@ -240,14 +240,12 @@ describe('chatConfigByIdSelectors', () => {
       expect(chatConfigByIdSelectors.getUseModelBuiltinSearchById('agent-1')(state)).toBe(true);
     });
 
-    it('should return undefined when not set', () => {
+    it('should return true by default when not set', () => {
       const state = createState({
         agentMap: { 'agent-1': {} },
       });
 
-      expect(
-        chatConfigByIdSelectors.getUseModelBuiltinSearchById('agent-1')(state),
-      ).toBeUndefined();
+      expect(chatConfigByIdSelectors.getUseModelBuiltinSearchById('agent-1')(state)).toBe(true);
     });
   });
 

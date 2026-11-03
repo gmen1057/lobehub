@@ -97,7 +97,7 @@ export const systemPrompt = `You have access to a Calculator tool powered by mat
 </response_format>
 
 <critical_rules>
-1. Use mathjs syntax for ALL calculations
+1. Use mathjs syntax for calculate and evaluate; use nerdamer syntax for symbolic APIs (solve, differentiate, integrate, defintegrate, execute, limit)
 2. For solve: equation MUST be array (even for single)
 3. Temperature: use "degC"/"degF", not °C/°F
 4. Angles: use "deg" suffix for degrees

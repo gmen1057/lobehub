@@ -5,7 +5,7 @@ import { getCanonicalUrl } from '@/server/utils/url';
 
 import { LAST_MODIFIED, Sitemap, SitemapType } from './sitemap';
 
-const LOCALE_COUNT = 18;
+const LOCALE_COUNT = 2;
 
 describe('Sitemap', () => {
   const sitemap = new Sitemap();
@@ -91,7 +91,7 @@ describe('Sitemap', () => {
       );
       expect(assistantsSitemap).toContainEqual(
         expect.objectContaining({
-          url: getCanonicalUrl('/community/agent/test-assistant?hl=zh-CN'),
+          url: getCanonicalUrl('/community/agent/test-assistant?hl=ru-RU'),
           lastModified: '2023-01-01T00:00:00.000Z',
         }),
       );
@@ -147,7 +147,7 @@ describe('Sitemap', () => {
       );
       expect(pluginsSitemap).toContainEqual(
         expect.objectContaining({
-          url: getCanonicalUrl('/community/plugin/test-plugin?hl=ja-JP'),
+          url: getCanonicalUrl('/community/plugin/test-plugin?hl=ru-RU'),
           lastModified: '2023-01-01T00:00:00.000Z',
         }),
       );
@@ -191,7 +191,7 @@ describe('Sitemap', () => {
       );
       expect(modelsSitemap).toContainEqual(
         expect.objectContaining({
-          url: getCanonicalUrl('/community/model/test:model?hl=ko-KR'),
+          url: getCanonicalUrl('/community/model/test:model?hl=ru-RU'),
           lastModified: '2023-01-01T00:00:00.000Z',
         }),
       );
@@ -235,7 +235,7 @@ describe('Sitemap', () => {
       );
       expect(providersSitemap).toContainEqual(
         expect.objectContaining({
-          url: getCanonicalUrl('/community/provider/test-provider?hl=ar'),
+          url: getCanonicalUrl('/community/provider/test-provider?hl=ru-RU'),
           lastModified: '2023-01-01T00:00:00.000Z',
         }),
       );

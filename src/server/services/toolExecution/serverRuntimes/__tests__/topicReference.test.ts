@@ -36,7 +36,7 @@ describe('topicReferenceRuntime', () => {
       };
 
       expect(() => topicReferenceRuntime.factory(context)).toThrow(
-        'serverDB is required for TopicReference execution',
+        'Authenticated database context is required',
       );
     });
 
@@ -47,7 +47,7 @@ describe('topicReferenceRuntime', () => {
       };
 
       expect(() => topicReferenceRuntime.factory(context)).toThrow(
-        'userId is required for TopicReference execution',
+        'Authenticated database context is required',
       );
     });
 
@@ -80,15 +80,17 @@ describe('topicReferenceRuntime', () => {
     });
 
     it('should return error when topicId is missing', async () => {
+      mockTopicModelFindById.mockResolvedValue(null);
       const result = await runtime.getTopicContext({ topicId: '' });
 
-      expect(result).toEqual({ content: 'topicId is required', success: false });
+      expect(result).toEqual({ content: 'Topic not found', success: false });
     });
 
     it('should return error when topicId is undefined', async () => {
+      mockTopicModelFindById.mockResolvedValue(null);
       const result = await runtime.getTopicContext({ topicId: undefined });
 
-      expect(result).toEqual({ content: 'topicId is required', success: false });
+      expect(result).toEqual({ content: 'Topic not found', success: false });
     });
 
     it('should return error when topic is not found', async () => {
@@ -97,7 +99,7 @@ describe('topicReferenceRuntime', () => {
       const result = await runtime.getTopicContext({ topicId: 'topic-123' });
 
       expect(result).toEqual({
-        content: 'Topic not found: topic-123',
+        content: 'Topic not found',
         success: false,
       });
       expect(mockTopicModelFindById).toHaveBeenCalledWith('topic-123');
@@ -113,7 +115,8 @@ describe('topicReferenceRuntime', () => {
       const result = await runtime.getTopicContext({ topicId: 'topic-123' });
 
       expect(result).toEqual({
-        content: '# Topic: My Topic\n\n## Summary\nThis is a summary of the conversation.',
+        content:
+          '# Topic: My Topic\nThis is a summary of the conversation.\nFor exact earlier details use getTopicContext(topicId="topic-123", mode="archive", query=literal text or offset=0).',
         success: true,
       });
       // Should NOT fetch messages when summary exists
@@ -150,9 +153,8 @@ describe('topicReferenceRuntime', () => {
 
       expect(result.success).toBe(true);
       expect(result.content).toContain('# Topic: Chat Topic');
-      expect(result.content).toContain('## Recent Messages');
-      expect(result.content).toContain('**User**: Hello');
-      expect(result.content).toContain('**Assistant**: Hi there!');
+      expect(result.content).toContain('user: Hello');
+      expect(result.content).toContain('assistant: Hi there!');
 
       expect(mockMessageModelQuery).toHaveBeenCalledWith({
         agentId: 'agent-1',
@@ -201,7 +203,7 @@ describe('topicReferenceRuntime', () => {
       expect(result.content).toContain('UniqueMsg-035');
     });
 
-    it('should skip messages with empty content', async () => {
+    it('should format messages including empty content', async () => {
       mockTopicModelFindById.mockResolvedValue({
         id: 'topic-123',
         title: 'Topic',
@@ -216,12 +218,8 @@ describe('topicReferenceRuntime', () => {
 
       const result = await runtime.getTopicContext({ topicId: 'topic-123' });
 
-      expect(result.content).toContain('**User**: Valid message');
-      expect(result.content).toContain('**Assistant**: Another message');
-      // Empty/whitespace messages should not appear
-      const lines = result.content.split('\n').filter((l: string) => l.trim());
-      const messageLines = lines.filter((l: string) => l.startsWith('**'));
-      expect(messageLines).toHaveLength(2);
+      expect(result.content).toContain('user: Valid message');
+      expect(result.content).toContain('assistant: Another message');
     });
 
     it('should handle non-user and non-assistant roles', async () => {
@@ -238,22 +236,20 @@ describe('topicReferenceRuntime', () => {
       const result = await runtime.getTopicContext({ topicId: 'topic-123' });
 
       expect(result.success).toBe(true);
-      expect(result.content).toContain('**system**: System message');
-      expect(result.content).toContain('**tool**: Tool result');
+      expect(result.content).toContain('system: System message');
+      expect(result.content).toContain('tool: Tool result');
     });
 
-    it('should return error when topic model throws', async () => {
+    it('should propagate error when topic model throws', async () => {
       const error = new Error('Database connection failed');
       mockTopicModelFindById.mockRejectedValue(error);
 
-      const result = await runtime.getTopicContext({ topicId: 'topic-123' });
-
-      expect(result.success).toBe(false);
-      expect(result.content).toContain('Failed to fetch topic context: Database connection failed');
-      expect(result.error).toBe(error);
+      await expect(runtime.getTopicContext({ topicId: 'topic-123' })).rejects.toThrow(
+        'Database connection failed',
+      );
     });
 
-    it('should return error when message model throws', async () => {
+    it('should propagate error when message model throws', async () => {
       mockTopicModelFindById.mockResolvedValue({
         id: 'topic-123',
         title: 'Topic',
@@ -262,20 +258,15 @@ describe('topicReferenceRuntime', () => {
       const error = new Error('Query failed');
       mockMessageModelQuery.mockRejectedValue(error);
 
-      const result = await runtime.getTopicContext({ topicId: 'topic-123' });
-
-      expect(result.success).toBe(false);
-      expect(result.content).toContain('Failed to fetch topic context: Query failed');
-      expect(result.error).toBe(error);
+      await expect(runtime.getTopicContext({ topicId: 'topic-123' })).rejects.toThrow(
+        'Query failed',
+      );
     });
 
-    it('should handle non-Error exceptions', async () => {
+    it('should propagate non-Error exceptions', async () => {
       mockTopicModelFindById.mockRejectedValue('string error');
 
-      const result = await runtime.getTopicContext({ topicId: 'topic-123' });
-
-      expect(result.success).toBe(false);
-      expect(result.content).toContain('Failed to fetch topic context: string error');
+      await expect(runtime.getTopicContext({ topicId: 'topic-123' })).rejects.toBe('string error');
     });
 
     it('should handle null message content', async () => {
@@ -292,10 +283,8 @@ describe('topicReferenceRuntime', () => {
       const result = await runtime.getTopicContext({ topicId: 'topic-123' });
 
       expect(result.success).toBe(true);
-      // null content should be treated as empty and skipped
-      const messageLines = result.content.split('\n').filter((l: string) => l.startsWith('**'));
-      expect(messageLines).toHaveLength(1);
-      expect(result.content).toContain('**Assistant**: Real message');
+      expect(result.content).toContain('user: ');
+      expect(result.content).toContain('assistant: Real message');
     });
   });
 });

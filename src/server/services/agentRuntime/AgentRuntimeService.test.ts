@@ -1,8 +1,14 @@
 /**
  * @vitest-environment node
  */
+import type * as AgentRuntimeModule from '@lobechat/agent-runtime';
 import type * as ModelBankModule from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  formatPersistedLLMError,
+  rememberPersistedLLMError,
+} from '@/server/modules/AgentRuntime/persistedLLMError';
 
 import { AgentRuntimeService } from './AgentRuntimeService';
 import { hookDispatcher } from './hooks';
@@ -77,13 +83,23 @@ vi.mock('@/server/modules/AgentRuntime/redis', () => ({
 }));
 
 // Use real AgentRuntimeCoordinator with InMemory backends; only mock unrelated exports
-vi.mock('@/server/modules/AgentRuntime', async (importOriginal) => {
-  const actual = await importOriginal<Record<string, unknown>>();
+vi.mock('@/server/modules/AgentRuntime', async () => {
   return {
-    ...actual,
-    createRuntimeExecutors: vi.fn(),
+    AgentRuntimeCoordinator: (await import('@/server/modules/AgentRuntime/AgentRuntimeCoordinator'))
+      .AgentRuntimeCoordinator,
+    createStreamEventManager: (await import('@/server/modules/AgentRuntime/factory'))
+      .createStreamEventManager,
   };
 });
+vi.mock('@/server/modules/AgentRuntime/RuntimeExecutors', () => ({
+  createRuntimeExecutors: vi.fn(),
+}));
+vi.mock('@/server/services/mcp', () => ({ mcpService: {} }));
+vi.mock('@/server/services/toolExecution', () => ({ ToolExecutionService: vi.fn() }));
+vi.mock('@/server/services/toolExecution/builtin', () => ({ BuiltinToolsExecutor: vi.fn() }));
+vi.mock('@lobechat/builtin-tools/dynamicInterventionAudits', () => ({
+  dynamicInterventionAudits: [],
+}));
 
 vi.mock('@lobechat/agent-runtime', () => ({
   AgentRuntime: vi.fn().mockImplementation((_agent, _options) => ({
@@ -601,6 +617,7 @@ describe('AgentRuntimeService', () => {
       // second call returns interrupted state (checked after runtime.step completes)
       mockCoordinator.loadAgentState
         .mockResolvedValueOnce(mockState) // initial load
+        .mockResolvedValueOnce(mockState) // subscription's race-closing read
         .mockResolvedValueOnce({ ...mockState, status: 'interrupted' }); // post-step check
 
       const result = await service.executeStep(mockParams);
@@ -1326,123 +1343,139 @@ describe('AgentRuntimeService', () => {
   });
 
   describe('interruptOperation', () => {
-    it('should interrupt a running operation', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue({
-        operationId: 'op-1',
-        status: 'running',
-        stepCount: 3,
-        lastModified: new Date().toISOString(),
+    it('persists the safe cause caught by the real runtime before emitting terminal state', async () => {
+      const { AgentRuntime } =
+        await vi.importActual<typeof AgentRuntimeModule>('@lobechat/agent-runtime');
+      const id = 'caught-provider-error';
+      const original = Object.assign(new Error('private-provider-response'), {
+        errorType: 'ProviderBizError',
+        error: { status: 404, message: 'private-provider-response' },
       });
-
-      const result = await service.interruptOperation('op-1');
-
-      expect(result).toBe(true);
-      expect(mockCoordinator.saveAgentState).toHaveBeenCalledWith(
-        'op-1',
-        expect.objectContaining({
+      const safe = formatPersistedLLMError(original);
+      const runtime = new AgentRuntime(
+        {
+          runner: async () => ({ type: 'call_llm', payload: {} }),
+        } as any,
+        {
+          executors: {
+            call_llm: async () => {
+              throw rememberPersistedLLMError(original, safe);
+            },
+          },
+        },
+      );
+      await mockCoordinator.saveAgentState(id, { status: 'running', stepCount: 0, messages: [] });
+      vi.spyOn(service as any, 'createAgentRuntime').mockResolvedValue({ runtime });
+      const result = await service.executeStep({ operationId: id, stepIndex: 0 });
+      expect(result.state.error).toEqual(safe);
+      expect(await mockCoordinator.loadAgentState(id)).toMatchObject({
+        status: 'error',
+        error: safe,
+      });
+      expect(result.stepResult.events).toContainEqual({ type: 'error', error: safe });
+      const emitted = JSON.stringify(mockStreamManager.getAllEvents(id));
+      expect(emitted).toContain('HTTP_404');
+      expect(emitted).not.toContain('private-provider-response');
+    });
+    it('turns a resumable client pause into final user cancellation', async () => {
+      await mockCoordinator.saveAgentState('paused-stop', {
+        status: 'interrupted',
+        stepCount: 1,
+        interruption: {
+          canResume: true,
+          reason: 'client_tool_execution',
+          interruptedAt: new Date().toISOString(),
+        },
+      });
+      expect(await service.interruptOperation('paused-stop')).toBe(true);
+      await mockCoordinator.saveAgentState('paused-stop', { status: 'running', stepCount: 1 });
+      expect(await mockCoordinator.loadAgentState('paused-stop')).toMatchObject({
+        status: 'interrupted',
+        interruption: { canResume: false, reason: 'user_cancelled' },
+      });
+    });
+    it.each(['running', 'waiting_for_human'])(
+      'interrupts %s once through persisted state',
+      async (status) => {
+        await mockCoordinator.saveAgentState('op-1', { status, stepCount: 3 });
+        expect(await service.interruptOperation('op-1')).toBe(true);
+        expect(await mockCoordinator.loadAgentState('op-1')).toMatchObject({
           status: 'interrupted',
-          lastModified: expect.any(String),
+        });
+        expect(await service.interruptOperation('op-1')).toBe(false);
+      },
+    );
+
+    it.each(['done', 'error', 'interrupted'])(
+      'does not change terminal state %s',
+      async (status) => {
+        await mockCoordinator.saveAgentState('op-terminal', { status, stepCount: 3 });
+        expect(await service.interruptOperation('op-terminal')).toBe(false);
+        expect(await mockCoordinator.loadAgentState('op-terminal')).toMatchObject({ status });
+      },
+    );
+
+    it('returns false when state is missing', async () => {
+      expect(await service.interruptOperation('missing')).toBe(false);
+    });
+
+    it('signals an in-flight step and finishes as interrupted, without an error or next step', async () => {
+      const id = 'running-cancel';
+      await mockCoordinator.saveAgentState(id, { status: 'running', stepCount: 0, messages: [] });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(service as any, 'createAgentRuntime').mockImplementation(
+        async ({ signal }: any) => ({
+          runtime: {
+            step: async () => {
+              entered();
+              await new Promise((_resolve, reject) =>
+                signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+              );
+            },
+          },
         }),
       );
-    });
-
-    it('should interrupt a waiting_for_human operation', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue({
-        operationId: 'op-2',
-        status: 'waiting_for_human',
-        stepCount: 1,
-      });
-
-      const result = await service.interruptOperation('op-2');
-
-      expect(result).toBe(true);
-      expect(mockCoordinator.saveAgentState).toHaveBeenCalledWith(
-        'op-2',
-        expect.objectContaining({ status: 'interrupted' }),
+      const running = service.executeStep({ operationId: id, stepIndex: 0 });
+      await started;
+      expect(await service.interruptOperation(id)).toBe(true);
+      const result = await running;
+      expect(result.state.status).toBe('interrupted');
+      expect(result.nextStepScheduled).toBe(false);
+      expect(mockStreamManager.getAllEvents(id).some((event: any) => event.type === 'error')).toBe(
+        false,
       );
     });
-
-    it('should return false when state not found', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue(null);
-
-      const result = await service.interruptOperation('non-existent');
-
-      expect(result).toBe(false);
-      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
-    });
-
-    it('should return false when operation already done', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue({
-        operationId: 'op-done',
-        status: 'done',
-        stepCount: 5,
-      });
-
-      const result = await service.interruptOperation('op-done');
-
-      expect(result).toBe(false);
-      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
-    });
-
-    it('should return false when operation already in error state', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue({
-        operationId: 'op-err',
-        status: 'error',
-        stepCount: 2,
-      });
-
-      const result = await service.interruptOperation('op-err');
-
-      expect(result).toBe(false);
-      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
-    });
-
-    it('should return false when operation already interrupted', async () => {
-      mockCoordinator.loadAgentState.mockResolvedValue({
-        operationId: 'op-int',
-        status: 'interrupted',
-        stepCount: 4,
-      });
-
-      const result = await service.interruptOperation('op-int');
-
-      expect(result).toBe(false);
-      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
-    });
   });
-  // arckep (chat-next-redesign, E2): остановка по теме — кнопка «стоп» в студии
+
   describe('interruptTopicOperations', () => {
-    it('прерывает незавершённые операции темы текущего пользователя и пропускает чужие', async () => {
-      mockCoordinator.getActiveOperations.mockResolvedValue([
+    it('interrupts only the current user active operations in the topic', async () => {
+      const ids = [
         'op_1_agt_a_tpc_target_x1',
         'op_2_agt_a_tpc_other_x2',
         'op_3_agt_b_tpc_target_x3',
         'op_4_agt_b_tpc_target_x4',
-      ]);
-      mockCoordinator.getOperationMetadata.mockImplementation(async (id: string) => ({
-        userId: id === 'op_3_agt_b_tpc_target_x3' ? 'someone-else' : mockUserId,
-      }));
-      mockCoordinator.loadAgentState.mockImplementation(async (id: string) => ({
-        operationId: id,
-        status: id === 'op_4_agt_b_tpc_target_x4' ? 'done' : 'running',
-        stepCount: 1,
-      }));
-      mockCoordinator.saveAgentState.mockResolvedValue(undefined);
-
-      const count = await service.interruptTopicOperations('tpc_target');
-
-      expect(count).toBe(1);
-      expect(mockCoordinator.saveAgentState).toHaveBeenCalledTimes(1);
-      expect(mockCoordinator.saveAgentState).toHaveBeenCalledWith(
-        'op_1_agt_a_tpc_target_x1',
-        expect.objectContaining({ status: 'interrupted' }),
-      );
+      ];
+      for (const id of ids) {
+        await mockCoordinator.createAgentOperation(id, {
+          userId: id === ids[2] ? 'someone-else' : mockUserId,
+        });
+        await mockCoordinator.saveAgentState(id, {
+          status: id === ids[3] ? 'done' : 'running',
+          stepCount: 1,
+        });
+      }
+      expect(await service.interruptTopicOperations('tpc_target')).toBe(1);
+      expect((await mockCoordinator.loadAgentState(ids[0])).status).toBe('interrupted');
+      expect((await mockCoordinator.loadAgentState(ids[1])).status).toBe('running');
+      expect((await mockCoordinator.loadAgentState(ids[2])).status).toBe('running');
+      expect((await mockCoordinator.loadAgentState(ids[3])).status).toBe('done');
     });
 
-    it('пустая тема — ничего не делает', async () => {
-      mockCoordinator.getActiveOperations.mockResolvedValue(['op_1_agt_a_tpc_x_x1']);
+    it('does nothing for an empty topic', async () => {
       expect(await service.interruptTopicOperations('')).toBe(0);
-      expect(mockCoordinator.saveAgentState).not.toHaveBeenCalled();
     });
   });
 });

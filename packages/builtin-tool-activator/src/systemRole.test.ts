@@ -2,6 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import { systemPrompt, systemPromptHeadless } from './systemRole';
 
+describe.each([systemPrompt, systemPromptHeadless])('calculation tool discovery', (prompt) => {
+  it('distinguishes expression evaluation from code and file execution before activation', () => {
+    expect(prompt).toContain('lobe-calculator');
+    expect(prompt).toContain('unit conversions');
+    expect(prompt).toContain('mcp-arckep-e2b-sandbox');
+    expect(prompt).not.toContain('data analysis, calculations or build files');
+  });
+});
+
 describe('activator systemPrompt — attached file translation', () => {
   it('tells the model to write markdown, not shop the skill store', () => {
     expect(systemPrompt).toContain('<attached_file_translation>');

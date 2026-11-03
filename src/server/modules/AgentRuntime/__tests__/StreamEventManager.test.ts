@@ -4,6 +4,8 @@ import { StreamEventManager } from '../StreamEventManager';
 
 // Mock Redis client
 const mockRedis = {
+  disconnect: vi.fn(),
+  duplicate: vi.fn(() => mockRedis),
   del: vi.fn(),
   expire: vi.fn(),
   keys: vi.fn(),

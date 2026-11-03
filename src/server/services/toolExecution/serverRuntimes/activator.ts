@@ -49,7 +49,7 @@ export const activatorRuntime: ServerRuntimeRegistration = {
       activateSkill: skillsRuntime
         ? async (args) => {
             const result = await skillsRuntime!.activateSkill(args);
-            return isHeadlessSkillMode() ? withSkillTools(result) : result;
+            return isHeadlessSkillMode() ? withSkillTools(result, context.toolManifestMap) : result;
           }
         : undefined,
       getActivatedToolIds: () => [...activatedIds],

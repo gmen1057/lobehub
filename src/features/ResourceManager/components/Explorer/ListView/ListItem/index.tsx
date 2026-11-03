@@ -1,4 +1,4 @@
-import { Center, Checkbox, ContextMenuTrigger, Flexbox } from '@lobehub/ui';
+import { Center, Checkbox, type ContextMenuItem, ContextMenuTrigger, Flexbox } from '@lobehub/ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import { isEqual } from 'es-toolkit';
 import { memo, useCallback } from 'react';
@@ -239,7 +239,7 @@ const FileListItem = ({
   }, []);
 
   return (
-    <ContextMenuTrigger items={menuItems}>
+    <ContextMenuTrigger items={menuItems as () => ContextMenuItem[]}>
       <Flexbox
         horizontal
         align={'center'}

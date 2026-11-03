@@ -180,18 +180,20 @@ describe('ResponsesService — ответ в реестре и переподк�
     });
   });
 
-  it('ошибка выполнения: ответ помечается упавшим, клиент получает response.completed со status failed', async () => {
+  it.each([402, 404, 429, 504])('ошибка HTTP %s сохраняет причину при отправке и переподключении', async (status) => {
     const sender = new ResponsesService({} as any, 'u1');
     const gen = sender.createStreamingResponse(params);
     await take(gen, 2);
     const pending = drain(gen);
     await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
-    finish({ error: { message: 'биллинг отказал' }, messages: [], status: 'error' });
+    finish({ error: { body: { status }, message: 'Model request failed', type: status }, messages: [], status: 'error' });
     const events = await pending;
     const last = events.at(-1);
     expect(last.type).toBe('response.completed');
     expect(last.response.status).toBe('failed');
-    expect(last.response.error.message).toBe('биллинг отказал');
+    expect(last.response.error).toEqual({ code: 'model_error', message: 'Model request failed', status });
     expect(sender.getResponseStatus('tpc_1')).toMatchObject({ status: 'failed' });
+    const replay = await drain(new ResponsesService({} as any, 'u1').resumeStreamingResponse('tpc_1'));
+    expect(replay.at(-1).response.error).toEqual(last.response.error);
   });
 });

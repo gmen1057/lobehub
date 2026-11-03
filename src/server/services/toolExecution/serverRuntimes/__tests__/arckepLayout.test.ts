@@ -36,16 +36,17 @@ describe('регистрация arckep-layout', () => {
     expect(tool.manifest.api.map((api) => api.name)).toEqual([
       ArckepLayoutApiName.checkLayout,
       ArckepLayoutApiName.editArtifact,
+      ArckepLayoutApiName.writeArtifact,
     ]);
     // включается в ход сразу (execAgent), а не через activateTools
     expect(arckepLazyToolIds).not.toContain(ArckepLayoutIdentifier);
   });
 
-  it('манифест: identifier обязателен, HTML модель не передаёт; правки — find/replace, до 30', () => {
+  it('манифест: identifier обязателен, HTML модель не передаёт в checkLayout/editArtifact; writeArtifact принимает content', () => {
     const manifest = builtinTools.find(
       (item) => item.identifier === ArckepLayoutIdentifier,
     )!.manifest;
-    const [check, edit] = manifest.api;
+    const [check, edit, write] = manifest.api;
     expect(check.parameters.required).toEqual(['identifier']);
     expect(Object.keys(check.parameters.properties as object).sort()).toEqual([
       'file',
@@ -55,7 +56,8 @@ describe('регистрация arckep-layout', () => {
     const edits = (edit.parameters.properties as any).edits;
     expect(edits.maxItems).toBe(30);
     expect(edits.items.required).toEqual(['find', 'replace']);
-    // ни у одного вызова нет параметра с HTML
+    expect(write.parameters.required).toEqual(['identifier', 'title', 'content']);
+    // ни у одного вызова нет параметра с именем `html`
     for (const api of manifest.api) {
       expect(Object.keys(api.parameters.properties as object)).not.toContain('html');
     }
@@ -80,10 +82,11 @@ describe('рантайм', () => {
     );
   });
 
-  it('создаётся через реестр и отвечает методами checkLayout / editArtifact', async () => {
+  it('создаётся через реестр и отвечает методами checkLayout / editArtifact / writeArtifact', async () => {
     const runtime = await getServerRuntime(ArckepLayoutIdentifier, context());
     expect(typeof runtime.checkLayout).toBe('function');
     expect(typeof runtime.editArtifact).toBe('function');
+    expect(typeof runtime.writeArtifact).toBe('function');
   });
 
   it('вызов без темы — понятный отказ, а не падение хода', async () => {

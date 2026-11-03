@@ -23,6 +23,7 @@ describe('settingsSelectors', () => {
         isDevMode: false,
         isLiteMode: false,
         mermaidTheme: 'lobe-theme',
+        primaryColor: 'volcano',
         telemetry: true,
         transitionMode: 'fadeIn',
       });
@@ -47,18 +48,18 @@ describe('settingsSelectors', () => {
     it('should prefer the saved response language', () => {
       const s: UserState = merge(initialState, {
         settings: {
-          general: { responseLanguage: 'zh-CN' },
+          general: { responseLanguage: 'ru-RU' },
         },
       });
 
       const result = userGeneralSettingsSelectors.currentResponseLanguage(s as UserStore);
 
-      expect(result).toBe('zh-CN');
+      expect(result).toBe('ru-RU');
     });
 
     it('should fallback to the normalized browser language', () => {
       const originalLanguage = navigator.language;
-      Object.defineProperty(window.navigator, 'language', { configurable: true, value: 'fr' });
+      Object.defineProperty(window.navigator, 'language', { configurable: true, value: 'ru' });
 
       const s: UserState = merge(initialState, {
         settings: {
@@ -68,7 +69,7 @@ describe('settingsSelectors', () => {
 
       const result = userGeneralSettingsSelectors.currentResponseLanguage(s as UserStore);
 
-      expect(result).toBe('fr-FR');
+      expect(result).toBe('ru-RU');
 
       Object.defineProperty(window.navigator, 'language', {
         configurable: true,
@@ -116,7 +117,7 @@ describe('settingsSelectors', () => {
   });
 
   describe('primaryColor', () => {
-    it('should return undefined if general settings not exists', () => {
+    it('should return default volcano if general settings not exists', () => {
       const s: UserState = merge(initialState, {
         settings: {
           general: undefined,
@@ -125,10 +126,10 @@ describe('settingsSelectors', () => {
 
       const result = userGeneralSettingsSelectors.primaryColor(s as UserStore);
 
-      expect(result).toBeUndefined();
+      expect(result).toBe('volcano');
     });
 
-    it('should return undefined if primaryColor not set', () => {
+    it('should return default volcano if primaryColor not set', () => {
       const s: UserState = merge(initialState, {
         settings: {
           general: {},
@@ -137,7 +138,7 @@ describe('settingsSelectors', () => {
 
       const result = userGeneralSettingsSelectors.primaryColor(s as UserStore);
 
-      expect(result).toBeUndefined();
+      expect(result).toBe('volcano');
     });
 
     it('should return the primaryColor', () => {

@@ -3,6 +3,27 @@ import { describe, expect, it, vi } from 'vitest';
 import { consumeStreamUntilDone } from './consumeStream';
 
 describe('consumeStreamUntilDone', () => {
+  it('cancels a stream waiting for its next chunk and releases the reader', async () => {
+    const cancel = vi.fn();
+    const controller = new AbortController();
+    const response = new Response(new ReadableStream({ cancel }));
+    const consuming = consumeStreamUntilDone(response, controller.signal);
+    const rejection = expect(consuming).rejects.toMatchObject({ name: 'AbortError' });
+    controller.abort();
+    await rejection;
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(response.body?.locked).toBe(false);
+  });
+
+  it('does not acquire a reader after cancellation', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const response = new Response('unused');
+    await expect(consumeStreamUntilDone(response, controller.signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(response.body?.locked).toBe(false);
+  });
   it('should consume a stream completely', async () => {
     const chunks = ['chunk1', 'chunk2', 'chunk3'];
     const stream = new ReadableStream({

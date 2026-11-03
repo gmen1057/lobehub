@@ -4,14 +4,14 @@
  * Flow:
  * 1. Reads arckep_token cookie (JWT from arckep.ru)
  * 2. Validates JWT via backend /api/auth/validate → gets userId
- * 3. Calls Better Auth sign-up + sign-in via internal HTTP
+ * 3. Atomically provisions user + credential, then signs in via internal HTTP
  * 4. Returns raw Response(302) with Set-Cookie headers copied from sign-in
  *
  * IMPORTANT: Uses `new Response()` not `NextResponse.redirect()` because
  * NextResponse drops manually appended Set-Cookie headers on redirects.
  *
  * Verified on: LobeChat v2.1.46, Better Auth 1.4.x
- * Contract: POST /api/auth/sign-up/email + POST /api/auth/sign-in/email
+ * Contract: internal atomic provisioning + POST /api/auth/sign-in/email
  */
 import { type NextRequest } from 'next/server';
 
@@ -58,12 +58,15 @@ export async function GET(req: NextRequest) {
   const password = `arckep_bridge_${userId}_${authSecret.slice(0, 8)}`;
 
   try {
-    // Sign-up via HTTP (idempotent)
-    await fetch(`${INTERNAL_URL}/chat/api/auth/sign-up/email`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, name: `User ${userId}`, password }),
-    }).catch(() => {});
+    // A concurrent signup may have committed, or its post-commit hook may have
+    // failed. In either case sign-in below still verifies the exact credential;
+    // an existing email alone never grants access or repairs an orphan account.
+    try {
+      const { auth } = await import('@/auth');
+      await auth.provisionArckepUser({ email, name: `User ${userId}`, password });
+    } catch (error) {
+      console.warn('Bridge: provisioning failed; verifying existing credential', error);
+    }
 
     // Sign-in via HTTP — returns proper Set-Cookie headers
     const signInRes = await fetch(`${INTERNAL_URL}/chat/api/auth/sign-in/email`, {

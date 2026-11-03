@@ -1,6 +1,5 @@
-import { ActionIcon, DropdownMenu, Icon } from '@lobehub/ui';
+import { ActionIcon, type DropdownItem, DropdownMenu, Icon, type MenuInfo } from '@lobehub/ui';
 import { App } from 'antd';
-import { type ItemType } from 'antd/es/menu/interface';
 import { createStaticStyles } from 'antd-style';
 import isEqual from 'fast-deep-equal';
 import {
@@ -87,7 +86,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
             icon: <Icon icon={LucideCopy} />,
             key: 'duplicate',
             label: t('duplicate', { ns: 'common' }),
-            onClick: ({ domEvent }) => {
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
 
               duplicateSession(id);
@@ -99,7 +98,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
                   icon: <Icon icon={ExternalLink} />,
                   key: 'openInNewWindow',
                   label: t('openInNewWindow'),
-                  onClick: ({ domEvent }: { domEvent: Event }) => {
+                  onClick: ({ domEvent }: MenuInfo) => {
                     domEvent.stopPropagation();
                     openAgentInNewWindow(id);
                   },
@@ -134,7 +133,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
                 icon: <Icon icon={LucidePlus} />,
                 key: 'createGroup',
                 label: <div>{t('sessionGroup.createGroup')}</div>,
-                onClick: ({ domEvent }) => {
+                onClick: ({ domEvent }: MenuInfo) => {
                   domEvent.stopPropagation();
                   openCreateGroupModal();
                 },
@@ -152,7 +151,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
             icon: <Icon icon={Trash} />,
             key: 'delete',
             label: t('delete', { ns: 'common' }),
-            onClick: ({ domEvent }) => {
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
               modal.confirm({
                 centered: true,
@@ -176,7 +175,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
               });
             },
           },
-        ] as ItemType[]
+        ] as DropdownItem[]
       ).filter(Boolean),
     [id, pin, openAgentInNewWindow],
   );

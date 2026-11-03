@@ -19,14 +19,29 @@ export const needsLayoutTool = (input: {
   /** Файлы текущего сообщения */
   files?: FileLike[];
   /** История темы (сообщения базы: role, content, fileList) */
-  history: Array<{ content?: unknown; fileList?: FileLike[]; role?: string }>;
+  history: Array<{
+    content?: unknown;
+    fileList?: FileLike[];
+    plugin?: { apiName?: string; identifier?: string } | null;
+    pluginState?: { identifier?: string; name?: string } | null;
+    role?: string;
+  }>;
+  /** Ручной режим навыков с включённым lobe-artifacts (активатор выключен) */
+  isManualArtifacts?: boolean;
 }): boolean => {
+  if (input.isManualArtifacts) return true;
   const isPdf = (file: FileLike) => isPdfMime(file.mimeType ?? file.fileType, file.name);
   if (input.files?.some(isPdf)) return true;
   return input.history.some((message) => {
     if (message.role === 'user') return Boolean(message.fileList?.some(isPdf));
     if (message.role === 'assistant') {
       return typeof message.content === 'string' && hasHtmlArtifact(message.content);
+    }
+    if (message.role === 'tool' && message.plugin?.apiName === 'activateSkill') {
+      return (
+        message.pluginState?.identifier === 'lobe-artifacts' ||
+        message.pluginState?.name === 'Artifacts'
+      );
     }
     return false;
   });

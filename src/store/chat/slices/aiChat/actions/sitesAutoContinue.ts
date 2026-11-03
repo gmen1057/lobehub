@@ -107,7 +107,7 @@ export interface SitesAutoContinueHost {
     context?: Partial<ConversationContext>;
     label?: string;
     metadata?: Record<string, unknown>;
-    type: string;
+    type: 'continue';
   }) => { abortController: AbortController; operationId: string };
   updateOperationMetadata?: (operationId: string, metadata: Record<string, unknown>) => void;
 }
@@ -155,7 +155,7 @@ export const isEligibleSitesAgent = ({
   agentId: string;
   inboxAgentId?: string;
   plugins?: string[];
-  slug?: string;
+  slug?: string | null;
 }): boolean => {
   const isInbox =
     agentId === INBOX_SESSION_ID ||
@@ -631,7 +631,7 @@ export const maybeSitesAutoContinue = async (
     agentId: context.agentId,
     inboxAgentId: bits.inboxAgentId,
     plugins: bits.plugins,
-    slug: bits.slug,
+    slug: bits.slug ?? undefined,
   });
   if (!eligible) return { action: 'skip', reason: 'not_eligible' };
 

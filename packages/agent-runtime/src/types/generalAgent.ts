@@ -18,6 +18,8 @@ export interface GeneralAgentCallLLMInstructionPayload {
 
 export interface GeneralAgentCallLLMResultPayload {
   hasToolsCalling: boolean;
+  /** Set when a direct-streamed text/html <lobeArtifact> failed syntax verification and needs a repair pass */
+  htmlArtifactSyntaxError?: string;
   parentMessageId: string;
   result: { content: string; tool_calls: MessageToolCall[] };
   toolsCalling: ChatToolPayload[];

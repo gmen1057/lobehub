@@ -143,6 +143,18 @@ export class AgentRuntimeCoordinator {
     return this.stateManager.loadAgentState(operationId);
   }
 
+  async interruptOperation(operationId: string): Promise<boolean> {
+    const state = await this.stateManager.interruptAgentState(operationId);
+    if (!state) return false;
+    await this.streamEventManager.publishAgentRuntimeEnd(
+      operationId,
+      state.stepCount,
+      state,
+      'interrupted',
+    );
+    return true;
+  }
+
   /**
    * Get operation metadata
    */

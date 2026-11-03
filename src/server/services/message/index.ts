@@ -416,7 +416,8 @@ export class MessageService {
 
   /**
    * Create a compression group for messages
-   * Creates a placeholder group, marks messages as compressed, and returns updated messages
+   * Stores the summary and marks its source messages together. Interactive callers
+   * may omit content to create a placeholder before finalizeCompression.
    *
    * @param topicId - The topic ID
    * @param messageIds - IDs of messages to compress
@@ -426,6 +427,7 @@ export class MessageService {
     topicId: string,
     messageIds: string[],
     options?: QueryOptions,
+    content = '...',
   ): Promise<{
     messageGroupId: string;
     messages?: UIChatMessage[];
@@ -440,9 +442,9 @@ export class MessageService {
 
     const messagesToSummarize = allMessages.filter((msg) => messageIds.includes(msg.id));
 
-    // 2. Create compression group with placeholder content
+    // 2. Store content and mark the exact source IDs in a single transaction.
     const messageGroupId = await this.compressionRepository.createCompressionGroup({
-      content: '...', // Placeholder content
+      content,
       messageIds,
       metadata: {
         originalMessageCount: messageIds.length,
