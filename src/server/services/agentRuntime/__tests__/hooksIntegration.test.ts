@@ -11,6 +11,8 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
+import { createStreamEventManager } from '@/server/modules/AgentRuntime';
+
 import { AgentRuntimeService } from '../AgentRuntimeService';
 import { hookDispatcher } from '../hooks';
 import type { AgentHookEvent } from '../hooks/types';
@@ -20,23 +22,27 @@ vi.mock('@/envs/app', () => ({ appEnv: { APP_URL: 'http://localhost:3010' } }));
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({})),
 }));
-vi.mock('@/server/modules/AgentRuntime', () => ({
-  AgentRuntimeCoordinator: vi.fn().mockImplementation(() => ({
-    createAgentOperation: vi.fn(),
-    getOperationMetadata: vi.fn(),
-    loadAgentState: vi.fn(),
-    releaseStepLock: vi.fn().mockResolvedValue(undefined),
-    saveAgentState: vi.fn(),
-    saveStepResult: vi.fn(),
-    tryClaimStep: vi.fn().mockResolvedValue(true),
-  })),
-  createStreamEventManager: vi.fn(() => ({
-    cleanupOperation: vi.fn(),
-    publishAgentRuntimeEnd: vi.fn(),
-    publishAgentRuntimeInit: vi.fn(),
-    publishStreamEvent: vi.fn(),
-  })),
-}));
+vi.mock('@/server/modules/AgentRuntime', async () => {
+  const { InMemoryStreamEventManager } = await import(
+    '@/server/modules/AgentRuntime/InMemoryStreamEventManager'
+  );
+  return {
+    AgentRuntimeCoordinator: vi.fn().mockImplementation(() => ({
+      createAgentOperation: vi.fn(),
+      getOperationMetadata: vi.fn(),
+      loadAgentState: vi.fn(),
+      releaseStepLock: vi.fn().mockResolvedValue(undefined),
+      saveAgentState: vi.fn(),
+      saveStepResult: vi.fn(),
+      tryClaimStep: vi.fn().mockResolvedValue(true),
+    })),
+    createStreamEventManager: vi.fn(() => {
+      const manager = new InMemoryStreamEventManager();
+      vi.spyOn(manager, 'subscribeStreamEvents');
+      return manager;
+    }),
+  };
+});
 vi.mock('@/server/modules/AgentRuntime/RuntimeExecutors', () => ({
   createRuntimeExecutors: vi.fn(() => ({})),
 }));
@@ -60,6 +66,23 @@ vi.mock('@/server/services/toolExecution/builtin', () => ({
 vi.mock('@lobechat/builtin-tools/dynamicInterventionAudits', () => ({
   dynamicInterventionAudits: [],
 }));
+
+const currentSubscription = () => {
+  const manager = vi.mocked(createStreamEventManager).mock.results.at(-1)!.value;
+  return vi.mocked(manager.subscribeStreamEvents);
+};
+
+const expectSubscriptionDisposed = async (operationId: string) => {
+  const subscribe = currentSubscription();
+  expect(subscribe).toHaveBeenCalledExactlyOnceWith(
+    operationId,
+    '0',
+    expect.any(Function),
+    expect.any(AbortSignal),
+  );
+  expect(subscribe.mock.calls[0][3]?.aborted).toBe(true);
+  await expect(subscribe.mock.results[0].value).resolves.toBeUndefined();
+};
 
 describe('Hooks integration — afterStep event carries step presentation data', () => {
   const createService = () => new AgentRuntimeService({} as any, 'user-1', { queueService: null });
@@ -135,6 +158,7 @@ describe('Hooks integration — afterStep event carries step presentation data',
       operationId: 'op-1',
       stepIndex: 0,
     });
+    await expectSubscriptionDisposed('op-1');
 
     expect(capturedEvents).toHaveLength(1);
     const event = capturedEvents[0];
@@ -228,6 +252,7 @@ describe('Hooks integration — afterStep event carries step presentation data',
       operationId: 'op-2',
       stepIndex: 1,
     });
+    await expectSubscriptionDisposed('op-2');
 
     expect(capturedEvents).toHaveLength(1);
     const event = capturedEvents[0];
@@ -283,6 +308,7 @@ describe('Hooks integration — onComplete event for early-terminal states', () 
       operationId: 'op-interrupted',
       stepIndex: 4,
     });
+    expect(currentSubscription()).not.toHaveBeenCalled();
 
     expect(capturedEvents).toHaveLength(1);
     const event = capturedEvents[0];
@@ -350,6 +376,7 @@ describe('Hooks integration — afterStep event is compatible with renderStepPro
       operationId: 'op-compat',
       stepIndex: 0,
     });
+    await expectSubscriptionDisposed('op-compat');
 
     expect(capturedEvents).toHaveLength(1);
     const event = capturedEvents[0];

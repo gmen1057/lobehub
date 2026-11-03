@@ -205,6 +205,11 @@ jobs:
         run: pnpm type-check
       - name: Build desktop and mobile web clients and Next server
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          # Module collection creates a pool; node-postgres connects only when queried.
+          # Keep this build-only endpoint unreachable instead of using a live database.
+          DATABASE_DRIVER: node
+          DATABASE_URL: postgresql://ci_build:ci_build@127.0.0.1:1/ci_build
         run: pnpm build
 
   test-databsae:
