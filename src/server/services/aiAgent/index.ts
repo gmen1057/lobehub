@@ -2,10 +2,7 @@ import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
 import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin-tool-activator';
-import {
-  ArckepLayoutIdentifier,
-  ArckepLayoutManifest,
-} from '@lobechat/builtin-tool-arckep-layout';
+import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
@@ -993,9 +990,10 @@ export class AiAgentService {
       ) {
         const layoutHistory = await loadHistoryMessages();
         const isManualArtifacts =
-          (agentConfig.chatConfig?.skillActivateMode === 'manual' &&
+          !excludedPluginIds.has('lobe-artifacts') &&
+          ((agentConfig.chatConfig?.skillActivateMode === 'manual' &&
             agentPlugins.includes('lobe-artifacts')) ||
-          pickedPluginIds.includes('lobe-artifacts');
+            pickedPluginIds.includes('lobe-artifacts'));
         if (needsLayoutTool({ files, history: layoutHistory, isManualArtifacts })) {
           pickedPluginIds.push(ArckepLayoutIdentifier);
           agentPlugins = dropExcluded([...new Set([...agentPlugins, ArckepLayoutIdentifier])]);
@@ -1254,7 +1252,7 @@ export class AiAgentService {
         }
       }
 
-      // arckep: манифест `arckep-layout` всегда кладётся в карту операции (но скрыт из `<available_tools>`),
+      // arckep: манифест `arckep-layout` кладётся в карту операции (но скрыт из `<available_tools>`),
       // чтобы `activateSkill({ name: 'Artifacts' })` на первом ходе создания HTML-артефакта мог подключить
       // `writeArtifact` / `editArtifact` / `checkLayout` в `activatedStepTools`.
       if (
@@ -1262,12 +1260,10 @@ export class AiAgentService {
         isLayoutCheckEnabled() &&
         !excludedPluginIds.has(ArckepLayoutIdentifier) &&
         !excludedPluginIds.has('lobe-artifacts') &&
-        !toolManifestMap[ArckepLayoutIdentifier]
+        !toolManifestMap[ArckepLayoutIdentifier] &&
+        typeof toolsEngine.getPluginManifest === 'function'
       ) {
-        const layoutManifest =
-          (typeof toolsEngine.getPluginManifest === 'function'
-            ? toolsEngine.getPluginManifest(ArckepLayoutIdentifier)
-            : undefined) ?? ArckepLayoutManifest;
+        const layoutManifest = toolsEngine.getPluginManifest(ArckepLayoutIdentifier);
         if (layoutManifest) {
           toolManifestMap[ArckepLayoutIdentifier] = layoutManifest;
         }

@@ -86,7 +86,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
             icon: <Icon icon={LucideCopy} />,
             key: 'duplicate',
             label: t('duplicate', { ns: 'common' }),
-            onClick: ({ domEvent }) => {
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
 
               duplicateSession(id);
@@ -133,7 +133,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
                 icon: <Icon icon={LucidePlus} />,
                 key: 'createGroup',
                 label: <div>{t('sessionGroup.createGroup')}</div>,
-                onClick: ({ domEvent }) => {
+                onClick: ({ domEvent }: MenuInfo) => {
                   domEvent.stopPropagation();
                   openCreateGroupModal();
                 },
@@ -151,7 +151,7 @@ const Actions = memo<ActionProps>(({ group, id, openCreateGroupModal, parentType
             icon: <Icon icon={Trash} />,
             key: 'delete',
             label: t('delete', { ns: 'common' }),
-            onClick: ({ domEvent }) => {
+            onClick: ({ domEvent }: MenuInfo) => {
               domEvent.stopPropagation();
               modal.confirm({
                 centered: true,
