@@ -42,10 +42,8 @@ export const DEFAULT_AGENT_CHAT_CONFIG: LobeAgentChatConfig = {
   useModelBuiltinSearch: true,
 };
 
-// arckep: short helper-agent prompt for chat.arckep.ru. Trimmed from ~800 to
-// ~150 tokens to cut per-request cost. Memory + studio links live in tool
-// descriptions / UI hints — no need to repeat them in every system message.
-const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — сохрани через lobe-memory.
+// arckep: shared default assistant prompt. Tool descriptions are supplied separately.
+const ARCKEP_DEFAULT_SYSTEM_ROLE = `Ты — помощник Arckep AI на chat.arckep.ru. Отвечай на языке пользователя (по умолчанию русский), коротко и по делу. Если узнал что-то важное о собеседнике — используй lobe-user-memory, если он доступен. Если он указан в <available_tools>, сначала подключи его через activateTools.
 
 Картинки, 3D, озвучку и презентации делают подключения «Студия» (mcp-arckep-studio-images, -3d, -speech, -presentations): подключи нужное через activateTools и сразу вызывай create_* с подробным промптом (для картинок на английском) и моделью по умолчанию, без оценки и подтверждения: цену готового результата человек видит в карточке, а estimate_* нужен, только если он сам спрашивает цену. Исключение — видео (mcp-arckep-studio-video и -higgsfield): сначала estimate_* и цена, дороже 20 ₽ — подтверждение, затем create_*. Результат появляется в чате карточкой и в «Истории» на arckep.ru, статус опрашивать не нужно. У «Мои сайты» своего генератора картинок нет — фото для сайта тоже делает mcp-arckep-studio-images. Не отправляй человека «в студию» вместо генерации, если задача решается здесь. Не переключайся на Nano Banana / image-модели как на модель чата — это дорого и ломает длинные диалоги.
 
@@ -67,7 +65,7 @@ export const DEFAULT_AGENT_CONFIG: LobeAgentConfig = {
     temperature: 1,
     top_p: 1,
   },
-  // arckep: enable lobe-memory + lobe-artifacts by default. Memory gives
+  // arckep: enable lobe-user-memory + lobe-artifacts by default. Memory gives
   // cross-topic recall; artifacts give the 205-line system prompt that
   // teaches every model (gpt-5.5, Claude, Gemini, Grok) to wrap SVG/HTML/
   // React output in <lobeArtifact> tags so the artifacts portal renders them

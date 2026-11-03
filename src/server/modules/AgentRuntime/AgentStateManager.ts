@@ -6,7 +6,9 @@ import {
 import debug from 'debug';
 import { type Redis } from 'ioredis';
 
+import { decodeAgentState, READ_AGENT_STATE, WRITE_AGENT_STATE } from './agentStateWrite';
 import { getAgentRuntimeRedisClient } from './redis';
+import { agentRuntimeStreamKey } from './StreamEventManager';
 
 const log = debug('lobe-server:agent-runtime:agent-state-manager');
 
@@ -49,19 +51,12 @@ export class AgentStateManager {
    * Save Agent state
    */
   async saveAgentState(operationId: string, state: AgentState): Promise<void> {
-    const stateKey = `${this.STATE_PREFIX}:${operationId}`;
-
     try {
-      const serializedState = JSON.stringify(state);
-      await this.redis.setex(stateKey, this.DEFAULT_TTL, serializedState);
-
-      // Update metadata
-      await this.updateOperationMetadata(operationId, {
-        lastActiveAt: new Date().toISOString(),
-        status: state.status,
-        totalCost: state.cost?.total || 0,
-        totalSteps: state.stepCount,
-      });
+      const saved = await this.writeState(operationId, 'save', state);
+      // The caller schedules from this state, so it must see a concurrent Stop.
+      state.status = saved!.status;
+      if (saved!.interruption?.reason === 'user_cancelled')
+        state.interruption = saved!.interruption;
 
       // State change events are recorded through the events array in saveStepResult
 
@@ -72,6 +67,45 @@ export class AgentStateManager {
     }
   }
 
+  async interruptAgentState(operationId: string): Promise<AgentState | null> {
+    return this.writeState(operationId, 'interrupt');
+  }
+
+  private async writeState(
+    operationId: string,
+    mode: 'save' | 'interrupt',
+    state?: AgentState,
+    stepResult?: StepResult,
+  ): Promise<AgentState | null> {
+    const result = await this.redis.eval(
+      WRITE_AGENT_STATE,
+      5,
+      `${this.STATE_PREFIX}:${operationId}`,
+      `${this.METADATA_PREFIX}:${operationId}`,
+      `${this.STEPS_PREFIX}:${operationId}`,
+      `${this.EVENTS_PREFIX}:${operationId}`,
+      agentRuntimeStreamKey(operationId),
+      mode,
+      state ? JSON.stringify({ ...state, status: undefined }) : '',
+      this.DEFAULT_TTL,
+      new Date().toISOString(),
+      stepResult
+        ? JSON.stringify({
+            context: stepResult.nextContext,
+            cost: state?.cost?.total || 0,
+            executionTime: stepResult.executionTime,
+            stepIndex: stepResult.stepIndex,
+            timestamp: Date.now(),
+          })
+        : '',
+      stepResult?.events?.length ? JSON.stringify(stepResult.events) : '',
+      state?.status || '',
+      operationId,
+      Date.now(),
+    );
+    return decodeAgentState(result);
+  }
+
   /**
    * Load Agent state
    */
@@ -79,14 +113,15 @@ export class AgentStateManager {
     const stateKey = `${this.STATE_PREFIX}:${operationId}`;
 
     try {
-      const serializedState = await this.redis.get(stateKey);
-
-      if (!serializedState) {
-        return null;
-      }
-
-      const state = JSON.parse(serializedState) as AgentState;
-      log('[%s] Loaded state (step %d)', operationId, state.stepCount);
+      const state = decodeAgentState(
+        await this.redis.eval(
+          READ_AGENT_STATE,
+          2,
+          stateKey,
+          `${this.METADATA_PREFIX}:${operationId}`,
+        ),
+      );
+      log('[%s] Loaded state (step %d)', operationId, state?.stepCount);
 
       return state;
     } catch (error) {
@@ -99,49 +134,11 @@ export class AgentStateManager {
    * Save step execution result
    */
   async saveStepResult(operationId: string, stepResult: StepResult): Promise<void> {
-    const pipeline = this.redis.multi();
-
     try {
-      // Save latest state
-      const stateKey = `${this.STATE_PREFIX}:${operationId}`;
-      pipeline.setex(stateKey, this.DEFAULT_TTL, JSON.stringify(stepResult.newState));
-
-      // Save step history
-      const stepsKey = `${this.STEPS_PREFIX}:${operationId}`;
-      const stepData = {
-        context: stepResult.nextContext,
-        cost: stepResult.newState.cost?.total || 0,
-        executionTime: stepResult.executionTime,
-        status: stepResult.newState.status,
-        stepIndex: stepResult.stepIndex,
-        timestamp: Date.now(),
-      };
-
-      pipeline.lpush(stepsKey, JSON.stringify(stepData));
-      pipeline.ltrim(stepsKey, 0, 199); // Keep most recent 200 steps
-      pipeline.expire(stepsKey, this.DEFAULT_TTL);
-
-      // Save step event sequence to agent_runtime_events
-      if (stepResult.events && stepResult.events.length > 0) {
-        const eventsKey = `${this.EVENTS_PREFIX}:${operationId}`;
-
-        pipeline.lpush(eventsKey, JSON.stringify(stepResult.events));
-        pipeline.ltrim(eventsKey, 0, 199); // Keep events from most recent 200 steps
-        pipeline.expire(eventsKey, this.DEFAULT_TTL);
-      }
-
-      // Update operation metadata
-      const metaKey = `${this.METADATA_PREFIX}:${operationId}`;
-      const metadata: Partial<AgentOperationMetadata> = {
-        lastActiveAt: new Date().toISOString(),
-        status: stepResult.newState.status,
-        totalCost: stepResult.newState.cost?.total || 0,
-        totalSteps: stepResult.newState.stepCount,
-      };
-      pipeline.hmset(metaKey, metadata as any);
-      pipeline.expire(metaKey, this.DEFAULT_TTL);
-
-      await pipeline.exec();
+      const saved = await this.writeState(operationId, 'save', stepResult.newState, stepResult);
+      stepResult.newState.status = saved!.status;
+      if (saved!.interruption?.reason === 'user_cancelled')
+        stepResult.newState.interruption = saved!.interruption;
 
       log(
         '[%s:%d] Saved step result with %d events',
@@ -247,37 +244,6 @@ export class AgentStateManager {
     } catch (error) {
       console.error('Failed to create operation metadata:', error);
       throw error;
-    }
-  }
-
-  /**
-   * Update operation metadata
-   */
-  private async updateOperationMetadata(
-    operationId: string,
-    updates: Partial<AgentOperationMetadata>,
-  ): Promise<void> {
-    const metaKey = `${this.METADATA_PREFIX}:${operationId}`;
-
-    try {
-      const redisUpdates: Record<string, string> = {};
-
-      Object.entries(updates).forEach(([key, value]) => {
-        if (value !== undefined) {
-          if (typeof value === 'object') {
-            redisUpdates[key] = JSON.stringify(value);
-          } else {
-            redisUpdates[key] = value.toString();
-          }
-        }
-      });
-
-      if (Object.keys(redisUpdates).length > 0) {
-        await this.redis.hmset(metaKey, redisUpdates);
-        await this.redis.expire(metaKey, this.DEFAULT_TTL);
-      }
-    } catch (error) {
-      console.error('Failed to update session metadata:', error);
     }
   }
 

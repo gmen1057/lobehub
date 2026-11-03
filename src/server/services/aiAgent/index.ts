@@ -110,6 +110,7 @@ import {
   type PdfPrepPage,
   type PdfPrepRecord,
 } from './pdfPrepare';
+import { getDeferredToolIds } from './toolDeferral';
 import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
@@ -1164,6 +1165,7 @@ export class AiAgentService {
         !pickedToolIds.has(ArckepStudioIdentifier);
       const hiddenToolIds = [
         ...restHiddenToolIds,
+        ...excludedPluginIds,
         ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
       ];
       // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
@@ -1179,19 +1181,21 @@ export class AiAgentService {
             ...(keepsOwnToolSet ? [] : [ArckepSkillsIdentifier, ArckepConnectorsIdentifier]),
           ]
         : [];
-      const lazyToolIds = [
-        ...new Set(
-          keepsOwnToolSet
-            ? [...studioConnectorIds, ...skillToolIds]
-            : [
-                ...arckepLazyToolIds,
-                ...studioConnectorIds,
-                ...lazyMcpConnectorIds,
-                ...lazyOnDemandToolIds,
-                ...skillToolIds,
-              ],
-        ),
-      ].filter((id) => !pickedToolIds.has(id) && !hiddenToolIds.includes(id));
+      const lazyToolIds = getDeferredToolIds({
+        candidates: keepsOwnToolSet
+          ? [...studioConnectorIds, ...skillToolIds]
+          : [
+              ...arckepLazyToolIds,
+              ...studioConnectorIds,
+              ...lazyMcpConnectorIds,
+              ...lazyOnDemandToolIds,
+              ...skillToolIds,
+            ],
+        configuredToolIds: dropExcluded(agentConfig.plugins || []),
+        hiddenToolIds,
+        isManualMode,
+        pickedToolIds,
+      });
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),

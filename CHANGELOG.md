@@ -4,6 +4,8 @@
 
 ## \[Unreleased]
 
+- fix(chat): preserve compression and error results, interrupt active model calls, and retain configured tools in manual mode
+
 - chore(cleanup): remove Electron, unused bot platforms and E2E tests
 - fix(onboarding): disable web onboarding redirect — upstream редиректил на абсолютный `/onboarding` без учёта `basePath='/chat'`, новые юзеры попадали в 404-петлю на arckep.ru. В нашем форке bridge auth закрывает onboarding flow
 - fix(auth): prevent SSO account switching issue by validating arckep_token against active BetterAuth session and forcing re-bridge on mismatch

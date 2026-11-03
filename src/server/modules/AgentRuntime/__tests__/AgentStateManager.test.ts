@@ -5,6 +5,10 @@ import { AgentStateManager } from '../AgentStateManager';
 // Mock Redis client
 vi.mock('../redis', () => ({
   getAgentRuntimeRedisClient: () => ({
+    eval: vi.fn(async (_script, _count, ...args) => {
+      const input = JSON.parse(args[6]);
+      return [JSON.stringify(input), args[11], args[8], ''];
+    }),
     del: vi.fn(),
     expire: vi.fn(),
     get: vi.fn(),

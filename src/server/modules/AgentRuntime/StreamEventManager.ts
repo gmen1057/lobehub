@@ -7,6 +7,8 @@ import { getAgentRuntimeRedisClient } from './redis';
 const log = debug('lobe-server:agent-runtime:stream-event-manager');
 const timing = debug('lobe-server:agent-runtime:timing');
 
+export const agentRuntimeStreamKey = (operationId: string) => `agent_runtime_stream:${operationId}`;
+
 const getDefaultReasonDetail = (finalState: any, reason?: string): string => {
   if (reason === 'error') {
     return finalState?.error?.message || finalState?.error?.type || 'Agent runtime failed';
@@ -26,6 +28,7 @@ export interface StreamEvent {
   stepIndex: number;
   timestamp: number;
   type:
+    | 'operation_interrupted'
     | 'agent_runtime_init'
     | 'agent_runtime_end'
     | 'stream_start'
@@ -83,7 +86,7 @@ export class StreamEventManager {
     operationId: string,
     event: Omit<StreamEvent, 'operationId' | 'timestamp'>,
   ): Promise<string> {
-    const streamKey = `${this.STREAM_PREFIX}:${operationId}`;
+    const streamKey = agentRuntimeStreamKey(operationId);
 
     const eventData: StreamEvent = {
       ...event,
@@ -196,82 +199,93 @@ export class StreamEventManager {
     onEvents: (events: StreamEvent[]) => void,
     signal?: AbortSignal,
   ): Promise<void> {
+    if (signal?.aborted) return;
     const streamKey = `${this.STREAM_PREFIX}:${operationId}`;
     let currentLastId = lastEventId;
+    // A blocking XREAD must not share the command connection with state writes
+    // or other subscribers. Closing this reader also wakes cancellation at once.
+    const subscriber = this.redis.duplicate();
+    const stopReading = () => subscriber.disconnect();
+    signal?.addEventListener('abort', stopReading, { once: true });
 
     log('Starting subscription for operation %s from %s', operationId, lastEventId);
 
-    while (!signal?.aborted) {
-      try {
-        const xreadStart = Date.now();
-        const results = await this.redis.xread(
-          'BLOCK',
-          1000, // 1 second timeout
-          'STREAMS',
-          streamKey,
-          currentLastId,
-        );
-        const xreadEnd = Date.now();
+    try {
+      while (!signal?.aborted) {
+        try {
+          const xreadStart = Date.now();
+          const results = await subscriber.xread(
+            'BLOCK',
+            1000, // 1 second timeout
+            'STREAMS',
+            streamKey,
+            currentLastId,
+          );
+          const xreadEnd = Date.now();
 
-        if (results && results.length > 0) {
-          const [, messages] = results[0];
-          const events: StreamEvent[] = [];
+          if (results && results.length > 0) {
+            const [, messages] = results[0];
+            const events: StreamEvent[] = [];
 
-          for (const [id, fields] of messages) {
-            const eventData: any = {};
+            for (const [id, fields] of messages) {
+              const eventData: any = {};
 
-            // Parse Redis Stream fields
-            for (let i = 0; i < fields.length; i += 2) {
-              const key = fields[i];
-              const value = fields[i + 1];
+              // Parse Redis Stream fields
+              for (let i = 0; i < fields.length; i += 2) {
+                const key = fields[i];
+                const value = fields[i + 1];
 
-              if (key === 'data') {
-                eventData[key] = JSON.parse(value);
-              } else if (key === 'stepIndex' || key === 'timestamp') {
-                eventData[key] = parseInt(value);
-              } else {
-                eventData[key] = value;
+                if (key === 'data') {
+                  eventData[key] = JSON.parse(value);
+                } else if (key === 'stepIndex' || key === 'timestamp') {
+                  eventData[key] = parseInt(value);
+                } else {
+                  eventData[key] = value;
+                }
               }
+
+              events.push({
+                ...eventData,
+                id, // Redis Stream event ID
+              } as StreamEvent);
+
+              currentLastId = id;
             }
 
-            events.push({
-              ...eventData,
-              id, // Redis Stream event ID
-            } as StreamEvent);
-
-            currentLastId = id;
-          }
-
-          if (events.length > 0) {
-            const now = Date.now();
-            // Calculate latency from event publication to read
-            for (const event of events) {
-              const latency = now - event.timestamp;
-              timing(
-                '[%s:%d] XREAD %s, published at %d, read at %d, latency %dms, xread took %dms',
-                operationId,
-                event.stepIndex,
-                event.type,
-                event.timestamp,
-                now,
-                latency,
-                xreadEnd - xreadStart,
-              );
+            if (events.length > 0) {
+              const now = Date.now();
+              // Calculate latency from event publication to read
+              for (const event of events) {
+                const latency = now - event.timestamp;
+                timing(
+                  '[%s:%d] XREAD %s, published at %d, read at %d, latency %dms, xread took %dms',
+                  operationId,
+                  event.stepIndex,
+                  event.type,
+                  event.timestamp,
+                  now,
+                  latency,
+                  xreadEnd - xreadStart,
+                );
+              }
+              onEvents(events);
             }
-            onEvents(events);
           }
-        }
-      } catch (error) {
-        if (signal?.aborted) {
-          break;
-        }
+        } catch (error) {
+          if (signal?.aborted) {
+            break;
+          }
 
-        console.error('[StreamEventManager] Stream subscription error:', error);
-        // Retry after brief delay
-        await new Promise((resolve) => {
-          setTimeout(resolve, 1000);
-        });
+          console.error('[StreamEventManager] Stream subscription error:', error);
+          // Retry after brief delay
+          await new Promise((resolve) => {
+            setTimeout(resolve, 1000);
+          });
+        }
       }
+    } finally {
+      signal?.removeEventListener('abort', stopReading);
+      subscriber.disconnect();
     }
 
     log('Subscription ended for operation %s', operationId);

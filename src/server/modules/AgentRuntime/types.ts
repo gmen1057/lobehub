@@ -60,6 +60,9 @@ export interface IAgentStateManager {
     totalOperations: number;
   }>;
 
+  /** Atomically interrupt an active state; never overwrite a completed result. */
+  interruptAgentState: (operationId: string) => Promise<AgentState | null>;
+
   /**
    * Load Agent state
    */

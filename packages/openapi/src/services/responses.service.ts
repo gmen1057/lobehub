@@ -1048,6 +1048,7 @@ export class ResponsesService extends BaseService {
               ? {
                   code: 'model_error' as const,
                   message: String(stateErrorMessage || 'Model execution failed'),
+                  status: stateError.body?.status,
                 }
               : null,
             output: fullOutput.output,

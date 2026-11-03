@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { HTTPException } from 'hono/http-exception';
 import { logger } from 'hono/logger';
 import { prettyJSON } from 'hono/pretty-json';
 
@@ -19,6 +20,9 @@ app.use('*', userAuthMiddleware); // User authentication middleware
 
 // Error handling middleware
 app.onError((error: Error, c) => {
+  if (error instanceof HTTPException) {
+    return c.json({ error: error.message }, error.status);
+  }
   console.error('Hono Error:', error);
   return c.json({ error: error.message }, 500);
 });

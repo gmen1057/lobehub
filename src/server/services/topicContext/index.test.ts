@@ -20,12 +20,17 @@ describe('original conversation archive', () => {
       return [];
     });
     const snapshotAt = '2026-09-16T08:00:00.000Z';
-    const result = await getTopicContext({ query: { messages: { findMany } } } as any, 'owner', {
-      topicId: 'own',
-      mode: 'archive',
-      offset: 20000,
-      snapshotAt,
-    });
+    const select = vi.fn(() => ({ from: () => ({ where: () => ({}) }) }));
+    const result = await getTopicContext(
+      { query: { messages: { findMany } }, select } as any,
+      'owner',
+      {
+        topicId: 'own',
+        mode: 'archive',
+        offset: 20000,
+        snapshotAt,
+      },
+    );
     filters.where({ createdAt: 'created_at' }, { and: vi.fn(), eq: vi.fn(), lte });
     expect(lte).toHaveBeenCalledWith('created_at', new Date(snapshotAt));
     expect(result.content).toContain(snapshotAt);

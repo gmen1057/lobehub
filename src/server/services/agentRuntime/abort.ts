@@ -30,3 +30,20 @@ export function throwIfAborted(signal?: AbortSignal, message = DEFAULT_ABORT_MES
 export function isAbortError(error: unknown): error is Error {
   return error instanceof Error && error.name === 'AbortError';
 }
+
+export function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(getAbortError(signal));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}

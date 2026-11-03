@@ -66,6 +66,10 @@ describe('AgentRuntime factory', () => {
   });
 
   describe('createAgentStateManager', () => {
+    it('shares state across local-mode workers whenever Redis is available', () => {
+      mockGetAgentRuntimeRedisClient.mockReturnValue({ ping: vi.fn() });
+      expect(createAgentStateManager()).toEqual({ kind: 'redis-state-manager' });
+    });
     it('uses in-memory state when queue mode is disabled', () => {
       expect(createAgentStateManager()).toBe(mockInMemoryAgentStateManager);
       expect(MockAgentStateManager).not.toHaveBeenCalled();

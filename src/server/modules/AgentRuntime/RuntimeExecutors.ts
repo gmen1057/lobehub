@@ -46,6 +46,7 @@ import { createToolImageUrlResolver } from '@/server/modules/Mecha/ContextEngine
 import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/types';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
+import { throwIfAborted, waitForRetry } from '@/server/services/agentRuntime/abort';
 import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistoryMessages';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
@@ -59,6 +60,8 @@ import { nanoid } from '@/utils/uuid';
 import { resolveServerEnabledSearch } from './arckepSearch';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
+import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
+import { persistInterruptedLLM } from './persistInterruptedLLM';
 import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
 
@@ -116,12 +119,11 @@ const shouldRetryTool = (kind: ToolFailureKind | undefined, attempt: number, max
 const shouldRetryLLM = (kind: LLMErrorKind, attempt: number, maxRetries: number) =>
   kind === 'retry' && attempt <= maxRetries;
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
 const getLLMRetryDelayMs = (attempt: number) =>
   Math.min(LLM_RETRY_BASE_DELAY_MS * 2 ** Math.max(attempt - 1, 0), LLM_RETRY_MAX_DELAY_MS);
 
 const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
+  if (ctx.signal?.aborted) return true;
   if (!ctx.loadAgentState) return false;
 
   try {
@@ -260,6 +262,7 @@ export interface RuntimeExecutorContext {
   messageModel: MessageModel;
   operationId: string;
   serverDB: LobeChatDatabase;
+  signal?: AbortSignal;
   stepIndex: number;
   stream?: boolean;
   streamManager: IStreamEventManager;
@@ -719,7 +722,25 @@ export const createRuntimeExecutors = (
           reasoningBuffer = '';
         };
 
+        const preservePartialResponse = () =>
+          persistInterruptedLLM(ctx, state, {
+            assistantMessageId: assistantMessageItem.id,
+            content: hasContentImages ? serializePartsForStorage(contentParts) : content,
+            grounding,
+            imageList,
+            isMultimodal: hasContentImages,
+            model,
+            provider,
+            reasoning: hasReasoningImages
+              ? { content: serializePartsForStorage(reasoningParts), isMultimodal: true }
+              : thinkingContent
+                ? { content: thinkingContent }
+                : undefined,
+            usage: currentStepUsage,
+          });
+
         try {
+          throwIfAborted(ctx.signal);
           log(
             `${stagePrefix} calling model-runtime chat (attempt %d/%d, model: %s, messages: %d, tools: %d)`,
             attempt,
@@ -914,11 +935,13 @@ export const createRuntimeExecutors = (
               topicId: state.metadata?.topicId,
               trigger: state.metadata?.trigger,
             },
+            signal: ctx.signal,
             user: ctx.userId,
           });
 
           // Consume stream to ensure all callbacks complete execution
-          await consumeStreamUntilDone(response);
+          await consumeStreamUntilDone(response, ctx.signal);
+          throwIfAborted(ctx.signal);
 
           // If a stream error was captured via onError callback, throw to propagate the error
           if (streamError) {
@@ -1115,6 +1138,7 @@ export const createRuntimeExecutors = (
           };
         } catch (error) {
           clearAttemptBuffers();
+          if (ctx.signal?.aborted) return preservePartialResponse();
 
           const classified = classifyLLMError(error);
           const interrupted = await isOperationInterrupted(ctx);
@@ -1137,7 +1161,12 @@ export const createRuntimeExecutors = (
               type: 'stream_retry',
             });
 
-            await sleep(delayMs);
+            try {
+              await waitForRetry(delayMs, ctx.signal);
+            } catch (retryError) {
+              if (ctx.signal?.aborted) return preservePartialResponse();
+              throw retryError;
+            }
 
             if (await isOperationInterrupted(ctx)) {
               throw error;
@@ -1152,9 +1181,22 @@ export const createRuntimeExecutors = (
 
       throw new Error('LLM execution retry loop exited unexpectedly');
     } catch (error) {
+      throwIfAborted(ctx.signal);
+      const messageError = formatPersistedLLMError(error);
+      // The failed assistant must keep its cause when the stream/operation has expired.
+      try {
+        await ctx.messageModel.update(assistantMessageItem.id, { error: messageError });
+      } catch (persistenceError) {
+        console.error('[StreamingLLMExecutor] Failed to persist message error', persistenceError);
+      }
       // Publish error event
       await streamManager.publishStreamEvent(operationId, {
-        data: formatErrorEventData(error, 'llm_execution'),
+        data: {
+          ...messageError.body,
+          error: messageError.message,
+          errorType: messageError.type,
+          phase: 'llm_execution',
+        },
         stepIndex,
         type: 'error',
       });
@@ -1163,7 +1205,7 @@ export const createRuntimeExecutors = (
         `[StreamingLLMExecutor][${operationId}:${stepIndex}] LLM execution failed:`,
         error,
       );
-      throw error;
+      throw rememberPersistedLLMError(error, messageError);
     }
   },
 
@@ -1184,6 +1226,9 @@ export const createRuntimeExecutors = (
     );
     const messagesToCompress = preservedMessages.length > 0 ? messages.slice(0, -1) : messages;
     const compressedMessagesFallback = [...messagesToCompress, ...preservedMessages];
+    const compressionModel =
+      newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
+    let summaryUsage: any;
 
     if (!topicId || !ctx.userId) {
       return {
@@ -1214,14 +1259,15 @@ export const createRuntimeExecutors = (
         topicId,
       });
 
-      const messageIds = dbMessages
-        .filter(
-          (message) =>
-            message.role !== 'compressedGroup' &&
-            Boolean(message.id) &&
-            !preservedMessageIds.has(message.id),
-        )
-        .map((message) => message.id);
+      // Keep the exact source snapshot while the model is running. Messages added
+      // concurrently must not be hidden by a summary that never saw them.
+      const messagesToSummarize = dbMessages.filter(
+        (message) =>
+          message.role !== 'compressedGroup' &&
+          Boolean(message.id) &&
+          !preservedMessageIds.has(message.id),
+      );
+      const messageIds = messagesToSummarize.map((message) => message.id);
 
       if (messageIds.length === 0 || messagesToCompress.length === 0) {
         return {
@@ -1248,14 +1294,6 @@ export const createRuntimeExecutors = (
       const latestAssistantMessage = dbMessages.findLast((message) => message.role === 'assistant');
       const followUpParentId = incomingParentMessageId ?? latestAssistantMessage?.id;
       const messageService = new MessageService(ctx.serverDB, ctx.userId);
-      const compressionResult = await messageService.createCompressionGroup(topicId, messageIds, {
-        agentId: state.metadata?.agentId,
-        threadId: state.metadata?.threadId,
-        topicId,
-      });
-
-      const compressionModel =
-        newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
 
       if (!compressionModel?.model || !compressionModel?.provider) {
         return {
@@ -1279,17 +1317,18 @@ export const createRuntimeExecutors = (
         };
       }
 
-      const compressionPayload = chainCompressContext(compressionResult.messagesToSummarize);
+      const compressionPayload = chainCompressContext(messagesToSummarize);
       const compressionRuntime = await initModelRuntimeFromDB(
         ctx.serverDB,
         ctx.userId,
         compressionModel.provider,
+        { sessionId: state.metadata?.sessionId, topicId },
       );
 
       let summaryContent = '';
-      let summaryUsage: any;
       let summaryError: any;
 
+      ctx.signal?.throwIfAborted();
       const compressionResponse = await compressionRuntime.chat(
         {
           messages: compressionPayload.messages!,
@@ -1301,6 +1340,9 @@ export const createRuntimeExecutors = (
             onCompletion: async (data) => {
               if (data.usage) summaryUsage = data.usage;
             },
+            onContentPart: async (part) => {
+              if (part.partType === 'text') summaryContent += part.content;
+            },
             onError: async (errorData) => {
               summaryError = errorData;
             },
@@ -1308,11 +1350,13 @@ export const createRuntimeExecutors = (
               summaryContent += text;
             },
           },
+          signal: ctx.signal,
           user: ctx.userId,
         },
       );
 
-      await consumeStreamUntilDone(compressionResponse);
+      await consumeStreamUntilDone(compressionResponse, ctx.signal);
+      ctx.signal?.throwIfAborted();
 
       if (summaryError) {
         throw new Error(
@@ -1322,18 +1366,22 @@ export const createRuntimeExecutors = (
         );
       }
 
-      const finalCompression = await messageService.finalizeCompression(
-        compressionResult.messageGroupId,
-        summaryContent,
+      if (!summaryContent.trim()) throw new Error('Compression returned an empty summary');
+
+      // Publish a complete summary and hide its source messages atomically, only
+      // after the stream has finished successfully.
+      const compressionResult = await messageService.createCompressionGroup(
+        topicId,
+        messageIds,
         {
           agentId: state.metadata?.agentId,
           threadId: state.metadata?.threadId,
           topicId,
         },
+        summaryContent,
       );
 
-      const compressedMessagesBase =
-        finalCompression.messages || compressionResult.messagesToSummarize;
+      const compressedMessagesBase = compressionResult.messages || messagesToSummarize;
       const compressedMessages = [...compressedMessagesBase];
 
       for (const preservedMessage of preservedMessages) {
@@ -1351,19 +1399,6 @@ export const createRuntimeExecutors = (
       }
 
       newState.messages = compressedMessages;
-
-      if (summaryUsage) {
-        const { usage, cost } = UsageCounter.accumulateLLM({
-          cost: newState.cost,
-          model: compressionModel.model,
-          modelUsage: summaryUsage,
-          provider: compressionModel.provider,
-          usage: newState.usage,
-        });
-
-        newState.usage = usage;
-        if (cost) newState.cost = cost;
-      }
 
       events.push({
         groupId: compressionResult.messageGroupId,
@@ -1390,6 +1425,10 @@ export const createRuntimeExecutors = (
         },
       };
     } catch (error) {
+      if (ctx.signal?.aborted) {
+        newState.status = 'interrupted';
+        return { events, newState };
+      }
       log(
         `${stagePrefix} Compression failed. originalTokens=%d error=%O`,
         currentTokenCount,
@@ -1417,6 +1456,20 @@ export const createRuntimeExecutors = (
           },
         },
       };
+    } finally {
+      // A reported completion still incurred usage when Stop won the publication
+      // race. Preserve it once without publishing an incomplete summary.
+      if (summaryUsage && compressionModel?.model && compressionModel.provider) {
+        const { usage, cost } = UsageCounter.accumulateLLM({
+          cost: newState.cost,
+          model: compressionModel.model,
+          modelUsage: summaryUsage,
+          provider: compressionModel.provider,
+          usage: newState.usage,
+        });
+        newState.usage = usage;
+        if (cost) newState.cost = cost;
+      }
     }
   },
   /**
@@ -1426,6 +1479,7 @@ export const createRuntimeExecutors = (
     const { payload } = instruction as Extract<AgentInstruction, { type: 'call_tool' }>;
     const { operationId, stepIndex, streamManager, toolExecutionService } = ctx;
     const events: AgentEvent[] = [];
+    if (ctx.signal?.aborted) return { events, newState: { ...state, status: 'interrupted' } };
 
     const operationLogId = `${operationId}:${stepIndex}`;
     log(`[${operationLogId}] payload: %O`, payload);
@@ -1438,6 +1492,7 @@ export const createRuntimeExecutors = (
     });
 
     try {
+      throwIfAborted(ctx.signal);
       // payload is { parentMessageId, toolCalling: ChatToolPayload }
       const chatToolPayload: ChatToolPayload = payload.toolCalling;
 
@@ -1499,8 +1554,9 @@ export const createRuntimeExecutors = (
       // Execute tool using ToolExecutionService
       log(`[${operationLogId}] Executing tool ${toolName} ...`);
       const execution = await executeToolWithRetry(
-        () =>
-          toolExecutionService.executeTool(chatToolPayload, {
+        () => {
+          throwIfAborted(ctx.signal);
+          return toolExecutionService.executeTool(chatToolPayload, {
             activeDeviceId: state.metadata?.activeDeviceId,
             agentId: state.metadata?.agentId,
             memoryToolPermission: agentConfig?.chatConfig?.memory?.toolPermission,
@@ -1511,7 +1567,8 @@ export const createRuntimeExecutors = (
             toolResultMaxLength,
             topicId: ctx.topicId,
             userId: ctx.userId,
-          }),
+          });
+        },
         {
           isInterrupted: () => isOperationInterrupted(ctx),
           maxRetries: TOOL_MAX_RETRIES,
@@ -1649,6 +1706,7 @@ export const createRuntimeExecutors = (
       );
 
       log('[%s:%d] Tool execution completed', operationId, stepIndex);
+      if (ctx.signal?.aborted) newState.status = 'interrupted';
 
       return {
         events,
@@ -1680,6 +1738,7 @@ export const createRuntimeExecutors = (
         },
       };
     } catch (error) {
+      if (ctx.signal?.aborted) return { events, newState: { ...state, status: 'interrupted' } };
       // Publish tool execution error event
       await streamManager.publishStreamEvent(operationId, {
         data: formatErrorEventData(error, 'tool_execution'),
@@ -1710,6 +1769,7 @@ export const createRuntimeExecutors = (
     const { parentMessageId, toolsCalling } = payload;
     const { operationId, stepIndex, streamManager, toolExecutionService } = ctx;
     const events: AgentEvent[] = [];
+    if (ctx.signal?.aborted) return { events, newState: { ...state, status: 'interrupted' } };
 
     const operationLogId = `${operationId}:${stepIndex}`;
     log(
@@ -1795,8 +1855,9 @@ export const createRuntimeExecutors = (
           const batchAgentConfig = state.metadata?.agentConfig;
 
           const execution = await executeToolWithRetry(
-            () =>
-              toolExecutionService.executeTool(chatToolPayload, {
+            () => {
+              throwIfAborted(ctx.signal);
+              return toolExecutionService.executeTool(chatToolPayload, {
                 activeDeviceId: state.metadata?.activeDeviceId,
                 agentId: state.metadata?.agentId,
                 memoryToolPermission: batchAgentConfig?.chatConfig?.memory?.toolPermission,
@@ -1807,7 +1868,8 @@ export const createRuntimeExecutors = (
                 toolResultMaxLength: batchAgentConfig?.chatConfig?.toolResultMaxLength,
                 topicId: ctx.topicId,
                 userId: ctx.userId,
-              }),
+              });
+            },
             {
               isInterrupted: () => isOperationInterrupted(ctx),
               maxRetries: TOOL_MAX_RETRIES,
@@ -1884,6 +1946,7 @@ export const createRuntimeExecutors = (
             toolName,
           };
         } catch (error) {
+          if (ctx.signal?.aborted) return;
           console.error(`[${operationLogId}] Tool execution failed for ${toolName}:`, error);
 
           // Publish error event
@@ -1983,6 +2046,7 @@ export const createRuntimeExecutors = (
     const lastToolMessageId = toolMessageIds.at(-1);
 
     // If there are remaining client tools in a mixed batch, interrupt after server tools
+    if (ctx.signal?.aborted) return { events, newState: { ...newState, status: 'interrupted' } };
     if (clientTools.length > 0) {
       log(
         `[${operationLogId}][call_tools_batch] Mixed batch: ${serverTools.length} server tools done, pausing for ${clientTools.length} client tools`,

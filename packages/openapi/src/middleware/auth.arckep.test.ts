@@ -1,8 +1,7 @@
-import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { honoApp } from '../app';
 import { clearArckepUserCache } from '../helpers/arckepServiceAuth';
-import { requireAuth, userAuthMiddleware } from './auth';
 
 const findByEmail = vi.fn();
 const onConflictDoNothing = vi.fn(async () => undefined);
@@ -45,20 +44,22 @@ vi.mock('@/utils/server/auth', () => ({
   extractBearerToken: (header?: string) =>
     header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null,
 }));
+// Keep the production middleware and onError handler; only replace unrelated routes.
+vi.mock('../routes', async () => {
+  const { Hono } = await import('hono');
+  const { requireAuth } = await import('./auth');
+  return {
+    default: {
+      me: new Hono().get('/', requireAuth, (c) =>
+        c.json({ authType: c.get('authType'), userId: c.get('userId') }),
+      ),
+    },
+  };
+});
 
 const SERVICE_KEY = 'a'.repeat(64);
 
-const buildApp = () => {
-  const app = new Hono();
-  app.use('*', userAuthMiddleware);
-  app.get('/me', requireAuth, (c) =>
-    c.json({ authType: c.get('authType'), userId: c.get('userId') }),
-  );
-  app.onError((err, c) => c.json({ error: err.message }, (err as any).status || 500));
-  return app;
-};
-
-const call = (headers: Record<string, string>) => buildApp().request('/me', { headers });
+const call = (headers: Record<string, string>) => honoApp.request('/api/v1/me', { headers });
 
 describe('arckep service auth', () => {
   beforeEach(() => {
@@ -154,5 +155,34 @@ describe('arckep service auth', () => {
     findByEmail.mockResolvedValue(null);
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '9' });
     expect(res.status).toBe(401);
+  });
+
+  it('конфликт регистрации с другим процессом перечитывает и проверяет аккаунт', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 422 })),
+    );
+    findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'user_4' });
+    const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ authType: 'arckep-service', userId: 'user_4' });
+  });
+
+  it('конфликт регистрации не доверяет совпавшему email без bridge-пароля', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 422 })),
+    );
+    findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'attacker' });
+    accountRows = [{ password: 'hash:attacker-password' }];
+    const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
+    expect(res.status).toBe(401);
+    expect(onConflictDoNothing).not.toHaveBeenCalled();
+  });
+
+  it('неожиданная ошибка БД остаётся 500 в настоящем обработчике', async () => {
+    findByEmail.mockRejectedValue(new Error('database unavailable'));
+    const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
+    expect(res.status).toBe(500);
   });
 });

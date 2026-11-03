@@ -1,8 +1,10 @@
 import type { LobeChatDatabase } from '@lobechat/database';
 import { readFilePage } from '@lobechat/prompts';
+import { notExists } from 'drizzle-orm';
 
 import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
+import { messagePlugins } from '@/database/schemas';
 
 export interface TopicContextParams {
   mode?: 'summary' | 'archive';
@@ -36,6 +38,22 @@ export async function getTopicContext(
           eq(fields.userId, userId),
           eq(fields.topicId, params.topicId),
           lte(fields.createdAt, snapshot),
+          // Archive pages and summaries are derived from this history. Reading
+          // them back recursively multiplies escaped copies of earlier pages.
+          notExists(
+            db
+              .select({ id: messagePlugins.id })
+              .from(messagePlugins)
+              .where(
+                and(
+                  eq(messagePlugins.id, fields.id),
+                  eq(messagePlugins.userId, userId),
+                  eq(fields.role, 'tool'),
+                  eq(messagePlugins.identifier, 'lobe-topic-reference'),
+                  eq(messagePlugins.apiName, 'getTopicContext'),
+                ),
+              ),
+          ),
         ),
       orderBy: (fields, { asc }) => [asc(fields.createdAt), asc(fields.id)],
     });

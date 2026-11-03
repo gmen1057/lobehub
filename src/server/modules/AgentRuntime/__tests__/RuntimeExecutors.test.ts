@@ -333,6 +333,7 @@ describe('RuntimeExecutors', () => {
 
     it('should execute compress_context and return compression_result', async () => {
       const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
         await options?.callback?.onText?.('summary');
         await options?.callback?.onCompletion?.({
           usage: {
@@ -354,7 +355,9 @@ describe('RuntimeExecutors', () => {
         messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         success: true,
       });
-      mockFinalizeCompression.mockResolvedValue({
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: [
           { content: 'summary', id: 'group-123', role: 'compressedGroup' },
           { content: 'loading', id: 'assistant-existing', role: 'assistant' },
@@ -374,7 +377,7 @@ describe('RuntimeExecutors', () => {
       const result = await executors.compress_context!(instruction, state);
 
       expect(mockCreateCompressionGroup).toHaveBeenCalledTimes(1);
-      expect(mockFinalizeCompression).toHaveBeenCalledTimes(1);
+      expect(mockFinalizeCompression).not.toHaveBeenCalled();
       expect(mockChat).toHaveBeenCalledTimes(1);
       expect(result.nextContext?.phase).toBe('compression_result');
       expect((result.nextContext?.payload as any).compressedMessages[0]).toEqual({
@@ -390,6 +393,156 @@ describe('RuntimeExecutors', () => {
       });
       expect(result.newState.usage.llm.tokens.total).toBe(15);
     });
+
+    it('should preserve multipart summary text and attribute its model call to the conversation', async () => {
+      const { consumeStreamUntilDone: realConsume } =
+        await import('../../../../../packages/model-runtime/src/utils/consumeStream');
+      const { createCallbacksTransformer } =
+        await import('../../../../../packages/model-runtime/src/core/streams/protocol');
+      vi.mocked(consumeStreamUntilDone).mockImplementationOnce(realConsume);
+      const mockChat = vi.fn(async (_payload, options) => {
+        const chunks = [
+          ['reasoning_part', { content: 'private reasoning', partType: 'text' }],
+          ['content_part', { content: 'First ', partType: 'text' }],
+          ['content_part', { content: 'image bytes', partType: 'image' }],
+          ['content_part', { content: 'summary.', partType: 'text' }],
+        ];
+        const source = new ReadableStream<string>({
+          start(controller) {
+            for (const [event, data] of chunks) {
+              controller.enqueue(`event: ${event}\n`);
+              controller.enqueue(`data: ${JSON.stringify(data)}\n\n`);
+            }
+            controller.close();
+          },
+        });
+        return new Response(source.pipeThrough(createCallbacksTransformer(options.callback)));
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
+      const history = { content: 'history', id: 'msg-history', role: 'user' };
+      mockMessageModel.query.mockResolvedValue([history]);
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messages: [{ content: 'First summary.', id: 'group-123', role: 'compressedGroup' }],
+        messagesToSummarize: [history],
+        success: true,
+      });
+      const state = createMockState({
+        messages: [history],
+        metadata: { agentId: 'agent-123', sessionId: 'session-123', topicId: 'topic-123' },
+        modelRuntimeConfig: { model: 'gemini-3.8-pro', provider: 'google' },
+      });
+
+      const result = await createRuntimeExecutors(ctx).compress_context!(
+        createCompressContextInstruction(state.messages),
+        state,
+      );
+
+      expect(mockCreateCompressionGroup).toHaveBeenCalledWith(
+        'topic-123',
+        ['msg-history'],
+        expect.any(Object),
+        'First summary.',
+      );
+      expect(result.newState.messages[0].content).toBe('First summary.');
+      expect(initModelRuntimeFromDB).toHaveBeenCalledWith(ctx.serverDB, ctx.userId, 'google', {
+        sessionId: 'session-123',
+        topicId: 'topic-123',
+      });
+    });
+
+    it.each(['', ' \n\t '])(
+      'should leave original history intact for an empty summary (%j)',
+      async (summary) => {
+        const history = { content: 'history', id: 'msg-history', role: 'user' };
+        mockMessageModel.query.mockResolvedValue([history]);
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
+          chat: vi.fn(async (_payload, options) => {
+            await options.callback.onText?.(summary);
+            return new Response('done');
+          }),
+        } as any);
+        const state = createMockState({ messages: [history] });
+
+        const result = await createRuntimeExecutors(ctx).compress_context!(
+          createCompressContextInstruction(state.messages),
+          state,
+        );
+
+        expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+        expect(mockFinalizeCompression).not.toHaveBeenCalled();
+        expect(result.newState.messages).toEqual([history]);
+        expect(result.nextContext?.payload).toMatchObject({ skipped: true });
+        expect(result.events).toContainEqual(
+          expect.objectContaining({ type: 'compression_error' }),
+        );
+      },
+    );
+
+    it('should not compress messages received while the summary is being generated', async () => {
+      const history = { content: 'history', id: 'msg-history', role: 'user' };
+      const concurrent = { content: 'new instruction', id: 'msg-new', role: 'user' };
+      const dbMessages = [history];
+      mockMessageModel.query.mockResolvedValue(dbMessages);
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
+        chat: vi.fn(async (_payload, options) => {
+          dbMessages.push(concurrent);
+          await options.callback.onText?.('summary');
+          return new Response('done');
+        }),
+      } as any);
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messages: [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }, concurrent],
+        success: true,
+      });
+      const state = createMockState({ messages: [history] });
+
+      const result = await createRuntimeExecutors(ctx).compress_context!(
+        createCompressContextInstruction(state.messages),
+        state,
+      );
+
+      expect(mockCreateCompressionGroup).toHaveBeenCalledWith(
+        'topic-123',
+        ['msg-history'],
+        expect.any(Object),
+        'summary',
+      );
+      expect(result.newState.messages.at(-1)).toEqual(concurrent);
+    });
+
+    it.each([false, true])(
+      'does not publish an aborted summary and preserves reported usage=%s',
+      async (hasUsage) => {
+        const controller = new AbortController();
+        const history = { content: 'history', id: 'msg-history', role: 'user' };
+        mockMessageModel.query.mockResolvedValue([history]);
+        vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
+          chat: vi.fn(async (_payload, options) => {
+            expect(options.signal).toBe(controller.signal);
+            await options.callback.onText?.('partial summary');
+            if (hasUsage)
+              await options.callback.onCompletion?.({
+                usage: { totalInputTokens: 10, totalOutputTokens: 3, totalTokens: 13 },
+              });
+            controller.abort();
+            return new Response('done');
+          }),
+        } as any);
+        const state = createMockState({ messages: [history] });
+
+        const result = await createRuntimeExecutors({ ...ctx, signal: controller.signal })
+          .compress_context!(createCompressContextInstruction(state.messages), state);
+
+        expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+        expect(result.newState.messages).toEqual([history]);
+        expect(result.newState.status).toBe('interrupted');
+        expect(result.nextContext).toBeUndefined();
+        if (hasUsage) expect(result.newState.usage?.llm.tokens.total).toBe(13);
+        else expect(result.newState.usage).toEqual(state.usage);
+      },
+    );
 
     it('should skip compress_context when topic metadata is missing', async () => {
       const executors = createRuntimeExecutors({
@@ -464,7 +617,7 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).toHaveBeenCalledTimes(1);
+      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
       expect(mockFinalizeCompression).not.toHaveBeenCalled();
       expect(result.nextContext?.payload as any).toMatchObject({
         compressedMessages: [{ content: 'history', role: 'user' }],
@@ -475,6 +628,12 @@ describe('RuntimeExecutors', () => {
 
     it('should continue when compress_context fails', async () => {
       mockCreateCompressionGroup.mockRejectedValueOnce(new Error('compression failed'));
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
+        chat: vi.fn(async (_payload, options) => {
+          await options.callback.onText?.('summary');
+          return new Response('done');
+        }),
+      } as any);
 
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
@@ -511,7 +670,9 @@ describe('RuntimeExecutors', () => {
         messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         success: true,
       });
-      mockFinalizeCompression.mockResolvedValue({
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }],
         success: true,
       });
@@ -532,6 +693,7 @@ describe('RuntimeExecutors', () => {
         'topic-123',
         ['msg-history', 'assistant-existing'],
         expect.any(Object),
+        'summary',
       );
       expect((result.nextContext?.payload as any).compressedMessages).toEqual([
         { content: 'summary', id: 'group-123', role: 'compressedGroup' },
@@ -539,7 +701,7 @@ describe('RuntimeExecutors', () => {
       ]);
     });
 
-    it('should fallback to messagesToSummarize when finalizeCompression does not return messages', async () => {
+    it('should fallback to the captured source snapshot when the save does not return messages', async () => {
       const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
         await options?.callback?.onText?.('summary');
         return new Response('done');
@@ -555,7 +717,9 @@ describe('RuntimeExecutors', () => {
         messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         success: true,
       });
-      mockFinalizeCompression.mockResolvedValue({
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: undefined,
         success: true,
       });
@@ -571,6 +735,7 @@ describe('RuntimeExecutors', () => {
 
       expect((result.nextContext?.payload as any).compressedMessages).toEqual([
         { content: 'history', id: 'msg-history', role: 'user' },
+        { content: 'loading', id: 'assistant-existing', role: 'assistant' },
       ]);
     });
 
@@ -597,7 +762,9 @@ describe('RuntimeExecutors', () => {
         messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         success: true,
       });
-      mockFinalizeCompression.mockResolvedValue({
+      mockCreateCompressionGroup.mockResolvedValue({
+        messageGroupId: 'group-123',
+        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: [
           { content: 'summary', id: 'group-123', role: 'compressedGroup' },
           preservedMessage,
@@ -622,6 +789,7 @@ describe('RuntimeExecutors', () => {
 
     it('should continue with skipped compression when the compression model reports a summary error', async () => {
       const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
+        await options?.callback?.onText?.('incomplete summary');
         await options?.callback?.onError?.({ message: 'summary failed' });
         return new Response('done');
       });
@@ -647,6 +815,7 @@ describe('RuntimeExecutors', () => {
       const result = await executors.compress_context!(instruction, state);
 
       expect(mockFinalizeCompression).not.toHaveBeenCalled();
+      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
       expect((result.nextContext?.payload as any).skipped).toBe(true);
       expect(result.events).toContainEqual(
         expect.objectContaining({
@@ -3556,8 +3725,9 @@ describe('RuntimeExecutors', () => {
         expect.objectContaining({
           type: 'error',
           data: expect.objectContaining({
-            error: '401 Unauthorized',
-            errorType: 'Error',
+            error: 'Model request failed',
+            errorType: 401,
+            status: 401,
             phase: 'llm_execution',
           }),
         }),
@@ -3678,7 +3848,7 @@ describe('RuntimeExecutors', () => {
         errorSpy.mockRestore();
       });
 
-      it('человеку уходит прежний текст про пополнение баланса', async () => {
+      it('человеку уходит безопасный код нехватки баланса', async () => {
         const mockChat = vi.fn().mockRejectedValue(balanceError());
         const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -3687,7 +3857,12 @@ describe('RuntimeExecutors', () => {
         const errorEvent = mockStreamManager.publishStreamEvent.mock.calls.find(
           ([, event]: [string, { type: string }]) => event.type === 'error',
         )?.[1];
-        expect(errorEvent.data).toMatchObject({ error: BALANCE_MESSAGE, phase: 'llm_execution' });
+        expect(errorEvent.data).toMatchObject({
+          code: 'INSUFFICIENT_BALANCE',
+          error: 'Insufficient balance',
+          phase: 'llm_execution',
+          status: 402,
+        });
         errorSpy.mockRestore();
       });
 

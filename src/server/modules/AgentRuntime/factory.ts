@@ -30,20 +30,11 @@ const isQueueModeEnabled = (): boolean => {
  * Create AgentStateManager based on configuration
  */
 export const createAgentStateManager = (): IAgentStateManager => {
-  // When queue mode is disabled, always use InMemory for simplicity
-  if (!isQueueModeEnabled()) {
-    log('Queue mode disabled, using InMemoryAgentStateManager');
-    return inMemoryAgentStateManager;
-  }
-
-  // Queue mode enabled, Redis is required
-  if (!isRedisAvailable()) {
-    throw new Error(
-      'Redis is required when AGENT_RUNTIME_MODE=queue. Please configure `REDIS_URL`.',
-    );
-  }
-
-  return new AgentStateManager();
+  // State and events must use the same shared backend: a local-mode worker can
+  // receive Stop/status requests in another process just like a queued worker.
+  if (isRedisAvailable()) return new AgentStateManager();
+  if (!isQueueModeEnabled()) return inMemoryAgentStateManager;
+  throw new Error('Redis is required when AGENT_RUNTIME_MODE=queue. Please configure `REDIS_URL`.');
 };
 
 /**

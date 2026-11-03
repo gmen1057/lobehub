@@ -125,7 +125,8 @@ export const resolveArckepUser = async (
       await signUp({ email, name: `User ${studioUserId}`, password });
     } catch (error) {
       log('sign-up for studio user %d failed: %O', studioUserId, error);
-      return null;
+      // Another process may have created it, or the response may have been lost.
+      // Re-read, but never accept an email match without verifying its credential.
     }
     user = await UserModel.findByEmail(db, email);
     if (!user) {

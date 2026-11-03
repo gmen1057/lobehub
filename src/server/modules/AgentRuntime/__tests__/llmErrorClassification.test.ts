@@ -55,6 +55,53 @@ describe('classifyLLMError', () => {
     expect(classifyLLMError(new Error('unexpected upstream issue')).kind).toBe('retry');
   });
 
+  it.each([400, 401, 403, 404, 409, 422])(
+    'should stop a permanent HTTP %s before the generic ProviderBizError retry',
+    (status) => {
+      expect(
+        classifyLLMError({
+          error: { message: 'Provider rejected the request', status },
+          errorType: 'ProviderBizError',
+        }).kind,
+      ).toBe('stop');
+    },
+  );
+
+  it.each([408, 425, 429, 500, 502, 503])('should keep HTTP %s retryable', (status) => {
+    expect(
+      classifyLLMError({
+        error: { message: 'Provider could not complete the request', status },
+        errorType: 'ProviderBizError',
+      }).kind,
+    ).toBe('retry');
+  });
+
+  it('preserves HTTP 404 through OpenAI normalization and JSON transport', () => {
+    const apiError = OpenAI.APIError.generate(
+      404,
+      {
+        error: { message: 'This model is unavailable for free. Use the paid model.' },
+      },
+      undefined,
+      new Headers() as any,
+    );
+    const { errorResult } = handleOpenAIError(apiError);
+    // Exercise the actual JSON wire boundary, not an in-memory clone.
+    // eslint-disable-next-line unicorn/prefer-structured-clone
+    const payload = JSON.parse(
+      JSON.stringify({
+        error: errorResult,
+        errorType: 'ProviderBizError',
+        provider: 'openrouter',
+      }),
+    );
+    expect(payload.error.status).toBe(404);
+    expect(classifyLLMError(payload).kind).toBe('stop');
+    // RuntimeExecutors throws an Error carrying the stream payload's fields.
+    const streamExecutionError = Object.assign(new Error('LLM stream error'), payload);
+    expect(classifyLLMError(streamExecutionError).kind).toBe('stop');
+  });
+
   // arckep (19.10.2026): нехватка баланса — повторять бессмысленно (раньше 6 попыток по ~30 с подряд)
   describe('нехватка баланса (HTTP 402 прокси студии)', () => {
     const BALANCE_MESSAGE =
@@ -64,7 +111,7 @@ describe('classifyLLMError', () => {
     };
 
     // что model-runtime кидает наверх, когда провайдер ответил 402: тело ошибки в `error`, тип — ProviderBizError
-    // (общий для повторяемых и неповторяемых ошибок), HTTP-статус при оборачивании теряется
+    // (общий для повторяемых и неповторяемых ошибок).
     const openAICompatiblePayload = () => {
       const apiError = OpenAI.APIError.generate(402, body, undefined, new Headers() as any);
       const { errorResult } = handleOpenAIError(apiError);
@@ -91,11 +138,10 @@ describe('classifyLLMError', () => {
       return { error, errorType, provider: 'google' };
     };
 
-    it('openai-совместимый провайдер: ProviderBizError без статуса, признаки в error → stop', () => {
+    it('openai-совместимый провайдер: ProviderBizError со статусом и признаками в error → stop', () => {
       const payload = openAICompatiblePayload();
-      // страховка от случайного изменения формы: статуса в обёртке нет, а тип именно «повторяемый»
       expect(payload.errorType).toBe('ProviderBizError');
-      expect(payload.error.status).toBeUndefined();
+      expect(payload.error.status).toBe(402);
 
       expect(classifyLLMError(payload).kind).toBe('stop');
     });

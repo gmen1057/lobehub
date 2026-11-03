@@ -1,9 +1,12 @@
 type LLMErrorKind = 'retry' | 'stop';
 
 interface ClassifiedLLMError {
+  billing?: boolean;
   code?: string;
   kind: LLMErrorKind;
   message: string;
+  status?: number;
+  type?: string;
 }
 
 interface LLMErrorSignal {
@@ -115,7 +118,8 @@ const normalizeCode = (value?: unknown) => {
     .replaceAll(/[\s-]+/g, '_');
 };
 
-const normalizeErrorType = (value?: string) => value?.trim();
+const normalizeErrorType = (value?: unknown) =>
+  typeof value === 'string' ? value.trim() : undefined;
 
 const tryExtractStatus = (message: string) => {
   const matches = message.match(/\b([45]\d{2})\b/);
@@ -133,30 +137,8 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
     return { billing, message, status: tryExtractStatus(message) };
   }
 
-  if (error instanceof Error) {
-    const raw = error as Error & {
-      code?: string;
-      errorType?: string;
-      status?: number;
-      statusCode?: number;
-      type?: string;
-    };
-    const message = (raw.message || raw.name || 'unknown error').toLowerCase();
-
-    return {
-      billing,
-      code: normalizeCode(raw.code),
-      errorType: normalizeErrorType(raw.errorType || raw.type),
-      message,
-      status:
-        typeof raw.status === 'number'
-          ? raw.status
-          : typeof raw.statusCode === 'number'
-            ? raw.statusCode
-            : tryExtractStatus(message),
-    };
-  }
-
+  // Stream errors are rethrown as Error objects with the provider payload attached.
+  // Read nested status/code for both forms instead of dropping it for instanceof Error.
   if (error && typeof error === 'object') {
     const raw = error as {
       code?: string;
@@ -170,6 +152,7 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
       };
       errorType?: string;
       message?: string;
+      name?: string;
       status?: number;
       statusCode?: number;
       type?: string;
@@ -180,6 +163,7 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
       raw.message ||
       nested?.message ||
       nestedError?.message ||
+      raw.name ||
       'unknown error'
     ).toLowerCase();
 
@@ -216,8 +200,11 @@ const classifyKind = ({
   // Нехватка баланса — до разбора errorType: у провайдеров она приходит как ProviderBizError (повторяемый)
   if (billing || status === PAYMENT_REQUIRED_STATUS) return 'stop';
 
+  // A provider wrapper describes the source, not whether a request can succeed
+  // unchanged. Preserve the permanent HTTP refusal before its generic retry type.
+  if (status !== undefined && [400, 401, 403, 404, 409, 422].includes(status)) return 'stop';
+
   if (errorType === 'ProviderBizError') {
-    if (status === 400 || status === 422) return 'stop';
     if (message.includes('invalid_request_error') || message.includes('invalid request')) {
       return 'stop';
     }
@@ -241,11 +228,8 @@ const classifyKind = ({
     if (code.includes('RATE_LIMIT') || code.includes('TIMEOUT')) return 'retry';
   }
 
-  if (status !== undefined) {
-    if (status === 401 || status === 403) return 'stop';
-    if (status === 400 || status === 404 || status === 409 || status === 422) return 'stop';
-    if (status === 408 || status === 425 || status === 429 || status >= 500) return 'retry';
-  }
+  if (status !== undefined && (status === 408 || status === 425 || status === 429 || status >= 500))
+    return 'retry';
 
   if (hasAnyKeyword(message, STOP_KEYWORDS)) return 'stop';
   if (hasAnyKeyword(message, RETRY_KEYWORDS)) return 'retry';
@@ -257,9 +241,12 @@ export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
   const signal = normalizeSignal(error);
 
   return {
+    billing: signal.billing,
     code: signal.code || signal.errorType,
     kind: classifyKind(signal),
     message: signal.message,
+    status: signal.status,
+    type: signal.errorType,
   };
 };
 

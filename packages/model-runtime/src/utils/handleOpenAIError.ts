@@ -23,6 +23,17 @@ export const handleOpenAIError = (
       errorResult = { headers: error.headers, status: error.status };
     }
 
+    // APIError keeps HTTP status outside the provider body. Retaining only that
+    // body loses permanent failures (e.g. 404) when serialized into the stream.
+    if (typeof error.status === 'number') {
+      errorResult = {
+        ...(typeof errorResult === 'object' && errorResult !== null
+          ? errorResult
+          : { message: String(errorResult) }),
+        status: error.status,
+      };
+    }
+
     return {
       errorResult,
     };
