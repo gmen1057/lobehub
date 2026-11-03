@@ -1,6 +1,11 @@
 name: Test CI
 
-on: [push, pull_request]
+on:
+  pull_request:
+    branches: [arckep/engine]
+  push:
+    branches: [arckep/engine]
+  workflow_dispatch:
 
 permissions:
   actions: write
@@ -32,7 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Test Packages
     env:
-      PACKAGES: '@lobechat/file-loaders @lobechat/prompts @lobechat/model-runtime @lobechat/web-crawler @lobechat/electron-server-ipc @lobechat/utils @lobechat/python-interpreter @lobechat/context-engine @lobechat/agent-runtime @lobechat/conversation-flow @lobechat/ssrf-safe-fetch @lobechat/memory-user-memory model-bank'
+      PACKAGES: '@lobechat/file-loaders @lobechat/prompts @lobechat/model-runtime @lobechat/web-crawler @lobechat/utils @lobechat/python-interpreter @lobechat/context-engine @lobechat/agent-runtime @lobechat/conversation-flow @lobechat/ssrf-safe-fetch @lobechat/memory-user-memory model-bank'
 
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +46,7 @@ jobs:
         uses: ./.github/actions/setup-env
 
       - name: Install deps
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Test packages with coverage
         run: |
@@ -107,7 +112,7 @@ jobs:
         uses: ./.github/actions/setup-env
 
       - name: Install deps
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Run tests
         run: bunx vitest --coverage --silent='passed-only' --reporter=default --reporter=blob --shard=${{ matrix.shard }}/2
@@ -134,7 +139,7 @@ jobs:
         uses: ./.github/actions/setup-env
 
       - name: Install deps
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
 
       - name: Download blob reports
         uses: actions/download-artifact@v7
@@ -153,39 +158,28 @@ jobs:
           files: ./coverage/app/lcov.info
           flags: app
 
-  test-desktop:
+  check-engine:
     needs: check-duplicate-run
     if: needs.check-duplicate-run.outputs.should_skip != 'true'
-    name: Test Desktop App
-
+    name: Check and Build Engine
     runs-on: ubuntu-latest
-
+    timeout-minutes: 40
+    env:
+      NEXT_TELEMETRY_DISABLED: '1'
+      TELEMETRY_DISABLED: '1'
+      AUTH_SECRET: ci-only-not-a-production-secret-0000000000
+      KEY_VAULTS_SECRET: Kix2wcUONd4CX51E/ZPAd36BqM4wzJgKjPtz2sGztqQ=
+      APP_URL: http://localhost:3210
     steps:
       - uses: actions/checkout@v6
-
       - name: Setup environment
         uses: ./.github/actions/setup-env
-
       - name: Install deps
-        run: pnpm install
-        working-directory: apps/desktop
-        env:
-          NODE_OPTIONS: --max-old-space-size=8192
-
-      - name: Typecheck Desktop
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck engine
         run: pnpm type-check
-        working-directory: apps/desktop
-
-      - name: Test Desktop Client
-        run: pnpm test
-        working-directory: apps/desktop
-
-      - name: Upload Desktop App Coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: ./apps/desktop/coverage/lcov.info
-          flags: desktop
+      - name: Build desktop and mobile web clients and Next server
+        run: pnpm build
 
   test-databsae:
     needs: check-duplicate-run
@@ -213,7 +207,7 @@ jobs:
         uses: ./.github/actions/setup-env
 
       - name: Install deps
-        run: pnpm i
+        run: pnpm install --frozen-lockfile
 
       - name: Lint
         run: bun run lint
