@@ -528,6 +528,7 @@
     ],
     "overrides": {
       "@lobehub/editor": "4.17.2",
+      "@types/node": "24.13.2",
       "@types/react": "19.2.13",
       "better-auth": "1.4.6",
       "better-call": "1.1.8",

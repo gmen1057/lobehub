@@ -122,6 +122,7 @@ describe('LobeOpenAI', () => {
             endpoint: 'https://api.openai.com/v1',
             error: {
               cause: { message: 'api is undefined' },
+              status: 400,
             },
             errorType: 'ProviderBizError',
             provider: 'openai',
@@ -156,6 +157,7 @@ describe('LobeOpenAI', () => {
             endpoint: 'https://api.***.com/v1',
             error: {
               cause: { message: 'api is undefined' },
+              status: 400,
             },
             errorType: 'ProviderBizError',
             provider: 'openai',

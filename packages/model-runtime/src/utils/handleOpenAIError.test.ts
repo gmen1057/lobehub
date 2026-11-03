@@ -71,7 +71,7 @@ describe('handleOpenAIError', () => {
 
     it('preserves the HTTP status without mutating the provider body', () => {
       const body = { message: 'Model unavailable', status: 'NOT_FOUND' };
-      const apiError = new OpenAI.APIError(404, body, 'not found', new Headers());
+      const apiError = new OpenAI.APIError(404, body, 'not found', {});
       expect(handleOpenAIError(apiError).errorResult).toEqual({
         message: 'Model unavailable',
         status: 404,
@@ -80,7 +80,7 @@ describe('handleOpenAIError', () => {
     });
 
     it('keeps a plain-text rejection readable and preserves its HTTP status', () => {
-      const apiError = new OpenAI.APIError(403, 'Access denied', undefined, new Headers());
+      const apiError = new OpenAI.APIError(403, 'Access denied', undefined, {});
       expect(handleOpenAIError(apiError).errorResult).toEqual({
         message: 'Access denied',
         status: 403,

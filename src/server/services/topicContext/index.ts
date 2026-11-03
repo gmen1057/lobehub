@@ -1,6 +1,5 @@
 import type { LobeChatDatabase } from '@lobechat/database';
 import { readFilePage } from '@lobechat/prompts';
-import { notExists } from 'drizzle-orm';
 
 import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
@@ -33,7 +32,7 @@ export async function getTopicContext(
     const snapshotAt = snapshot.toISOString();
     const originals = await db.query.messages.findMany({
       columns: { id: true, role: true, content: true },
-      where: (fields, { and, eq, lte }) =>
+      where: (fields, { and, eq, lte, notExists }) =>
         and(
           eq(fields.userId, userId),
           eq(fields.topicId, params.topicId),

@@ -11,7 +11,7 @@ vi.mock('@/database/models/topic', () => ({
 vi.mock('@/database/models/message', () => ({ MessageModel: class {} }));
 
 describe('original conversation archive', () => {
-  it('keeps subsequent pages on the original snapshot, excluding newly written tool results', async () => {
+  it('keeps the requested snapshot timestamp on subsequent pages', async () => {
     findTopic.mockResolvedValue({});
     let filters: any;
     const lte = vi.fn();
@@ -31,7 +31,7 @@ describe('original conversation archive', () => {
         snapshotAt,
       },
     );
-    filters.where({ createdAt: 'created_at' }, { and: vi.fn(), eq: vi.fn(), lte });
+    filters.where({ createdAt: 'created_at' }, { and: vi.fn(), eq: vi.fn(), lte, notExists: vi.fn() });
     expect(lte).toHaveBeenCalledWith('created_at', new Date(snapshotAt));
     expect(result.content).toContain(snapshotAt);
   });

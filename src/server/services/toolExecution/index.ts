@@ -409,7 +409,7 @@ export class ToolExecutionService {
    * Base64 не остаётся ни в тексте для модели, ни в pluginState, ни в базе. Нет пользователя или базы,
    * либо загрузка упала — блок заменяется строкой «[картинка не сохранена: причина]», инструмент не падает.
    */
-  private createMediaProcessor(context: ToolExecutionContext) {
+  private createMediaProcessor(context: ToolExecutionContext, identifier?: string) {
     return async (blocks: ToolCallContent[]): Promise<ToolCallContent[]> => {
       // Текстовые ответы (подключения студии, базы данных и т. д.) хранилища не касаются.
       const needsStorage = blocks.some(
@@ -432,7 +432,10 @@ export class ToolExecutionService {
         return replaceMediaBlocksWithText(blocks, 'хранилище файлов не настроено');
       }
 
-      return processContentBlocks(blocks, fileService, { degradeOnError: true });
+      return processContentBlocks(blocks, fileService, {
+        degradeOnError: true,
+        fileImagesAsMedia: identifier === ARCKEP_E2B_CONNECTOR_ID,
+      });
     };
   }
 
@@ -503,7 +506,7 @@ export class ToolExecutionService {
       const result = await this.mcpService.callTool({
         argsStr: args,
         clientParams: await this.withUserConnectionParams(identifier, mcpParams, context),
-        processContentBlocks: this.createMediaProcessor(context),
+        processContentBlocks: this.createMediaProcessor(context, identifier),
         toolName: apiName,
       });
 

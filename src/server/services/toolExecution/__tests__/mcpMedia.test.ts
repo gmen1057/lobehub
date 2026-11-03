@@ -12,11 +12,15 @@ import { ToolExecutionService } from '../index';
 const mocks = vi.hoisted(() => ({
   callCloudMcpEndpoint: vi.fn(),
   fileServiceCtor: vi.fn(),
+  findTopic: vi.fn(),
   resolveArckepUserId: vi.fn(),
   uploadBase64: vi.fn(),
 }));
 
 vi.mock('@/database/models/plugin', () => ({ PluginModel: vi.fn(() => ({ findById: vi.fn() })) }));
+vi.mock('@/database/models/topic', () => ({
+  TopicModel: vi.fn(() => ({ findById: mocks.findTopic })),
+}));
 vi.mock('../serverRuntimes/arckepStudio', () => ({
   resolveArckepUserId: mocks.resolveArckepUserId,
 }));
@@ -78,6 +82,44 @@ describe('executeMCPTool — картинки и формат ответа', () 
       { text: 'Frame 1:2 "Login"', type: 'text' },
       { data: BASE64, mimeType: 'image/png', type: 'image' },
     ],
+  });
+
+  it('E2B read_file enters the owned image path; another MCP file keeps its existing link contract', async () => {
+    mocks.resolveArckepUserId.mockResolvedValue(15);
+    mocks.findTopic.mockResolvedValue({ id: 'owned-topic' });
+    const e2b = 'mcp-arckep-e2b-sandbox';
+    const raw = {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ content_base64: BASE64, filename: 'scan.png', success: true }),
+        },
+      ],
+    };
+    const { service } = serviceReturning(raw);
+    const result = await service.executeTool(payload(e2b, 'read_file'), {
+      ...context,
+      topicId: 'owned-topic',
+      toolManifestMap: {
+        [e2b]: {
+          identifier: e2b,
+          mcpParams: { type: 'http', url: 'http://127.0.0.1:8410/mcp/e2b-sandbox' },
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.state?.content).toContainEqual({
+      data: PROXY_URL,
+      fileId: 'file-uuid-1',
+      mimeType: 'image/png',
+      type: 'image',
+    });
+    expect(mocks.fileServiceCtor).toHaveBeenCalledWith(serverDB, 'user-1');
+    expect(mocks.findTopic).toHaveBeenCalledWith('owned-topic');
+    const other = await service.executeTool(payload('mcp-figma', 'read_file'), context);
+    expect(other.state?.content).toEqual([
+      { type: 'text', text: `Файл готов: [scan.png](${PROXY_URL})` },
+    ]);
   });
 
   it('картинка уходит в хранилище пользователя, base64 нет ни в тексте, ни в state', async () => {

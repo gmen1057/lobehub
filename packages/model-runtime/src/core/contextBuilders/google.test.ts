@@ -1402,11 +1402,10 @@ describe('google contextBuilders', () => {
 
       const result = buildGoogleTool(tool);
 
-      // $ref should be resolved and inlined, allOf with single element unwrapped
+      // Resolve/in-line $ref and unwrap allOf, then remove unsupported Google schema keywords.
       expect(result.parameters?.properties).toEqual({
         query: { type: 'string' },
         timeIntent: {
-          additionalProperties: false,
           properties: {
             selector: { enum: ['today', 'yesterday', 'month'], type: 'string' },
             date: { format: 'date-time', type: 'string' },

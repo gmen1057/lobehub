@@ -17,6 +17,7 @@ import { ProxyAgent, setGlobalDispatcher } from 'undici';
 import { businessEmailValidator } from '@/business/server/better-auth';
 import { appEnv } from '@/envs/app';
 import { authEnv } from '@/envs/auth';
+import { createArckepUserProvisioner } from '@/libs/better-auth/arckepProvisioning';
 import {
   getChangeEmailVerificationTemplate,
   getMagicLinkEmailTemplate,
@@ -335,5 +336,7 @@ export function defineConfig(customOptions: CustomBetterAuthOptions) {
     ],
   } satisfies BetterAuthOptions;
 
-  return betterAuth(options);
+  return Object.assign(betterAuth(options), {
+    provisionArckepUser: createArckepUserProvisioner(options, serverDB, schema),
+  });
 }

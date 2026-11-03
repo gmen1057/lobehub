@@ -6,6 +6,11 @@ on:
   push:
     branches: [arckep/engine]
   workflow_dispatch:
+    inputs:
+      baseline_ref:
+        description: Optional source commit for an isolated baseline typecheck/build
+        required: false
+        type: string
 
 permissions:
   actions: write
@@ -33,7 +38,7 @@ jobs:
   # Package tests - all packages in single job to save runner resources
   test-packages:
     needs: check-duplicate-run
-    if: needs.check-duplicate-run.outputs.should_skip != 'true'
+    if: needs.check-duplicate-run.outputs.should_skip != 'true' && !inputs.baseline_ref
     runs-on: ubuntu-latest
     name: Test Packages
     env:
@@ -50,11 +55,13 @@ jobs:
 
       - name: Test packages with coverage
         run: |
+          status=0
           for package in $PACKAGES; do
             echo "::group::Testing $package"
-            bun run --filter $package test:coverage
+            bun run --filter $package test:coverage || status=1
             echo "::endgroup::"
           done
+          exit "$status"
 
       - name: Upload coverage to Codecov
         if: always()
@@ -99,8 +106,9 @@ jobs:
   # App tests - run sharded tests
   test-app:
     needs: check-duplicate-run
-    if: needs.check-duplicate-run.outputs.should_skip != 'true'
+    if: needs.check-duplicate-run.outputs.should_skip != 'true' && !inputs.baseline_ref
     strategy:
+      fail-fast: false
       matrix:
         shard: [1, 2]
     name: Test App (shard ${{ matrix.shard }}/2)
@@ -113,6 +121,9 @@ jobs:
 
       - name: Install deps
         run: pnpm install --frozen-lockfile
+
+      - name: Install isolated cancellation test dependency
+        run: sudo apt-get update && sudo apt-get install -y redis-server
 
       - name: Run tests
         run: bunx vitest --coverage --silent='passed-only' --reporter=default --reporter=blob --shard=${{ matrix.shard }}/2
@@ -172,18 +183,33 @@ jobs:
       APP_URL: http://localhost:3210
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.baseline_ref || github.sha }}
       - name: Setup environment
         uses: ./.github/actions/setup-env
       - name: Install deps
+        id: install
         run: pnpm install --frozen-lockfile
+      - name: Install isolated auth test dependency
+        if: ${{ !inputs.baseline_ref }}
+        run: sudo apt-get update && sudo apt-get install -y postgresql
+      - name: Verify atomic signup against an isolated PostgreSQL cluster
+        if: ${{ !inputs.baseline_ref }}
+        run: pnpm exec vitest run --maxWorkers=1 --minWorkers=1 --silent=passed-only src/libs/better-auth/__tests__/arckepProvisioning.test.ts
+        env:
+          TEST_AUTH_POSTGRES: '1'
+      - name: Test tool discovery and calculator instructions
+        if: ${{ !inputs.baseline_ref }}
+        run: pnpm exec vitest run --config packages/builtin-tool-activator/vitest.config.mts --maxWorkers=1 --minWorkers=1 packages/builtin-tool-activator/src/systemRole.test.ts packages/builtin-tool-calculator/src/calculation-contract.test.ts
       - name: Typecheck engine
         run: pnpm type-check
       - name: Build desktop and mobile web clients and Next server
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm build
 
   test-databsae:
     needs: check-duplicate-run
-    if: needs.check-duplicate-run.outputs.should_skip != 'true'
+    if: needs.check-duplicate-run.outputs.should_skip != 'true' && !inputs.baseline_ref
     name: Test Database
 
     runs-on: ubuntu-latest
@@ -207,12 +233,14 @@ jobs:
         uses: ./.github/actions/setup-env
 
       - name: Install deps
+        id: dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Lint
         run: bun run lint
 
       - name: Test Coverage
+        if: ${{ !cancelled() && steps.dependencies.outcome == 'success' }}
         run: pnpm --filter @lobechat/database test:coverage
         env:
           DATABASE_TEST_URL: postgresql://postgres:postgres@localhost:5432/postgres

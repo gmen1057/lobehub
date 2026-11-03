@@ -41,7 +41,6 @@ const assemble = ({
     },
     {
       agentConfig: {
-        chatConfig: { skillActivateMode: manual ? 'manual' : 'auto' },
         plugins: selected,
       },
       globalMemoryEnabled: memory,
@@ -84,7 +83,7 @@ describe('manual tools: effective function schemas and prompts', () => {
     const objective = 'Read my existing document';
     const output = await new MessagesEngine({
       enableSystemDate: false,
-      messages: [{ content: objective, id: 'user-fixture', role: 'user' }],
+      messages: [{ content: objective, createdAt: 0, id: 'user-fixture', role: 'user', updatedAt: 0 }],
       model: 'offline-fixture',
       provider: 'offline-fixture',
       toolsConfig: { manifests: result.enabledManifests, tools: result.enabledToolIds },

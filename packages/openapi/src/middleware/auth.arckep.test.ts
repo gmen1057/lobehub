@@ -6,6 +6,7 @@ import { clearArckepUserCache } from '../helpers/arckepServiceAuth';
 const findByEmail = vi.fn();
 const onConflictDoNothing = vi.fn(async () => undefined);
 const findByKey = vi.fn(async () => null);
+const provisionArckepUser = vi.fn();
 let accountRows: Array<{ password: string | null }> = [];
 
 vi.mock('@/database/core/db-adaptor', () => ({
@@ -36,6 +37,9 @@ vi.mock('@/database/schemas', () => ({
   userRoles: {},
 }));
 vi.mock('@/envs/auth', () => ({ authEnv: { ENABLE_OIDC: false } }));
+vi.mock('@/auth', () => ({
+  auth: { provisionArckepUser: (...args: unknown[]) => provisionArckepUser(...args) },
+}));
 vi.mock('@/libs/oidc-provider/jwt', () => ({ validateOIDCJWT: vi.fn() }));
 vi.mock('@/utils/apiKey', () => ({
   validateApiKeyFormat: (key: string) => /^sk-lh-[\da-z]{16}$/.test(key),
@@ -50,8 +54,10 @@ vi.mock('../routes', async () => {
   const { requireAuth } = await import('./auth');
   return {
     default: {
-      me: new Hono().get('/', requireAuth, (c) =>
-        c.json({ authType: c.get('authType'), userId: c.get('userId') }),
+      me: new Hono<{ Variables: { authType: string; userId: string } }>().get(
+        '/',
+        requireAuth,
+        (c) => c.json({ authType: c.get('authType'), userId: c.get('userId') }),
       ),
     },
   };
@@ -67,6 +73,7 @@ describe('arckep service auth', () => {
     findByEmail.mockReset();
     onConflictDoNothing.mockClear();
     findByKey.mockClear();
+    provisionArckepUser.mockReset();
     process.env.ARCKEP_ENGINE_SERVICE_KEY = SERVICE_KEY;
     process.env.AUTH_SECRET = 'secret-for-tests-0123456789';
     process.env.PORT = '3403';
@@ -131,37 +138,29 @@ describe('arckep service auth', () => {
   });
 
   it('пользователя нет → sign-up как в bridge, затем userId', async () => {
-    const fetchMock = vi.fn(async () => new Response('{}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
     accountRows = [{ password: 'hash:arckep_bridge_7_secret-f' }];
     findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'user_7' });
 
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '7' });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ authType: 'arckep-service', userId: 'user_7' });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
-    expect(url).toBe('http://127.0.0.1:3403/chat/api/auth/sign-up/email');
-    const body = JSON.parse(String(init.body));
-    expect(body.email).toBe('user7@arckep.ru');
-    expect(body.password).toBe('arckep_bridge_7_secret-f');
+    expect(provisionArckepUser).toHaveBeenCalledOnce();
+    expect(provisionArckepUser).toHaveBeenCalledWith({
+      email: 'user7@arckep.ru',
+      name: 'User 7',
+      password: 'arckep_bridge_7_secret-f',
+    });
   });
 
   it('sign-up не удался → 401', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('x', { status: 500 })),
-    );
+    provisionArckepUser.mockRejectedValue(new Error('registration failed'));
     findByEmail.mockResolvedValue(null);
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '9' });
     expect(res.status).toBe(401);
   });
 
   it('конфликт регистрации с другим процессом перечитывает и проверяет аккаунт', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('{}', { status: 422 })),
-    );
+    provisionArckepUser.mockRejectedValue(new Error('email already exists'));
     findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'user_4' });
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });
     expect(res.status).toBe(200);
@@ -169,10 +168,7 @@ describe('arckep service auth', () => {
   });
 
   it('конфликт регистрации не доверяет совпавшему email без bridge-пароля', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('{}', { status: 422 })),
-    );
+    provisionArckepUser.mockRejectedValue(new Error('email already exists'));
     findByEmail.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'attacker' });
     accountRows = [{ password: 'hash:attacker-password' }];
     const res = await call({ 'Authorization': `Bearer ${SERVICE_KEY}`, 'X-Arckep-User-Id': '4' });

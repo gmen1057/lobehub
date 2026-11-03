@@ -202,6 +202,7 @@ export const testProvider = ({
                 endpoint: defaultBaseURL,
                 error: {
                   cause: { message: 'api is undefined' },
+                  status: 400,
                 },
                 errorType: bizErrorType,
                 provider,
@@ -239,6 +240,7 @@ export const testProvider = ({
                 endpoint: 'https://api.***.com/v1',
                 error: {
                   cause: { message: 'api is undefined' },
+                  status: 400,
                 },
                 errorType: bizErrorType,
                 provider,

@@ -670,6 +670,7 @@ describe('LobeOpenAICompatibleFactory', () => {
             endpoint: defaultBaseURL,
             error: {
               cause: { message: 'api is undefined' },
+              status: 400,
             },
             errorType: bizErrorType,
             provider,
@@ -704,6 +705,7 @@ describe('LobeOpenAICompatibleFactory', () => {
             endpoint: 'https://api.***.com/v1',
             error: {
               cause: { message: 'api is undefined' },
+              status: 400,
             },
             errorType: bizErrorType,
             provider,
@@ -1761,6 +1763,9 @@ describe('LobeOpenAICompatibleFactory', () => {
     });
 
     it('passes reasoningEffort as reasoning_effort to Chat Completions and omits it when unset', async () => {
+      const responses = vi.spyOn(instance['client'].responses, 'create').mockRejectedValue(
+        new Error('This fixture must use Chat Completions'),
+      );
       const create = vi.spyOn(instance['client'].chat.completions, 'create').mockResolvedValue({
         choices: [{ message: { content: '{"ok": true}' } }],
       } as any);
@@ -1769,12 +1774,14 @@ describe('LobeOpenAICompatibleFactory', () => {
       const messages = [{ content: 'x', role: 'user' as const }];
       await instance.generateObject({
         messages,
-        model: 'gpt-6-luna',
+        model: 'test-chat-model',
         reasoningEffort: 'low',
         schema,
       });
-      await instance.generateObject({ messages, model: 'gpt-6-luna', schema });
+      await instance.generateObject({ messages, model: 'test-chat-model', schema });
 
+      expect(responses).not.toHaveBeenCalled();
+      expect(create).toHaveBeenCalledTimes(2);
       expect(create.mock.calls[0][0]).toMatchObject({ reasoning_effort: 'low' });
       expect(create.mock.calls[1][0]).not.toHaveProperty('reasoning_effort');
     });
@@ -1796,10 +1803,15 @@ describe('LobeOpenAICompatibleFactory', () => {
         schema,
         serviceTier: 'flex',
       });
-      await instance.generateObject({ messages, model: 'gpt-6-luna', schema, serviceTier: 'flex' });
-      await instance.generateObject({ messages, model: 'gpt-6-luna', schema });
+      // gpt-6-luna is forced onto Responses, so use a neutral model for the other API path.
+      await instance.generateObject({ messages, model: 'test-chat-model', schema, serviceTier: 'flex' });
+      await instance.generateObject({ messages, model: 'test-chat-model', schema });
+      await instance.generateObject({ messages, model: 'gpt-6-luna', responseApi: true, schema });
 
+      expect(responses).toHaveBeenCalledTimes(2);
+      expect(completions).toHaveBeenCalledTimes(2);
       expect(responses.mock.calls[0][0]).toMatchObject({ service_tier: 'flex' });
+      expect(responses.mock.calls[1][0]).not.toHaveProperty('service_tier');
       expect(completions.mock.calls[0][0]).toMatchObject({ service_tier: 'flex' });
       expect(completions.mock.calls[1][0]).not.toHaveProperty('service_tier');
     });

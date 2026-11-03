@@ -25,6 +25,8 @@ import { createEnableChecker, type LobeToolManifest } from '@lobechat/context-en
 import { ToolsEngine } from '@lobechat/context-engine';
 import debug from 'debug';
 
+import { applyChatFileDeliveryContract } from '@/server/services/mcp/fileDelivery';
+
 import {
   type ServerAgentToolsContext,
   type ServerAgentToolsEngineConfig,
@@ -58,7 +60,8 @@ export const createServerToolsEngine = (
   // Get plugin manifests from installed plugins (from database)
   const pluginManifests = context.installedPlugins
     .map((plugin) => plugin.manifest as LobeToolManifest)
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(applyChatFileDeliveryContract);
 
   // Get all builtin tool manifests
   // arckep (19.10.2026): в движке без интерфейса инструменты навыков — вариант без подтверждения человеком

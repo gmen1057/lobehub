@@ -1,4 +1,4 @@
-import type { AgentState } from '@lobechat/agent-runtime';
+import { AgentRuntime } from '@lobechat/agent-runtime';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -21,7 +21,7 @@ vi.mock('../llmTrace', () => ({
 describe('failed model message persistence', () => {
   let ctx: RuntimeExecutorContext;
   let chat: ReturnType<typeof vi.fn>;
-  const state = { messages: [], metadata: { agentId: 'a', topicId: 't' }, status: 'running', stepCount: 0 } as AgentState;
+  const state = AgentRuntime.createInitialState({ operationId: 'op', metadata: { agentId: 'a', topicId: 't' }, status: 'running' });
   const instruction = { type: 'call_llm', payload: { model: 'test', provider: 'openai', messages: [], tools: [] } } as any;
 
   beforeEach(() => {

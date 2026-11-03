@@ -13,7 +13,7 @@ import type { LobeChatDatabase } from '@/database/type';
  *
  * Бэкенд студии шлёт `Authorization: Bearer <ARCKEP_ENGINE_SERVICE_KEY>` и
  * `X-Arckep-User-Id: <id пользователя студии>`. Движок находит своего пользователя
- * `user{N}@arckep.ru`; если его нет — создаёт через Better Auth sign-up ровно так же,
+ * `user{N}@arckep.ru`; если его нет — атомарно создаёт через внутренний Better Auth signup,
  * как `/api/bridge`, и выдаёт роль `arckep_owner` (scripts/arckep/seed-rbac-owner.sql).
  *
  * Совпадения email недостаточно (кто-то мог заранее зарегистрировать `user4@arckep.ru`):
@@ -67,14 +67,8 @@ export type ArckepSignUp = (params: {
 }) => Promise<void>;
 
 const defaultSignUp: ArckepSignUp = async ({ email, name, password }) => {
-  const port = process.env.PORT || '3402';
-  const res = await fetch(`http://127.0.0.1:${port}/chat/api/auth/sign-up/email`, {
-    body: JSON.stringify({ email, name, password }),
-    headers: { 'Content-Type': 'application/json' },
-    method: 'POST',
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) throw new Error(`sign-up failed: ${res.status}`);
+  const { auth } = await import('@/auth');
+  await auth.provisionArckepUser({ email, name, password });
 };
 
 /** Учётка создана bridge/служебным входом: её credential-пароль равен производному паролю. */

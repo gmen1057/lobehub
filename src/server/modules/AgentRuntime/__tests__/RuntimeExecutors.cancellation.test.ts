@@ -1,4 +1,4 @@
-import type { AgentState } from '@lobechat/agent-runtime';
+import { AgentRuntime, type AgentState } from '@lobechat/agent-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -32,13 +32,13 @@ const instruction = {
   },
 };
 const state = (): AgentState =>
-  ({
+  AgentRuntime.createInitialState({
     messages: [],
     metadata: { agentId: 'test-agent', topicId: 'test-topic' },
     status: 'running',
     stepCount: 0,
     operationId: 'test-operation',
-  }) as AgentState;
+  });
 
 describe('running model cancellation', () => {
   let controller: AbortController;
@@ -98,7 +98,7 @@ describe('running model cancellation', () => {
         }),
       );
       if (hasUsage) expect(result.newState.usage?.llm.tokens.total).toBe(13);
-      else expect(result.newState.usage).toBeUndefined();
+      else expect(result.newState.usage).toEqual(state().usage);
       const published = vi
         .mocked(ctx.streamManager.publishStreamEvent)
         .mock.calls.map(([, event]) => event.type);

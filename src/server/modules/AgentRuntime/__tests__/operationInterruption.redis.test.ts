@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import type { AgentState } from '@lobechat/agent-runtime';
+import { AgentRuntime, type AgentState } from '@lobechat/agent-runtime';
 import Redis from 'ioredis';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -27,13 +27,14 @@ let server: ReturnType<typeof spawn>;
 let client: Redis;
 let writer: Redis;
 
-const state = (status = 'running', stepCount = 0): AgentState =>
-  ({
+const state = (status: AgentState['status'] = 'running', stepCount = 0): AgentState =>
+  AgentRuntime.createInitialState({
+    operationId: 'test-operation',
     messages: [],
     metadata: { topicId: 'test-topic', userId: 'test-user' },
     status,
     stepCount,
-  }) as AgentState;
+  });
 
 beforeAll(async () => {
   directory = await mkdtemp(path.join(tmpdir(), 'chat-stop-test-'));
