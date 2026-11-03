@@ -70,7 +70,7 @@ describe('Metadata', () => {
       const result = (meta as any).genAlternateLocales('en', '/test');
 
       expect(result).toHaveProperty('x-default', expect.stringContaining('/test'));
-      expect(result).toHaveProperty('zh-CN', expect.stringContaining('hl=zh-CN'));
+      expect(result).toHaveProperty('ru-RU', expect.stringContaining('hl=ru-RU'));
       expect(result).not.toHaveProperty('en');
     });
   });
@@ -89,7 +89,7 @@ describe('Metadata', () => {
         title: 'Twitter Title',
         description: 'Twitter description',
         images: ['https://twitter-image.com'],
-        site: '@lobehub',
+        site: '@Arckep',
         url: 'https://example.com/twitter',
       });
     });
@@ -115,22 +115,7 @@ describe('Metadata', () => {
         type: 'article',
         url: 'https://example.com/og',
         siteName: BRANDING_NAME,
-        alternateLocale: expect.arrayContaining([
-          'ar',
-          'bg-BG',
-          'de-DE',
-          'en-US',
-          'es-ES',
-          'fr-FR',
-          'ja-JP',
-          'ko-KR',
-          'pt-BR',
-          'ru-RU',
-          'tr-TR',
-          'zh-CN',
-          'zh-TW',
-          'vi-VN',
-        ]),
+        alternateLocale: expect.arrayContaining(['en-US', 'ru-RU']),
       });
     });
   });

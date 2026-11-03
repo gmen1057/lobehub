@@ -258,7 +258,7 @@ export class SkillsExecutionRuntime {
     const { name } = args;
 
     // Check builtin skills first — no DB query needed
-    const builtinSkill = this.builtinSkills.find((s) => s.name === name);
+    const builtinSkill = this.builtinSkills.find((s) => s.name === name || s.identifier === name);
     if (builtinSkill) {
       let content = builtinSkill.content;
       const hasResources = !!(

@@ -241,6 +241,7 @@ export class TopicModel {
     if (!keyword.trim()) return [];
 
     const bm25Query = sanitizeBm25Query(keyword);
+    if (!bm25Query) return [];
 
     // Run title and message content searches in parallel
     const [topicsByTitle, topicIdsByMessages] = await Promise.all([

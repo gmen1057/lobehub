@@ -78,7 +78,51 @@ describe('settingsSelectors', () => {
 
       const result = settingsSelectors.defaultAgent(s);
 
-      expect(result).toMatchSnapshot();
+      expect(result).toEqual({
+        config: {
+          chatConfig: {
+            autoCreateTopicThreshold: 2,
+            enableAutoCreateTopic: true,
+            enableCompressHistory: true,
+            enableContextCompression: true,
+            enableHistoryCount: false,
+            enableReasoning: false,
+            enableSitesAutoContinue: true,
+            enableStreaming: true,
+            historyCount: 20,
+            reasoningBudgetToken: 1024,
+            searchFCModel: {
+              model: 'claude-sonnet-4-6',
+              provider: 'anthropic',
+            },
+            searchMode: 'auto',
+            useModelBuiltinSearch: true,
+          },
+          model: 'gpt-3.5-turbo',
+          openingQuestions: [],
+          params: {
+            frequency_penalty: 0,
+            presence_penalty: 0,
+            temperature: 1,
+            top_p: 1,
+          },
+          plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
+          provider: 'anthropic',
+          systemRole: 'user',
+          tts: {
+            showAllLocaleVoice: false,
+            sttLocale: 'auto',
+            ttsService: 'openai',
+            voice: {
+              openai: 'alloy',
+            },
+          },
+        },
+        meta: {
+          avatar: 'agent-avatar.jpg',
+          description: 'Test agent',
+        },
+      });
     });
   });
 
@@ -173,7 +217,45 @@ describe('settingsSelectors', () => {
 
       const result = settingsSelectors.defaultAgentConfig(s);
 
-      expect(result).toMatchSnapshot();
+      expect(result).toEqual({
+        chatConfig: {
+          autoCreateTopicThreshold: 2,
+          enableAutoCreateTopic: true,
+          enableCompressHistory: true,
+          enableContextCompression: true,
+          enableHistoryCount: false,
+          enableReasoning: false,
+          enableSitesAutoContinue: true,
+          enableStreaming: true,
+          historyCount: 20,
+          reasoningBudgetToken: 1024,
+          searchFCModel: {
+            model: 'claude-sonnet-4-6',
+            provider: 'anthropic',
+          },
+          searchMode: 'auto',
+          useModelBuiltinSearch: true,
+        },
+        model: 'gpt-4',
+        openingQuestions: [],
+        params: {
+          frequency_penalty: 0,
+          presence_penalty: 0,
+          temperature: 0.7,
+          top_p: 1,
+        },
+        plugins: ['lobe-user-memory', 'lobe-artifacts', 'arckep-sites'],
+        provider: 'anthropic',
+        systemRole: 'custom role',
+        tts: {
+          showAllLocaleVoice: false,
+          sttLocale: 'auto',
+          ttsService: 'openai',
+          voice: {
+            openai: 'alloy',
+          },
+        },
+      });
     });
   });
 
@@ -211,7 +293,44 @@ describe('settingsSelectors', () => {
 
       const result = settingsSelectors.currentSystemAgent(s);
 
-      expect(result).toMatchSnapshot();
+      expect(result).toEqual({
+        agentMeta: {
+          model: 'claude-sonnet-4-6',
+          provider: 'anthropic',
+        },
+        enableAutoReply: true,
+        generationTopic: {
+          model: 'gpt-5.4-mini',
+          provider: 'openai',
+        },
+        historyCompress: {
+          model: 'claude-sonnet-4-6',
+          provider: 'anthropic',
+        },
+        inputCompletion: {
+          enabled: false,
+          model: 'gpt-5.4-mini',
+          provider: 'openai',
+        },
+        queryRewrite: {
+          enabled: true,
+          model: 'gpt-5.4-mini',
+          provider: 'openai',
+        },
+        replyMessage: 'Custom auto reply',
+        thread: {
+          model: 'claude-sonnet-4-6',
+          provider: 'anthropic',
+        },
+        topic: {
+          model: 'gpt-5.4-mini',
+          provider: 'openai',
+        },
+        translation: {
+          model: 'gpt-5.4-mini',
+          provider: 'openai',
+        },
+      });
     });
   });
 

@@ -40,7 +40,7 @@ export const params = {
             max_tokens: thinking?.budget_tokens,
           };
         } else if (reasoning_effort) {
-          reasoning = { effort: reasoning_effort };
+          reasoning = { effort: reasoning_effort === 'max' ? 'xhigh' : reasoning_effort };
         } else if (thinkingLevel) {
           reasoning = { effort: thinkingLevel };
         }

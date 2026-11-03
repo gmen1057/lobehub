@@ -19,7 +19,7 @@ export class MessageCollector {
   ) {}
 
   private createdAtMs(message: Message): number {
-    return new Date(message.createdAt as Date).getTime() || 0;
+    return new Date(message.createdAt).getTime() || 0;
   }
 
   /**

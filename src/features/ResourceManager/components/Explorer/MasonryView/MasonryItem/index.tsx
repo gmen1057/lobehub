@@ -1,4 +1,4 @@
-import { Checkbox, showContextMenu, stopPropagation } from '@lobehub/ui';
+import { Checkbox, type ContextMenuItem, showContextMenu, stopPropagation } from '@lobehub/ui';
 import { createStaticStyles, cssVar, cx } from 'antd-style';
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -388,7 +388,7 @@ const MasonryFileItem = memo<MasonryFileItemProps>(
         onDragStart={handleDragStart}
         onContextMenu={(e) => {
           e.preventDefault();
-          showContextMenu(menuItems());
+          showContextMenu(menuItems() as ContextMenuItem[]);
         }}
       >
         <div

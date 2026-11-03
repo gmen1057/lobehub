@@ -63,6 +63,31 @@ export const ArckepLayoutManifest: BuiltinToolManifest = {
         type: 'object',
       },
     },
+    {
+      description:
+        'Create and verify a complete HTML artifact before showing it to the person. Validates document structure and syntax-checks every inline <script> block (reporting exact 1-based line and column diagnostics if invalid), saves the verified HTML to a chat file, and returns a short <lobeArtifact … src="…"> tag. Show the result with that tag and never re-print the HTML.',
+      name: ArckepLayoutApiName.writeArtifact,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          content: {
+            description:
+              'Complete HTML document source (without outer <lobeArtifact> wrapper tags)',
+            type: 'string',
+          },
+          identifier: {
+            description: 'Consistent kebab-case identifier attribute of the text/html artifact',
+            type: 'string',
+          },
+          title: {
+            description: 'Concise title of the HTML artifact',
+            type: 'string',
+          },
+        },
+        required: ['identifier', 'title', 'content'],
+        type: 'object',
+      },
+    },
   ],
   identifier: ArckepLayoutIdentifier,
   meta: {

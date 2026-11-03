@@ -3,6 +3,16 @@ import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import ModeSwitch from './ModeSwitch';
+
+let mockAgentOnboardingEnabled = true;
+
+vi.mock('@/routes/onboarding/config', () => ({
+  get AGENT_ONBOARDING_ENABLED() {
+    return mockAgentOnboardingEnabled;
+  },
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) =>
@@ -25,12 +35,7 @@ const renderModeSwitch = async ({
   entry?: string;
   showLabel?: boolean;
 }) => {
-  vi.resetModules();
-  vi.doMock('@/routes/onboarding/config', () => ({
-    AGENT_ONBOARDING_ENABLED: enabled,
-  }));
-
-  const { default: ModeSwitch } = await import('./ModeSwitch');
+  mockAgentOnboardingEnabled = enabled;
 
   render(
     <MemoryRouter initialEntries={[entry]}>
@@ -41,7 +46,6 @@ const renderModeSwitch = async ({
 
 afterEach(() => {
   cleanup();
-  vi.doUnmock('@/routes/onboarding/config');
 });
 
 describe('ModeSwitch', () => {

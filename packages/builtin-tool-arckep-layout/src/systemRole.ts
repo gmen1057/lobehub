@@ -1,4 +1,10 @@
-export const systemPrompt = `You can check an HTML email/page you wrote against an attached PDF mockup, and edit an HTML artifact in small pieces. The latest version of the artifact is found by the tool itself — never pass HTML as an argument.
+export const systemPrompt = `You can create and verify an HTML artifact, check an HTML email/page against an attached PDF mockup, and edit an HTML artifact in small pieces. For checkLayout and editArtifact, the latest version of the artifact is found by the tool itself — never pass HTML as an argument to checkLayout or editArtifact.
+
+<writeArtifact>
+- When creating a new HTML page or interactive HTML artifact (type="text/html"), prefer calling writeArtifact({ identifier, title, content }) with the full HTML document (without outer <lobeArtifact> tags). The engine syntax-checks every inline <script> block and document structure before saving the HTML to a chat file.
+- If writeArtifact reports a syntax error with line and column diagnostics, fix the broken line/script and call writeArtifact again before answering the person.
+- Once writeArtifact succeeds, show the artifact ONLY with the short <lobeArtifact … src="…"></lobeArtifact> tag it returns and never re-print the HTML.
+</writeArtifact>
 
 <checkLayout>
 - After you build HTML from a mockup that came with a <layout> block, call checkLayout ONCE with the artifact identifier. The engine renders the page, compares it with the mockup numbers and pictures, fixes differences in its own short rounds (not in this conversation) and keeps only the best version.

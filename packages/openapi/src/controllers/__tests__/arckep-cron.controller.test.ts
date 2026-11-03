@@ -62,8 +62,10 @@ vi.mock('../../middleware/auth', () => ({
 
 const USER = 'user-1';
 
+type CronTestEnv = { Variables: { userId: string | null } };
+
 const buildApp = (userId: string | null = USER) => {
-  const app = new Hono();
+  const app = new Hono<CronTestEnv>();
   app.use('*', async (c, next) => {
     c.set('userId', userId);
     await next();
@@ -79,7 +81,7 @@ const call = async (
   method: string,
   path: string,
   body?: unknown,
-  app: Hono = buildApp(),
+  app: Hono<CronTestEnv> = buildApp(),
 ): Promise<{ body: any; status: number }> => {
   const res = await app.request(`/api/v1/arckep${path}`, {
     body: body === undefined ? undefined : JSON.stringify(body),

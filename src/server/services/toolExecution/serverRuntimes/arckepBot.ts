@@ -5,13 +5,13 @@ import {
   getBotConfigForUser,
   listBotsForUser,
 } from '@/server/services/bot/botConfigRead';
+import { setBotEnabled } from '@/server/services/bot/botEnableService';
 import {
   setAccessRule,
   setCommands,
   setGreeting,
   setModel,
 } from '@/server/services/bot/botMutationService';
-import { setBotEnabled } from '@/server/services/bot/botEnableService';
 
 import { type ServerRuntimeRegistration } from './types';
 

@@ -213,7 +213,11 @@ describe('FileService', () => {
 
     const result = await service.createPreSignedUrlForPreview(testKey, expiresIn);
 
-    expect(service['impl'].createPreSignedUrlForPreview).toHaveBeenCalledWith(testKey, expiresIn);
+    expect(service['impl'].createPreSignedUrlForPreview).toHaveBeenCalledWith(
+      testKey,
+      expiresIn,
+      undefined,
+    );
     expect(result).toBe(expectedUrl);
   });
 

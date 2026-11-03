@@ -347,6 +347,27 @@ describe('fileRouter', () => {
         }),
       ).rejects.toThrow('File size cannot be negative');
     });
+
+    it.each([
+      'generated/8/secret.png',
+      'uploads/8/photo.png',
+      'videos/8/clip.mp4',
+      'files/user_other/secret.png',
+      'files/../generated/8/secret.png',
+      'https://evil.example/a.png',
+    ])('should reject foreign or non-chat storage key %s in createFile', async (badUrl) => {
+      await expect(
+        caller.createFile({
+          hash: 'test-hash',
+          fileType: 'image/png',
+          name: 'test.png',
+          size: 100,
+          url: badUrl,
+          metadata: {},
+        }),
+      ).rejects.toThrow(TRPCError);
+      expect(mockFileModelCreate).not.toHaveBeenCalled();
+    });
   });
 
   describe('findById', () => {

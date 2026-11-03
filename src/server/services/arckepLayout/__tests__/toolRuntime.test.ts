@@ -42,8 +42,11 @@ const checked = (extra: Partial<CheckLayoutResult> = {}): CheckLayoutResult => (
   ...extra,
 });
 
-const runtime = (checkLayout: () => Promise<CheckLayoutResult>, editArtifact = vi.fn()) =>
-  new ArckepLayoutExecutionRuntime({ checkLayout, editArtifact });
+const runtime = (
+  checkLayout: () => Promise<CheckLayoutResult>,
+  editArtifact = vi.fn(),
+  writeArtifact = vi.fn(),
+) => new ArckepLayoutExecutionRuntime({ checkLayout, editArtifact, writeArtifact });
 
 describe('ответ модели после checkLayout', () => {
   it('итоги до и после, круги, остаток, тег и запрет печатать HTML', async () => {

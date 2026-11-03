@@ -19,7 +19,6 @@ import type {
   TasksBatchResultPayload,
 } from '@lobechat/agent-runtime';
 import {
-  calculateMessageTokens,
   hasRepeatedToolCall,
   resolveAssistantParentId,
   TOOL_CALL_REPEAT_STOP_MESSAGE,
@@ -2758,7 +2757,11 @@ export const createAgentExecutors = (context: {
 
       // arckep: skip repeat compression
       if (
-        hasRunningCompressionOperation(Object.values(context.get().operations), opContext) ||
+        !opContext.agentId ||
+        hasRunningCompressionOperation(Object.values(context.get().operations), {
+          ...opContext,
+          agentId: opContext.agentId,
+        }) ||
         !topicId ||
         messageIds.length === 0
       ) {
@@ -2772,9 +2775,7 @@ export const createAgentExecutors = (context: {
           newState: state,
           nextContext: createCompressionResultContext(
             {
-              compressedTokenCount: currentTokenCount,
               groupId: '',
-              originalTokenCount: currentTokenCount,
               skipped: true,
             },
             state.messages.length,
@@ -2898,17 +2899,12 @@ export const createAgentExecutors = (context: {
 
         events.push({ type: 'compression_complete', groupId, parentMessageId });
 
-        // Calculate new token count
-        const compressedTokenCount = calculateMessageTokens(compressedMessages);
-
         return {
           events,
           newState: { ...state, messages: compressedMessages },
           nextContext: createCompressionResultContext(
             {
-              compressedTokenCount,
               groupId,
-              originalTokenCount: currentTokenCount,
               parentMessageId,
             },
             compressedMessages.length,

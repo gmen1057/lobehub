@@ -8,11 +8,14 @@ import {
   type EditArtifactParams,
   type EditArtifactResult,
   type TechniqueSummary,
+  type WriteArtifactParams,
+  type WriteArtifactResult,
 } from '../types';
 
 interface ArckepLayoutRuntimeDeps {
   checkLayout: (params: CheckLayoutParams) => Promise<CheckLayoutResult>;
   editArtifact: (params: EditArtifactParams) => Promise<EditArtifactResult>;
+  writeArtifact: (params: WriteArtifactParams) => Promise<WriteArtifactResult>;
 }
 
 const percent = (value: number | undefined) =>
@@ -174,6 +177,39 @@ export class ArckepLayoutExecutionRuntime {
     } catch (error) {
       return {
         content: `Не удалось применить правки: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async writeArtifact(args: WriteArtifactParams): Promise<BuiltinServerRuntimeOutput> {
+    if (
+      !args?.identifier ||
+      typeof args.identifier !== 'string' ||
+      !args?.title ||
+      typeof args.title !== 'string' ||
+      !args?.content ||
+      typeof args.content !== 'string'
+    ) {
+      return {
+        content: 'writeArtifact: нужны непустые identifier, title и content (HTML-документ).',
+        success: false,
+      };
+    }
+    try {
+      const result = await this.deps.writeArtifact(args);
+      const lines = [
+        `HTML-артефакт «${result.title}» (${result.identifier}) проверен и сохранён в файл чата (sha256: ${result.sha256.slice(0, 12)}, проверено скриптов: ${result.checkedScripts}).`,
+        `Проверено: ${result.verifiedParts.join(', ')}.`,
+        `Не проверялось автоматически: ${result.unverifiedParts.join(', ')}.`,
+        '',
+        SHOW_TAG,
+        result.tag,
+      ];
+      return { content: lines.join('\n'), state: result, success: true };
+    } catch (error) {
+      return {
+        content: `HTML-артефакт не прошёл проверку и не сохранён: ${(error as Error).message}`,
         success: false,
       };
     }

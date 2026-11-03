@@ -3,9 +3,9 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { NewSandboxJob } from '@/database/schemas';
 import { sandboxJobs, topics, users } from '@/database/schemas';
+import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { getSandboxJobWorker, SandboxJobWorker } from '../worker';
@@ -50,7 +50,7 @@ const jsonResponse = (body: unknown, status: number = 200) =>
   });
 
 const mockGatewaySuccess = (text: string = 'done') => {
-  const fetchMock = vi.fn().mockResolvedValue(
+  const fetchMock = vi.fn().mockImplementation(async () =>
     jsonResponse({
       jsonrpc: '2.0',
       result: {
@@ -221,8 +221,11 @@ describe('SandboxJobWorker', () => {
     );
     vi.stubGlobal('fetch', fetchMock);
 
-    const heartbeatSpy = vi.spyOn(SandboxJobModel.prototype, 'heartbeat');
     const worker = new SandboxJobWorker(serverDB, 1);
+    (worker as any).workerId = 'worker-heartbeat-long';
+    const userModel = new SandboxJobModel(serverDB, userId);
+    const heartbeatSpy = vi.spyOn(userModel, 'heartbeat');
+    vi.spyOn(worker as any, 'getUserModel').mockReturnValue(userModel);
     const execution = worker.executeJob(claimed!);
 
     await vi.advanceTimersByTimeAsync(15_000);
@@ -247,9 +250,12 @@ describe('SandboxJobWorker', () => {
     expect(claimed?.id).toBe(job.id);
 
     mockAbortableGateway();
-    vi.spyOn(SandboxJobModel.prototype, 'heartbeat').mockResolvedValue(false);
 
     const worker = new SandboxJobWorker(serverDB, 1);
+    (worker as any).workerId = 'worker-heartbeat-lost';
+    const userModel = new SandboxJobModel(serverDB, userId);
+    vi.spyOn(userModel, 'heartbeat').mockResolvedValue(false);
+    vi.spyOn(worker as any, 'getUserModel').mockReturnValue(userModel);
     const execution = worker.executeJob(claimed!);
 
     await vi.advanceTimersByTimeAsync(15_000);
@@ -340,6 +346,7 @@ describe('SandboxJobWorker', () => {
     mockAbortableGateway();
 
     const worker = new SandboxJobWorker(serverDB, 1);
+    (worker as any).workerId = 'worker-timeout';
     const execution = worker.executeJob(claimed!);
 
     await vi.advanceTimersByTimeAsync(120_000);

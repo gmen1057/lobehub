@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Import after mocks are set up
 import { DeviceProxy } from '../deviceProxy';
@@ -38,10 +38,10 @@ describe('DeviceProxy', () => {
       expect(proxy.isConfigured).toBe(false);
     });
 
-    it('should return true when DEVICE_GATEWAY_URL is set', () => {
+    it('should return false even when DEVICE_GATEWAY_URL is set (stubbed in Arckep)', () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       const proxy = new DeviceProxy();
-      expect(proxy.isConfigured).toBe(true);
+      expect(proxy.isConfigured).toBe(false);
     });
   });
 
@@ -52,17 +52,16 @@ describe('DeviceProxy', () => {
       expect(result).toEqual({ deviceCount: 0, online: false });
     });
 
-    it('should return status from client on success', async () => {
+    it('should return offline status even when gateway env is set', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
-      const expected = { deviceCount: 2, online: true };
-      mockClient.queryDeviceStatus.mockResolvedValue(expected);
+      mockClient.queryDeviceStatus.mockResolvedValue({ deviceCount: 2, online: true });
 
       const proxy = new DeviceProxy();
       const result = await proxy.queryDeviceStatus('user-1');
 
-      expect(result).toEqual(expected);
-      expect(mockClient.queryDeviceStatus).toHaveBeenCalledWith('user-1');
+      expect(result).toEqual({ deviceCount: 0, online: false });
+      expect(mockClient.queryDeviceStatus).not.toHaveBeenCalled();
     });
 
     it('should return offline status on error', async () => {
@@ -84,7 +83,7 @@ describe('DeviceProxy', () => {
       expect(result).toEqual([]);
     });
 
-    it('should transform connectedAt to lastSeen and set online: true', async () => {
+    it('should return empty array even when gateway env is set', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       const connectedAt = '2025-01-15T10:30:00Z';
@@ -106,23 +105,8 @@ describe('DeviceProxy', () => {
       const proxy = new DeviceProxy();
       const result = await proxy.queryDeviceList('user-1');
 
-      expect(result).toEqual([
-        {
-          deviceId: 'dev-1',
-          hostname: 'my-laptop',
-          lastSeen: new Date(connectedAt).toISOString(),
-          online: true,
-          platform: 'darwin',
-        },
-        {
-          deviceId: 'dev-2',
-          hostname: 'my-desktop',
-          lastSeen: new Date(connectedAt).toISOString(),
-          online: true,
-          platform: 'win32',
-        },
-      ]);
-      expect(mockClient.queryDeviceList).toHaveBeenCalledWith('user-1');
+      expect(result).toEqual([]);
+      expect(mockClient.queryDeviceList).not.toHaveBeenCalled();
     });
 
     it('should return empty array on error', async () => {
@@ -144,7 +128,7 @@ describe('DeviceProxy', () => {
       expect(result).toBeUndefined();
     });
 
-    it('should return systemInfo on success', async () => {
+    it('should return undefined even when gateway env is set', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       const systemInfo = { cpuModel: 'Apple M1', os: 'macOS', totalMemory: 16384 };
@@ -153,8 +137,8 @@ describe('DeviceProxy', () => {
       const proxy = new DeviceProxy();
       const result = await proxy.queryDeviceSystemInfo('user-1', 'dev-1');
 
-      expect(result).toEqual(systemInfo);
-      expect(mockClient.getDeviceSystemInfo).toHaveBeenCalledWith('user-1', 'dev-1');
+      expect(result).toBeUndefined();
+      expect(mockClient.getDeviceSystemInfo).not.toHaveBeenCalled();
     });
 
     it('should return undefined when result is not successful', async () => {
@@ -195,37 +179,39 @@ describe('DeviceProxy', () => {
       });
     });
 
-    it('should execute tool call with default timeout', async () => {
+    it('should return GATEWAY_NOT_CONFIGURED when called with default timeout', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
-      const expected = { content: 'file list', success: true };
-      mockClient.executeToolCall.mockResolvedValue(expected);
+      mockClient.executeToolCall.mockResolvedValue({ content: 'file list', success: true });
 
       const proxy = new DeviceProxy();
       const result = await proxy.executeToolCall(params, toolCall);
 
-      expect(result).toEqual(expected);
-      expect(mockClient.executeToolCall).toHaveBeenCalledWith(
-        { deviceId: 'dev-1', timeout: 30_000, userId: 'user-1' },
-        toolCall,
-      );
+      expect(result).toEqual({
+        content: 'Device Gateway is not configured',
+        error: 'GATEWAY_NOT_CONFIGURED',
+        success: false,
+      });
+      expect(mockClient.executeToolCall).not.toHaveBeenCalled();
     });
 
-    it('should use custom timeout', async () => {
+    it('should return GATEWAY_NOT_CONFIGURED when called with custom timeout', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       mockClient.executeToolCall.mockResolvedValue({ content: 'ok', success: true });
 
       const proxy = new DeviceProxy();
-      await proxy.executeToolCall(params, toolCall, 60_000);
+      const result = await proxy.executeToolCall(params, toolCall, 60_000);
 
-      expect(mockClient.executeToolCall).toHaveBeenCalledWith(
-        { deviceId: 'dev-1', timeout: 60_000, userId: 'user-1' },
-        toolCall,
-      );
+      expect(result).toEqual({
+        content: 'Device Gateway is not configured',
+        error: 'GATEWAY_NOT_CONFIGURED',
+        success: false,
+      });
+      expect(mockClient.executeToolCall).not.toHaveBeenCalled();
     });
 
-    it('should return error result on Error exception', async () => {
+    it('should return GATEWAY_NOT_CONFIGURED without invoking client on Error setup', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       mockClient.executeToolCall.mockRejectedValue(new Error('connection refused'));
@@ -234,13 +220,13 @@ describe('DeviceProxy', () => {
       const result = await proxy.executeToolCall(params, toolCall);
 
       expect(result).toEqual({
-        content: 'Device tool call error: connection refused',
-        error: 'connection refused',
+        content: 'Device Gateway is not configured',
+        error: 'GATEWAY_NOT_CONFIGURED',
         success: false,
       });
     });
 
-    it('should handle non-Error exceptions', async () => {
+    it('should return GATEWAY_NOT_CONFIGURED without invoking client on non-Error setup', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       mockClient.executeToolCall.mockRejectedValue('string error');
@@ -249,8 +235,8 @@ describe('DeviceProxy', () => {
       const result = await proxy.executeToolCall(params, toolCall);
 
       expect(result).toEqual({
-        content: 'Device tool call error: string error',
-        error: 'string error',
+        content: 'Device Gateway is not configured',
+        error: 'GATEWAY_NOT_CONFIGURED',
         success: false,
       });
     });
@@ -275,7 +261,7 @@ describe('DeviceProxy', () => {
       expect(MockGatewayHttpClient).not.toHaveBeenCalled();
     });
 
-    it('should create client only once across multiple calls', async () => {
+    it('should never instantiate GatewayHttpClient when stubbed', async () => {
       mockEnv.DEVICE_GATEWAY_URL = 'https://gateway.example.com';
       mockEnv.DEVICE_GATEWAY_SERVICE_TOKEN = 'token';
       mockClient.queryDeviceStatus.mockResolvedValue({ deviceCount: 1, online: true });
@@ -284,11 +270,7 @@ describe('DeviceProxy', () => {
       await proxy.queryDeviceStatus('user-1');
       await proxy.queryDeviceStatus('user-2');
 
-      expect(MockGatewayHttpClient).toHaveBeenCalledTimes(1);
-      expect(MockGatewayHttpClient).toHaveBeenCalledWith({
-        gatewayUrl: 'https://gateway.example.com',
-        serviceToken: 'token',
-      });
+      expect(MockGatewayHttpClient).not.toHaveBeenCalled();
     });
   });
 });

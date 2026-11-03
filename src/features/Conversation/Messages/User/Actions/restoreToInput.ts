@@ -1,13 +1,11 @@
 import { message as antdMessage } from 'antd';
 
-import type { ChatInputEditor } from '@/features/ChatInput';
+import { useChatStore } from '@/store/chat';
 import { cleanSpeakerTag } from '@/store/chat/utils/cleanSpeakerTag';
 import { unescapeMarkdown } from '@/store/chat/utils/unescapeMarkdown';
 import { useFileStore } from '@/store/file';
 import type { UploadFileItem } from '@/types/files/upload';
 import type { UIChatMessage } from '@/types/index';
-
-import { useConversationStore } from '../../../store';
 
 const fromMedia = (
   list: { alt: string; id: string; url: string }[] | undefined,
@@ -24,7 +22,7 @@ const fromMedia = (
 
 /** Restore a sent user message (text + attachments) into the composer. */
 export const restoreUserMessageToInput = (data: UIChatMessage, successLabel: string) => {
-  const editor = useConversationStore.getState().editor as ChatInputEditor | null;
+  const editor = useChatStore.getState().mainInputEditor;
   if (!editor) return;
 
   const markdown = unescapeMarkdown(cleanSpeakerTag(data.content ?? ''));
@@ -42,7 +40,7 @@ export const restoreUserMessageToInput = (data: UIChatMessage, successLabel: str
     editor.setDocument('markdown', markdown);
   }
 
-  useConversationStore.getState().updateInputMessage(markdown);
+  useChatStore.getState().updateMessageInput(markdown);
 
   const restored: UploadFileItem[] = [
     ...fromMedia(data.imageList, 'image'),

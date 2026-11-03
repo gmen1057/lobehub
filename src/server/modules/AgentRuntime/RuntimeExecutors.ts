@@ -14,6 +14,7 @@ import {
   UsageCounter,
 } from '@lobechat/agent-runtime';
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
+import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import {
@@ -48,6 +49,7 @@ import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { throwIfAborted, waitForRetry } from '@/server/services/agentRuntime/abort';
 import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistoryMessages';
+import { HtmlArtifactStreamGate } from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import {
@@ -180,9 +182,10 @@ const executeToolWithRetry = async (
 
 /**
  * arckep (19.10.2026): манифест есть в карте операции, но в <available_tools> не показывается — модель
- * получает эти инструменты от `activateSkill`, а не выбирает сама. Сейчас так скрыты инструменты навыков.
+ * получает эти инструменты от `activateSkill`, а не выбирает сама. Сейчас так скрыты инструменты навыков
+ * и проверка/запись HTML-артефактов (`arckep-layout`).
  */
-const HIDDEN_FROM_DISCOVERY = new Set<string>([SkillsIdentifier]);
+const HIDDEN_FROM_DISCOVERY = new Set<string>([ArckepLayoutIdentifier, SkillsIdentifier]);
 
 export const buildToolDiscoveryConfig = (
   operationToolSet: OperationToolSet,
@@ -647,6 +650,7 @@ export const createRuntimeExecutors = (
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         let content = '';
+        let rawContent = '';
         let toolsCalling: ChatToolPayload[] = [];
         let tool_calls: MessageToolCall[] = [];
         let thinkingContent = '';
@@ -658,6 +662,7 @@ export const createRuntimeExecutors = (
         const reasoningParts: ContentPart[] = [];
         let hasContentImages = false;
         let hasReasoningImages = false;
+        const htmlStreamGate = new HtmlArtifactStreamGate();
         textBuffer = '';
         reasoningBuffer = '';
 
@@ -787,16 +792,20 @@ export const createRuntimeExecutors = (
                   Date.now(),
                   text.length,
                 );
-                content += text;
+                rawContent += text;
+                const safeText = htmlStreamGate.push(text);
+                content += safeText;
 
-                textBuffer += text;
+                if (safeText) {
+                  textBuffer += safeText;
 
-                // If no timer exists, create one
-                if (!textBufferTimer) {
-                  textBufferTimer = setTimeout(async () => {
-                    await flushTextBuffer();
-                    textBufferTimer = null;
-                  }, BUFFER_INTERVAL);
+                  // If no timer exists, create one
+                  if (!textBufferTimer) {
+                    textBufferTimer = setTimeout(async () => {
+                      await flushTextBuffer();
+                      textBufferTimer = null;
+                    }, BUFFER_INTERVAL);
+                  }
                 }
               },
               onThinking: async (reasoning) => {
@@ -855,15 +864,19 @@ export const createRuntimeExecutors = (
                   const text = data.content;
                   if (!text) return;
 
-                  content += text;
-                  appendTextToContentParts(text);
+                  rawContent += text;
+                  const safeText = htmlStreamGate.push(text);
+                  content += safeText;
+                  if (safeText) {
+                    appendTextToContentParts(safeText);
 
-                  textBuffer += text;
-                  if (!textBufferTimer) {
-                    textBufferTimer = setTimeout(async () => {
-                      await flushTextBuffer();
-                      textBufferTimer = null;
-                    }, BUFFER_INTERVAL);
+                    textBuffer += safeText;
+                    if (!textBufferTimer) {
+                      textBufferTimer = setTimeout(async () => {
+                        await flushTextBuffer();
+                        textBufferTimer = null;
+                      }, BUFFER_INTERVAL);
+                    }
                   }
                   return;
                 }
@@ -958,6 +971,21 @@ export const createRuntimeExecutors = (
             throw streamExecutionError;
           }
 
+          let htmlGateDiagnostics: string[] = [];
+          if (rawContent.includes('<lobeArtifact') || rawContent !== content) {
+            const gateResult = await htmlStreamGate.finalize();
+            if (gateResult.postStreamDelta) {
+              textBuffer += gateResult.postStreamDelta;
+              if (hasContentImages) {
+                appendTextToContentParts(gateResult.postStreamDelta);
+              }
+            }
+            content = gateResult.finalContent;
+            if (!gateResult.valid) {
+              htmlGateDiagnostics = gateResult.diagnostics;
+            }
+          }
+
           await flushTextBuffer();
           await flushReasoningBuffer();
           clearAttemptBuffers();
@@ -997,6 +1025,27 @@ export const createRuntimeExecutors = (
             toolsCalling = [];
             tool_calls = [];
             blockedRepeatedToolCall = true;
+          }
+
+          const htmlSyntaxRepairAttempts =
+            htmlGateDiagnostics.length > 0
+              ? ((state.metadata?.htmlSyntaxRepairAttempts as number | undefined) ?? 0) + 1
+              : ((state.metadata?.htmlSyntaxRepairAttempts as number | undefined) ?? 0);
+          const canScheduleSyntaxRepair =
+            htmlGateDiagnostics.length > 0 &&
+            !blockedRepeatedToolCall &&
+            toolsCalling.length === 0 &&
+            !state.forceFinish &&
+            htmlSyntaxRepairAttempts <= 2 &&
+            !ctx.signal?.aborted &&
+            !(await isOperationInterrupted(ctx));
+          const htmlArtifactSyntaxError = canScheduleSyntaxRepair
+            ? htmlGateDiagnostics.join('\n\n')
+            : undefined;
+          if (htmlGateDiagnostics.length > 0 && !canScheduleSyntaxRepair && toolsCalling.length === 0) {
+            const fallbackNotice =
+              'Не удалось показать готовую HTML-страницу: в коде скрипта осталась синтаксическая ошибка. Попробуйте повторить запрос или уточнить задачу.';
+            content = content.trim() ? `${content.trim()}\n\n${fallbackNotice}` : fallbackNotice;
           }
 
           // Add a complete llm_stream event (including all streaming chunks)
@@ -1093,12 +1142,46 @@ export const createRuntimeExecutors = (
           // ===== 2. Then accumulate to AgentState =====
           const newState = structuredClone(state);
           newState.toolCallRepeatGuard = toolCallRepeatGuard;
+          if (htmlGateDiagnostics.length > 0) {
+            newState.metadata = {
+              ...newState.metadata,
+              htmlSyntaxRepairAttempts,
+            };
+          }
 
-          newState.messages.push({
-            content,
-            role: 'assistant',
-            tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
-          });
+          if (htmlArtifactSyntaxError) {
+            newState.messages.push(
+              {
+                content: rawContent,
+                role: 'assistant',
+              },
+              {
+                content: `${htmlArtifactSyntaxError}\n\nИсправь синтаксическую ошибку и пересоздай артефакт через writeArtifact({ identifier, title, content }) либо выдай полный исправленный <lobeArtifact type="text/html"> без экранирования кавычек и переносов.`,
+                role: 'user',
+              },
+            );
+            const layoutManifest = operationToolSet.manifestMap[ArckepLayoutIdentifier];
+            if (layoutManifest) {
+              const existingActivations = newState.activatedStepTools ?? [];
+              if (!existingActivations.some((item) => item.id === ArckepLayoutIdentifier)) {
+                newState.activatedStepTools = [
+                  ...existingActivations,
+                  {
+                    activatedAtStep: stepIndex,
+                    id: ArckepLayoutIdentifier,
+                    manifest: layoutManifest,
+                    source: 'discovery',
+                  },
+                ];
+              }
+            }
+          } else {
+            newState.messages.push({
+              content,
+              role: 'assistant',
+              tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+            });
+          }
 
           if (currentStepUsage) {
             // Use UsageCounter to uniformly accumulate usage and cost
@@ -1120,6 +1203,7 @@ export const createRuntimeExecutors = (
             nextContext: {
               payload: {
                 hasToolsCalling: toolsCalling.length > 0,
+                ...(htmlArtifactSyntaxError ? { htmlArtifactSyntaxError } : {}),
                 // Pass assistant message ID as parentMessageId for tool calls
                 parentMessageId: assistantMessageItem.id,
                 result: { content, tool_calls },

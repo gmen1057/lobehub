@@ -1,5 +1,12 @@
-import { ActionIcon, DropdownMenu, Flexbox, Icon, Text, TooltipGroup } from '@lobehub/ui';
-import { type ItemType } from 'antd/es/menu/interface';
+import {
+  ActionIcon,
+  type DropdownItem,
+  DropdownMenu,
+  Flexbox,
+  Icon,
+  Text,
+  TooltipGroup,
+} from '@lobehub/ui';
 import isEqual from 'fast-deep-equal';
 import { ArrowDownUpIcon, LucideCheck } from 'lucide-react';
 import { type AiProviderModelListItem } from 'model-bank';
@@ -286,7 +293,7 @@ const DisabledModels = memo<DisabledModelsProps>(({ activeTab, providerId }) => 
                     label: t('providerModels.list.disabledActions.sortReleasedAtDesc'),
                     onClick: () => updateSortType(SortType.ReleasedAtDesc),
                   },
-                ] as ItemType[]
+                ] as DropdownItem[]
               }
             >
               <ActionIcon

@@ -5,6 +5,8 @@ import type {
   EditArtifactParams,
   EditArtifactResult,
   TechniqueSummary,
+  WriteArtifactParams,
+  WriteArtifactResult,
 } from '@lobechat/builtin-tool-arckep-layout';
 import debug from 'debug';
 
@@ -14,6 +16,11 @@ import { type CheckDeps, type CheckOutcome, runLayoutCheck } from './check';
 import { issueSeverity, issueText, issueY } from './compare';
 import type { EditorPart } from './editor';
 import { applyEdits, describeEdits } from './edits';
+import {
+  computeHtmlSha256,
+  formatHtmlSyntaxDiagnostics,
+  validateHtmlArtifactSyntax,
+} from './htmlSyntax';
 import { buildMockup, loadMockPicture, type ReadFile } from './mockup';
 import { LayoutRenderError, type RenderParams } from './render';
 import { detectTechniques, isTechniqueCheckEnabled, type TechniqueFinding } from './techniques';
@@ -87,7 +94,7 @@ interface LatestArtifact {
   versions: number;
 }
 
-const fileName = (identifier: string, kind: 'check' | 'edit', n: number) => {
+const fileName = (identifier: string, kind: 'check' | 'edit' | 'write', n: number) => {
   const safe = identifier
     .replaceAll(/[^\w-]/g, '-')
     .slice(0, 60)
@@ -200,6 +207,12 @@ export class ArckepLayoutService {
         `ни одна правка не применилась, версия не менялась:\n${describeEdits(edited)}\nВозьми find точно из текущего HTML, кусок должен встречаться ровно один раз.`,
       );
     }
+    const syntax = validateHtmlArtifactSyntax(edited.html);
+    if (!syntax.valid) {
+      throw new LayoutToolError(
+        `${formatHtmlSyntaxDiagnostics(syntax, latest.identifier)}\nВерсия «${latest.identifier}» не перезаписана (предыдущая рабочая копия сохранена). Исправь синтаксис в правках и вызови editArtifact повторно.`,
+      );
+    }
     const saved = await this.save(
       edited.html,
       fileName(latest.identifier, 'edit', latest.versions + 1),
@@ -212,6 +225,41 @@ export class ArckepLayoutService {
       src: saved.address,
       tag: artifactTag({ identifier: latest.identifier, src: saved.address, title: latest.title }),
       title: latest.title,
+    };
+  }
+
+  /** `writeArtifact`: синтаксическая проверка HTML + всех встроенных `<script>` до сохранения в файл чата. */
+  async writeArtifact(params: WriteArtifactParams): Promise<WriteArtifactResult> {
+    const topicId = this.requireTopic();
+    const identifier = params.identifier?.trim();
+    const title = params.title?.trim();
+    const content = params.content;
+    if (!identifier || !title || typeof content !== 'string' || !content.trim()) {
+      throw new LayoutToolError(
+        'writeArtifact: нужны непустые identifier, title и content (HTML-документ).',
+      );
+    }
+    const syntax = validateHtmlArtifactSyntax(content);
+    if (!syntax.valid) {
+      throw new LayoutToolError(formatHtmlSyntaxDiagnostics(syntax, identifier));
+    }
+    const messages = await this.deps.artifactMessages(topicId);
+    const versions = collectHtmlVersions(messages).filter(
+      (version) =>
+        version.identifier === identifier &&
+        (version.body !== undefined || version.srcFileId !== undefined),
+    ).length;
+    const saved = await this.save(content, fileName(identifier, 'write', versions + 1));
+    return {
+      checkedScripts: syntax.checkedScripts,
+      fileId: saved.fileId,
+      identifier,
+      sha256: computeHtmlSha256(content),
+      src: saved.address,
+      tag: artifactTag({ identifier, src: saved.address, title }),
+      title,
+      unverifiedParts: syntax.unverifiedParts,
+      verifiedParts: syntax.verifiedParts,
     };
   }
 

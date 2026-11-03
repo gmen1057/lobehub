@@ -47,11 +47,12 @@ describe('useCategory', () => {
 
     act(() => {
       const items = result.current;
+      expect(items.some((item) => item.key === 'back-to-studio')).toBe(true);
       expect(items.some((item) => item.key === 'profile')).toBe(true);
       expect(items.some((item) => item.key === 'setting')).toBe(true);
-      expect(items.some((item) => item.key === 'docs')).toBe(true);
-      expect(items.some((item) => item.key === 'feedback')).toBe(true);
-      expect(items.some((item) => item.key === 'changelog')).toBe(true);
+      expect(items.some((item) => item.key === 'docs')).toBe(false);
+      expect(items.some((item) => item.key === 'feedback')).toBe(false);
+      expect(items.some((item) => item.key === 'changelog')).toBe(false);
     });
   });
 
@@ -65,12 +66,13 @@ describe('useCategory', () => {
 
     act(() => {
       const items = result.current;
+      expect(items.some((item) => item.key === 'back-to-studio')).toBe(true);
       expect(items.some((item) => item.key === 'profile')).toBe(false);
       expect(items.some((item) => item.key === 'setting')).toBe(false);
       expect(items.some((item) => item.key === 'data')).toBe(false);
-      expect(items.some((item) => item.key === 'docs')).toBe(true);
-      expect(items.some((item) => item.key === 'feedback')).toBe(true);
-      expect(items.some((item) => item.key === 'changelog')).toBe(true);
+      expect(items.some((item) => item.key === 'docs')).toBe(false);
+      expect(items.some((item) => item.key === 'feedback')).toBe(false);
+      expect(items.some((item) => item.key === 'changelog')).toBe(false);
     });
   });
 });

@@ -7,7 +7,7 @@ import {
 } from '@lobechat/types';
 import isEqual from 'fast-deep-equal';
 import i18n from 'i18next';
-import { produce } from 'immer';
+import { current, isDraft, produce } from 'immer';
 
 import { merge } from '@/utils/merge';
 
@@ -152,7 +152,11 @@ export const messagesReducer = (
           newState = merge(message.pluginState, { [key]: value });
         }
 
-        if (isEqual(message.pluginState, newState)) return;
+        const prevState = isDraft(message.pluginState)
+          ? current(message.pluginState)
+          : message.pluginState;
+
+        if (isEqual(prevState, newState)) return;
 
         message.pluginState = newState;
         message.updatedAt = Date.now();

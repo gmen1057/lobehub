@@ -452,7 +452,7 @@ export class GeneralChatAgent implements Agent {
 
       case 'llm_result': {
         // LLM response received, check if it contains tool calls
-        const { hasToolsCalling, toolsCalling, parentMessageId } =
+        const { hasToolsCalling, htmlArtifactSyntaxError, toolsCalling, parentMessageId } =
           context.payload as GeneralAgentCallLLMResultPayload;
 
         if (hasToolsCalling && toolsCalling && toolsCalling.length > 0) {
@@ -497,6 +497,20 @@ export class GeneralChatAgent implements Agent {
           }
 
           return instructions;
+        }
+
+        if (htmlArtifactSyntaxError && !state.forceFinish) {
+          if (context.stepContext?.hasQueuedMessages) {
+            return { reason: 'queued_message_interrupt', type: 'finish' };
+          }
+          return this.toLLMCall({
+            assistantMessageId: parentMessageId,
+            messages: state.messages,
+            model: this.config.modelRuntimeConfig?.model,
+            parentMessageId,
+            provider: this.config.modelRuntimeConfig?.provider,
+            tools: state.tools,
+          } as GeneralAgentCallLLMInstructionPayload);
         }
 
         // No tool calls, conversation is complete

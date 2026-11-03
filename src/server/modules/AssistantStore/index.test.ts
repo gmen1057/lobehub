@@ -34,10 +34,10 @@ describe('AssistantStore', () => {
     expect(url).toBe(baseURL);
   });
 
-  it('should return the zh-CN URL for zh locale', () => {
+  it('should return the ru-RU URL for ru-RU locale', () => {
     const agentMarket = new AssistantStore();
-    const url = agentMarket['getAgentIndexUrl']('zh' as any);
-    expect(url).toBe(`${baseURL}/index.zh-CN.json`);
+    const url = agentMarket['getAgentIndexUrl']('ru-RU');
+    expect(url).toBe(`${baseURL}/index.ru-RU.json`);
   });
 
   it('should return the default URL for en locale', () => {
@@ -60,8 +60,8 @@ describe('AssistantStore', () => {
 
   it('should return the agent URL for a supported language', () => {
     const agentMarket = new AssistantStore();
-    const url = agentMarket.getAgentUrl('agent-123', 'zh-CN');
-    expect(url).toBe(`${baseURL}/agent-123.zh-CN.json`);
+    const url = agentMarket.getAgentUrl('agent-123', 'ru-RU');
+    expect(url).toBe(`${baseURL}/agent-123.ru-RU.json`);
   });
 
   it('should return the agent URL without language suffix if the provided language is not supported', () => {

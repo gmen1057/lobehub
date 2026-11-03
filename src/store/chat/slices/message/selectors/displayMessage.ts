@@ -41,7 +41,14 @@ const getDisplayMessagesByKey =
   (key: string) =>
   (s: ChatStoreState): UIChatMessage[] => {
     const messages = s.messagesMap[key] || [];
-    return messages.filter((m) => !m.metadata?.arckepSitesAutoContinue);
+    return messages.filter(
+      (m) =>
+        !(
+          m.metadata &&
+          'arckepSitesAutoContinue' in m.metadata &&
+          m.metadata.arckepSitesAutoContinue
+        ),
+    );
   };
 
 /**

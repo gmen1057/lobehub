@@ -1,7 +1,15 @@
 'use client';
 
 import { CaretDownFilled, LoadingOutlined } from '@ant-design/icons';
-import { ActionIcon, Block, Flexbox, Icon, showContextMenu, stopPropagation } from '@lobehub/ui';
+import {
+  ActionIcon,
+  Block,
+  type ContextMenuItem,
+  Flexbox,
+  Icon,
+  showContextMenu,
+  stopPropagation,
+} from '@lobehub/ui';
 import { App, Input } from 'antd';
 import { cx } from 'antd-style';
 import { FileText, FolderIcon, FolderOpenIcon } from 'lucide-react';
@@ -258,7 +266,7 @@ export const HierarchyNode = memo<HierarchyNodeProps>(
             onDrop={handleDrop}
             onContextMenu={(e) => {
               e.preventDefault();
-              showContextMenu(menuItems());
+              showContextMenu(menuItems() as ContextMenuItem[]);
             }}
           >
             {isLoading ? (
@@ -350,7 +358,7 @@ export const HierarchyNode = memo<HierarchyNodeProps>(
           onDragStart={handleDragStart}
           onContextMenu={(e) => {
             e.preventDefault();
-            showContextMenu(menuItems());
+            showContextMenu(menuItems() as ContextMenuItem[]);
           }}
         >
           <div style={{ width: 20 }} />

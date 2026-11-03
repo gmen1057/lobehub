@@ -3,6 +3,7 @@ export const ArckepLayoutIdentifier = 'arckep-layout';
 export enum ArckepLayoutApiName {
   checkLayout = 'checkLayout',
   editArtifact = 'editArtifact',
+  writeArtifact = 'writeArtifact',
 }
 
 /** Правка «найти → заменить». */
@@ -22,6 +23,15 @@ export interface EditArtifactParams {
   /** Правки последней версии: до 30, `find` встречается в HTML ровно один раз */
   edits: LayoutEdit[];
   identifier: string;
+}
+
+export interface WriteArtifactParams {
+  /** Полный HTML-документ артефакта (содержимое внутри <lobeArtifact>, без самого тега-обёртки) */
+  content: string;
+  /** kebab-case identifier артефакта */
+  identifier: string;
+  /** Заголовок артефакта */
+  title: string;
 }
 
 /** Одна строка итогов круга сверки. */
@@ -95,4 +105,16 @@ export interface EditArtifactResult {
   src: string;
   tag: string;
   title: string;
+}
+
+export interface WriteArtifactResult {
+  checkedScripts: number;
+  fileId: string;
+  identifier: string;
+  sha256: string;
+  src: string;
+  tag: string;
+  title: string;
+  unverifiedParts: string[];
+  verifiedParts: string[];
 }

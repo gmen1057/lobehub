@@ -2,7 +2,10 @@ import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
 import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin-tool-activator';
-import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
+import {
+  ArckepLayoutIdentifier,
+  ArckepLayoutManifest,
+} from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
 import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
@@ -989,7 +992,11 @@ export class AiAgentService {
         !excludedPluginIds.has(ArckepLayoutIdentifier)
       ) {
         const layoutHistory = await loadHistoryMessages();
-        if (needsLayoutTool({ files, history: layoutHistory })) {
+        const isManualArtifacts =
+          (agentConfig.chatConfig?.skillActivateMode === 'manual' &&
+            agentPlugins.includes('lobe-artifacts')) ||
+          pickedPluginIds.includes('lobe-artifacts');
+        if (needsLayoutTool({ files, history: layoutHistory, isManualArtifacts })) {
           pickedPluginIds.push(ArckepLayoutIdentifier);
           agentPlugins = dropExcluded([...new Set([...agentPlugins, ArckepLayoutIdentifier])]);
           log('execAgent: arckep-layout activated (PDF mockup or HTML artifact in the topic)');
@@ -1244,6 +1251,25 @@ export class AiAgentService {
           if (id === 'lobe-user-memory' && !globalMemoryEnabled) continue;
           const manifest = toolsEngine.getPluginManifest(id);
           if (manifest) toolManifestMap[id] = manifest;
+        }
+      }
+
+      // arckep: манифест `arckep-layout` всегда кладётся в карту операции (но скрыт из `<available_tools>`),
+      // чтобы `activateSkill({ name: 'Artifacts' })` на первом ходе создания HTML-артефакта мог подключить
+      // `writeArtifact` / `editArtifact` / `checkLayout` в `activatedStepTools`.
+      if (
+        !isBotConversation &&
+        isLayoutCheckEnabled() &&
+        !excludedPluginIds.has(ArckepLayoutIdentifier) &&
+        !excludedPluginIds.has('lobe-artifacts') &&
+        !toolManifestMap[ArckepLayoutIdentifier]
+      ) {
+        const layoutManifest =
+          (typeof toolsEngine.getPluginManifest === 'function'
+            ? toolsEngine.getPluginManifest(ArckepLayoutIdentifier)
+            : undefined) ?? ArckepLayoutManifest;
+        if (layoutManifest) {
+          toolManifestMap[ArckepLayoutIdentifier] = layoutManifest;
         }
       }
 

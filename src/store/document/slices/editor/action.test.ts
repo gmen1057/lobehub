@@ -158,7 +158,7 @@ describe('DocumentStore - Editor Actions', () => {
         result.current.onEditorInit(mockEditor);
       });
 
-      expect(mockEditor.setDocument).toHaveBeenCalledWith('markdown', '# Hello World');
+      expect(mockEditor.setDocument).toHaveBeenCalledWith('markdown', '# Hello World', undefined);
     });
 
     it('should load editorData as json into editor', () => {
@@ -179,7 +179,11 @@ describe('DocumentStore - Editor Actions', () => {
         result.current.onEditorInit(mockEditor);
       });
 
-      expect(mockEditor.setDocument).toHaveBeenCalledWith('json', JSON.stringify(editorData));
+      expect(mockEditor.setDocument).toHaveBeenCalledWith(
+        'json',
+        JSON.stringify(editorData),
+        undefined,
+      );
     });
 
     it('should reset editor content when target document is empty', () => {
@@ -214,6 +218,7 @@ describe('DocumentStore - Editor Actions', () => {
       expect(mockEditor.setDocument).toHaveBeenLastCalledWith(
         'json',
         JSON.stringify(EMPTY_EDITOR_STATE),
+        undefined,
       );
     });
   });

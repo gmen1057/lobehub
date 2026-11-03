@@ -172,7 +172,7 @@ describe('messageRuntime', () => {
   });
 
   describe('Discord adapter', () => {
-    it('should send a message via Discord', async () => {
+    it('should return removed platform error when sending via Discord', async () => {
       mockProviderFor('discord', { botToken: 'discord-token' });
       mockDiscordCreateMessage.mockResolvedValue({ id: 'msg-123' });
 
@@ -183,15 +183,11 @@ describe('messageRuntime', () => {
         platform: 'discord',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state).toMatchObject({
-        channelId: 'ch-1',
-        messageId: 'msg-123',
-        platform: 'discord',
-      });
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
 
-    it('should read messages from Discord', async () => {
+    it('should return removed platform error when reading messages from Discord', async () => {
       mockProviderFor('discord', { botToken: 'discord-token' });
       mockDiscordGetMessages.mockResolvedValue([
         {
@@ -208,14 +204,13 @@ describe('messageRuntime', () => {
         platform: 'discord',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state.messages).toHaveLength(1);
-      expect(result.state.messages[0].author.name).toBe('alice');
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
   });
 
   describe('Telegram adapter', () => {
-    it('should send a message via Telegram', async () => {
+    it('should return removed platform error when sending via Telegram', async () => {
       mockProviderFor('telegram', { botToken: 'tg-token' });
       mockTelegramSendMessage.mockResolvedValue({ message_id: 42 });
 
@@ -226,15 +221,11 @@ describe('messageRuntime', () => {
         platform: 'telegram',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state).toMatchObject({
-        channelId: '-100123',
-        messageId: '42',
-        platform: 'telegram',
-      });
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
 
-    it('should return error for unsupported readMessages', async () => {
+    it('should return removed platform error for readMessages on Telegram', async () => {
       mockProviderFor('telegram', { botToken: 'tg-token' });
 
       const runtime = await messageRuntime.factory(validContext);
@@ -244,12 +235,12 @@ describe('messageRuntime', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.content).toContain('not supported on Telegram');
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
   });
 
   describe('Slack adapter', () => {
-    it('should send a message via Slack', async () => {
+    it('should return removed platform error when sending via Slack', async () => {
       mockProviderFor('slack', { botToken: 'slack-token' });
       mockSlackPostMessage.mockResolvedValue({ ts: '1234567890.123456' });
 
@@ -260,17 +251,13 @@ describe('messageRuntime', () => {
         platform: 'slack',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state).toMatchObject({
-        channelId: 'C0123456',
-        messageId: '1234567890.123456',
-        platform: 'slack',
-      });
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
   });
 
   describe('Feishu adapter', () => {
-    it('should send a message via Feishu', async () => {
+    it('should return removed platform error when sending via Feishu', async () => {
       mockProviderFor('feishu', { appSecret: 'feishu-secret' });
       mockFeishuSendMessage.mockResolvedValue({ messageId: 'om_feishu_123', raw: {} });
 
@@ -281,17 +268,13 @@ describe('messageRuntime', () => {
         platform: 'feishu',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state).toMatchObject({
-        channelId: 'oc_chat_123',
-        messageId: 'om_feishu_123',
-        platform: 'feishu',
-      });
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
   });
 
   describe('QQ adapter', () => {
-    it('should send a message via QQ', async () => {
+    it('should return removed platform error when sending via QQ', async () => {
       mockProviderFor('qq', { appSecret: 'qq-secret' });
       mockQQSendGroupMessage.mockResolvedValue({ id: 'qq-msg-1' });
 
@@ -302,15 +285,11 @@ describe('messageRuntime', () => {
         platform: 'qq',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.state).toMatchObject({
-        channelId: 'group:123456',
-        messageId: 'qq-msg-1',
-        platform: 'qq',
-      });
+      expect(result.success).toBe(false);
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
 
-    it('should return error for unsupported editMessage', async () => {
+    it('should return removed platform error for editMessage on QQ', async () => {
       mockProviderFor('qq', { appSecret: 'qq-secret' });
 
       const runtime = await messageRuntime.factory(validContext);
@@ -322,12 +301,12 @@ describe('messageRuntime', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.content).toContain('not supported on QQ');
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
   });
 
   describe('dispatcher error handling', () => {
-    it('should return error for unconfigured platform', async () => {
+    it('should return removed platform error when bot platforms are disabled', async () => {
       mockQuery.mockResolvedValue([]);
 
       const runtime = await messageRuntime.factory(validContext);
@@ -338,7 +317,7 @@ describe('messageRuntime', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.content).toContain('No enabled discord bot provider found');
+      expect(result.content).toContain('This bot platform has been removed from Arckep Image Studio.');
     });
 
     it('should return error for unregistered platform', async () => {

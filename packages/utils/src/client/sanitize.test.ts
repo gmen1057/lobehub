@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
 import { sanitizeSVGContent } from './sanitize';
@@ -55,16 +56,16 @@ describe('sanitizeSVGContent', () => {
   it('should remove dangerous embed and object tags', () => {
     const maliciousSvg = `
       <svg xmlns="http://www.w3.org/2000/svg">
+        <circle cx="50" cy="50" r="40" fill="red" />
         <object data="malicious.swf"></object>
         <embed src="malicious.swf"></embed>
-        <circle cx="50" cy="50" r="40" fill="red" />
       </svg>
     `;
 
     const sanitized = sanitizeSVGContent(maliciousSvg);
 
-    // Note: DOMPurify with SVG profile may still allow some elements
-    // The key security protection is removing script and event handlers
+    expect(sanitized).not.toContain('<object');
+    expect(sanitized).not.toContain('<embed');
     expect(sanitized).toContain('<circle');
     expect(sanitized).toContain('fill="red"');
   });
@@ -93,16 +94,19 @@ describe('sanitizeSVGContent', () => {
 
     const sanitized = sanitizeSVGContent(complexSvg);
 
-    // Should preserve safe elements and attributes
-    expect(sanitized).toEqual(`
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">
-        <defs>
-          <linearGradient id="grad1">
-            <stop offset="0%" stop-color="red"></stop>
-            <stop offset="100%" stop-color="blue"></stop>
-          </linearGradient>
-        </defs>
-        <g transform="translate(50,50)">
-          </g></svg>`);
+    // Should preserve safe elements and attributes while stripping threats
+    expect(sanitized).toContain('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">');
+    expect(sanitized).toContain('<linearGradient id="grad1">');
+    expect(sanitized).toContain('<stop offset="0%" stop-color="red">');
+    expect(sanitized).toContain('<stop offset="100%" stop-color="blue">');
+    expect(sanitized).toContain('<g transform="translate(50,50)">');
+    expect(sanitized).toContain('<circle cx="50" cy="50" r="40" fill="url(#grad1)">');
+    expect(sanitized).toContain('<text x="50" y="60" text-anchor="middle">Hello</text>');
+    expect(sanitized).not.toContain('<script>');
+    expect(sanitized).not.toContain('malicious');
+    expect(sanitized).not.toContain('onclick');
+    expect(sanitized).not.toContain('onload');
+    expect(sanitized).not.toContain('hack');
+    expect(sanitized).not.toContain('evil');
   });
 });

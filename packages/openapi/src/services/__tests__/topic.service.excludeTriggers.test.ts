@@ -146,7 +146,7 @@ describe('TopicListQuerySchema.excludeTriggers (query-строка)', () => {
       seen = (c.req as any).valid('query');
       return c.json({ ok: true });
     });
-    return app.request(`/${query}`).then((res) => ({ seen, status: res.status }));
+    return Promise.resolve(app.request(`/${query}`)).then((res) => ({ seen, status: res.status }));
   };
 
   it('одно значение — массив из одного источника', async () => {

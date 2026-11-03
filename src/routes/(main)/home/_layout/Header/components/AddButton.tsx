@@ -1,4 +1,4 @@
-import { ActionIcon, DropdownMenu, Flexbox } from '@lobehub/ui';
+import { ActionIcon, type DropdownItem, DropdownMenu, Flexbox } from '@lobehub/ui';
 import { CreateBotIcon } from '@lobehub/ui/icons';
 import { cssVar } from 'antd-style';
 import { ChevronDownIcon } from 'lucide-react';
@@ -31,9 +31,9 @@ const AddButton = memo(() => {
     [createAgent],
   );
 
-  const dropdownItems = useMemo(() => {
-    return [createAgentMenuItem(), createGroupChatMenuItem(), createPageMenuItem()];
-  }, [createAgentMenuItem, createGroupChatMenuItem, createPageMenuItem]);
+  const dropdownItems = useMemo(
+    () => [createAgentMenuItem(), createGroupChatMenuItem(), createPageMenuItem()] as DropdownItem[],
+  [createAgentMenuItem, createGroupChatMenuItem, createPageMenuItem]);
 
   return (
     <Flexbox horizontal>

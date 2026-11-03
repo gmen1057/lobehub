@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ToolExecutionService } from '../index';
+
 /**
  * arckep (план chat-next-redesign, F6): подключения студии mcp-arckep-studio-* ходят в MCP Arckep доверенным
  * путём — служебный токен студии и номер человека, без ключа у человека и без его настроек.
@@ -15,8 +17,6 @@ vi.mock('@/database/models/plugin', () => ({
 vi.mock('../serverRuntimes/arckepStudio', () => ({
   resolveArckepUserId: mockResolveArckepUserId,
 }));
-
-import { ToolExecutionService } from '../index';
 
 const context = { serverDB: {} as any, toolManifestMap: {}, userId: 'user-1' } as any;
 const http = { headers: { 'X-Static': '1' }, type: 'http', url: 'http://127.0.0.1:8422/mcp' };
