@@ -119,6 +119,16 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
     }
   });
 
+  it('HY4 final only accepts none/low/high, with high as provider default', () => {
+    for (const id of ['tencent/hy4', 'tencent/hy4-20261104']) {
+      const profile = resolveReasoningProfile(id, 'openrouter', []);
+      expect(profile).toEqual({ kind: 'reasoningEffort', levels: ['none', 'low', 'high'] });
+      expect(resolveReasoningAuto(id, 'openrouter', {})).toBe('high');
+      expect(snapReasoningLevel('medium', profile!.levels)).toBe('low');
+      expect(reasoningCallParams(profile!, 'none')).toEqual({ reasoning_effort: 'none' });
+    }
+  });
+
   it('OpenRouter — три ступени для любой модели; без модели и неизвестное — нет ступеней', () => {
     expect(resolveReasoningProfile('moonshotai/kimi-k3', 'openrouter', [])).toEqual({
       kind: 'reasoningEffort',
