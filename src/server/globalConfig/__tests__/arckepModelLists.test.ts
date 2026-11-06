@@ -28,6 +28,17 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(resolveArckepModelList('openai', '+gpt-5.5')).toBe('-all,+gpt-6.1-sol');
   });
 
+  it('exposes final HY4 with image understanding', async () => {
+    const models = await transformToAiModelList({
+      defaultModels: [],
+      modelString: ARCKEP_STUDIO_MODEL_LISTS.openrouter,
+      providerId: 'openrouter',
+    });
+    const hy4 = models?.find((model) => model.id === 'tencent/hy4');
+    expect(hy4?.abilities).toMatchObject({ functionCall: true, reasoning: true, vision: true });
+    expect(hy4?.contextWindowTokens).toBe(1_048_576);
+  });
+
   it('produces exact 33 studio chat models across the 7 enabled providers and excludes legacy/retired IDs', async () => {
     const activeChatKeys: string[] = [];
 
@@ -74,7 +85,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'openrouter/mistralai/mistral-large-4-0',
       'openrouter/xiaomi/mimo-v2.6-pro',
       'openrouter/xiaomi/mimo-v2.6-flash',
-      'openrouter/tencent/hy4-preview',
+      'openrouter/tencent/hy4',
       'deepseek/deepseek-flash',
     ]) {
       expect(activeChatKeys).toContain(expected);
@@ -100,6 +111,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'qwen/qwen-image-max',
       'qwen/qwen-image-edit',
       'qwen/qwen-image-edit-plus',
+      'openrouter/tencent/hy4-preview',
       'openrouter/openrouter/auto',
       'openrouter/moonshotai/kimi-k3',
     ]) {

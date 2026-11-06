@@ -157,6 +157,12 @@ const ARCKEP_PROFILES: ReadonlyArray<{
     },
     provider: 'openrouter',
   },
+  // HY4 GA: OpenRouter /api/v1/models/tencent/hy4 (verified 2026-11-06).
+  {
+    match: /^tencent\/hy4(?:-\d{8})?$/,
+    profile: { kind: 'reasoningEffort', levels: ['none', 'low', 'high'] },
+    provider: 'openrouter',
+  },
   // Mistral Large 4 (OpenRouter): принимает только none и high.
   {
     match: /^mistralai\/mistral-large-4(?:-0)?(?:-\d{8})?$/,
@@ -209,6 +215,7 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
   { auto: 'medium', match: /^gemini-(?:4-argon|3\.8-flash|3\.7-flash)$/, provider: 'google' },
   { auto: 'auto', match: /^gemini-/, provider: 'google' },
   { auto: 'auto', match: /^grok-4/, provider: 'xai' },
+  { auto: 'high', match: /^tencent\/hy4(?:-\d{8})?$/, provider: 'openrouter' },
   { auto: 'auto', match: /./, provider: 'openrouter' },
 ];
 

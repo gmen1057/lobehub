@@ -68,7 +68,7 @@ export const ARCKEP_STUDIO_MODEL_LISTS: Readonly<Record<string, string>> = {
     '+minimax/minimax-m3.1-flash=MiniMax M3.1 Flash<1000000:fc:vision:reasoning>',
     '+xiaomi/mimo-v2.6-pro=MiMo V2.6 Pro<1048576:fc>',
     '+xiaomi/mimo-v2.6-flash=MiMo V2.6 Flash<1048576:fc>',
-    '+tencent/hy4-preview=Hunyuan 4<1048576:fc:reasoning>',
+    '+tencent/hy4=Hunyuan 4<1048576:fc:vision:reasoning>',
     '+inception/mercury-3=Mercury 3<1000000:fc:reasoning>',
   ].join(','),
 
