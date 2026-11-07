@@ -63,6 +63,7 @@ import { resolveServerEnabledSearch } from './arckepSearch';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
+import { persistFailedLLM } from './persistFailedLLM';
 import { persistInterruptedLLM } from './persistInterruptedLLM';
 import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
@@ -560,6 +561,8 @@ export const createRuntimeExecutors = (
       // Initialize ModelRuntime (read user's keyVaults from database).
       // Pass conversation ids so billing proxy can attribute charges (site cost).
       const modelRuntime = await initModelRuntimeFromDB(ctx.serverDB, ctx.userId!, provider, {
+        assistantMessageId: assistantMessageItem.id,
+        retryOwner: 'engine',
         sessionId: state.metadata?.sessionId,
         topicId: state.metadata?.topicId ?? ctx.topicId,
       });
@@ -775,6 +778,9 @@ export const createRuntimeExecutors = (
                 if (data.usage) {
                   currentStepUsage = data.usage;
                 }
+              },
+              onUsage: async (usage) => {
+                currentStepUsage = usage;
               },
               onGrounding: async (groundingData) => {
                 log(`[${operationLogId}][grounding] %O`, groundingData);
@@ -1042,7 +1048,11 @@ export const createRuntimeExecutors = (
           const htmlArtifactSyntaxError = canScheduleSyntaxRepair
             ? htmlGateDiagnostics.join('\n\n')
             : undefined;
-          if (htmlGateDiagnostics.length > 0 && !canScheduleSyntaxRepair && toolsCalling.length === 0) {
+          if (
+            htmlGateDiagnostics.length > 0 &&
+            !canScheduleSyntaxRepair &&
+            toolsCalling.length === 0
+          ) {
             const fallbackNotice =
               'Не удалось показать готовую HTML-страницу: в коде скрипта осталась синтаксическая ошибка. Попробуйте повторить запрос или уточнить задачу.';
             content = content.trim() ? `${content.trim()}\n\n${fallbackNotice}` : fallbackNotice;
@@ -1221,13 +1231,57 @@ export const createRuntimeExecutors = (
             },
           };
         } catch (error) {
-          clearAttemptBuffers();
-          if (ctx.signal?.aborted) return preservePartialResponse();
+          if (ctx.signal?.aborted) {
+            clearAttemptBuffers();
+            return preservePartialResponse();
+          }
+
+          // Retrying an emitted/billable response would replace received output
+          // and may charge again. Keep it on the same assistant, then report the
+          // failure; only an empty transient attempt can restart automatically.
+          const hasReceivedResult = Boolean(
+            rawContent ||
+            thinkingContent ||
+            hasContentImages ||
+            hasReasoningImages ||
+            toolsCalling.length ||
+            tool_calls.length ||
+            currentStepUsage,
+          );
+          if (hasReceivedResult) {
+            try {
+              await persistFailedLLM(ctx, {
+                assistantMessageId: assistantMessageItem.id,
+                content: hasContentImages ? serializePartsForStorage(contentParts) : content,
+                grounding,
+                imageList,
+                isMultimodal: hasContentImages,
+                model,
+                provider,
+                reasoning: hasReasoningImages
+                  ? { content: serializePartsForStorage(reasoningParts), isMultimodal: true }
+                  : thinkingContent
+                    ? { content: thinkingContent }
+                    : undefined,
+                usage: currentStepUsage,
+              });
+              await flushTextBuffer();
+              await flushReasoningBuffer();
+            } finally {
+              clearAttemptBuffers();
+            }
+          } else {
+            clearAttemptBuffers();
+          }
 
           const classified = classifyLLMError(error);
           const interrupted = await isOperationInterrupted(ctx);
 
-          if (!interrupted && shouldRetryLLM(classified.kind, attempt, LLM_MAX_RETRIES)) {
+          if (
+            !hasReceivedResult &&
+            !interrupted &&
+            shouldRetryLLM(classified.kind, attempt, LLM_MAX_RETRIES)
+          ) {
             const delayMs = getLLMRetryDelayMs(attempt);
 
             log(

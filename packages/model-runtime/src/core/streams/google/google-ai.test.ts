@@ -255,8 +255,16 @@ describe('GoogleGenerativeAIStream', () => {
           'data: "234"\n',
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":19,"outputImageTokens":0,"outputReasoningTokens":100,"outputTextTokens":3,"totalInputTokens":19,"totalOutputTokens":103,"totalTokens":122}\n',
+
+          'id: chat_1',
           'event: text',
           'data: ""\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":19,"outputImageTokens":0,"outputReasoningTokens":100,"outputTextTokens":3,"totalInputTokens":19,"totalOutputTokens":103,"totalTokens":122}\n',
 
           'id: chat_1',
           'event: text',
@@ -380,12 +388,24 @@ describe('GoogleGenerativeAIStream', () => {
           'data: {"content":"**Understanding the Conditional Logic**\\n\\n","inReasoning":true,"partType":"text"}\n',
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":38,"outputImageTokens":0,"outputReasoningTokens":256,"outputTextTokens":7,"totalInputTokens":38,"totalOutputTokens":263,"totalTokens":301}\n',
+
+          'id: chat_1',
           'event: reasoning_part',
           `data: {"content":"**Finalizing Interpretation**\\n\\n","inReasoning":true,"partType":"text"}\n`,
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":38,"outputImageTokens":0,"outputReasoningTokens":304,"outputTextTokens":13,"totalInputTokens":38,"totalOutputTokens":317,"totalTokens":355}\n',
+
+          'id: chat_1',
           'event: text',
           'data: "简单来说，"\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":38,"outputImageTokens":0,"outputReasoningTokens":304,"outputTextTokens":16,"totalInputTokens":38,"totalOutputTokens":320,"totalTokens":358}\n',
 
           'id: chat_1',
           'event: text',
@@ -473,6 +493,10 @@ describe('GoogleGenerativeAIStream', () => {
           'id: chat_1',
           'event: text',
           'data: "234"\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":19,"outputImageTokens":0,"outputReasoningTokens":100,"outputTextTokens":3,"totalInputTokens":19,"totalOutputTokens":103,"totalTokens":122}\n',
 
           'id: chat_1',
           'event: text',
@@ -639,6 +663,10 @@ describe('GoogleGenerativeAIStream', () => {
           'id: chat_1',
           'event: text',
           'data: "234"\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":20,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":20,"totalOutputTokens":0,"totalTokens":20}\n',
 
           'id: chat_1',
           'event: text',
@@ -833,6 +861,10 @@ describe('GoogleGenerativeAIStream', () => {
           'id: chat_1',
           'event: text',
           'data: "123"\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":18,"totalInputTokens":9,"totalOutputTokens":18,"totalTokens":27}\n',
 
           'id: chat_1',
           'event: text',
@@ -1194,6 +1226,10 @@ describe('GoogleGenerativeAIStream', () => {
           'data: [{"function":{"arguments":"{\\"query\\":\\"\\\\\\"version\\\\\\":\\",\\"repo\\":\\"lobehub/lobe-chat\\",\\"path\\":\\"package.json\\"}","name":"grep____searchGitHub____mcp"},"id":"grep____searchGitHub____mcp_0_abcd1234","index":0,"thoughtSignature":"123","type":"function"}]\n',
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":1171,"outputImageTokens":0,"outputReasoningTokens":196,"outputTextTokens":41,"totalInputTokens":1171,"totalOutputTokens":237,"totalTokens":1408}\n',
+
+          'id: chat_1',
           'event: stop',
           'data: "STOP"\n',
 
@@ -1332,8 +1368,16 @@ describe('GoogleGenerativeAIStream', () => {
           'data: [{"function":{"arguments":"{\\"location\\":\\"Paris\\"}","name":"get_current_temperature"},"id":"get_current_temperature_0_abcd1234","index":0,"thoughtSignature":"ErEDCq4DAdHtim...","type":"function"}]\n',
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":72,"outputImageTokens":0,"outputReasoningTokens":77,"outputTextTokens":18,"totalInputTokens":72,"totalOutputTokens":95,"totalTokens":167}\n',
+
+          'id: chat_1',
           'event: tool_calls',
           'data: [{"function":{"arguments":"{\\"location\\":\\"London\\"}","name":"get_current_temperature"},"id":"get_current_temperature_0_efgh5678","index":0,"type":"function"}]\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":72,"outputImageTokens":0,"outputReasoningTokens":77,"outputTextTokens":36,"totalInputTokens":72,"totalOutputTokens":113,"totalTokens":185}\n',
 
           'id: chat_1',
           'event: stop',
@@ -1495,15 +1539,27 @@ describe('GoogleGenerativeAIStream', () => {
           'event: reasoning_part',
           'data: {"content":"**Planning the Solution**\\n\\nI\'m solidifying my plan...","inReasoning":true,"partType":"text"}\n',
 
+          'id: chat_test',
+          'event: usage',
+          'data: {"inputTextTokens":10250,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":10250,"totalOutputTokens":0,"totalTokens":10250}\n',
+
           // First tool call (createPlan)
           'id: chat_test',
           'event: tool_calls',
           'data: [{"function":{"arguments":"{\\"goal\\":\\"Fix Linear API Argument Validation Error\\",\\"description\\":\\"Investigate the Linear API error.\\",\\"context\\":\\"The user is encountering a validation error.\\"}","name":"lobe-gtd____createPlan____builtin"},"id":"lobe-gtd____createPlan____builtin_0_tool_id_1","index":0,"thoughtSignature":"EoIYCv8XAXLI2nx+C18votz5l0A...","type":"function"}]\n',
 
+          'id: chat_test',
+          'event: usage',
+          'data: {"inputTextTokens":10250,"outputImageTokens":0,"outputReasoningTokens":730,"outputTextTokens":131,"totalInputTokens":10250,"totalOutputTokens":861,"totalTokens":11111}\n',
+
           // Second tool call (createTodos) - should be a SEPARATE event with index:0
           'id: chat_test',
           'event: tool_calls',
           'data: [{"function":{"arguments":"{\\"adds\\":[\\"Verify Linear GraphQL API requirements\\",\\"Determine if code needs to look up Team UUID\\",\\"Provide corrected code\\"]}","name":"lobe-gtd____createTodos____builtin"},"id":"lobe-gtd____createTodos____builtin_0_tool_id_2","index":0,"type":"function"}]\n',
+
+          'id: chat_test',
+          'event: usage',
+          'data: {"inputTextTokens":10250,"outputImageTokens":0,"outputReasoningTokens":730,"outputTextTokens":213,"totalInputTokens":10250,"totalOutputTokens":943,"totalTokens":11193}\n',
 
           // Stop and usage
           'id: chat_test',
@@ -1602,6 +1658,10 @@ describe('GoogleGenerativeAIStream', () => {
           'id: chat_1',
           'event: content_part',
           'data: {"content":"你好！很高兴为你服务。请问有什么我可以帮你的吗？\\n\\n无论是回答问题、协助写作、翻译，还是随便聊聊，我都随时待命！","partType":"text"}\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":1,"outputImageTokens":0,"outputReasoningTokens":676,"outputTextTokens":35,"totalInputTokens":1,"totalOutputTokens":711,"totalTokens":712}\n',
 
           'id: chat_1',
           'event: stop',
@@ -1975,30 +2035,54 @@ describe('GoogleGenerativeAIStream', () => {
           'event: reasoning_part',
           'data: {"content":"**Clarifying the Core Concept**\\n\\nI\'m now focusing on the visual metaphor. I plan to depict Agent Runtime as a software environment that manages and executes agents\' tasks, similar to how an operating system functions. I aim to create an informative and intuitive infographic.\\n\\n\\n","inReasoning":true,"partType":"text"}\n',
 
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
+
           // Second reasoning text
           'id: chat_1',
           'event: reasoning_part',
           'data: {"content":"**Developing Visual Representation**\\n\\nI\'m now iterating on the visual representation. The \\"command center\\" metaphor is proving useful. I\'m focusing on the interplay of the core components: the central engine coordinates perception, memory, planning, and action, with tools and plugins as extensions. The goal is to clearly show the flow of information through the system, from input to output, using visual cues. The aesthetic aims for a futuristic, tech-inspired look with glowing lines and circuit board elements, using a palette of blues, purples, and oranges.\\n\\n\\n","inReasoning":true,"partType":"text"}\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
 
           // Third reasoning text
           'id: chat_1',
           'event: reasoning_part',
           'data: {"content":"**Constructing the Architecture**\\n\\nI\'m presently building out the architecture of the infographic. I\'ve broken down \\"Agent Runtime\\" into its core components and I\'m designing the visual relationships between them.  The central engine will be the focal point, with modules for perception, memory, planning, action, and tools radiating outwards. My aim is to illustrate the workflow from input to output clearly. I\'ll utilize arrows to represent the flow of data and instructions between each module.\\n\\n\\n","inReasoning":true,"partType":"text"}\n',
 
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
+
           // First reasoning image
           'id: chat_1',
           'event: reasoning_part',
           'data: {"content":"/9j/4AAQSkZJRgABAQEBLAEsAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQBiUgnjeAMHrkrk/mMk8k57YpwnCsBtzkcgk+/ONuO3QE4JJ3ccuJ373EbEg5KgDkAg4xtySNrHv14HYm9ne7au7JpLRfm+vn63Emtk9FZWv1t+Ntt9L9Wj//2Q==","inReasoning":true,"mimeType":"image/jpeg","partType":"image"}\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
 
           // Fourth reasoning text
           'id: chat_1',
           'event: reasoning_part',
           'data: {"content":"**Constructing an Infographic**\\n\\nI\'ve successfully created an infographic depicting an \\"Agent Runtime.\\" The design employs a tech-inspired circuit board aesthetic, placing the core engine at the center. I\'ve clearly represented six essential modules: perception, memory, planning, action, tools, and learning. Arrows and text annotations vividly illustrate the data flow and processing.\\n\\n\\n","inReasoning":true,"partType":"text"}\n',
 
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
+
           // Fifth reasoning text
           'id: chat_1',
           'event: reasoning_part',
           'data: {"content":"**Defining Agent Runtime Modules**\\n\\nI\'m making progress clarifying the architecture of an \\"Agent Runtime\\" system. I\'ve designed an infographic with a circuit board aesthetic, centered on the core engine. Six key modules are now visualized: perception, memory, planning, action, tools, and learning. I\'ve incorporated arrows and annotations to show data flow effectively.\\n\\n\\n","inReasoning":true,"partType":"text"}\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":9,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":9,"totalOutputTokens":0,"totalTokens":9}\n',
 
           // Content image (with thoughtSignature but not thought:true)
           'id: chat_1',
@@ -2112,8 +2196,16 @@ describe('GoogleGenerativeAIStream', () => {
           'data: {"content":"This is the description: ","partType":"text"}\n',
 
           'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":5,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":5,"totalOutputTokens":0,"totalTokens":5}\n',
+
+          'id: chat_1',
           'event: content_part',
           'data: {"content":"iVBORw0KGgoAAAANSUhEUgAAAAUA","mimeType":"image/png","partType":"image"}\n',
+
+          'id: chat_1',
+          'event: usage',
+          'data: {"inputTextTokens":5,"outputImageTokens":0,"outputTextTokens":0,"totalInputTokens":5,"totalOutputTokens":0,"totalTokens":5}\n',
 
           'id: chat_1',
           'event: content_part',

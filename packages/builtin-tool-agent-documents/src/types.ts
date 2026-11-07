@@ -22,7 +22,18 @@ export interface CreateDocumentState {
   documentId?: string;
 }
 
-export interface ReadDocumentArgs {
+export interface DocumentReadOptions {
+  /** Maximum source characters per response; the original document is never truncated. */
+  limit?: number;
+  /** UTF-16 offset in the original document; use nextOffset for continuation. */
+  offset?: number;
+  /** Case-insensitive literal text/heading search, not a regular expression. */
+  query?: string;
+  /** Copy the returned source fingerprint when continuing a read. */
+  snapshot?: string;
+}
+
+export interface ReadDocumentArgs extends DocumentReadOptions {
   id: string;
 }
 
@@ -113,7 +124,7 @@ export interface ListDocumentsState {
   documents: { filename: string; id: string; title?: string }[];
 }
 
-export interface ReadDocumentByFilenameArgs {
+export interface ReadDocumentByFilenameArgs extends DocumentReadOptions {
   filename: string;
 }
 

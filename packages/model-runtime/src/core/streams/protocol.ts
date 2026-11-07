@@ -71,7 +71,8 @@ export interface StreamContext {
 export interface StreamProtocolChunk {
   data: any;
   id?: string;
-  type: // pure text
+  type:
+    // pure text
     | 'text'
     // base64 format image
     | 'base64_image'
@@ -221,7 +222,7 @@ export const convertIterableToStream = <T>(stream: AsyncIterable<T>) => {
 export const createSSEProtocolTransformer = (
   transformer: (chunk: any, stack: StreamContext) => StreamProtocolChunk | StreamProtocolChunk[],
   streamStack?: StreamContext,
-  options?: { requireTerminalEvent?: boolean },
+  options?: { requireTerminalEvent?: boolean; usageIsTerminal?: boolean },
 ) => {
   let hasTerminalEvent = false;
   const requireTerminalEvent = Boolean(options?.requireTerminalEvent);
@@ -253,7 +254,12 @@ export const createSSEProtocolTransformer = (
         controller.enqueue(`data: ${JSON.stringify(data)}\n\n`);
 
         // mark terminal when receiving any of these events
-        if (type === 'stop' || type === 'usage' || type === 'error') hasTerminalEvent = true;
+        if (
+          type === 'stop' ||
+          type === 'error' ||
+          (type === 'usage' && options?.usageIsTerminal !== false)
+        )
+          hasTerminalEvent = true;
       });
     },
   });

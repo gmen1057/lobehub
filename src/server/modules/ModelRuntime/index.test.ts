@@ -490,6 +490,37 @@ describe('initModelRuntimeWithUserPayload method', () => {
       expect(opts.defaultHeaders['x-assistant-message-id']).toBe('msg_VqfAoxBtmD01N7');
     });
 
+    it.each([
+      ['msg_VqfAoxBtmD01N7', 'test-internal-key', 'engine'],
+      ['../etc/passwd', 'test-internal-key', undefined],
+      ['msg_VqfAoxBtmD01N7', '', undefined],
+    ])(
+      'arckep: forwards retry ownership only with a valid placeholder and internal auth (%s)',
+      async (assistantMessageId, internalKey, expected) => {
+        vi.stubEnv('OPENAI_PROXY_URL', 'http://127.0.0.1:8202/api/billing-proxy/openai');
+        vi.stubEnv('LOBECHAT_BACKEND_KEY', internalKey);
+        try {
+          const initialize = vi.spyOn(ModelRuntime, 'initializeWithProvider');
+          await initModelRuntimeWithUserPayload(
+            ModelProvider.OpenAI,
+            { apiKey: 'sk-test' },
+            {
+              userId: 'user_abc',
+              assistantMessageId,
+              retryOwner: 'engine',
+            },
+          );
+          const options = initialize.mock.calls.at(-1)![1];
+          expect(options.defaultHeaders?.['x-arckep-retry-owner']).toBe(expected);
+          expect(options).not.toHaveProperty('retryOwner');
+          expect(options).not.toHaveProperty('assistantMessageId');
+          initialize.mockRestore();
+        } finally {
+          vi.unstubAllEnvs();
+        }
+      },
+    );
+
     it('arckep: drops an assistant message id that is not a message key', async () => {
       process.env.OPENAI_PROXY_URL = 'http://127.0.0.1:8202/api/billing-proxy/openai';
       process.env.LOBECHAT_BACKEND_KEY = 'test-internal-key';

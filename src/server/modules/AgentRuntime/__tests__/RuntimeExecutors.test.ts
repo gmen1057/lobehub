@@ -3737,19 +3737,10 @@ describe('RuntimeExecutors', () => {
     it('should retry llm execution, emit stream_retry, and commit only the successful attempt', async () => {
       vi.useFakeTimers();
 
-      const toolCallPayload = [
-        {
-          function: { arguments: '{}', name: 'search' },
-          id: 'tool-call-1',
-          type: 'function',
-        },
-      ];
-
       const mockChat = vi
         .fn()
         .mockImplementationOnce(async (_payload: any, options: any) => {
           await options.callback.onGrounding?.({ query: 'draft' });
-          await options.callback.onToolsCalling?.({ toolsCalling: toolCallPayload });
           throw new Error('network timeout');
         })
         .mockImplementationOnce(async (_payload: any, options: any) => {
@@ -3780,7 +3771,7 @@ describe('RuntimeExecutors', () => {
 
         await vi.runOnlyPendingTimersAsync();
 
-        const result = await resultPromise;
+        await resultPromise;
 
         expect(mockChat).toHaveBeenCalledTimes(2);
         expect(mockMessageModel.create).toHaveBeenCalledTimes(1);

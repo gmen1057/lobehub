@@ -29,6 +29,7 @@ import { StreamingResponse } from '../../utils/response';
 import { createGoogleImage } from './createImage';
 import { createGoogleVideo, pollGoogleVideoOperation } from './createVideo';
 import { createGoogleGenerateObject, createGoogleGenerateObjectWithTools } from './generateObject';
+import { readInternalProxyError } from './proxyError';
 import { resolveGoogleThinkingConfig } from './thinkingResolver';
 
 const log = debug('model-runtime:google');
@@ -125,6 +126,7 @@ const isAbortError = (error: Error): boolean => {
 export class LobeGoogleAI implements LobeRuntimeAI {
   private client: GoogleGenAI;
   private isVertexAi: boolean;
+  private internalProxyRecovery: boolean;
   baseURL?: string;
   apiKey?: string;
   provider: string;
@@ -143,6 +145,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       ? ({ baseUrl: baseURL, headers: defaultHeaders } as HttpOptions)
       : undefined;
 
+    const headers = new Headers(defaultHeaders);
+    this.internalProxyRecovery = Boolean(
+      baseURL && headers.get('x-arckep-token') && headers.get('x-arckep-retry-owner') === 'engine',
+    );
     this.apiKey = apiKey;
     this.client = client ?? new GoogleGenAI({ apiKey, httpOptions });
     this.baseURL = client ? undefined : baseURL || DEFAULT_BASE_URL;
@@ -332,6 +338,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
   private createEnhancedStream(originalStream: any, signal: AbortSignal): ReadableStream {
     // capture provider for error payloads inside the stream closure
     const provider = this.provider;
+    const internalProxyRecovery = this.internalProxyRecovery;
     return new ReadableStream({
       async start(controller) {
         let hasData = false;
@@ -361,6 +368,18 @@ export class LobeGoogleAI implements LobeRuntimeAI {
               }
             }
 
+            const proxyError = internalProxyRecovery ? readInternalProxyError(chunk) : undefined;
+            if (proxyError) {
+              controller.enqueue({
+                [LOBE_ERROR_KEY]: {
+                  body: { ...proxyError, provider },
+                  message: proxyError.message,
+                  type: AgentRuntimeErrorType.StreamChunkError,
+                },
+              });
+              controller.close();
+              return;
+            }
             hasData = true;
             controller.enqueue(chunk);
           }

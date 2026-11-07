@@ -1255,6 +1255,10 @@ importers:
         version: link:../types
 
   packages/builtin-tool-agent-documents:
+    dependencies:
+      '@lobechat/prompts':
+        specifier: workspace:*
+        version: link:../prompts
     devDependencies:
       '@lobechat/types':
         specifier: workspace:*

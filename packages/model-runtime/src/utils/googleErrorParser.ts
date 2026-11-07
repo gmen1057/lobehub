@@ -189,6 +189,7 @@ export function parseGoogleErrorMessage(message: string): ParsedError {
           return {
             error: {
               code: finalCode,
+              ...(errorInfo.details && { details: errorInfo.details }),
               message: finalMessage,
               status: finalStatus,
             },
@@ -210,6 +211,7 @@ export function parseGoogleErrorMessage(message: string): ParsedError {
     return {
       error: {
         code: finalCode,
+        ...(errorInfo.details && { details: errorInfo.details }),
         message: finalMessage,
         status: finalStatus,
       },
@@ -231,6 +233,7 @@ export function parseGoogleErrorMessage(message: string): ParsedError {
         return {
           error: {
             code: finalCode,
+            ...(errorInfo.details && { details: errorInfo.details }),
             message: finalMessage,
             status: finalStatus,
           },

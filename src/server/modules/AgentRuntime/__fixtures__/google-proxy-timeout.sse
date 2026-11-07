@@ -1,0 +1,4 @@
+: ping
+
+data: {"error":{"code":504,"type":"upstream_timeout","message":"Upstream provider google timed out.","details":[{"reason":"upstream_timeout","retryOwner":"engine","retrySafe":true,"hasOutput":false,"hasUsage":false}],"status":"DEADLINE_EXCEEDED"},"promptFeedback":{"blockReason":"OTHER","blockReasonMessage":"{\"arckepProxyError\":1,\"error\":{\"code\":504,\"type\":\"upstream_timeout\",\"message\":\"Upstream provider google timed out.\",\"details\":[{\"reason\":\"upstream_timeout\",\"retryOwner\":\"engine\",\"retrySafe\":true,\"hasOutput\":false,\"hasUsage\":false}],\"status\":\"DEADLINE_EXCEEDED\"}}"}}
+

@@ -370,6 +370,8 @@ export type ModelRuntimeConversationContext = {
    * billing proxy so it can store the answer if the browser never does.
    */
   assistantMessageId?: string | null;
+  /** The server agent loop owns retries for this LLM step; the proxy must not nest another loop. */
+  retryOwner?: 'engine';
 };
 
 /** Chat message ids are nanoid-style. Reject anything else; do not truncate. */
@@ -411,6 +413,7 @@ export const initModelRuntimeWithUserPayload = (
     sessionId: convSessionId,
     topicId: convTopicId,
     assistantMessageId: rawAssistantMessageId,
+    retryOwner,
     ...restParams
   } = params;
 
@@ -441,6 +444,9 @@ export const initModelRuntimeWithUserPayload = (
     // Without this hop the browser header dies in the route and the proxy
     // never learns which chat row to fill when the tab closes.
     if (assistantMessageId) headers['x-assistant-message-id'] = assistantMessageId;
+    if (internalKey && assistantMessageId && retryOwner === 'engine') {
+      headers['x-arckep-retry-owner'] = 'engine';
+    }
     resolvedParams.defaultHeaders = headers;
   }
 
@@ -502,6 +508,7 @@ export const initModelRuntimeFromDB = async (
       sessionId: conversation?.sessionId,
       topicId: conversation?.topicId,
       assistantMessageId: conversation?.assistantMessageId,
+      retryOwner: conversation?.retryOwner,
     },
     hooks,
   );
