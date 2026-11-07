@@ -111,14 +111,18 @@ const transformGoogleGenerativeAIStream = (
   }
 
   const usageChunks: StreamProtocolChunk[] = [];
-  if (candidate?.finishReason && usageMetadata) {
-    usageChunks.push({ data: candidate.finishReason, id: context?.id, type: 'stop' });
+  if (usageMetadata) {
+    if (candidate?.finishReason)
+      usageChunks.push({ data: candidate.finishReason, id: context?.id, type: 'stop' });
 
     const convertedUsage = convertGoogleAIUsage(usageMetadata, payload?.pricing);
     if (convertedUsage) {
       usageChunks.push({ data: convertedUsage, id: context?.id, type: 'usage' });
     }
   }
+
+  // Token accounting can arrive before a terminal candidate. Preserve it even on a later disconnect.
+  if (!candidate && usageChunks.length) return usageChunks;
 
   // Parse function calls from candidate.content.parts
   const functionCalls =
@@ -132,18 +136,16 @@ const transformGoogleGenerativeAIStream = (
   if (functionCalls.length > 0) {
     return [
       {
-        data: functionCalls.map(
-          (value, index: number): StreamToolCallChunkData => ({
-            function: {
-              arguments: JSON.stringify(value.args),
-              name: value.name,
-            },
-            id: generateToolCallId(index, value.name),
-            index,
-            thoughtSignature: value.thoughtSignature,
-            type: 'function',
-          }),
-        ),
+        data: functionCalls.map((value, index: number): StreamToolCallChunkData => ({
+          function: {
+            arguments: JSON.stringify(value.args),
+            name: value.name,
+          },
+          id: generateToolCallId(index, value.name),
+          index,
+          thoughtSignature: value.thoughtSignature,
+          type: 'function',
+        })),
         id: context.id,
         type: 'tool_calls',
       },
@@ -268,9 +270,7 @@ const transformGoogleGenerativeAIStream = (
 
       // If we found multimodal parts, return them with usage chunks
       if (results.length > 0) {
-        if (candidate.finishReason && usageMetadata) {
-          results.push(...usageChunks);
-        }
+        results.push(...usageChunks);
         return results;
       }
     }
@@ -353,7 +353,7 @@ const transformGoogleGenerativeAIStream = (
           return chunks;
         }
 
-        return imageChunk;
+        return [imageChunk, ...usageChunks];
       }
     }
 
@@ -371,14 +371,17 @@ const transformGoogleGenerativeAIStream = (
       ];
     }
 
-    if (!!text?.trim()) return { data: text, id: context?.id, type: 'text' };
+    if (!!text?.trim()) return [{ data: text, id: context?.id, type: 'text' }, ...usageChunks];
   }
 
-  return {
-    data: text || '',
-    id: context?.id,
-    type: 'text',
-  };
+  return [
+    {
+      data: text || '',
+      id: context?.id,
+      type: 'text',
+    },
+    ...usageChunks,
+  ];
 };
 
 export interface GoogleAIStreamOptions {
@@ -406,7 +409,10 @@ export const GoogleGenerativeAIStream = (
       }),
     )
     .pipeThrough(
-      createSSEProtocolTransformer((c) => c, streamStack, { requireTerminalEvent: true }),
+      createSSEProtocolTransformer((c) => c, streamStack, {
+        requireTerminalEvent: true,
+        usageIsTerminal: false,
+      }),
     )
     .pipeThrough(createCallbacksTransformer(callbacks));
 };

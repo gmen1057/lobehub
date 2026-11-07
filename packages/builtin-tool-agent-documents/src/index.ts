@@ -8,6 +8,7 @@ export {
   type CopyDocumentState,
   type CreateDocumentArgs,
   type CreateDocumentState,
+  type DocumentReadOptions,
   type EditDocumentArgs,
   type EditDocumentState,
   type ListDocumentsArgs,

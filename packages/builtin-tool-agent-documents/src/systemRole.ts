@@ -32,6 +32,7 @@ export const systemPrompt = `You have access to an Agent Documents tool for crea
 <best_practices>
 - Prefer Agent Documents for shared working context unless the user explicitly requires Cloud Sandbox or another tool.
 - Prefer readDocument before edit/remove if content state is uncertain.
+- readDocument and readDocumentByFilename preserve the entire original and return bounded source pages with startOffset, endOffset, nextOffset, totalLength, eof and snapshot. Choose any offset/limit yourself; use query for literal text or heading search. For full-document work follow nextOffset automatically until null, carrying the same snapshot. If the document changed, restart rather than mixing versions. A search page is not proof that the entire document was read. Never replace a whole document using only a partial read, and never ask the user to divide the document into excerpts.
 - Use renameDocument for title-only changes; avoid rewriting content unnecessarily.
 - Use copyDocument before major edits when user may want a backup version.
 - Keep load-rule changes explicit and summarize their effect, especially when they change permissions, sharing scope, load location, or load strategy.

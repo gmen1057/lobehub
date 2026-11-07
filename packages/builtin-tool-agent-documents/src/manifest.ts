@@ -3,6 +3,32 @@ import type { BuiltinToolManifest } from '@lobechat/types';
 import { systemPrompt } from './systemRole';
 import { AgentDocumentsApiName, AgentDocumentsIdentifier } from './types';
 
+const documentReadProperties = {
+  limit: {
+    description:
+      'Maximum source characters in this response (2–20000; at least 2000 for literal searches). Choose a page size and follow nextOffset to continue.',
+    maximum: 20000,
+    minimum: 2,
+    type: 'integer',
+  },
+  offset: {
+    description:
+      'UTF-16 character offset in the original. Start at 0, copy nextOffset to continue, or choose another source position.',
+    minimum: 0,
+    type: 'integer',
+  },
+  query: {
+    description:
+      'Optional case-insensitive literal text or heading search. Search matches are not exhaustive document coverage.',
+    type: 'string',
+  },
+  snapshot: {
+    description:
+      'Source fingerprint from the preceding page. Pass unchanged to avoid combining different document versions.',
+    type: 'string',
+  },
+} as const;
+
 export const AgentDocumentsManifest: BuiltinToolManifest = {
   api: [
     {
@@ -26,10 +52,11 @@ export const AgentDocumentsManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Read an existing agent document by ID (similar intent to cat/read operation). Use this before edits or deletes when needed.',
+        'Read any part of an original agent document by ID. Returns exact source cursors and a snapshot fingerprint. Follow nextOffset automatically until null for complete coverage; do not replace a whole document from a partial read.',
       name: AgentDocumentsApiName.readDocument,
       parameters: {
         properties: {
+          ...documentReadProperties,
           id: {
             description: 'Target document ID.',
             type: 'string',
@@ -121,10 +148,11 @@ export const AgentDocumentsManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Read an existing agent document by its filename (similar intent to cat by filename). Use when you know the filename but not the id.',
+        'Read any part of an original agent document by filename when its ID is unknown. Follow nextOffset with snapshot automatically for complete coverage; query searches literal text or a heading.',
       name: AgentDocumentsApiName.readDocumentByFilename,
       parameters: {
         properties: {
+          ...documentReadProperties,
           filename: {
             description: 'Target document filename.',
             type: 'string',

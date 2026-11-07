@@ -1,3 +1,5 @@
+import { readLLMRecoverySignal } from './llmErrorRecovery';
+
 type LLMErrorKind = 'retry' | 'stop';
 
 interface ClassifiedLLMError {
@@ -5,6 +7,7 @@ interface ClassifiedLLMError {
   code?: string;
   kind: LLMErrorKind;
   message: string;
+  retrySafe?: boolean;
   status?: number;
   type?: string;
 }
@@ -15,6 +18,7 @@ interface LLMErrorSignal {
   code?: string;
   errorType?: string;
   message: string;
+  retrySafe?: boolean;
   status?: number;
 }
 
@@ -195,14 +199,17 @@ const classifyKind = ({
   code,
   errorType,
   message,
+  retrySafe,
   status,
 }: LLMErrorSignal): LLMErrorKind => {
+  if (retrySafe === false) return 'stop';
   // Нехватка баланса — до разбора errorType: у провайдеров она приходит как ProviderBizError (повторяемый)
   if (billing || status === PAYMENT_REQUIRED_STATUS) return 'stop';
 
   // A provider wrapper describes the source, not whether a request can succeed
   // unchanged. Preserve the permanent HTTP refusal before its generic retry type.
-  if (status !== undefined && [400, 401, 403, 404, 409, 422].includes(status)) return 'stop';
+  if (status !== undefined && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
+    return 'stop';
 
   if (errorType === 'ProviderBizError') {
     if (message.includes('invalid_request_error') || message.includes('invalid request')) {
@@ -238,13 +245,20 @@ const classifyKind = ({
 };
 
 export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
-  const signal = normalizeSignal(error);
+  const normalized = normalizeSignal(error);
+  const recovery = readLLMRecoverySignal(error);
+  const signal = {
+    ...normalized,
+    retrySafe: recovery.retrySafe,
+    status: recovery.status ?? normalized.status,
+  };
 
   return {
     billing: signal.billing,
     code: signal.code || signal.errorType,
     kind: classifyKind(signal),
     message: signal.message,
+    retrySafe: signal.retrySafe,
     status: signal.status,
     type: signal.errorType,
   };

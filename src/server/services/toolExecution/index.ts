@@ -133,7 +133,9 @@ export class ToolExecutionService {
       // again would silently skip source characters on the next read.
       const truncatedContent =
         (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') ||
-        (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext')
+        (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext') ||
+        (identifier === 'lobe-agent-documents' &&
+          (apiName === 'readDocument' || apiName === 'readDocumentByFilename'))
           ? data.content
           : truncateToolResult(data.content, context.toolResultMaxLength);
 
@@ -193,7 +195,10 @@ export class ToolExecutionService {
     context: ToolExecutionContext,
   ): Promise<ToolExecutionResult | undefined> {
     const { identifier, apiName } = payload;
-    if (!isArckepPaidStudioTool(identifier, apiName) && !isArckepPageOpeningTool(identifier, apiName)) {
+    if (
+      !isArckepPaidStudioTool(identifier, apiName) &&
+      !isArckepPageOpeningTool(identifier, apiName)
+    ) {
       return undefined;
     }
     if (!context.serverDB || !context.userId || !context.topicId) return undefined;
@@ -384,9 +389,12 @@ export class ToolExecutionService {
       if (!marked) throw new Error('topic not marked');
     } catch (error) {
       log('user MCP: topic mark failed for %s: %O', identifier, error);
-      throw new Error('Не удалось отметить чат перед запуском чужого инструмента, повторите вызов.', {
-        cause: error,
-      });
+      throw new Error(
+        'Не удалось отметить чат перед запуском чужого инструмента, повторите вызов.',
+        {
+          cause: error,
+        },
+      );
     }
 
     log('MCP connection %s: user MCP, arckep user %s', identifier, arckepUserId);

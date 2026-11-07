@@ -12,6 +12,7 @@ import type {
   UpdateLoadRuleArgs,
   UpsertDocumentByFilenameArgs,
 } from '../types';
+import { readAgentDocumentPage } from './documentRead';
 
 interface AgentDocumentRecord {
   content?: string;
@@ -126,11 +127,7 @@ export class AgentDocumentsExecutionRuntime {
     const doc = await this.service.readDocumentByFilename({ ...args, agentId });
     if (!doc) return { content: `Document not found: ${args.filename}`, success: false };
 
-    return {
-      content: doc.content || '',
-      state: { content: doc.content, filename: args.filename, id: doc.id, title: doc.title },
-      success: true,
-    };
+    return readAgentDocumentPage({ ...doc, filename: args.filename }, args);
   }
 
   async upsertDocumentByFilename(
@@ -192,11 +189,7 @@ export class AgentDocumentsExecutionRuntime {
     const doc = await this.service.readDocument({ ...args, agentId });
     if (!doc) return { content: `Document not found: ${args.id}`, success: false };
 
-    return {
-      content: doc.content || '',
-      state: { content: doc.content, id: doc.id, title: doc.title },
-      success: true,
-    };
+    return readAgentDocumentPage(doc, args);
   }
 
   async editDocument(

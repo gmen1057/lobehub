@@ -9,6 +9,8 @@ describe('source pages keep their cursor coverage', () => {
   it.each([
     ['lobe-knowledge-base', 'readKnowledge'],
     ['lobe-topic-reference', 'getTopicContext'],
+    ['lobe-agent-documents', 'readDocument'],
+    ['lobe-agent-documents', 'readDocumentByFilename'],
   ])('does not cut an already bounded %s/%s result', async (identifier, apiName) => {
     const content = 'x'.repeat(20_000) + '\nnextOffset:20000';
     const service = new ToolExecutionService({
