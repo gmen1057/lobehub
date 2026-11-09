@@ -63,6 +63,11 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
       kind: 'anthropicEffort',
       levels: ['low', 'medium', 'high', 'xhigh', 'max'],
     });
+    expect(resolveReasoningProfile('claude-fable-5-2', 'anthropic', ['effort'])).toEqual({
+      kind: 'anthropicEffort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    });
+    expect(resolveReasoningAuto('claude-fable-5-2', 'anthropic', {})).toBe('high');
     expect(resolveReasoningProfile('claude-opus-5-5', 'anthropic', undefined)?.kind).toBe(
       'anthropicEffort',
     );

@@ -158,9 +158,16 @@ export const buildDefaultAnthropicPayload = async (
 
   const postMessages = await buildAnthropicMessages(userMessages, { enabledContextCaching });
 
-  // Claude 4.6 models do not support assistant turn prefill
-  if (model.includes('-4-6') && postMessages.at(-1)?.role === 'assistant') {
-    postMessages.pop();
+  // Claude 4.6+ and Claude 5.x models reject trailing assistant prefill with HTTP 400
+  if (
+    (model.includes('-4-6') ||
+      model.includes('-4-7') ||
+      /^claude-(?:fable|opus|sonnet|haiku)-5(?:-|$)/.test(model)) &&
+    postMessages.length > 1
+  ) {
+    while (postMessages.length > 1 && postMessages.at(-1)?.role === 'assistant') {
+      postMessages.pop();
+    }
   }
 
   let postTools = buildAnthropicTools(tools, { enabledContextCaching }) as
@@ -182,15 +189,25 @@ export const buildDefaultAnthropicPayload = async (
     });
   }
 
-  // Sonnet 5.5 uses adaptive thinking; legacy budgets and sampling are rejected.
-  if (model === 'claude-sonnet-5-5') {
+  // Claude 5.x adaptive-only models: legacy budgets and sampling (temperature/top_p) are rejected.
+  // In Fable 5.2 thinking.display defaults to "omitted" unless "summarized" is explicitly requested.
+  if (
+    model === 'claude-sonnet-5-5' ||
+    model === 'claude-opus-5-5' ||
+    model === 'claude-fable-5-2' ||
+    model === 'claude-fable-5-1'
+  ) {
+    const adaptiveThinking =
+      model === 'claude-fable-5-2'
+        ? ({ display: 'summarized', type: 'adaptive' } as unknown as Anthropic.MessageCreateParams['thinking'])
+        : ({ type: 'adaptive' } as Anthropic.MessageCreateParams['thinking']);
     return {
       max_tokens: resolvedMaxTokens,
       messages: postMessages,
       model,
       ...(effort ? { output_config: { effort } } : {}),
       system: systemPrompts,
-      thinking: { type: 'adaptive' },
+      thinking: adaptiveThinking,
       tools: postTools as Anthropic.MessageCreateParams['tools'],
     } as Anthropic.MessageCreateParams;
   }

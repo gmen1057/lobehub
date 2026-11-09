@@ -13,7 +13,7 @@
 export const ARCKEP_STUDIO_MODEL_LISTS: Readonly<Record<string, string>> = {
   anthropic: [
     '-all',
-    '+claude-fable-5-1=Claude Fable 5.1<1000000:fc:vision:reasoning>',
+    '+claude-fable-5-2=Claude Fable 5.2<1000000:fc:vision:reasoning>',
     '+claude-opus-5-5=Claude Opus 5.5<1000000:fc:vision:reasoning>',
     '+claude-sonnet-5-5=Claude Sonnet 5.5<1000000:fc:vision:reasoning>',
     '+claude-haiku-5-5=Claude Haiku 5.5<1000000:fc:vision:reasoning>',

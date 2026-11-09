@@ -74,9 +74,9 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(activeChatKeys).toContain('openai/gpt-6-sol');
     expect(activeChatKeys).toContain('openai/gpt-6.1-sol');
 
-    // Sept–Oct 2026 additions + canonical deepseek-flash
+    // Sept–Nov 2026 additions + canonical deepseek-flash
     for (const expected of [
-      'anthropic/claude-fable-5-1',
+      'anthropic/claude-fable-5-2',
       'anthropic/claude-opus-5-5',
       'anthropic/claude-sonnet-5-5',
       'anthropic/claude-haiku-5-5',
@@ -98,6 +98,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'openai/gpt-5.6-sol',
       'anthropic/claude-sonnet-4-6',
       'anthropic/claude-opus-5',
+      'anthropic/claude-fable-5-1',
       'anthropic/claude-fable-5',
       'google/gemini-3.7-flash',
       'google/gemini-3.1-pro-preview',
