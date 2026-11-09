@@ -10,6 +10,41 @@ const anthropicChatModels: AIChatModelCard[] = [
       vision: true,
     },
     contextWindowTokens: 1_000_000,
+    description:
+      'Claude Fable 5.2 — верхний флагман Anthropic для автономной разработки, аудита репозиториев и многошаговых агентных задач.',
+    displayName: 'Claude Fable 5.2',
+    enabled: true,
+    id: 'claude-fable-5-2',
+    maxOutput: 128_000,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 8, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 40, strategy: 'fixed', unit: 'millionTokens' },
+        {
+          lookup: { prices: { '1h': 16, '5m': 10 }, pricingParams: ['ttl'] },
+          name: 'textInput_cacheWrite',
+          strategy: 'lookup',
+          unit: 'millionTokens',
+        },
+      ],
+    },
+    releasedAt: '2026-11-09',
+    settings: {
+      extendParams: ['disableContextCaching', 'effort'],
+      searchImpl: 'params',
+    },
+    type: 'chat',
+  },
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_000_000,
     description: 'Claude Sonnet 5.5 — тексты, код и повседневные задачи.',
     displayName: 'Claude Sonnet 5.5',
     enabled: true,

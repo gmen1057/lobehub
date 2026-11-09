@@ -47,8 +47,8 @@ describe('createDefaultAnthropicClient', () => {
   });
 });
 
-describe('Sonnet 5.5 payload', () => {
-  it('uses adaptive thinking and drops obsolete budgets and sampling', async () => {
+describe('Sonnet 5.5 and Fable 5.2 adaptive payloads', () => {
+  it('uses adaptive thinking and drops obsolete budgets and sampling for Sonnet 5.5', async () => {
     const result = await buildDefaultAnthropicPayload({
       model: 'claude-sonnet-5-5',
       messages: [{ role: 'user', content: 'Hello' }],
@@ -61,5 +61,24 @@ describe('Sonnet 5.5 payload', () => {
     expect(result.output_config).toEqual({ effort: 'high' });
     expect(result.temperature).toBeUndefined();
     expect(result.top_p).toBeUndefined();
+  });
+
+  it('requests summarized adaptive thinking, drops sampling, and strips trailing assistant prefill for Fable 5.2', async () => {
+    const result = await buildDefaultAnthropicPayload({
+      model: 'claude-fable-5-2',
+      messages: [
+        { role: 'user', content: 'Design the architecture' },
+        { role: 'assistant', content: 'Sure, starting with:' },
+      ],
+      temperature: 0.5,
+      top_p: 0.8,
+      effort: 'xhigh' as any,
+    });
+    expect(result.thinking).toEqual({ display: 'summarized', type: 'adaptive' });
+    expect(result.output_config).toEqual({ effort: 'xhigh' });
+    expect(result.temperature).toBeUndefined();
+    expect(result.top_p).toBeUndefined();
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0].role).toBe('user');
   });
 });
