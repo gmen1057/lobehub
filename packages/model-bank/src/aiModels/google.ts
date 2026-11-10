@@ -7,6 +7,40 @@ import { type AIChatModelCard, type AIImageModelCard, type AIVideoModelCard } fr
  */
 
 const googleChatModels: AIChatModelCard[] = [
+  // arckep: Gemini 4 Carbon (GA 2026-11-10) — list $4/$20 (intro $2/$10 through 2026-11-30 is
+  // billed via studio proxy provider_promos). Unified 1M window (input + thinking + output), sync
+  // output 65_536; thinkingLevel low|medium|high, thinking cannot be turned off.
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      video: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576,
+    description:
+      'Gemini 4 Carbon — Google strongest frontier reasoning model (November 2026): sustained agentic coding, scientific reasoning, dense documents. 1M context, multimodal input, text output.',
+    displayName: 'Gemini 4 Carbon',
+    enabled: true,
+    id: 'gemini-4-carbon',
+    maxOutput: 65_536,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 4, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 20, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-11-10',
+    settings: {
+      extendParams: ['thinkingLevel3', 'urlContext'],
+      searchImpl: 'params',
+      searchProvider: 'google',
+    },
+    type: 'chat',
+  },
   // arckep: Gemini 4 Argon (GA 2026-10-13) — list $4/$20 (intro $2/$10 through 2026-11-30 is not
   // passed on; billing is the studio proxy). Unified 1M window (input + thinking + output), sync
   // output 65_536; thinkingLevel low|medium|high, thinking cannot be turned off.

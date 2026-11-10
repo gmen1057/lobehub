@@ -88,18 +88,22 @@ describe('thinkingResolver', () => {
       'gemini-3.0-flash',
       'gemini-3-pro-image-preview',
       'gemini-4-argon',
+      'gemini-4-carbon',
     ])('should return true for %s', (model) => {
       expect(isGemini3Model(model)).toBe(true);
     });
 
-    it('sends only thinkingLevel for gemini-4-argon (arckep)', () => {
-      expect(isThinkingEnabledModel('gemini-4-argon')).toBe(true);
-      expect(resolveGoogleThinkingConfig('gemini-4-argon', { thinkingLevel: 'medium' })).toEqual({
-        includeThoughts: true,
-        thinkingBudget: undefined,
-        thinkingLevel: 'medium',
-      });
-    });
+    it.each(['gemini-4-argon', 'gemini-4-carbon'])(
+      'sends only thinkingLevel for %s (arckep)',
+      (model) => {
+        expect(isThinkingEnabledModel(model)).toBe(true);
+        expect(resolveGoogleThinkingConfig(model, { thinkingLevel: 'medium' })).toEqual({
+          includeThoughts: true,
+          thinkingBudget: undefined,
+          thinkingLevel: 'medium',
+        });
+      },
+    );
 
     it.each([
       'gemini-2.5-pro',

@@ -39,7 +39,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(hy4?.contextWindowTokens).toBe(1_048_576);
   });
 
-  it('produces exact 33 studio chat models across the 7 enabled providers and excludes legacy/retired IDs', async () => {
+  it('produces exact 34 studio chat models across the 7 enabled providers and excludes legacy/retired IDs', async () => {
     const activeChatKeys: string[] = [];
 
     for (const [provider, modelString] of Object.entries(ARCKEP_STUDIO_MODEL_LISTS)) {
@@ -68,11 +68,13 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       }
     }
 
-    expect(activeChatKeys).toHaveLength(33);
+    expect(activeChatKeys).toHaveLength(34);
 
-    // Owner decision: keep BOTH GPT-6 Sol and GPT-6.1 Sol
+    // Owner decision: keep BOTH GPT-6 Sol and GPT-6.1 Sol, and BOTH Gemini 4 Carbon and Argon
     expect(activeChatKeys).toContain('openai/gpt-6-sol');
     expect(activeChatKeys).toContain('openai/gpt-6.1-sol');
+    expect(activeChatKeys).toContain('google/gemini-4-carbon');
+    expect(activeChatKeys).toContain('google/gemini-4-argon');
 
     // Sept–Nov 2026 additions + canonical deepseek-flash
     for (const expected of [
