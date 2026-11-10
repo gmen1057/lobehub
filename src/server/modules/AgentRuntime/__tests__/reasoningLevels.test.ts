@@ -99,7 +99,13 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
     expect(
       resolveReasoningProfile('mistralai/mistral-large-4-0', 'openrouter', [])?.levels,
     ).toEqual(['none', 'high']);
-    // У карточки Gemini 3.7 Flash бюджет токенов, студия проверила уровни.
+    // У карточки Gemini 3.7 Flash бюджет токенов, студия проверила уровни; Gemini 4 Carbon и Argon в ARCKEP_PROFILES работают и без extendParams.
+    for (const id of ['gemini-4-carbon', 'gemini-4-argon']) {
+      expect(resolveReasoningProfile(id, 'google', undefined)).toEqual({
+        kind: 'geminiLevel',
+        levels: ['low', 'medium', 'high'],
+      });
+    }
     expect(
       resolveReasoningProfile('gemini-3.7-flash', 'google', ['thinkingBudget', 'urlContext']),
     ).toEqual({
@@ -229,6 +235,7 @@ describe('resolveReasoningAuto (что значит «Авто», 19.10)', () =>
     expect(auto('claude-opus-5-5', 'anthropic')).toBe('medium');
     expect(auto('deepseek-v4-pro', 'deepseek')).toBe('high');
     expect(auto('gemini-4-argon', 'google')).toBe('medium');
+    expect(auto('gemini-4-carbon', 'google')).toBe('medium');
     expect(auto('gemini-3.8-flash', 'google')).toBe('medium');
     expect(auto('gemini-3.6-flash', 'google')).toBe('auto');
     expect(auto('grok-4.6', 'xai')).toBe('auto');

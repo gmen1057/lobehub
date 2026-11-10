@@ -126,7 +126,7 @@ const ARCKEP_PROFILES: ReadonlyArray<{
   },
   // Gemini: уровни мышления проверены студией вживую (GEMINI_THINKING_LEVELS); выключить нельзя.
   {
-    match: /^gemini-(?:4-argon|3\.8-flash|3\.7-flash|3\.1-pro-preview)$/,
+    match: /^gemini-(?:4-(?:argon|carbon)|3\.8-flash|3\.7-flash|3\.1-pro-preview)$/,
     profile: { kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     provider: 'google',
   },
@@ -206,13 +206,18 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
   { auto: 'none', match: /^gpt-5\.4(?:-|$)/, provider: 'openai' },
   {
     auto: 'medium',
-    match: /^(?:gpt-6-astra|gpt-6-(?:sol|luna)|gpt-6\.1-(?:sol|terra)|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
+    match:
+      /^(?:gpt-6-astra|gpt-6-(?:sol|luna)|gpt-6\.1-(?:sol|terra)|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
     provider: 'openai',
   },
   { auto: 'medium', match: /^claude-(?:opus-5-5|haiku-5-5)(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^claude-(?:fable|mythos|opus|sonnet)-5(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^deepseek-(?:flash|v4)/, provider: 'deepseek' },
-  { auto: 'medium', match: /^gemini-(?:4-argon|3\.8-flash|3\.7-flash)$/, provider: 'google' },
+  {
+    auto: 'medium',
+    match: /^gemini-(?:4-(?:argon|carbon)|3\.8-flash|3\.7-flash)$/,
+    provider: 'google',
+  },
   { auto: 'auto', match: /^gemini-/, provider: 'google' },
   { auto: 'auto', match: /^grok-4/, provider: 'xai' },
   { auto: 'high', match: /^tencent\/hy4(?:-\d{8})?$/, provider: 'openrouter' },

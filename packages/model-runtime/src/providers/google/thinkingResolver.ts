@@ -85,7 +85,7 @@ const THINKING_ENABLED_PATTERNS: RegExp[] = [
   /gemini-\d+(?:\.\d+)?-flash(?!-lite)/i, // gemini-2.5-flash, gemini-3-flash (but not flash-lite)
   /gemini-\d+-pro-image/i, // gemini-3-pro-image-preview
   /nano-banana-pro/i,
-  /gemini-\d+(?:\.\d+)?-argon/i, // arckep: gemini-4-argon (thinking cannot be turned off)
+  /gemini-\d+(?:\.\d+)?-(?:argon|carbon)/i, // arckep: gemini-4-argon & gemini-4-carbon (thinking cannot be turned off)
   /thinking/i, // Any model with "thinking" in the name
 ];
 

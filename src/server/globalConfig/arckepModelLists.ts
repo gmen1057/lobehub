@@ -3,7 +3,8 @@
  * (`image-studio-lobechat-next`, порт 3403) вместо неверсионируемых строк `*_MODEL_LIST` в `.env`.
  *
  * Чат-модели строго синхронизированы с `iter_studio_chat_models()` в `backend/app/data/chat_models.py`
- * (33 актуальные модели чата, включая обе `gpt-6-sol` и `gpt-6.1-sol`; 36 моделей прошлых поколений
+ * (34 актуальные модели чата, включая обе `gpt-6-sol` и `gpt-6.1-sol`, а также обе `gemini-4-carbon`
+ * и `gemini-4-argon`; модели прошлых поколений
  * и `openrouter/auto` оставлены только в публичном API студии). Картиночные и видео-движки без окна
  * контекста и флагов возможностей сохранены в конце списков для внутренних маршрутов генерации
  * (ручка `/api/chat-engine/models` студии их отфильтровывает).
@@ -27,6 +28,7 @@ export const ARCKEP_STUDIO_MODEL_LISTS: Readonly<Record<string, string>> = {
 
   google: [
     '-all',
+    '+gemini-4-carbon=Gemini 4 Carbon<1048576:fc:vision:reasoning>',
     '+gemini-4-argon=Gemini 4 Argon<1048576:fc:vision:reasoning>',
     '+gemini-3.8-flash=Gemini 3.8 Flash<1048576:fc:vision:reasoning>',
     '+gemini-3.1-flash-lite=Gemini 3.1 Flash Lite<1048576:fc:vision>',
