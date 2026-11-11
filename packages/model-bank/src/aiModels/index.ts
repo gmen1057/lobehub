@@ -1,12 +1,21 @@
 import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 
-import { type AiFullModelCard, type LobeDefaultAiModelListItem } from '../types/aiModel';
+import {
+  type AIChatModelCard,
+  type AiFullModelCard,
+  type LobeDefaultAiModelListItem,
+  type Pricing,
+} from '../types/aiModel';
 import { default as ai21 } from './ai21';
 import { default as ai302 } from './ai302';
 import { default as ai360 } from './ai360';
 import { default as aihubmix } from './aihubmix';
 import { default as akashchat } from './akashchat';
-import { default as anthropic } from './anthropic';
+import { default as baseAnthropic } from './anthropic';
+import {
+  ARCKEP_STUDIO_MODEL_CARDS,
+  type ArckepStudioProviderId,
+} from './arckepStudioModels.generated';
 import { default as azure } from './azure';
 import { default as azureai } from './azureai';
 import { default as baichuan } from './baichuan';
@@ -18,14 +27,14 @@ import { default as cloudflare } from './cloudflare';
 import { default as cohere } from './cohere';
 import { default as cometapi } from './cometapi';
 import { default as comfyui } from './comfyui';
-import { default as deepseek } from './deepseek';
+import { default as baseDeepseek } from './deepseek';
 import { default as fal } from './fal';
 import { default as fireworksai } from './fireworksai';
 import { default as giteeai } from './giteeai';
 import { default as github } from './github';
 import { default as githubcopilot } from './githubCopilot';
 import { default as glmcodingplan } from './glmCodingPlan';
-import { default as google } from './google';
+import { default as baseGoogle } from './google';
 import { default as groq } from './groq';
 import { default as higress } from './higress';
 import { default as huggingface } from './huggingface';
@@ -48,12 +57,12 @@ import { default as novita } from './novita';
 import { default as nvidia } from './nvidia';
 import { default as ollama } from './ollama';
 import { default as ollamacloud } from './ollamacloud';
-import { default as openai } from './openai';
-import { default as openrouter } from './openrouter';
+import { default as baseOpenai } from './openai';
+import { default as baseOpenrouter } from './openrouter';
 import { default as perplexity } from './perplexity';
 import { default as ppio } from './ppio';
 import { default as qiniu } from './qiniu';
-import { default as qwen } from './qwen';
+import { default as baseQwen } from './qwen';
 import { default as replicate } from './replicate';
 import { default as sambanova } from './sambanova';
 import { default as search1api } from './search1api';
@@ -73,7 +82,7 @@ import { default as vllm } from './vllm';
 import { default as volcengine } from './volcengine';
 import { default as volcenginecodingplan } from './volcengineCodingPlan';
 import { default as wenxin } from './wenxin';
-import { default as xai } from './xai';
+import { default as baseXai } from './xai';
 import { default as xiaomimimo } from './xiaomimimo';
 import { default as xinference } from './xinference';
 import { default as zenmux } from './zenmux';
@@ -81,6 +90,74 @@ import { default as zeroone } from './zeroone';
 import { default as zhipu } from './zhipu';
 
 type ModelsMap = Record<string, AiFullModelCard[]>;
+
+const mergeArckepPricing = (
+  existingPricing: Pricing | undefined,
+  studioPricing: Pricing | undefined,
+): Pricing | undefined => {
+  if (!existingPricing) return studioPricing;
+  if (!studioPricing) return existingPricing;
+
+  const studioFixedRates = new Map<string, number>();
+  for (const unit of studioPricing.units) {
+    if (unit.strategy === 'fixed') {
+      studioFixedRates.set(unit.name, unit.rate);
+    }
+  }
+
+  const seenNames = new Set<string>();
+  const mergedUnits = existingPricing.units.map((unit) => {
+    seenNames.add(unit.name);
+    if (unit.strategy === 'fixed' && studioFixedRates.has(unit.name)) {
+      return { ...unit, rate: studioFixedRates.get(unit.name)! };
+    }
+    return unit;
+  });
+
+  for (const unit of studioPricing.units) {
+    if (!seenNames.has(unit.name)) {
+      mergedUnits.push(unit);
+    }
+  }
+
+  return { ...existingPricing, units: mergedUnits };
+};
+
+export const withArckepOverlay = (
+  provider: ArckepStudioProviderId,
+  baseModels: AiFullModelCard[],
+): AiFullModelCard[] => {
+  const studioCards = ARCKEP_STUDIO_MODEL_CARDS[provider];
+  const studioIds = new Set(studioCards.map((card) => card.id));
+
+  const overlaid: AiFullModelCard[] = studioCards.map((studioCard) => {
+    const existing = baseModels.find(
+      (item): item is AIChatModelCard => item.id === studioCard.id && item.type === 'chat',
+    );
+    if (!existing) return studioCard;
+
+    return {
+      ...existing,
+      ...studioCard,
+      abilities: { ...existing.abilities, ...studioCard.abilities },
+      pricing: mergeArckepPricing(existing.pricing, studioCard.pricing),
+      settings: studioCard.settings
+        ? { ...existing.settings, ...studioCard.settings }
+        : existing.settings,
+    };
+  });
+
+  const rest = baseModels.filter((model) => model.type !== 'chat' || !studioIds.has(model.id));
+  return [...overlaid, ...rest];
+};
+
+export const anthropic = withArckepOverlay('anthropic', baseAnthropic);
+export const deepseek = withArckepOverlay('deepseek', baseDeepseek);
+export const google = withArckepOverlay('google', baseGoogle);
+export const openai = withArckepOverlay('openai', baseOpenai);
+export const openrouter = withArckepOverlay('openrouter', baseOpenrouter);
+export const qwen = withArckepOverlay('qwen', baseQwen);
+export const xai = withArckepOverlay('xai', baseXai);
 
 const buildDefaultModelList = (map: ModelsMap): LobeDefaultAiModelListItem[] => {
   let models: LobeDefaultAiModelListItem[] = [];
@@ -185,7 +262,7 @@ export { default as ai302 } from './ai302';
 export { default as ai360 } from './ai360';
 export { default as aihubmix } from './aihubmix';
 export { default as akashchat } from './akashchat';
-export { default as anthropic } from './anthropic';
+export * from './arckepStudioModels.generated';
 export { default as azure } from './azure';
 export { default as azureai } from './azureai';
 export { default as baichuan } from './baichuan';
@@ -197,14 +274,12 @@ export { default as cloudflare } from './cloudflare';
 export { default as cohere } from './cohere';
 export { default as cometapi } from './cometapi';
 export { default as comfyui } from './comfyui';
-export { default as deepseek } from './deepseek';
 export { default as fal, fluxSchnellParamsSchema } from './fal';
 export { default as fireworksai } from './fireworksai';
 export { default as giteeai } from './giteeai';
 export { default as github } from './github';
 export { default as githubcopilot } from './githubCopilot';
 export { default as glmcodingplan } from './glmCodingPlan';
-export { default as google } from './google';
 export { default as groq } from './groq';
 export { default as higress } from './higress';
 export { default as huggingface } from './huggingface';
@@ -227,12 +302,10 @@ export { default as novita } from './novita';
 export { default as nvidia } from './nvidia';
 export { default as ollama } from './ollama';
 export { default as ollamacloud } from './ollamacloud';
-export { gptImage1ParamsSchema, default as openai, openaiChatModels } from './openai';
-export { default as openrouter } from './openrouter';
+export { gptImage1ParamsSchema, openaiChatModels } from './openai';
 export { default as perplexity } from './perplexity';
 export { default as ppio } from './ppio';
 export { default as qiniu } from './qiniu';
-export { default as qwen } from './qwen';
 export { default as replicate } from './replicate';
 export { default as sambanova } from './sambanova';
 export { default as search1api } from './search1api';
@@ -252,7 +325,6 @@ export { default as vllm } from './vllm';
 export { default as volcengine } from './volcengine';
 export { default as volcenginecodingplan } from './volcengineCodingPlan';
 export { default as wenxin } from './wenxin';
-export { default as xai } from './xai';
 export { default as xiaomimimo } from './xiaomimimo';
 export { default as xinference } from './xinference';
 export { default as zenmux } from './zenmux';

@@ -1,3 +1,9 @@
+import {
+  ARCKEP_STUDIO_REASONING_SPECS,
+  type ArckepStudioProviderId,
+  type ArckepStudioReasoningSpec,
+} from 'model-bank/arckepStudioModels';
+
 /**
  * arckep (19.10.2026): ступени рассуждений модели для поля ввода студии — «Авто / Немного / Средне /
  * Больше / …» вместо одной кнопки «Думать дольше».
@@ -227,6 +233,20 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
 export const isReasoningLevel = (value: unknown): value is ReasoningLevel =>
   typeof value === 'string' && (REASONING_LEVELS as readonly string[]).includes(value);
 
+const findStudioReasoningSpec = (
+  model: string,
+  provider: string,
+): ArckepStudioReasoningSpec | undefined => {
+  if (!Object.hasOwn(ARCKEP_STUDIO_REASONING_SPECS, provider)) return undefined;
+  const specs = ARCKEP_STUDIO_REASONING_SPECS[provider as ArckepStudioProviderId];
+  if (Object.hasOwn(specs, model)) return specs[model];
+  if (provider === 'openrouter') {
+    const stripped = model.replace(/-\d{8}$/, '');
+    if (stripped !== model && Object.hasOwn(specs, stripped)) return specs[stripped];
+  }
+  return undefined;
+};
+
 /** Ступени модели или `undefined`, если ступенями её не настроить. */
 export const resolveReasoningProfile = (
   model: string | undefined,
@@ -234,6 +254,11 @@ export const resolveReasoningProfile = (
   extendParams: readonly string[] | undefined,
 ): ReasoningProfile | undefined => {
   if (!model || !provider) return undefined;
+  const studioSpec = findStudioReasoningSpec(model, provider);
+  if (studioSpec !== undefined) {
+    if (studioSpec.kind === null || studioSpec.levels.length === 0) return undefined;
+    return { kind: studioSpec.kind, levels: studioSpec.levels };
+  }
   const override = ARCKEP_PROFILES.find(
     (item) => item.provider === provider && item.match.test(model),
   );
@@ -318,6 +343,10 @@ export const resolveReasoningAuto = (
   model: string,
   provider: string,
   callParams: ReasoningCallParams,
-): ReasoningAuto | undefined =>
-  levelFromCallParams(callParams) ??
-  PROVIDER_AUTO.find((item) => item.provider === provider && item.match.test(model))?.auto;
+): ReasoningAuto | undefined => {
+  const explicit = levelFromCallParams(callParams);
+  if (explicit !== undefined) return explicit;
+  const studioSpec = findStudioReasoningSpec(model, provider);
+  if (studioSpec !== undefined) return studioSpec.auto ?? undefined;
+  return PROVIDER_AUTO.find((item) => item.provider === provider && item.match.test(model))?.auto;
+};

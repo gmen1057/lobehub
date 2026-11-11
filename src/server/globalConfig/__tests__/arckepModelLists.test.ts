@@ -1,7 +1,13 @@
 import * as AiModels from 'model-bank';
-import { type AiFullModelCard } from 'model-bank';
+import { type AiFullModelCard, LOBE_DEFAULT_MODEL_LIST } from 'model-bank';
+import {
+  ARCKEP_STUDIO_MODEL_CARDS,
+  ARCKEP_STUDIO_MODEL_COUNT,
+  ARCKEP_STUDIO_PROVIDER_IDS,
+} from 'model-bank/arckepStudioModels';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { modelHasVision } from '@/server/services/aiAgent/modelVision';
 import { extractEnabledModels, transformToAiModelList } from '@/utils/server/parseModels';
 
 import { ARCKEP_STUDIO_MODEL_LISTS, resolveArckepModelList } from '../arckepModelLists';
@@ -39,7 +45,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(hy4?.contextWindowTokens).toBe(1_048_576);
   });
 
-  it('produces exact 34 studio chat models across the 7 enabled providers and excludes legacy/retired IDs', async () => {
+  it('keeps activeChatKeys, LOBE_DEFAULT_MODEL_LIST and AiModels[provider] synced with ARCKEP_STUDIO_MODEL_CARDS and excludes retired IDs', async () => {
     const activeChatKeys: string[] = [];
 
     for (const [provider, modelString] of Object.entries(ARCKEP_STUDIO_MODEL_LISTS)) {
@@ -68,30 +74,26 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       }
     }
 
-    expect(activeChatKeys).toHaveLength(34);
+    expect(activeChatKeys).toHaveLength(ARCKEP_STUDIO_MODEL_COUNT);
+
+    for (const provider of ARCKEP_STUDIO_PROVIDER_IDS) {
+      const providerModels = AiModels[provider] as AiFullModelCard[];
+      for (const card of ARCKEP_STUDIO_MODEL_CARDS[provider]) {
+        expect(activeChatKeys).toContain(`${provider}/${card.id}`);
+        const inBank = LOBE_DEFAULT_MODEL_LIST.find(
+          (item) => item.providerId === provider && item.id === card.id,
+        );
+        expect(inBank).toBeDefined();
+        const inProvider = providerModels.find((item) => item.id === card.id);
+        expect(inProvider).toBeDefined();
+      }
+    }
 
     // Owner decision: keep BOTH GPT-6 Sol and GPT-6.1 Sol, and BOTH Gemini 4 Carbon and Argon
     expect(activeChatKeys).toContain('openai/gpt-6-sol');
     expect(activeChatKeys).toContain('openai/gpt-6.1-sol');
     expect(activeChatKeys).toContain('google/gemini-4-carbon');
     expect(activeChatKeys).toContain('google/gemini-4-argon');
-
-    // Sept–Nov 2026 additions + canonical deepseek-flash
-    for (const expected of [
-      'anthropic/claude-fable-5-2',
-      'anthropic/claude-opus-5-5',
-      'anthropic/claude-sonnet-5-5',
-      'anthropic/claude-haiku-5-5',
-      'google/gemini-3.8-flash',
-      'qwen/qwen3.8-omni-flash',
-      'openrouter/mistralai/mistral-large-4-0',
-      'openrouter/xiaomi/mimo-v2.6-pro',
-      'openrouter/xiaomi/mimo-v2.6-flash',
-      'openrouter/tencent/hy4',
-      'deepseek/deepseek-flash',
-    ]) {
-      expect(activeChatKeys).toContain(expected);
-    }
 
     // Previous-generation API-only models & retired 1st-gen Qwen image IDs must not appear
     for (const excluded of [
@@ -120,5 +122,70 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     ]) {
       expect(activeChatKeys).not.toContain(excluded);
     }
+  });
+
+  it('returns false from modelHasVision for all 6 text-only studio models and true for vision models', async () => {
+    const textOnlyStudioModels: ReadonlyArray<[string, string]> = [
+      ['inception/mercury-3', 'openrouter'],
+      ['xiaomi/mimo-v2.6-pro', 'openrouter'],
+      ['xiaomi/mimo-v2.6-flash', 'openrouter'],
+      ['z-ai/glm-5.3', 'openrouter'],
+      ['deepseek-v4-pro', 'deepseek'],
+      ['grok-build-0.1', 'xai'],
+    ];
+    for (const [model, provider] of textOnlyStudioModels) {
+      expect(await modelHasVision(model, provider), `${provider}/${model}`).toBe(false);
+    }
+
+    const visionStudioModels: ReadonlyArray<[string, string]> = [
+      ['gemini-4-carbon', 'google'],
+      ['claude-fable-5-2', 'anthropic'],
+      ['tencent/hy4', 'openrouter'],
+      ['gpt-6.1-sol', 'openai'],
+      ['deepseek-flash', 'deepseek'],
+      ['qwen3.8-omni-flash', 'qwen'],
+      ['grok-4.7', 'xai'],
+    ];
+    for (const [model, provider] of visionStudioModels) {
+      expect(await modelHasVision(model, provider), `${provider}/${model}`).toBe(true);
+    }
+  });
+
+  it('overlays studio maxOutput and video abilities onto model-bank cards while preserving upstream cache pricing', () => {
+    const opus55 = AiModels.anthropic.find((item) => item.id === 'claude-opus-5-5');
+    const haiku55 = AiModels.anthropic.find((item) => item.id === 'claude-haiku-5-5');
+    expect(opus55?.maxOutput).toBe(128_000);
+    expect(haiku55?.maxOutput).toBe(128_000);
+
+    const fable52 = AiModels.anthropic.find((item) => item.id === 'claude-fable-5-2');
+    expect(fable52?.pricing?.units.some((u) => u.name === 'textInput_cacheRead')).toBe(true);
+
+    const kimiK31Pro = LOBE_DEFAULT_MODEL_LIST.find(
+      (item) => item.providerId === 'openrouter' && item.id === 'moonshotai/kimi-k3.1-pro',
+    );
+    const qwenOmni = LOBE_DEFAULT_MODEL_LIST.find(
+      (item) => item.providerId === 'qwen' && item.id === 'qwen3.8-omni-flash',
+    );
+    expect(kimiK31Pro?.abilities.video).toBe(true);
+    expect(qwenOmni?.abilities.video).toBe(true);
+
+    // Studio textInput/textOutput rates win over stale upstream rates while keeping non-chat cards intact
+    const qwen37Plus = AiModels.qwen.find((item) => item.id === 'qwen3.7-plus');
+    expect(qwen37Plus?.pricing?.units.find((u) => u.name === 'textInput')).toMatchObject({
+      rate: 0.4,
+      strategy: 'fixed',
+    });
+    expect(qwen37Plus?.pricing?.units.find((u) => u.name === 'textOutput')).toMatchObject({
+      rate: 1.6,
+      strategy: 'fixed',
+    });
+
+    const overlaidWithMedia = AiModels.withArckepOverlay('openai', [
+      { id: 'gpt-6.1-sol', type: 'image' } as AiFullModelCard,
+    ]);
+    expect(overlaidWithMedia.filter((m) => m.id === 'gpt-6.1-sol').map((m) => m.type)).toEqual([
+      'chat',
+      'image',
+    ]);
   });
 });
