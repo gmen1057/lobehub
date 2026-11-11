@@ -149,6 +149,40 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
     expect(resolveReasoningProfile('claude-opus-5', 'openrouter', [])?.levels).toHaveLength(3);
     expect(resolveReasoningProfile(undefined, 'openai', ['reasoningEffort'])).toBeUndefined();
   });
+
+  it('синхронизация со студией (ARCKEP_STUDIO_REASONING_SPECS): нерассуждающие модели и точные шкалы', () => {
+    const nonReasoning: ReadonlyArray<[string, string]> = [
+      ['openrouter/free', 'openrouter'],
+      ['xiaomi/mimo-v2.6-pro', 'openrouter'],
+      ['xiaomi/mimo-v2.6-flash', 'openrouter'],
+      ['grok-build-0.1', 'xai'],
+    ];
+    for (const [model, provider] of nonReasoning) {
+      expect(resolveReasoningProfile(model, provider, []), `${provider}/${model}`).toBeUndefined();
+      expect(resolveReasoningAuto(model, provider, {}), `${provider}/${model}`).toBeUndefined();
+    }
+
+    expect(resolveReasoningProfile('inception/mercury-3', 'openrouter', [])).toEqual({
+      kind: 'reasoningEffort',
+      levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+    });
+
+    expect(resolveReasoningProfile('minimax/minimax-m3.1-flash', 'openrouter', [])).toEqual({
+      kind: 'reasoningEffort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    });
+    expect(resolveReasoningAuto('minimax/minimax-m3.1-flash', 'openrouter', {})).toBe('medium');
+
+    expect(resolveReasoningProfile('moonshotai/kimi-k3.1-pro', 'openrouter', [])).toEqual({
+      kind: 'reasoningEffort',
+      levels: ['low', 'high', 'max'],
+    });
+
+    expect(resolveReasoningProfile('qwen3.8-omni-flash', 'qwen', undefined)).toEqual({
+      kind: 'budget',
+      levels: ['none', 'low', 'medium', 'high'],
+    });
+  });
 });
 
 describe('snapReasoningLevel', () => {

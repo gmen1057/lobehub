@@ -17,7 +17,14 @@ describe('model-bank package.json exports should cover all aiModels files', () =
     .filter((f) => f.endsWith('.ts'))
     .map((f) => f.replace(/\.ts$/, ''))
     // 排除非 provider 文件，如 index、类型声明等
-    .filter((name) => !['index'].includes(name));
+    .filter((name) => !['arckepStudioModels.generated', 'index'].includes(name));
+
+  it('exports arckepStudioModels subpath for studio model sync', () => {
+    const exportsMap = packageJson.exports ?? {};
+    expect(exportsMap['./arckepStudioModels']).toBe(
+      './src/aiModels/arckepStudioModels.generated.ts',
+    );
+  });
 
   it('every aiModels file should be exported in package.json.exports', () => {
     const exportsMap = packageJson.exports ?? {};
