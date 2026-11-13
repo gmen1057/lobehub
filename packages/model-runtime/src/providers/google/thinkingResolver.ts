@@ -18,7 +18,7 @@ export type GoogleThinkingModelCategory = 'pro' | 'flash' | 'flashLite' | 'robot
 /**
  * Thinking level for Gemini 3.0+ models
  */
-export type GoogleThinkingLevel = 'minimal' | 'low' | 'medium' | 'high';
+export type GoogleThinkingLevel = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 /**
  * Options for resolving Google thinking configuration
@@ -85,7 +85,7 @@ const THINKING_ENABLED_PATTERNS: RegExp[] = [
   /gemini-\d+(?:\.\d+)?-flash(?!-lite)/i, // gemini-2.5-flash, gemini-3-flash (but not flash-lite)
   /gemini-\d+-pro-image/i, // gemini-3-pro-image-preview
   /nano-banana-pro/i,
-  /gemini-\d+(?:\.\d+)?-(?:argon|carbon)/i, // arckep: gemini-4-argon & gemini-4-carbon (thinking cannot be turned off)
+  /gemini-\d+(?:\.\d+)?-(?:argon|carbon|hydrogen)/i, // arckep: Gemini 4 thinking cannot be turned off
   /thinking/i, // Any model with "thinking" in the name
 ];
 
@@ -277,6 +277,15 @@ export const resolveGoogleThinkingConfig = (
   options: GoogleThinkingResolverOptions = {},
 ): ResolvedGoogleThinkingConfig => {
   const { thinkingBudget, thinkingLevel } = options;
+
+  // Hydrogen accepts four levels, defaults to high, and cannot disable thinking via a budget.
+  if (/^gemini-4-hydrogen$/i.test(model)) {
+    const level = thinkingLevel ?? 'high';
+    if (!['low', 'medium', 'high', 'xhigh'].includes(level)) {
+      throw new TypeError('Gemini 4 Hydrogen thinkingLevel must be low, medium, high or xhigh');
+    }
+    return { includeThoughts: true, thinkingBudget: undefined, thinkingLevel: level };
+  }
 
   const isGemini3 = isGemini3Model(model);
   const hasExplicitBudget = thinkingBudget !== undefined && thinkingBudget !== null;

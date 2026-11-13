@@ -45,6 +45,33 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(hy4?.contextWindowTokens).toBe(1_048_576);
   });
 
+  it('exposes Hydrogen alongside Carbon and Argon with the synchronous output limit', async () => {
+    const models = await transformToAiModelList({
+      defaultModels: AiModels.google,
+      modelString: ARCKEP_STUDIO_MODEL_LISTS.google,
+      providerId: 'google',
+    });
+    const hydrogen = models?.find((model) => model.id === 'gemini-4-hydrogen');
+    expect(hydrogen?.abilities).toMatchObject({
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      video: true,
+      vision: true,
+    });
+    expect(hydrogen?.abilities.imageOutput).toBeFalsy();
+    expect(hydrogen?.contextWindowTokens).toBe(1_048_576);
+    expect(hydrogen?.maxOutput).toBe(65_536);
+    expect(hydrogen?.settings).toMatchObject({
+      extendParams: ['thinkingLevel3', 'urlContext'],
+      searchImpl: 'params',
+      searchProvider: 'google',
+    });
+    expect(models?.some((model) => model.id === 'gemini-4-carbon')).toBe(true);
+    expect(models?.some((model) => model.id === 'gemini-4-argon')).toBe(true);
+  });
+
   it('keeps activeChatKeys, LOBE_DEFAULT_MODEL_LIST and AiModels[provider] synced with ARCKEP_STUDIO_MODEL_CARDS and excludes retired IDs', async () => {
     const activeChatKeys: string[] = [];
 

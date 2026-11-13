@@ -10,6 +10,21 @@ import {
 } from '../reasoningLevels';
 
 describe('resolveReasoningProfile (arckep: ступени модели)', () => {
+  it('Hydrogen uses its generated four-level profile before the legacy thinkingLevel3 control', () => {
+    for (const extendParams of [undefined, ['thinkingLevel3', 'urlContext']]) {
+      const profile = resolveReasoningProfile('gemini-4-hydrogen', 'google', extendParams)!;
+      expect(profile).toEqual({ kind: 'geminiLevel', levels: ['low', 'medium', 'high', 'xhigh'] });
+      expect(snapReasoningLevel('xhigh', profile.levels)).toBe('xhigh');
+      expect(snapReasoningLevel('none', profile.levels)).toBe('low');
+      expect(snapReasoningLevel('minimal', profile.levels)).toBe('low');
+      expect(reasoningCallParams(profile, 'xhigh')).toEqual({ thinkingLevel: 'xhigh' });
+    }
+    expect(resolveReasoningAuto('gemini-4-hydrogen', 'google', {})).toBe('high');
+    expect(resolveReasoningAuto('gemini-4-hydrogen', 'google', { thinkingLevel: 'xhigh' })).toBe(
+      'xhigh',
+    );
+  });
+
   it('по полю карточки: GPT-5.x, GPT-6, Grok, Gemini, o3', () => {
     expect(
       resolveReasoningProfile('gpt-5.5', 'openai', ['gpt5_2ReasoningEffort', 'textVerbosity']),

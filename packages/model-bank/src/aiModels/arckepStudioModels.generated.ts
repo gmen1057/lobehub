@@ -28,7 +28,7 @@ export interface ArckepStudioReasoningSpec {
   levels: readonly ArckepReasoningLevel[];
 }
 
-export const ARCKEP_STUDIO_MODEL_COUNT = 34;
+export const ARCKEP_STUDIO_MODEL_COUNT = 35;
 
 export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatModelCard[]> = {
   anthropic: [
@@ -192,6 +192,35 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
     },
   ],
   google: [
+    {
+      abilities: {
+        functionCall: true,
+        reasoning: true,
+        search: true,
+        structuredOutput: true,
+        video: true,
+        vision: true,
+      },
+      contextWindowTokens: 1_048_576,
+      description:
+        'Gemini 4 Hydrogen — модель Google для кода, инструментов и длинных документов; четыре уровня глубины размышлений и общий контекст до 1 млн токенов',
+      displayName: 'Gemini 4 Hydrogen',
+      enabled: true,
+      id: 'gemini-4-hydrogen',
+      maxOutput: 65_536,
+      pricing: {
+        units: [
+          { name: 'textInput', rate: 1.5, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textOutput', rate: 7.5, strategy: 'fixed', unit: 'millionTokens' },
+        ],
+      },
+      settings: {
+        extendParams: ['thinkingLevel3', 'urlContext'],
+        searchImpl: 'params',
+        searchProvider: 'google',
+      },
+      type: 'chat',
+    },
     {
       abilities: {
         functionCall: true,
@@ -938,6 +967,7 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
     '+deepseek-v4-pro=DeepSeek V4 Pro<1000000:fc:reasoning>',
   ],
   google: [
+    '+gemini-4-hydrogen=Gemini 4 Hydrogen<1048576:fc:vision:reasoning>',
     '+gemini-4-carbon=Gemini 4 Carbon<1048576:fc:vision:reasoning>',
     '+gemini-4-argon=Gemini 4 Argon<1048576:fc:vision:reasoning>',
     '+gemini-3.8-flash=Gemini 3.8 Flash<1048576:fc:vision:reasoning>',
@@ -1013,6 +1043,11 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
     'gemini-3.8-flash': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     'gemini-4-argon': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     'gemini-4-carbon': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
+    'gemini-4-hydrogen': {
+      auto: 'high',
+      kind: 'geminiLevel',
+      levels: ['low', 'medium', 'high', 'xhigh'],
+    },
   },
   openai: {
     'gpt-6-astra': {
