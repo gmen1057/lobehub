@@ -71,6 +71,7 @@ import {
   prefersArckepSearchOnSchedule,
   resolveArckepSearchPluginIds,
 } from '@/server/modules/AgentRuntime/arckepSearch';
+import { assertDeepSeekDocumentsGuardCompatible } from '@/server/modules/AgentRuntime/deepseekDocumentGuard';
 import {
   createServerAgentToolsEngine,
   type EvalContext,
@@ -235,6 +236,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   chatConfigOverride?: Record<string, unknown>;
   /** Cron job ID that triggered this execution (if trigger is 'cron') */
   cronJobId?: string;
+  deepseekDocumentIds?: string[];
+  deepseekDocuments?: Array<{ id: string; filename: string; purpose: string; expires_at?: number }>;
   /** Disable all tools (no plugins, no system manifests). Useful for eval/benchmark scenarios. */
   disableTools?: boolean;
   /** Discord context for injecting channel/guild info into agent system message */
@@ -587,6 +590,8 @@ export class AiAgentService {
       botPlatformContext,
       discordContext,
       existingMessageIds = [],
+      deepseekDocumentIds,
+      deepseekDocuments,
       files,
       functionTools,
       hooks,
@@ -838,6 +843,16 @@ export class AiAgentService {
     // Extract model and provider from agent config
     const model = agentConfig.model!;
     const provider = agentConfig.provider!;
+    const parsedDocumentRefs = deepseekDocuments?.filter((document) =>
+      deepseekDocumentIds?.includes(document.id),
+    );
+    if (deepseekDocumentIds?.length && (provider !== 'deepseek' || model !== 'deepseek-flash'))
+      throw new Error('DeepSeek document input requires direct deepseek-flash');
+    if (
+      (deepseekDocumentIds?.length ?? 0) > 20 ||
+      deepseekDocumentIds?.some((id) => !id.startsWith('arkdoc_'))
+    )
+      throw new Error('Invalid DeepSeek document handles');
 
     // arckep (19.10.2026): модели без встроенного поиска (OpenRouter, DeepSeek) получают платный «Поиск Arckep»
     // сразу, а не по activateTools: модель сама решает, звать ли его, и платит человек по 0,10 ₽ за вызов.
@@ -1485,6 +1500,11 @@ export class AiAgentService {
     // arckep (19.10.2026): загрузка истории вынесена выше (loadHistoryMessages) — её читает и правило ссылок
     // (arckepLinkConnectors), и сборка сообщений; запрос выполняется один раз.
     const historyMessages: any[] = await loadHistoryMessages();
+    assertDeepSeekDocumentsGuardCompatible(
+      !!(agentConfig.chatConfig as any)?.deepseekDataGuardProtected,
+      historyMessages,
+      deepseekDocumentIds,
+    );
 
     await throwIfExecutionAborted('message history loading');
 
@@ -1688,7 +1708,20 @@ export class AiAgentService {
           agentId: resolvedAgentId,
           content: prompt,
           files: fileIds,
-          metadata: attachmentRefs.length > 0 ? { attachments: attachmentRefs } : undefined,
+          metadata:
+            attachmentRefs.length > 0 || deepseekDocumentIds?.length
+              ? {
+                  ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
+                  ...(deepseekDocumentIds?.length
+                    ? {
+                        deepseek_document_ids: deepseekDocumentIds,
+                        ...(parsedDocumentRefs?.length
+                          ? { deepseek_documents: parsedDocumentRefs }
+                          : {}),
+                      }
+                    : {}),
+                }
+              : undefined,
           role: 'user',
           threadId: appContext?.threadId ?? undefined,
           topicId,
@@ -1718,8 +1751,16 @@ export class AiAgentService {
       fileList,
       imageList,
       metadata:
-        attachmentRefs.length > 0 || pdfLayouts.length > 0
+        attachmentRefs.length > 0 || pdfLayouts.length > 0 || deepseekDocumentIds?.length
           ? {
+              ...(deepseekDocumentIds?.length
+                ? {
+                    deepseek_document_ids: deepseekDocumentIds,
+                    ...(parsedDocumentRefs?.length
+                      ? { deepseek_documents: parsedDocumentRefs }
+                      : {}),
+                  }
+                : {}),
               ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
               ...(pdfLayouts.length > 0 ? { layouts: pdfLayouts } : {}),
             }

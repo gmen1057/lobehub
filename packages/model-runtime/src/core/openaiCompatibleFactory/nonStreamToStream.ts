@@ -69,6 +69,18 @@ export const transformResponseToStream = (data: OpenAI.ChatCompletion) =>
         choices: choices.map((choice: OpenAI.ChatCompletion.Choice) => ({
           delta: {
             content: null,
+            ...(data.model === 'deepseek-flash' &&
+              (choice.message as any).annotations && {
+                annotations: (choice.message as any).annotations,
+              }),
+            ...(data.model === 'deepseek-flash' &&
+              (choice.message as any).server_tool_calls && {
+                server_tool_calls: (choice.message as any).server_tool_calls,
+              }),
+            ...(data.model === 'deepseek-flash' &&
+              (choice.message as any).refusal !== undefined && {
+                refusal: (choice.message as any).refusal,
+              }),
             role: choice.message.role,
           },
           finish_reason: choice.finish_reason,

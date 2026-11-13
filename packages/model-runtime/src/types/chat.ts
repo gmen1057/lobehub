@@ -128,6 +128,7 @@ export interface ChatStreamPayload {
    */
   presence_penalty?: number;
   provider?: string;
+  read_url?: boolean;
   reasoning?: {
     effort?: string;
     summary?: string;
@@ -135,6 +136,7 @@ export interface ChatStreamPayload {
   reasoning_effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   response_format?: ChatResponseFormat;
   responseMode?: 'stream' | 'json';
+  safety_check?: boolean;
   /**
    * @title Whether to enable streaming requests
    * @default true

@@ -152,3 +152,13 @@ describe('offersArckepSearchChoice', () => {
     ).toBe(false);
   });
 });
+
+it('gives only direct DeepSeek Flash native search, retaining Pro/OpenRouter fallback', async () => {
+  expect(await modelHasBuiltinSearch('deepseek-flash', 'deepseek')).toBe(true);
+  expect(await modelHasBuiltinSearch('deepseek-v4-pro', 'deepseek')).toBe(false);
+  expect(await modelHasBuiltinSearch('deepseek/deepseek-flash', 'openrouter')).toBe(false);
+  expect(await resolveArckepSearchPluginIds(undefined, 'deepseek-flash', 'deepseek')).toEqual([]);
+  expect(await resolveArckepSearchPluginIds(undefined, 'deepseek-v4-pro', 'deepseek')).toEqual([
+    ARCKEP_WEB_SEARCH_CONNECTOR,
+  ]);
+});

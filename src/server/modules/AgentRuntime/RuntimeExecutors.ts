@@ -60,6 +60,7 @@ import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
 import { resolveServerEnabledSearch } from './arckepSearch';
+import { assertDeepSeekDocumentsGuardCompatible } from './deepseekDocumentGuard';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
@@ -341,6 +342,11 @@ export const createRuntimeExecutors = (
       throw new Error('Model and provider are required for call_llm instruction');
     }
 
+    assertDeepSeekDocumentsGuardCompatible(
+      !!(ctx.agentConfig?.chatConfig as any)?.deepseekDataGuardProtected,
+      llmPayload.messages as any[],
+    );
+
     // Type assertion to ensure payload correctness
     const operationLogId = `${operationId}:${stepIndex}`;
 
@@ -583,6 +589,12 @@ export const createRuntimeExecutors = (
         stream,
         tools,
         ...(enabledSearch ? { enabledSearch: true } : {}),
+        ...(provider === 'deepseek' && model === 'deepseek-flash'
+          ? {
+              read_url: !!(agentConfig?.chatConfig as any)?.deepseekReadUrl,
+              safety_check: !!(agentConfig?.chatConfig as any)?.deepseekSafetyCheck,
+            }
+          : {}),
       };
 
       // Buffer: accumulate text and reasoning, send every 50ms
@@ -785,6 +797,19 @@ export const createRuntimeExecutors = (
               onGrounding: async (groundingData) => {
                 log(`[${operationLogId}][grounding] %O`, groundingData);
                 grounding = groundingData;
+                if (groundingData?.deepseek?.finish_reason === 'content_filter') {
+                  clearAttemptBuffers();
+                  content = '';
+                  rawContent = '';
+                  thinkingContent = '';
+                  toolsCalling = [];
+                  tool_calls = [];
+                  contentParts.length = 0;
+                  reasoningParts.length = 0;
+                  imageList.length = 0;
+                  hasContentImages = false;
+                  hasReasoningImages = false;
+                }
 
                 await streamManager.publishStreamChunk(operationId, stepIndex, {
                   chunkType: 'grounding',
@@ -977,6 +1002,11 @@ export const createRuntimeExecutors = (
             throw streamExecutionError;
           }
 
+          if (grounding?.deepseek?.finish_reason === 'content_filter') {
+            content = 'Модель отказалась отвечать на этот запрос.';
+            rawContent = content;
+            textBuffer = content;
+          }
           let htmlGateDiagnostics: string[] = [];
           if (rawContent.includes('<lobeArtifact') || rawContent !== content) {
             const gateResult = await htmlStreamGate.finalize();
@@ -1188,6 +1218,14 @@ export const createRuntimeExecutors = (
           } else {
             newState.messages.push({
               content,
+              search: grounding,
+              ...(grounding?.deepseek
+                ? {
+                    server_tool_calls: grounding.deepseek.server_tool_calls,
+                    reasoning_content: grounding.deepseek.reasoning_content,
+                    annotations: grounding.deepseek.annotations,
+                  }
+                : {}),
               role: 'assistant',
               tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
             });

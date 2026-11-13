@@ -180,6 +180,21 @@ export const CreateResponseRequestSchema = z
   .object({
     // arckep (chat-next-redesign, E1): инструменты помощника, выключенные на этот запрос
     disabled_tools: z.array(z.string()).nullish(),
+    deepseek_document_ids: z.array(z.string().startsWith('arkdoc_')).max(20).nullish(),
+    deepseek_documents: z
+      .array(
+        z.object({
+          id: z.string().startsWith('arkdoc_'),
+          filename: z.string(),
+          purpose: z.enum(['text_recognition', 'rich_layout_recognition', 'user_data']),
+          expires_at: z.number().optional(),
+        }),
+      )
+      .max(20)
+      .nullish(),
+    read_url: z.boolean().nullish(),
+    data_guard_protected: z.boolean().nullish(),
+    safety_check: z.boolean().nullish(),
     input: z.union([z.string(), z.array(InputItemSchema)]),
     instructions: z.string().nullish(),
     max_output_tokens: z.number().int().positive().nullish(),
@@ -247,6 +262,7 @@ export interface ResponseObject {
 // ==================== SSE Event Types ====================
 
 export type ResponseStreamEventType =
+  | 'response.grounding'
   | 'response.created'
   | 'response.in_progress'
   | 'response.completed'
@@ -381,7 +397,13 @@ export interface ReasoningTextDeltaEvent extends BaseStreamEvent {
   type: 'response.reasoning_text.delta';
 }
 
+export interface ResponseGroundingEvent extends BaseStreamEvent {
+  grounding: any;
+  type: 'response.grounding';
+}
+
 export type ResponseStreamEvent =
+  | ResponseGroundingEvent
   | ContentPartAddedEvent
   | ContentPartDoneEvent
   | FunctionCallArgumentsDeltaEvent

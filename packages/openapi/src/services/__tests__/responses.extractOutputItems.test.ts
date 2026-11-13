@@ -210,3 +210,17 @@ describe('ResponsesService.extractOutputItems', () => {
     });
   });
 });
+
+it('retains native citation offsets in completed output', () => {
+  const annotations = [
+    {
+      type: 'url_citation',
+      url_citation: { url: 'https://example.com', title: 'Source', start_index: 1, end_index: 3 },
+    },
+  ];
+  const result = callExtractOutputItems(
+    [{ role: 'assistant', content: 'A😀Б', search: { deepseek: { annotations } } }],
+    'tpc_test',
+  );
+  expect((result.output[0] as any).content[0].annotations).toEqual(annotations);
+});

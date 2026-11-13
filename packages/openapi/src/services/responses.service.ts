@@ -32,6 +32,8 @@ import { type HubOperation, responsesStreamHub } from './responsesStreamHub';
  */
 export interface ExecOverrides {
   chatConfigOverride?: Record<string, unknown>;
+  deepseekDocumentIds?: string[];
+  deepseekDocuments?: Array<{ id: string; filename: string; purpose: string; expires_at?: number }>;
   excludePluginIds?: string[];
   model?: string;
   paramsOverride?: Record<string, unknown>;
@@ -46,6 +48,13 @@ export const buildExecOverrides = (params: CreateResponseRequest): ExecOverrides
   const chatConfig: Record<string, unknown> = {};
   if (params.reasoning?.effort) chatConfig[ARCKEP_REASONING_LEVEL_KEY] = params.reasoning.effort;
   if (params.search) chatConfig.searchMode = params.search;
+  if (typeof params.data_guard_protected === 'boolean')
+    chatConfig.deepseekDataGuardProtected = params.data_guard_protected;
+  if (typeof params.read_url === 'boolean') chatConfig.deepseekReadUrl = params.read_url;
+  if (typeof params.safety_check === 'boolean')
+    chatConfig.deepseekSafetyCheck = params.safety_check;
+  if (params.deepseek_document_ids?.length) out.deepseekDocumentIds = params.deepseek_document_ids;
+  if (params.deepseek_documents?.length) out.deepseekDocuments = params.deepseek_documents;
   if (Object.keys(chatConfig).length > 0) out.chatConfigOverride = chatConfig;
 
   const callParams: Record<string, unknown> = {};
@@ -329,7 +338,13 @@ export class ResponsesService extends BaseService {
           outputText = content;
           output.push({
             content: [
-              { annotations: [], logprobs: [], text: content, type: 'output_text' as const },
+              {
+                annotations:
+                  (msg as any).search?.deepseek?.annotations ?? (msg as any).annotations ?? [],
+                logprobs: [],
+                text: content,
+                type: 'output_text' as const,
+              },
             ],
             id: `msg_${responseId}_${itemCounter++}`,
             role: 'assistant' as const,
@@ -731,6 +746,7 @@ export class ResponsesService extends BaseService {
     try {
       // 5. Process stream events and emit output items
       let accumulatedText = '';
+      let currentGrounding: any;
       let currentOutputIndex = 0;
       let itemCounter = 0;
       let textMessageStarted = false;
@@ -786,13 +802,25 @@ export class ResponsesService extends BaseService {
           content_index: 0,
           item_id: currentTextItemId,
           output_index: currentOutputIndex,
-          part: { annotations: [], logprobs: [], text, type: 'output_text' as const },
+          part: {
+            annotations: currentGrounding?.deepseek?.annotations ?? [],
+            logprobs: [],
+            text,
+            type: 'output_text' as const,
+          },
           sequence_number: seq.n++,
           type: 'response.content_part.done' as const,
         };
         yield {
           item: {
-            content: [{ annotations: [], logprobs: [], text, type: 'output_text' as const }],
+            content: [
+              {
+                annotations: currentGrounding?.deepseek?.annotations ?? [],
+                logprobs: [],
+                text,
+                type: 'output_text' as const,
+              },
+            ],
             id: currentTextItemId,
             role: 'assistant' as const,
             status: 'completed' as const,
@@ -847,7 +875,16 @@ export class ResponsesService extends BaseService {
           if (event.type === 'stream_chunk') {
             const chunk = event.data as StreamChunkData;
 
-            if (chunk.chunkType === 'text' && chunk.content) {
+            if (chunk.chunkType === 'grounding' && chunk.grounding) {
+              currentGrounding = chunk.grounding;
+              if (currentGrounding.deepseek?.finish_reason === 'content_filter')
+                accumulatedText = '';
+              yield {
+                grounding: currentGrounding,
+                sequence_number: seq.n++,
+                type: 'response.grounding' as const,
+              };
+            } else if (chunk.chunkType === 'text' && chunk.content) {
               // Start text message output item if not already started
               yield* startTextMessage(seq);
 
