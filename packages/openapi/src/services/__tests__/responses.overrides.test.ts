@@ -61,3 +61,38 @@ describe('buildExecOverrides (arckep: настройки одного запро
     });
   });
 });
+
+describe('DeepSeek opt-in response controls', () => {
+  it('keeps explicit false values and opaque owned document handles', () => {
+    expect(
+      buildExecOverrides({
+        ...base,
+        read_url: true,
+        safety_check: false,
+        data_guard_protected: true,
+        deepseek_document_ids: ['arkdoc_owned'],
+      }),
+    ).toEqual({
+      chatConfigOverride: {
+        deepseekReadUrl: true,
+        deepseekSafetyCheck: false,
+        deepseekDataGuardProtected: true,
+      },
+      deepseekDocumentIds: ['arkdoc_owned'],
+    });
+  });
+});
+
+it('keeps parsed document display metadata beside replay handles', () => {
+  const deepseek_documents = [
+    {
+      id: 'arkdoc_owned',
+      filename: 'report.pdf',
+      purpose: 'rich_layout_recognition' as const,
+      expires_at: 1800000000,
+    },
+  ];
+  expect(
+    buildExecOverrides({ ...base, deepseek_document_ids: ['arkdoc_owned'], deepseek_documents }),
+  ).toMatchObject({ deepseekDocumentIds: ['arkdoc_owned'], deepseekDocuments: deepseek_documents });
+});

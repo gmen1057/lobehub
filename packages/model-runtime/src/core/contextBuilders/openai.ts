@@ -20,9 +20,7 @@ type ConvertMessageContentOptions = {
 };
 
 type OpenAICompatibleContentPart =
-  | ExtendedChatCompletionContentPart
-  | OpenAI.ChatCompletionContentPart
-  | UserMessageContentPart;
+  ExtendedChatCompletionContentPart | OpenAI.ChatCompletionContentPart | UserMessageContentPart;
 
 const isInternalThinkingContentPart = (
   content: OpenAICompatibleContentPart,
@@ -104,6 +102,8 @@ export const convertOpenAIMessages = async (
 
       // it's compatible for DeepSeek & Moonshot
       if (msg.reasoning_content !== undefined) result.reasoning_content = msg.reasoning_content;
+      if (msg.server_tool_calls !== undefined) result.server_tool_calls = msg.server_tool_calls;
+      if (msg.annotations !== undefined) result.annotations = msg.annotations;
       // MiniMax uses reasoning_details for historical thinking, so forward it unchanged
       if (msg.reasoning_details !== undefined) result.reasoning_details = msg.reasoning_details;
 

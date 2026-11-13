@@ -43,8 +43,19 @@ export const params = {
         return rest;
       });
 
+      const { enabledSearch, read_url, safety_check, ...restPayload } = payload;
+      const native = payload.model === 'deepseek-flash';
+      if (!native && (read_url || safety_check))
+        throw new Error('DeepSeek application tools require deepseek-flash');
+      const tools: any[] = [...(payload.tools ?? [])];
+      if (native && enabledSearch && !tools.some((tool) => tool.type === 'deepseek_web_search'))
+        tools.push({ type: 'deepseek_web_search' });
+      if (native && read_url && !tools.some((tool) => tool.type === 'deepseek_read_url'))
+        tools.push({ type: 'deepseek_read_url' });
       return {
-        ...payload,
+        ...restPayload,
+        ...(tools.length ? { tools } : {}),
+        ...(native && safety_check ? { safety_check: { level: 'high' } } : {}),
         messages,
         stream: payload.stream ?? true,
       } as any;

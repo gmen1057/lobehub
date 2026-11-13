@@ -20,6 +20,15 @@ export type ChatPayloadForTransformStream = {
  */
 export interface StreamContext {
   chunkIndex?: number;
+  deepseek?: {
+    annotations: any[];
+    server_tool_calls: any[];
+    server_tool_events: any[];
+    finish_reason?: string;
+    refusal?: string;
+    reasoning_content?: string;
+    usage?: any;
+  };
   id: string;
   /**
    * As pplx citations is in every chunk, but we only need to return it once
@@ -385,6 +394,11 @@ export function createCallbacksTransformer(cb: ChatStreamCallbacks | undefined) 
 
           case 'grounding': {
             grounding = data;
+            if (data.deepseek?.finish_reason === 'content_filter') {
+              aggregatedText = '';
+              aggregatedThinking = undefined;
+              toolsCalling = undefined;
+            }
             await callbacks.onGrounding?.(data);
             break;
           }

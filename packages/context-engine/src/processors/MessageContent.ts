@@ -260,6 +260,7 @@ export class MessageContentProcessor extends BaseProcessor {
         createdAt: message.createdAt,
         id: message.id,
         meta: message.meta,
+        metadata: message.metadata,
         role: message.role,
         updatedAt: message.updatedAt,
         // Keep other potentially needed fields, but remove processed file-related fields
@@ -276,6 +277,7 @@ export class MessageContentProcessor extends BaseProcessor {
       createdAt: message.createdAt,
       id: message.id,
       meta: message.meta,
+      metadata: message.metadata,
       role: message.role,
       updatedAt: message.updatedAt,
       // Keep other potentially needed fields, but remove processed file-related fields

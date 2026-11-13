@@ -2,6 +2,7 @@ import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { PipelineContext, ProcessorOptions } from '../types';
+import { deepseekApplicationContext } from './deepseekApplicationContext';
 
 declare module '../types' {
   interface PipelineContextMetadataOverrides {
@@ -21,7 +22,10 @@ const log = debug('context-engine:processor:MessageCleanupProcessor');
 export class MessageCleanupProcessor extends BaseProcessor {
   readonly name = 'MessageCleanupProcessor';
 
-  constructor(options: ProcessorOptions = {}) {
+  constructor(
+    options: ProcessorOptions = {},
+    private applicationModel?: { model?: string; provider?: string },
+  ) {
     super(options);
   }
 
@@ -33,7 +37,14 @@ export class MessageCleanupProcessor extends BaseProcessor {
     // Clean each message, keeping only necessary fields
     for (let i = 0; i < clonedContext.messages.length; i++) {
       const message = clonedContext.messages[i];
-      const cleanedMessage = this.cleanMessage(message);
+      const cleanedMessage = {
+        ...this.cleanMessage(message),
+        ...deepseekApplicationContext(
+          message,
+          this.applicationModel?.model ?? context.initialState.model,
+          this.applicationModel?.provider ?? context.initialState.provider,
+        ),
+      };
 
       if (cleanedMessage !== message) {
         clonedContext.messages[i] = cleanedMessage;
@@ -76,6 +87,9 @@ export class MessageCleanupProcessor extends BaseProcessor {
           role: message.role,
           ...(message.tool_calls && { tool_calls: message.tool_calls }),
           ...(message.reasoning && { reasoning: message.reasoning }),
+          ...(message.reasoning_content !== undefined && {
+            reasoning_content: message.reasoning_content,
+          }),
         };
       }
 

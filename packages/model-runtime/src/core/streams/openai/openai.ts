@@ -22,6 +22,7 @@ import {
   FIRST_CHUNK_ERROR_KEY,
   generateToolCallId,
 } from '../protocol';
+import { transformDeepSeekStream } from './deepseek';
 
 /**
  * Extended type for OpenAI tool calls that includes provider-specific extensions
@@ -94,6 +95,12 @@ const transformOpenAIStream = (
           : AgentRuntimeErrorType.ProviderBizError,
     } satisfies ChatMessageError;
     return { data: errorData, id: 'first_chunk_error', type: 'error' };
+  }
+
+  if (payload?.provider === 'deepseek' && payload.model === 'deepseek-flash') {
+    return transformDeepSeekStream(chunk, streamContext, payload, (functionChunk) =>
+      transformOpenAIStream(functionChunk, streamContext, { ...payload, provider: undefined }),
+    );
   }
 
   // MiniMax returns business errors (e.g., insufficient balance) in base_resp, but not through FIRST_CHUNK_ERROR_KEY
@@ -644,7 +651,13 @@ export const OpenAIStream = (
           streamStack,
         }),
       )
-      .pipeThrough(createSSEProtocolTransformer((c) => c, streamStack))
+      .pipeThrough(
+        createSSEProtocolTransformer((c) => c, streamStack, {
+          requireTerminalEvent:
+            payload?.provider === 'deepseek' && payload.model === 'deepseek-flash',
+          usageIsTerminal: false,
+        }),
+      )
       .pipeThrough(createCallbacksTransformer(callbacks))
   );
 };

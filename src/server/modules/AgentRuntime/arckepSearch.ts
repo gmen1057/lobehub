@@ -9,7 +9,7 @@
  *    список провайдеров брался из model-bank (DEFAULT_MODEL_PROVIDER_LIST), но индекс model-bank его не
  *    экспортирует: список был пуст, и поиск включался только у моделей с пометкой в карточке (21 из 48).
  * 2. «Поиск Arckep» (подключение студии mcp-arckep-studio-web → публичный API /tools/search и
- *    /tools/fetch, платный по вызову) — моделям без встроенного поиска: OpenRouter и DeepSeek напрямую.
+ *    /tools/fetch, платный по вызову) — моделям без встроенного поиска: OpenRouter и DeepSeek Pro напрямую; Flash использует native tools.
  *    OpenRouter `:online` не подходит: он ищет в каждом сообщении (не по выбору модели), стоит ≈0,007 $
  *    вне цены ответа (проба 19.10: usage.cost 0,0072 $ при ответе на копейки). Раньше такие модели
  *    искали через песочницу с кодом — 11–55 с и 34–71 тыс. входных токенов.
@@ -46,6 +46,7 @@ export const modelHasBuiltinSearch = async (
   provider: string | undefined,
 ): Promise<boolean> => {
   if (!model || !provider) return false;
+  if (provider === 'deepseek') return model === 'deepseek-flash';
   if (ARCKEP_NATIVE_SEARCH_PROVIDERS.has(provider)) return true;
   // OpenRouter сознательно без встроенного поиска (см. выше, п. 2).
   if (provider === 'openrouter') return false;

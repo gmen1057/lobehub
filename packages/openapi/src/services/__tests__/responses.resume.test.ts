@@ -180,20 +180,66 @@ describe('ResponsesService — ответ в реестре и переподк�
     });
   });
 
-  it.each([402, 404, 429, 504])('ошибка HTTP %s сохраняет причину при отправке и переподключении', async (status) => {
-    const sender = new ResponsesService({} as any, 'u1');
-    const gen = sender.createStreamingResponse(params);
-    await take(gen, 2);
-    const pending = drain(gen);
-    await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
-    finish({ error: { body: { status }, message: 'Model request failed', type: status }, messages: [], status: 'error' });
-    const events = await pending;
-    const last = events.at(-1);
-    expect(last.type).toBe('response.completed');
-    expect(last.response.status).toBe('failed');
-    expect(last.response.error).toEqual({ code: 'model_error', message: 'Model request failed', status });
-    expect(sender.getResponseStatus('tpc_1')).toMatchObject({ status: 'failed' });
-    const replay = await drain(new ResponsesService({} as any, 'u1').resumeStreamingResponse('tpc_1'));
-    expect(replay.at(-1).response.error).toEqual(last.response.error);
+  it.each([402, 404, 429, 504])(
+    'ошибка HTTP %s сохраняет причину при отправке и переподключении',
+    async (status) => {
+      const sender = new ResponsesService({} as any, 'u1');
+      const gen = sender.createStreamingResponse(params);
+      await take(gen, 2);
+      const pending = drain(gen);
+      await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
+      finish({
+        error: { body: { status }, message: 'Model request failed', type: status },
+        messages: [],
+        status: 'error',
+      });
+      const events = await pending;
+      const last = events.at(-1);
+      expect(last.type).toBe('response.completed');
+      expect(last.response.status).toBe('failed');
+      expect(last.response.error).toEqual({
+        code: 'model_error',
+        message: 'Model request failed',
+        status,
+      });
+      expect(sender.getResponseStatus('tpc_1')).toMatchObject({ status: 'failed' });
+      const replay = await drain(
+        new ResponsesService({} as any, 'u1').resumeStreamingResponse('tpc_1'),
+      );
+      expect(replay.at(-1).response.error).toEqual(last.response.error);
+    },
+  );
+});
+
+it('emits native grounding and clears already accumulated partial text on terminal refusal, including replay', async () => {
+  responsesStreamHub.clear();
+  const metadata = { finish_reason: 'content_filter', annotations: [], server_tool_calls: [] };
+  mockExecAgent.mockResolvedValue({ operationId: OP, success: true, topicId: 'tpc_1' });
+  mockExecuteSync.mockImplementation(async () => {
+    await responsesStreamHub.publishStreamChunk(OP, 0, {
+      chunkType: 'text',
+      content: 'unsafe partial',
+    });
+    await responsesStreamHub.publishStreamChunk(OP, 0, {
+      chunkType: 'grounding',
+      grounding: { citations: [], deepseek: metadata },
+    });
+    await responsesStreamHub.publishStreamChunk(OP, 0, { chunkType: 'text', content: 'refusal' });
+    return {
+      messages: [{ role: 'assistant', content: 'refusal', search: { deepseek: metadata } }],
+      status: 'done',
+    };
   });
+  const service = new ResponsesService({} as any, 'u1');
+  const events = await drain(service.createStreamingResponse(params));
+  const grounding = events.find((event) => event.type === 'response.grounding');
+  expect(grounding.grounding).toEqual({ citations: [], deepseek: metadata });
+  expect(events.find((event) => event.type === 'response.output_text.done').text).toBe('refusal');
+  expect(events.at(-1).response.output_text).toBe('refusal');
+  expect(JSON.stringify(events.at(-1))).not.toContain('unsafe partial');
+  const replay = await drain(service.resumeStreamingResponse('tpc_1'));
+  expect(
+    replay.find((event) => event.type === 'response.grounding').grounding.deepseek.finish_reason,
+  ).toBe('content_filter');
+  expect(replay.at(-1).response.output_text).toBe('refusal');
 });

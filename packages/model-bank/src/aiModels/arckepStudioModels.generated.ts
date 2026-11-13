@@ -166,6 +166,9 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
           { name: 'textOutput', rate: 1.2, strategy: 'fixed', unit: 'millionTokens' },
         ],
       },
+      settings: {
+        searchImpl: 'params',
+      },
       type: 'chat',
     },
     {
