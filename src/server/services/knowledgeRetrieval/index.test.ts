@@ -69,4 +69,28 @@ describe('shared owner-scoped knowledge retrieval', () => {
     await service.semanticSearchForChat({ fileIds: ['owned', 'foreign'], query: 'contact' });
     expect(mocks.search).toHaveBeenCalledWith(expect.objectContaining({ fileIds: ['owned'] }));
   });
+  it.each([
+    undefined,
+    null,
+    {},
+    { query: null },
+    { query: 12 },
+    { query: [] },
+    { query: '' },
+    { query: ' \t\n' },
+  ])('rejects invalid input %j before provider initialization or DB work', async (input) => {
+    const findMany = vi.fn();
+    const service = new KnowledgeRetrievalService(
+      { query: { knowledgeBaseFiles: { findMany } } } as any,
+      'owner',
+    );
+    await expect(service.semanticSearchForChat(input as never)).rejects.toMatchObject({
+      code: 'BAD_REQUEST',
+    });
+    expect(mocks.runtime).not.toHaveBeenCalled();
+    expect(mocks.embeddings).not.toHaveBeenCalled();
+    expect(mocks.files).not.toHaveBeenCalled();
+    expect(mocks.search).not.toHaveBeenCalled();
+    expect(findMany).not.toHaveBeenCalled();
+  });
 });

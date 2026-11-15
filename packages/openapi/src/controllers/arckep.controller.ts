@@ -29,6 +29,7 @@ import {
   resolveServerModelParams,
 } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
+import { defaultInboxPlugins } from '@/server/services/agent/inboxPlugins';
 import {
   runAutoExtract,
   runDailyDigest,
@@ -91,25 +92,15 @@ export class ArckepController extends BaseController {
       const sessionModel = new SessionModel(db, userId);
       const existing = await sessionModel.findByIdOrSlug(INBOX_SESSION_ID);
       if (!existing) {
+        // Provision manifests before the inbox exists: a failed installation can be retried,
+        // and the first response already contains the selection persisted on creation.
+        await new PluginService(db, userId).installCatalog();
         await new ServerAgentService(db, userId).createInbox();
       }
 
       const agentModel = new AgentModel(db, userId);
       const agent = await agentModel.getBuiltinAgent(INBOX_SESSION_ID);
       if (!agent) return this.error(c, 'Inbox agent not found', 404);
-      if (!existing) {
-        // arckep (chat-next-redesign, E2): новый пользователь получает подключения каталога
-        // и набор инструментов помощника по умолчанию — раньше это делали только SQL-скрипты
-        // разом для всех, и новые пользователи оставались ни с чем.
-        try {
-          await new PluginService(db, userId).installCatalog();
-          if (!Array.isArray(agent.plugins) || agent.plugins.length === 0) {
-            await agentModel.update(agent.id, { plugins: ArckepController.defaultInboxPlugins() });
-          }
-        } catch (error) {
-          console.error('[arckep] default plugins for new user failed:', error);
-        }
-      }
 
       return this.success(c, agent, 'inbox agent');
     } catch (error) {
@@ -121,28 +112,7 @@ export class ArckepController extends BaseController {
 
   /** Подключения по умолчанию для нового помощника «Arckep Помощник» (ARCKEP_DEFAULT_INBOX_PLUGINS). */
   static defaultInboxPlugins(): string[] {
-    const raw = process.env.ARCKEP_DEFAULT_INBOX_PLUGINS;
-    // Подключения студии mcp-arckep-studio-* (F6) — вместо встроенного arckep-studio; грузятся по требованию.
-    const list = (
-      raw ??
-      [
-        'lobe-user-memory',
-        'lobe-artifacts',
-        'mcp-arckep-wordstat',
-        'mcp-arckep-studio-images',
-        'mcp-arckep-studio-video',
-        'mcp-arckep-studio-higgsfield',
-        'mcp-arckep-studio-3d',
-        'mcp-arckep-studio-speech',
-        'mcp-arckep-studio-presentations',
-        'mcp-arckep-studio-models',
-        'mcp-arckep-studio-account',
-      ].join(',')
-    )
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-    return [...new Set(list)];
+    return defaultInboxPlugins();
   }
 
   /** GET /api/v1/plugins — установленные подключения пользователя. */

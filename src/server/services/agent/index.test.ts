@@ -9,6 +9,7 @@ import type * as RedisModule from '@/libs/redis';
 import { initializeRedisWithPrefix, isRedisEnabled, RedisKeys } from '@/libs/redis';
 import { parseAgentConfig } from '@/server/globalConfig/parseDefaultAgent';
 
+import { defaultInboxPlugins } from './inboxPlugins';
 import { AgentService } from './index';
 
 vi.mock('@/envs/app', () => ({
@@ -81,7 +82,10 @@ describe('AgentService', () => {
 
       expect(SessionModel).toHaveBeenCalledWith(mockDb, mockUserId);
       expect(parseAgentConfig).toHaveBeenCalledWith('model=gpt-4;temperature=0.7');
-      expect(mockSessionModel.createInbox).toHaveBeenCalledWith(mockConfig);
+      expect(mockSessionModel.createInbox).toHaveBeenCalledWith({
+        ...mockConfig,
+        plugins: defaultInboxPlugins(),
+      });
     });
 
     it('should create inbox with empty config if parseAgentConfig returns undefined', async () => {
@@ -96,7 +100,28 @@ describe('AgentService', () => {
 
       expect(SessionModel).toHaveBeenCalledWith(mockDb, mockUserId);
       expect(parseAgentConfig).toHaveBeenCalledWith('model=gpt-4;temperature=0.7');
-      expect(mockSessionModel.createInbox).toHaveBeenCalledWith({});
+      expect(mockSessionModel.createInbox).toHaveBeenCalledWith({ plugins: defaultInboxPlugins() });
+    });
+  });
+
+  describe('inbox server plugin override', () => {
+    it.each([{ plugins: [] }, { plugins: ['custom-tool'] }, { plugins: ['lobe-artifacts'] }])(
+      'preserves explicit selection %j',
+      async ({ plugins }) => {
+        const createInbox = vi.fn();
+        (SessionModel as any).mockImplementation(() => ({ createInbox }));
+        (parseAgentConfig as any).mockReturnValue({ plugins });
+        await service.createInbox();
+        expect(createInbox).toHaveBeenCalledWith({ plugins });
+      },
+    );
+
+    it('uses defaults when a server plugins field is undefined', async () => {
+      const createInbox = vi.fn();
+      (SessionModel as any).mockImplementation(() => ({ createInbox }));
+      (parseAgentConfig as any).mockReturnValue({ plugins: undefined });
+      await service.createInbox();
+      expect(createInbox).toHaveBeenCalledWith({ plugins: defaultInboxPlugins() });
     });
   });
 

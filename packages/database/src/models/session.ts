@@ -335,11 +335,27 @@ export class SessionModel {
 
     if (item) return;
 
-    return await this.create({
-      config: merge(DEFAULT_AGENT_CONFIG, defaultAgentConfig),
-      slug: INBOX_SESSION_ID,
-      type: 'agent',
-    });
+    try {
+      return await this.create({
+        config: merge(DEFAULT_AGENT_CONFIG, defaultAgentConfig),
+        slug: INBOX_SESSION_ID,
+        type: 'agent',
+      });
+    } catch (error) {
+      // Concurrent first requests may both observe no inbox. Its unique slug wins;
+      // the losing transaction rolls back its agent and must not change the winner.
+      const cause = (error as { cause?: unknown }).cause ?? error;
+      if (
+        (cause as { code?: string }).code === '23505' &&
+        (cause as { constraint?: string }).constraint === 'slug_user_id_unique'
+      ) {
+        const winner = await this.db.query.sessions.findFirst({
+          where: and(eq(sessions.userId, this.userId), eq(sessions.slug, INBOX_SESSION_ID)),
+        });
+        if (winner) return;
+      }
+      throw error;
+    }
   };
 
   batchCreate = async (newSessions: NewSession[]) => {
@@ -566,8 +582,7 @@ export class SessionModel {
     type,
     ...res
   }: SessionItem & { agentsToSessions?: { agent: AgentItem }[] }):
-    | LobeAgentSession
-    | LobeGroupSession => {
+    LobeAgentSession | LobeGroupSession => {
     const meta = {
       avatar: avatar ?? undefined,
       backgroundColor: backgroundColor ?? undefined,

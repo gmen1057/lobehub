@@ -1,3 +1,4 @@
+import { getSearchQueryError } from '@lobechat/builtin-tool-knowledge-base';
 import { DEFAULT_FILE_EMBEDDING_MODEL_ITEM } from '@lobechat/const';
 import type { LobeChatDatabase } from '@lobechat/database';
 import type {
@@ -137,6 +138,13 @@ export class KnowledgeRetrievalService {
   };
 
   semanticSearchForChat = async (input: SemanticSearchSchemaType, _signal?: AbortSignal) => {
+    const invalidQuery = getSearchQueryError(input);
+    if (invalidQuery) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `${invalidQuery.code}: ${invalidQuery.message}`,
+      });
+    }
     try {
       const { model, provider } =
         getServerDefaultFilesConfig().embeddingModel || DEFAULT_FILE_EMBEDDING_MODEL_ITEM;

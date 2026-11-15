@@ -102,6 +102,9 @@ export class ActivatorExecutionRuntime {
 
       if (notFound.length > 0) {
         parts.push(`\nNot found: ${notFound.join(', ')}`);
+        parts.push(
+          'These tools are unavailable in this turn; no provider call was attempted. Do not retry absent identifiers. If the connection is installed but disabled, ask the person to enable it through "+" in the chat; do not enable it yourself or override exclusions. This does not mean the platform cannot edit images or create files.',
+        );
       }
 
       return {

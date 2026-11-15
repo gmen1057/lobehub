@@ -1,4 +1,5 @@
 export { KnowledgeBaseManifest } from './manifest';
+export { getSearchQueryError, searchQueryRetryMessage } from './searchQuery';
 export { systemPrompt } from './systemRole';
 export {
   type FileContentDetail,
