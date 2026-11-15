@@ -51,3 +51,45 @@ describe('automatic original-file retrieval', () => {
     );
   });
 });
+
+describe('search query runtime validation', () => {
+  it.each([
+    undefined,
+    null,
+    {},
+    { query: null },
+    { query: 12 },
+    { query: [] },
+    { query: '' },
+    { query: ' \t\n' },
+  ])('rejects invalid args %j without accessing retrieval', async (args) => {
+    const semanticSearchForChat = vi.fn();
+    const getFileContents = vi.fn();
+    const runtime = new KnowledgeBaseExecutionRuntime({ semanticSearchForChat, getFileContents });
+    const result = await runtime.searchKnowledgeBase(args as never);
+    expect(result.success).toBe(false);
+    expect(result.error).toMatchObject({ code: 'INVALID_ARGUMENT' });
+    expect(result.content).toContain('Retry searchKnowledgeBase');
+    expect(result.content).not.toContain('Search unavailable');
+    expect(semanticSearchForChat).not.toHaveBeenCalled();
+    expect(getFileContents).not.toHaveBeenCalled();
+  });
+
+  it('preserves valid queries and attachment IDs and returns the normal search result', async () => {
+    const semanticSearchForChat = vi.fn().mockResolvedValue({ chunks: [], fileResults: [] });
+    const runtime = new KnowledgeBaseExecutionRuntime({
+      semanticSearchForChat,
+      getFileContents: vi.fn(),
+    });
+    const result = await runtime.searchKnowledgeBase(
+      { query: '  actual query  ', fileIds: ['file-1'], topK: 7 },
+      { knowledgeBaseIds: ['kb-1'] },
+    );
+    expect(result.success).toBe(true);
+    expect(semanticSearchForChat).toHaveBeenCalledWith(
+      { fileIds: ['file-1'], knowledgeIds: ['kb-1'], query: '  actual query  ', topK: 7 },
+      undefined,
+    );
+    expect(result.state).toMatchObject({ totalResults: 0 });
+  });
+});

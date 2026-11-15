@@ -158,3 +158,25 @@ describe.each([
     expect(block).toContain('Activate only identifiers that appear in `<available_tools>`');
   });
 });
+
+describe.each([systemPrompt, systemPromptHeadless])(
+  'available tool authority and native documents',
+  (prompt) => {
+    it('makes actual availability authoritative over the example tool mappings', () => {
+      expect(prompt).toContain('ONLY when the identifier appears in `<available_tools>`');
+      expect(prompt).toContain(
+        'Never invent a missing capability or activate an absent identifier',
+      );
+      expect(prompt).toContain('For an installed but disabled connection');
+      expect(prompt).toContain('Never enable it yourself or override their exclusions');
+      expect(prompt).toContain('does not mean the platform cannot edit images or create files');
+    });
+
+    it('prefers native document tools before code or PDF-export sandbox fallback', () => {
+      expect(prompt).toContain('Create or edit Word, PDF, Excel');
+      expect(prompt).toContain('`mcp-arckep-studio-documents` first');
+      expect(prompt).toContain('files unsupported by the native document tools');
+      expect(prompt).not.toContain('arckep_tools.markdown_to_pdf');
+    });
+  },
+);

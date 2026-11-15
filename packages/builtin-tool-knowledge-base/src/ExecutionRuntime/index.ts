@@ -1,6 +1,7 @@
 import { formatSearchResults, promptFileContents, promptNoSearchResults } from '@lobechat/prompts';
 import type { BuiltinServerRuntimeOutput } from '@lobechat/types';
 
+import { getSearchQueryError, searchQueryRetryMessage } from '../searchQuery';
 import type {
   ReadKnowledgeArgs,
   ReadKnowledgeState,
@@ -44,6 +45,15 @@ export class KnowledgeBaseExecutionRuntime {
       signal?: AbortSignal;
     },
   ): Promise<BuiltinServerRuntimeOutput> {
+    const invalidQuery = getSearchQueryError(args);
+    if (invalidQuery) {
+      return {
+        content: searchQueryRetryMessage(invalidQuery),
+        error: { code: 'INVALID_ARGUMENT', message: invalidQuery.message },
+        state: { code: invalidQuery.code },
+        success: false,
+      };
+    }
     try {
       const { query, topK = 20 } = args;
 

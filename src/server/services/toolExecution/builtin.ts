@@ -1,3 +1,9 @@
+import {
+  getSearchQueryError,
+  KnowledgeBaseApiName,
+  KnowledgeBaseIdentifier,
+  searchQueryRetryMessage,
+} from '@lobechat/builtin-tool-knowledge-base';
 import { type LobeChatDatabase } from '@lobechat/database';
 import { type ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
@@ -54,6 +60,22 @@ export class BuiltinToolsExecutor implements IToolExecutor {
         identifier,
         toolName: apiName,
       });
+    }
+
+    // Reject bad persisted/model arguments before constructing the KB runtime (which reads DB).
+    if (
+      identifier === KnowledgeBaseIdentifier &&
+      apiName === KnowledgeBaseApiName.searchKnowledgeBase
+    ) {
+      const invalidQuery = getSearchQueryError(args);
+      if (invalidQuery) {
+        return {
+          content: searchQueryRetryMessage(invalidQuery),
+          error: { code: 'INVALID_ARGUMENT', message: invalidQuery.message },
+          state: { code: invalidQuery.code },
+          success: false,
+        };
+      }
     }
 
     // Use server runtime registry (handles both pre-instantiated and per-request runtimes)

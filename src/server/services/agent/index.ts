@@ -19,6 +19,7 @@ import {
 } from '@/libs/redis';
 import { getServerDefaultAgentConfig } from '@/server/globalConfig';
 
+import { defaultInboxPlugins } from './inboxPlugins';
 import { type UpdateAgentResult } from './type';
 
 const log = debug('lobe-agent:service');
@@ -55,8 +56,12 @@ export class AgentService {
 
   async createInbox() {
     const sessionModel = new SessionModel(this.db, this.userId);
-    const defaultAgentConfig = getServerDefaultAgentConfig();
-    await sessionModel.createInbox(defaultAgentConfig);
+    const defaultAgentConfig: PartialDeep<LobeAgentConfig> = getServerDefaultAgentConfig();
+    await sessionModel.createInbox({
+      ...defaultAgentConfig,
+      // An explicit server selection (including []) is authoritative.
+      plugins: defaultAgentConfig.plugins ?? defaultInboxPlugins(),
+    });
   }
 
   /**
