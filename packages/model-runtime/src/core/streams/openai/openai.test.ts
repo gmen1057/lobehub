@@ -428,6 +428,45 @@ describe('OpenAIStream', () => {
     ]);
   });
 
+  it('should preserve status, code, retrySafe, and details from nested stream error', async () => {
+    const details = [{ reason: 'upstream_error', retryOwner: 'engine', retrySafe: false }];
+    async function* failingChatStream() {
+      throw Object.assign(new Error('Invalid JSON schema: regex lookaround is not supported'), {
+        error: {
+          code: 'invalid_json_schema',
+          details,
+          message: 'Invalid JSON schema: regex lookaround is not supported',
+          status: 400,
+          type: 'invalid_request_error',
+        },
+      });
+      yield {} as any;
+    }
+
+    const protocolStream = OpenAIStream(failingChatStream() as any, {
+      payload: { provider: 'openai' },
+    });
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+
+    // @ts-ignore
+    for await (const chunk of protocolStream) {
+      chunks.push(decoder.decode(chunk, { stream: true }));
+    }
+
+    expect(chunks[0]).toBe('id: first_chunk_error\n');
+    expect(chunks[1]).toBe('event: error\n');
+    const parsedData = JSON.parse(chunks[2].replace(/^data: /, '').trim());
+    expect(parsedData).toMatchObject({
+      code: 'invalid_json_schema',
+      details,
+      message: 'Invalid JSON schema: regex lookaround is not supported',
+      retrySafe: false,
+      status: 400,
+      type: 'ProviderBizError',
+    });
+  });
+
   describe('token usage', () => {
     it('should streaming token usage', async () => {
       const data = [

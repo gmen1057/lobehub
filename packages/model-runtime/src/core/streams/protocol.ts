@@ -154,6 +154,84 @@ const chatStreamable = async function* <T>(stream: AsyncIterable<T>) {
 
 const ERROR_CHUNK_PREFIX = '%FIRST_CHUNK_ERROR%: ';
 
+const pickNumericStatus = (...candidates: unknown[]): number | undefined => {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
+  }
+  return undefined;
+};
+
+const pickRetrySafe = (directCandidates: unknown[], details: unknown): boolean | undefined => {
+  let retrySafe: boolean | undefined;
+  for (const candidate of directCandidates) {
+    if (candidate === false) return false;
+    if (candidate === true && retrySafe === undefined) retrySafe = true;
+  }
+  if (Array.isArray(details)) {
+    for (const item of details) {
+      if (item && typeof item === 'object') {
+        const flag = (item as Record<string, unknown>).retrySafe;
+        if (flag === false) return false;
+        if (flag === true && retrySafe === undefined) retrySafe = true;
+      }
+    }
+  }
+  return retrySafe;
+};
+
+const serializeStreamErrorChunk = (e: unknown): string => {
+  const error = e as Error;
+  const raw = e && typeof e === 'object' ? (e as Record<string, unknown>) : undefined;
+  const nested =
+    raw?.error && typeof raw.error === 'object' && !Array.isArray(raw.error)
+      ? (raw.error as Record<string, unknown>)
+      : undefined;
+  const nestedError =
+    nested?.error && typeof nested.error === 'object' && !Array.isArray(nested.error)
+      ? (nested.error as Record<string, unknown>)
+      : undefined;
+
+  const details = raw?.details ?? nested?.details ?? nestedError?.details;
+  const status = pickNumericStatus(
+    raw?.status,
+    raw?.statusCode,
+    nested?.status,
+    nested?.statusCode,
+    nestedError?.status,
+    nestedError?.statusCode,
+    typeof nested?.code === 'number' && nested.code >= 400 && nested.code < 600
+      ? nested.code
+      : undefined,
+  );
+  const code = raw?.code ?? nested?.code ?? nestedError?.code;
+  const type = raw?.type ?? nested?.type ?? nestedError?.type;
+  const retrySafe = pickRetrySafe(
+    [raw?.retrySafe, nested?.retrySafe, nestedError?.retrySafe],
+    details,
+  );
+
+  try {
+    return (
+      ERROR_CHUNK_PREFIX +
+      JSON.stringify({
+        ...(code !== undefined ? { code } : {}),
+        ...(details !== undefined ? { details } : {}),
+        message: error?.message ?? nested?.message ?? nestedError?.message,
+        name: error?.name,
+        ...(retrySafe !== undefined ? { retrySafe } : {}),
+        stack: error?.stack,
+        ...(status !== undefined ? { status } : {}),
+        ...(type !== undefined ? { type } : {}),
+      })
+    );
+  } catch {
+    return (
+      ERROR_CHUNK_PREFIX +
+      JSON.stringify({ message: error?.message, name: error?.name, stack: error?.stack })
+    );
+  }
+};
+
 export function readableFromAsyncIterable<T>(iterable: AsyncIterable<T>) {
   const it = iterable[Symbol.asyncIterator]();
   return new ReadableStream<T>({
@@ -167,12 +245,7 @@ export function readableFromAsyncIterable<T>(iterable: AsyncIterable<T>) {
         if (done) controller.close();
         else controller.enqueue(value);
       } catch (e) {
-        const error = e as Error;
-
-        controller.enqueue(
-          (ERROR_CHUNK_PREFIX +
-            JSON.stringify({ message: error.message, name: error.name, stack: error.stack })) as T,
-        );
+        controller.enqueue(serializeStreamErrorChunk(e) as T);
         controller.close();
       }
     },
@@ -197,12 +270,7 @@ export const convertIterableToStream = <T>(stream: AsyncIterable<T>) => {
         if (done) controller.close();
         else controller.enqueue(value);
       } catch (e) {
-        const error = e as Error;
-
-        controller.enqueue(
-          (ERROR_CHUNK_PREFIX +
-            JSON.stringify({ message: error.message, name: error.name, stack: error.stack })) as T,
-        );
+        controller.enqueue(serializeStreamErrorChunk(e) as T);
         controller.close();
       }
     },
@@ -213,12 +281,7 @@ export const convertIterableToStream = <T>(stream: AsyncIterable<T>) => {
         if (done) controller.close();
         else controller.enqueue(value);
       } catch (e) {
-        const error = e as Error;
-
-        controller.enqueue(
-          (ERROR_CHUNK_PREFIX +
-            JSON.stringify({ message: error.message, name: error.name, stack: error.stack })) as T,
-        );
+        controller.enqueue(serializeStreamErrorChunk(e) as T);
         controller.close();
       }
     },

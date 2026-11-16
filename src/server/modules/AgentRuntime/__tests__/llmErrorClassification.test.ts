@@ -1,8 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI from 'openai';
-import { describe, expect, it } from 'vitest';
+import { Stream } from 'openai/streaming';
+import { describe, expect, it, vi } from 'vitest';
 
 import { handleAnthropicError } from '../../../../../packages/model-runtime/src/core/anthropicCompatibleFactory/handleAnthropicError';
+import { OpenAIResponsesStream } from '../../../../../packages/model-runtime/src/core/streams/openai/responsesStream';
+import { consumeStreamUntilDone } from '../../../../../packages/model-runtime/src/utils/consumeStream';
 import { parseGoogleErrorMessage } from '../../../../../packages/model-runtime/src/utils/googleErrorParser';
 import { handleOpenAIError } from '../../../../../packages/model-runtime/src/utils/handleOpenAIError';
 import { classifyLLMError } from '../llmErrorClassification';
@@ -242,6 +245,115 @@ describe('classifyLLMError', () => {
         }).kind,
       ).toBe('retry');
       expect(classifyLLMError(new Error('network timeout')).kind).toBe('retry');
+    });
+  });
+
+  describe('OpenAI stream non-retryable schema and proxy recovery metadata', () => {
+    it('stops on ProviderBizError with Invalid JSON schema / invalid_json_schema even without status', () => {
+      expect(
+        classifyLLMError({
+          errorType: 'ProviderBizError',
+          message:
+            'LLM stream error: Invalid JSON schema: regex lookaround is not supported in pattern',
+        }).kind,
+      ).toBe('stop');
+
+      expect(
+        classifyLLMError({
+          body: { code: 'invalid_json_schema', message: 'Schema validation failed' },
+          type: 'ProviderBizError',
+        }).kind,
+      ).toBe('stop');
+    });
+
+    it('stops when retrySafe: false is carried in details, body.details, or body.error.details', () => {
+      const details = [{ reason: 'upstream_error', retryOwner: 'engine', retrySafe: false }];
+
+      expect(
+        classifyLLMError({
+          details,
+          message: 'Upstream request failed',
+          type: 'ProviderBizError',
+        }),
+      ).toMatchObject({ kind: 'stop', retrySafe: false });
+
+      expect(
+        classifyLLMError({
+          body: { details, message: 'Upstream request failed' },
+          type: 'ProviderBizError',
+        }),
+      ).toMatchObject({ kind: 'stop', retrySafe: false });
+
+      expect(
+        classifyLLMError({
+          body: { error: { details, message: 'Upstream request failed' } },
+          type: 'ProviderBizError',
+        }),
+      ).toMatchObject({ kind: 'stop', retrySafe: false });
+    });
+
+    it.each([400, 401, 403, 404, 413, 415, 422])(
+      'extracts numeric HTTP %s from body.status and body.error.status and stops',
+      (status) => {
+        expect(
+          classifyLLMError({
+            body: { message: 'Request rejected', status },
+            type: 'ProviderBizError',
+          }),
+        ).toMatchObject({ kind: 'stop', status });
+
+        expect(
+          classifyLLMError({
+            body: { error: { message: 'Request rejected', status } },
+            type: 'ProviderBizError',
+          }),
+        ).toMatchObject({ kind: 'stop', status });
+      },
+    );
+
+    it('stops end-to-end when OpenAIResponsesStream receives billing_proxy SSE error frame', async () => {
+      const ssePayload = {
+        error: {
+          code: 'invalid_json_schema',
+          details: [
+            {
+              hasOutput: false,
+              hasUsage: false,
+              reason: 'upstream_error',
+              retryOwner: 'engine',
+              retrySafe: false,
+            },
+          ],
+          message: 'Invalid JSON schema: regex lookaround is not supported',
+          type: 'invalid_request_error',
+        },
+      };
+      const sseResponse = new Response(
+        `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+      const openAIStream = Stream.fromSSEResponse<any>(sseResponse, new AbortController());
+      const onError = vi.fn();
+
+      const protocolStream = OpenAIResponsesStream(openAIStream, {
+        callbacks: { onError },
+        payload: { provider: 'openai' },
+      });
+      await consumeStreamUntilDone(new Response(protocolStream));
+
+      expect(onError).toHaveBeenCalledOnce();
+      const streamError = onError.mock.calls[0][0];
+      const { message, ...restStreamError } = streamError;
+      const streamExecutionError = Object.assign(
+        new Error(`LLM stream error: ${message}`),
+        restStreamError,
+      );
+
+      expect(classifyLLMError(streamExecutionError)).toMatchObject({
+        code: 'INVALID_JSON_SCHEMA',
+        kind: 'stop',
+        retrySafe: false,
+      });
     });
   });
 });

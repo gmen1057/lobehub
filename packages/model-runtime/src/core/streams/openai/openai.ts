@@ -81,6 +81,7 @@ const transformOpenAIStream = (
     // @ts-ignore
     delete chunk['stack'];
 
+    const rawChunk = chunk as Record<string, unknown>;
     const errorData = {
       body: chunk,
       message:
@@ -94,7 +95,17 @@ const transformOpenAIStream = (
           ? (chunk.errorType as typeof AgentRuntimeErrorType.ProviderBizError)
           : AgentRuntimeErrorType.ProviderBizError,
     } satisfies ChatMessageError;
-    return { data: errorData, id: 'first_chunk_error', type: 'error' };
+    return {
+      data: {
+        ...errorData,
+        ...(rawChunk.code !== undefined ? { code: rawChunk.code } : {}),
+        ...(rawChunk.details !== undefined ? { details: rawChunk.details } : {}),
+        ...(rawChunk.retrySafe !== undefined ? { retrySafe: rawChunk.retrySafe } : {}),
+        ...(rawChunk.status !== undefined ? { status: rawChunk.status } : {}),
+      },
+      id: 'first_chunk_error',
+      type: 'error',
+    };
   }
 
   if (payload?.provider === 'deepseek' && payload.model === 'deepseek-flash') {

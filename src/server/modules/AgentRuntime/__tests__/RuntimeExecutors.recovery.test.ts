@@ -3,10 +3,12 @@ import { readFileSync } from 'node:fs';
 
 import type { AgentState } from '@lobechat/agent-runtime';
 import { AgentRuntime } from '@lobechat/agent-runtime';
+import { Stream } from 'openai/streaming';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
+import { OpenAIResponsesStream } from '../../../../../packages/model-runtime/src/core/streams/openai/responsesStream';
 import { LobeGoogleAI } from '../../../../../packages/model-runtime/src/providers/google';
 import { consumeStreamUntilDone } from '../../../../../packages/model-runtime/src/utils/consumeStream';
 import { parseGoogleErrorMessage } from '../../../../../packages/model-runtime/src/utils/googleErrorParser';
@@ -345,6 +347,57 @@ describe('same-turn recovery through native Google SDK streams', () => {
       'msg_recovery_placeholder',
       expect.objectContaining({ error: expect.any(Object) }),
     );
+    expect(
+      vi.mocked(ctx.streamManager.publishStreamEvent).mock.calls.map(([, event]) => event.type),
+    ).not.toContain('stream_retry');
+  });
+
+  it('stops after 1 attempt without 5 retries on OpenAI Responses SSE invalid_json_schema error', async () => {
+    const ssePayload = {
+      error: {
+        code: 'invalid_json_schema',
+        details: [
+          {
+            hasOutput: false,
+            hasUsage: false,
+            reason: 'upstream_error',
+            retryOwner: 'engine',
+            retrySafe: false,
+          },
+        ],
+        message: 'Invalid JSON schema: regex lookaround is not supported',
+        status: 400,
+        type: 'invalid_request_error',
+      },
+    };
+    const chat = vi.fn(async (_payload: unknown, options: { callback?: any }) => {
+      const sseResponse = new Response(
+        `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+      const openAIStream = Stream.fromSSEResponse<any>(sseResponse, new AbortController());
+      return new Response(
+        OpenAIResponsesStream(openAIStream, {
+          callbacks: options?.callback,
+          payload: { provider: 'openai' },
+        }),
+      );
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat } as unknown as Awaited<
+      ReturnType<typeof initModelRuntimeFromDB>
+    >);
+
+    await expect(
+      createRuntimeExecutors(ctx).call_llm!(
+        {
+          ...instruction,
+          payload: { ...instruction.payload, model: 'gpt-6-astra', provider: 'openai' },
+        },
+        initialState(),
+      ),
+    ).rejects.toThrow(/Invalid JSON schema: regex lookaround is not supported/);
+
+    expect(chat).toHaveBeenCalledOnce();
     expect(
       vi.mocked(ctx.streamManager.publishStreamEvent).mock.calls.map(([, event]) => event.type),
     ).not.toContain('stream_retry');

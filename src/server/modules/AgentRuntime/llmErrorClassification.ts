@@ -15,7 +15,9 @@ interface ClassifiedLLMError {
 interface LLMErrorSignal {
   /** Нехватка денег на балансе: HTTP 402 или её признаки в сообщении / типе / коде на любом уровне */
   billing?: boolean;
+  body?: unknown;
   code?: string;
+  details?: unknown;
   errorType?: string;
   message: string;
   retrySafe?: boolean;
@@ -60,6 +62,8 @@ const STOP_KEYWORDS = [
   'billing',
   'forbidden',
   'insufficient quota',
+  'invalid json schema',
+  'invalid_json_schema',
   'invalid request',
   'maximum context length',
   'model not found',
@@ -67,6 +71,16 @@ const STOP_KEYWORDS = [
   'payload',
   'too many tokens',
   'unauthorized',
+];
+
+const NON_RETRYABLE_PROVIDER_BIZ_SUBSTRINGS = [
+  'field required',
+  'input_schema',
+  'invalid json schema',
+  'invalid request',
+  'invalid_json_schema',
+  'invalid_request_error',
+  'missing required',
 ];
 
 const hasAnyKeyword = (text: string, keywords: string[]) =>
@@ -133,6 +147,72 @@ const tryExtractStatus = (message: string) => {
   return Number.isNaN(status) ? undefined : status;
 };
 
+const asRecord = (value: unknown): Record<string, unknown> | undefined =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+const pickString = (...candidates: unknown[]): string | undefined => {
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+  }
+  return undefined;
+};
+
+const extractRetrySafeFromDetails = (details: unknown): boolean | undefined => {
+  if (!Array.isArray(details)) return undefined;
+  let retrySafe: boolean | undefined;
+  for (const item of details) {
+    const record = asRecord(item);
+    if (!record) continue;
+    if (record.retrySafe === false) return false;
+    if (record.retrySafe === true && retrySafe === undefined) retrySafe = true;
+  }
+  return retrySafe;
+};
+
+const extractRetrySafe = (value: unknown): boolean | undefined => {
+  const raw = asRecord(value);
+  if (!raw) return undefined;
+  const body = asRecord(raw.body);
+  const bodyError = asRecord(body?.error);
+  const nested = asRecord(raw.error);
+  const nestedError = asRecord(nested?.error);
+
+  const candidates = [
+    raw.retrySafe,
+    body?.retrySafe,
+    bodyError?.retrySafe,
+    nested?.retrySafe,
+    nestedError?.retrySafe,
+    extractRetrySafeFromDetails(raw.details),
+    extractRetrySafeFromDetails(body?.details),
+    extractRetrySafeFromDetails(bodyError?.details),
+    extractRetrySafeFromDetails(nested?.details),
+    extractRetrySafeFromDetails(nestedError?.details),
+  ];
+
+  let retrySafe: boolean | undefined;
+  for (const candidate of candidates) {
+    if (candidate === false) return false;
+    if (candidate === true && retrySafe === undefined) retrySafe = true;
+  }
+  return retrySafe;
+};
+
+const extractNumericStatus = (...candidates: unknown[]): number | undefined => {
+  const statuses: number[] = [];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      statuses.push(candidate);
+    }
+  }
+  const permanent = statuses.find(
+    (status) => status >= 400 && status < 500 && ![408, 425, 429].includes(status),
+  );
+  return permanent ?? statuses[0];
+};
+
 const normalizeSignal = (error: unknown): LLMErrorSignal => {
   const billing = hasBillingSignal(error);
 
@@ -144,50 +224,57 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
   // Stream errors are rethrown as Error objects with the provider payload attached.
   // Read nested status/code for both forms instead of dropping it for instanceof Error.
   if (error && typeof error === 'object') {
-    const raw = error as {
-      code?: string;
-      error?: {
-        code?: string;
-        error?: { code?: string; message?: string; status?: number; type?: string };
-        errorType?: string;
-        message?: string;
-        status?: number;
-        type?: string;
-      };
-      errorType?: string;
-      message?: string;
-      name?: string;
-      status?: number;
-      statusCode?: number;
-      type?: string;
-    };
-    const nested = raw.error;
-    const nestedError = nested?.error;
+    const raw = error as Record<string, unknown>;
+    const body = asRecord(raw.body);
+    const bodyError = asRecord(body?.error);
+    const nested = asRecord(raw.error);
+    const nestedError = asRecord(nested?.error);
     const message = (
-      raw.message ||
-      nested?.message ||
-      nestedError?.message ||
-      raw.name ||
-      'unknown error'
+      pickString(
+        raw.message,
+        nested?.message,
+        nestedError?.message,
+        body?.message,
+        bodyError?.message,
+        raw.name,
+      ) || 'unknown error'
     ).toLowerCase();
 
     return {
       billing,
-      code: normalizeCode(raw.code || nested?.code || nestedError?.code),
+      body,
+      code: normalizeCode(
+        raw.code ?? body?.code ?? bodyError?.code ?? nested?.code ?? nestedError?.code,
+      ),
+      details:
+        raw.details ??
+        body?.details ??
+        bodyError?.details ??
+        nested?.details ??
+        nestedError?.details,
       errorType: normalizeErrorType(
-        raw.errorType || raw.type || nested?.errorType || nested?.type || nestedError?.type,
+        raw.errorType ||
+          raw.type ||
+          nested?.errorType ||
+          nested?.type ||
+          nestedError?.type ||
+          body?.errorType,
       ),
       message,
+      retrySafe: extractRetrySafe(error),
       status:
-        typeof raw.status === 'number'
-          ? raw.status
-          : typeof raw.statusCode === 'number'
-            ? raw.statusCode
-            : typeof nested?.status === 'number'
-              ? nested.status
-              : typeof nestedError?.status === 'number'
-                ? nestedError.status
-                : tryExtractStatus(message),
+        extractNumericStatus(
+          raw.status,
+          raw.statusCode,
+          body?.status,
+          body?.statusCode,
+          bodyError?.status,
+          bodyError?.statusCode,
+          nested?.status,
+          nested?.statusCode,
+          nestedError?.status,
+          nestedError?.statusCode,
+        ) ?? tryExtractStatus(message),
     };
   }
 
@@ -196,30 +283,50 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
 
 const classifyKind = ({
   billing,
+  body,
   code,
+  details,
   errorType,
   message,
   retrySafe,
   status,
 }: LLMErrorSignal): LLMErrorKind => {
-  if (retrySafe === false) return 'stop';
+  if (
+    retrySafe === false ||
+    extractRetrySafeFromDetails(details) === false ||
+    extractRetrySafe(body) === false
+  ) {
+    return 'stop';
+  }
+  const bodyRecord = asRecord(body);
+  const bodyErrorRecord = asRecord(bodyRecord?.error);
+  const resolvedStatus =
+    status ??
+    extractNumericStatus(
+      bodyRecord?.status,
+      bodyRecord?.statusCode,
+      bodyErrorRecord?.status,
+      bodyErrorRecord?.statusCode,
+    );
+
   // Нехватка баланса — до разбора errorType: у провайдеров она приходит как ProviderBizError (повторяемый)
-  if (billing || status === PAYMENT_REQUIRED_STATUS) return 'stop';
+  if (billing || resolvedStatus === PAYMENT_REQUIRED_STATUS) return 'stop';
 
   // A provider wrapper describes the source, not whether a request can succeed
   // unchanged. Preserve the permanent HTTP refusal before its generic retry type.
-  if (status !== undefined && status >= 400 && status < 500 && ![408, 425, 429].includes(status))
+  if (
+    resolvedStatus !== undefined &&
+    resolvedStatus >= 400 &&
+    resolvedStatus < 500 &&
+    ![408, 425, 429].includes(resolvedStatus)
+  )
     return 'stop';
 
   if (errorType === 'ProviderBizError') {
-    if (message.includes('invalid_request_error') || message.includes('invalid request')) {
+    if (hasAnyKeyword(message, NON_RETRYABLE_PROVIDER_BIZ_SUBSTRINGS)) {
       return 'stop';
     }
-    if (
-      message.includes('input_schema') ||
-      message.includes('field required') ||
-      message.includes('missing required')
-    ) {
+    if (code && (code.includes('INVALID_JSON_SCHEMA') || code.includes('INVALID_REQUEST'))) {
       return 'stop';
     }
   }
@@ -231,11 +338,17 @@ const classifyKind = ({
 
   if (code) {
     if (code.includes('UNAUTHORIZED') || code.includes('FORBIDDEN')) return 'stop';
-    if (code.includes('MODEL_NOT_FOUND')) return 'stop';
+    if (code.includes('MODEL_NOT_FOUND') || code.includes('INVALID_JSON_SCHEMA')) return 'stop';
     if (code.includes('RATE_LIMIT') || code.includes('TIMEOUT')) return 'retry';
   }
 
-  if (status !== undefined && (status === 408 || status === 425 || status === 429 || status >= 500))
+  if (
+    resolvedStatus !== undefined &&
+    (resolvedStatus === 408 ||
+      resolvedStatus === 425 ||
+      resolvedStatus === 429 ||
+      resolvedStatus >= 500)
+  )
     return 'retry';
 
   if (hasAnyKeyword(message, STOP_KEYWORDS)) return 'stop';
@@ -247,9 +360,13 @@ const classifyKind = ({
 export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
   const normalized = normalizeSignal(error);
   const recovery = readLLMRecoverySignal(error);
+  const retrySafe =
+    recovery.retrySafe === false || normalized.retrySafe === false
+      ? false
+      : (recovery.retrySafe ?? normalized.retrySafe);
   const signal = {
     ...normalized,
-    retrySafe: recovery.retrySafe,
+    retrySafe,
     status: recovery.status ?? normalized.status,
   };
 
