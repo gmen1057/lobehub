@@ -1,7 +1,40 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from 'vitest';
 
-import { sanitizeSVGContent } from './sanitize';
+import { sanitizeHTMLContent, sanitizeSVGContent } from './sanitize';
+
+describe('sanitizeHTMLContent', () => {
+  it('should retain safe content while removing executable markup and event handlers', () => {
+    const sanitized = sanitizeHTMLContent(`
+      <p>Hello <strong>world</strong></p>
+      <script>alert('XSS')</script>
+      <img src="image.png" onerror="alert('XSS')">
+      <object data="malicious.swf"></object>
+      <embed src="malicious.swf">
+    `);
+    const document = new DOMParser().parseFromString(sanitized, 'text/html');
+
+    expect(document.querySelector('p')?.textContent).toBe('Hello world');
+    expect(document.querySelector('strong')?.textContent).toBe('world');
+    expect(document.querySelector('img')?.getAttribute('src')).toBe('image.png');
+    expect(document.querySelector('script, object, embed, [onerror]')).toBeNull();
+  });
+
+  it('should remove script URLs while preserving safe links', () => {
+    const sanitized = sanitizeHTMLContent(`
+      <a href="javascript:alert(1)">unsafe</a>
+      <a href="java&#x09;script:alert(1)">encoded</a>
+      <a href="https://example.com/docs">safe</a>
+    `);
+    const document = new DOMParser().parseFromString(sanitized, 'text/html');
+    const links = document.querySelectorAll('a');
+
+    expect(links).toHaveLength(3);
+    expect(links[0].hasAttribute('href')).toBe(false);
+    expect(links[1].hasAttribute('href')).toBe(false);
+    expect(links[2].getAttribute('href')).toBe('https://example.com/docs');
+  });
+});
 
 describe('sanitizeSVGContent', () => {
   it('should preserve safe SVG elements and attributes', () => {
