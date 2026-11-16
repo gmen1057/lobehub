@@ -1,3 +1,4 @@
+import { Stream } from 'openai/streaming';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AgentRuntimeErrorType } from '../../../types/error';
@@ -1372,5 +1373,68 @@ describe('OpenAIResponsesStream', () => {
       expect(onStartMock).toHaveBeenCalledTimes(1);
       expect(onCompletionMock).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('preserves status, code, and details[].retrySafe through convertIterableToStream -> OpenAIResponsesStream', async () => {
+    const ssePayload = {
+      error: {
+        code: 'invalid_json_schema',
+        details: [
+          {
+            hasOutput: false,
+            hasUsage: false,
+            reason: 'upstream_error',
+            retryOwner: 'engine',
+            retrySafe: false,
+          },
+        ],
+        message:
+          "Invalid schema for function 'create_video_relight': regex lookaround is not supported",
+        status: 400,
+        type: 'invalid_request_error',
+      },
+    };
+    const sseResponse = new Response(
+      `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+    const openAIStream = Stream.fromSSEResponse<any>(sseResponse, new AbortController());
+    const onError = vi.fn();
+
+    const protocolStream = OpenAIResponsesStream(openAIStream, {
+      callbacks: { onError },
+      payload: { provider: 'openai' },
+    });
+    const chunks = await readStreamChunk(protocolStream);
+
+    expect(chunks[0]).toBe('id: first_chunk_error\n');
+    expect(chunks[1]).toBe('event: error\n');
+    const parsedData = JSON.parse(chunks[2].replace(/^data: /, '').trim());
+    expect(parsedData).toMatchObject({
+      body: {
+        code: 'invalid_json_schema',
+        details: [{ retryOwner: 'engine', retrySafe: false }],
+        errorType: 'ProviderBizError',
+        provider: 'openai',
+        retrySafe: false,
+        status: 400,
+        type: 'invalid_request_error',
+      },
+      code: 'invalid_json_schema',
+      details: [{ retryOwner: 'engine', retrySafe: false }],
+      message:
+        "Invalid schema for function 'create_video_relight': regex lookaround is not supported",
+      retrySafe: false,
+      status: 400,
+      type: 'ProviderBizError',
+    });
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'invalid_json_schema',
+        retrySafe: false,
+        status: 400,
+      }),
+    );
   });
 });

@@ -8,6 +8,7 @@ import {
   createSSEProtocolTransformer,
   createTokenSpeedCalculator,
   FIRST_CHUNK_ERROR_KEY,
+  readableFromAsyncIterable,
 } from './protocol';
 
 describe('createSSEDataExtractor', () => {
@@ -265,6 +266,74 @@ describe('convertIterableToStream', () => {
     expect(chunks[0]).toBe('first');
     expect(chunks[1][FIRST_CHUNK_ERROR_KEY]).toBe(true);
     expect(chunks[1].message).toBe('rate limit');
+  });
+
+  it('should preserve status, code, type, retrySafe, and details from nested error.error', async () => {
+    const details = [
+      { hasOutput: false, hasUsage: false, reason: 'upstream_error', retrySafe: false },
+    ];
+    const apiError = Object.assign(
+      new Error('Invalid JSON schema: regex lookaround is not supported'),
+      {
+        code: 'invalid_json_schema',
+        error: {
+          code: 'invalid_json_schema',
+          details,
+          message: 'Invalid JSON schema: regex lookaround is not supported',
+          status: 400,
+          type: 'invalid_request_error',
+        },
+        status: undefined,
+        type: 'invalid_request_error',
+      },
+    );
+
+    async function* failingFirstChunk() {
+      throw apiError;
+      yield 'unreachable';
+    }
+
+    const readable = convertIterableToStream(failingFirstChunk()).pipeThrough(
+      createFirstErrorHandleTransformer(),
+    );
+    const reader = readable.getReader();
+    const { value } = await reader.read();
+
+    expect(value).toMatchObject({
+      [FIRST_CHUNK_ERROR_KEY]: true,
+      code: 'invalid_json_schema',
+      details,
+      errorType: 'ProviderBizError',
+      message: 'Invalid JSON schema: regex lookaround is not supported',
+      retrySafe: false,
+      status: 400,
+      type: 'invalid_request_error',
+    });
+  });
+
+  it('should also preserve nested error metadata in readableFromAsyncIterable', async () => {
+    const details = [{ reason: 'upstream_error', retryOwner: 'engine', retrySafe: false }];
+    async function* failingStream() {
+      throw Object.assign(new Error('Invalid JSON schema'), {
+        error: { code: 'invalid_json_schema', details, status: 400, type: 'invalid_request_error' },
+      });
+      yield 'unreachable';
+    }
+
+    const readable = readableFromAsyncIterable(failingStream()).pipeThrough(
+      createFirstErrorHandleTransformer(),
+    );
+    const reader = readable.getReader();
+    const { value } = await reader.read();
+
+    expect(value).toMatchObject({
+      [FIRST_CHUNK_ERROR_KEY]: true,
+      code: 'invalid_json_schema',
+      details,
+      retrySafe: false,
+      status: 400,
+      type: 'invalid_request_error',
+    });
   });
 });
 

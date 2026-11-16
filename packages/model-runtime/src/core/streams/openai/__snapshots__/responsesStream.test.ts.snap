@@ -194,7 +194,7 @@ exports[`OpenAIResponsesStream > should handle first chunk error without message
 ",
   "event: error
 ",
-  "data: {"body":{"code":"rate_limit_exceeded","status":429},"message":"{\\"code\\":\\"rate_limit_exceeded\\",\\"status\\":429}","type":"ProviderBizError"}
+  "data: {"body":{"code":"rate_limit_exceeded","status":429},"message":"{\\"code\\":\\"rate_limit_exceeded\\",\\"status\\":429}","type":"ProviderBizError","code":"rate_limit_exceeded","status":429}
 
 ",
 ]
