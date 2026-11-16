@@ -6,6 +6,7 @@ import { QwenAIStream } from '../../core/streams';
 import { processMultiProviderModelList } from '../../utils/modelParse';
 import { createQwenImage } from './createImage';
 import { createQwenVideo } from './createVideo';
+import { qwen4Payload } from './qwen4';
 
 export interface QwenModelCard {
   id: string;
@@ -61,6 +62,7 @@ export const LobeQwenAI = createOpenAICompatibleRuntime({
                   thinking?.budget_tokens === 0 ? 0 : thinking?.budget_tokens || undefined,
               }
             : {}),
+        ...(model === 'qwen4-max' ? qwen4Payload(payload) : {}),
         frequency_penalty: undefined,
         model,
         presence_penalty: resolvedParams.presence_penalty,
