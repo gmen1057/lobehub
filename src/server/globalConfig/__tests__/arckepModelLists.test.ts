@@ -45,6 +45,27 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(hy4?.contextWindowTokens).toBe(1_048_576);
   });
 
+  it('exposes Qwen4 alongside Qwen3 with the stable multimodal limits', async () => {
+    const models = await transformToAiModelList({
+      defaultModels: AiModels.qwen,
+      modelString: ARCKEP_STUDIO_MODEL_LISTS.qwen,
+      providerId: 'qwen',
+      withDeploymentName: true,
+    });
+    const qwen4 = models?.find((model) => model.id === 'qwen4-max');
+    expect(qwen4?.abilities).toMatchObject({
+      functionCall: true,
+      reasoning: true,
+      structuredOutput: true,
+      video: true,
+      vision: true,
+    });
+    expect(qwen4?.contextWindowTokens).toBe(1_000_000);
+    expect(qwen4?.maxOutput).toBe(262_144);
+    expect(qwen4?.settings?.extendParams).toEqual(['reasoningEffort']);
+    expect(models?.some((model) => model.id === 'qwen3.8-max')).toBe(true);
+  });
+
   it('exposes Hydrogen alongside Carbon and Argon with the synchronous output limit', async () => {
     const models = await transformToAiModelList({
       defaultModels: AiModels.google,

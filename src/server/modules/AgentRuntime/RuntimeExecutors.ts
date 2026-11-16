@@ -1218,6 +1218,9 @@ export const createRuntimeExecutors = (
           } else {
             newState.messages.push({
               content,
+              ...(provider === 'qwen' && model === 'qwen4-max' && thinkingContent
+                ? { reasoning_content: thinkingContent }
+                : {}),
               search: grounding,
               ...(grounding?.deepseek
                 ? {

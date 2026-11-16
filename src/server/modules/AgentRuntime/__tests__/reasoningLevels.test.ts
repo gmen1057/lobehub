@@ -10,6 +10,15 @@ import {
 } from '../reasoningLevels';
 
 describe('resolveReasoningProfile (arckep: ступени модели)', () => {
+  it('Qwen4 takes native effort levels and default high from the generated passport', () => {
+    const profile = resolveReasoningProfile('qwen4-max', 'qwen', ['reasoningEffort'])!;
+    expect(profile).toEqual({ kind: 'reasoningEffort', levels: ['none', 'low', 'high', 'xhigh'] });
+    expect(reasoningCallParams(profile, 'none')).toEqual({ reasoning_effort: 'none' });
+    expect(reasoningCallParams(profile, 'xhigh')).toEqual({ reasoning_effort: 'xhigh' });
+    expect(resolveReasoningAuto('qwen4-max', 'qwen', {})).toBe('high');
+    expect(resolveReasoningProfile('qwen3.8-max', 'qwen', undefined)?.kind).toBe('budget');
+  });
+
   it('Hydrogen uses its generated four-level profile before the legacy thinkingLevel3 control', () => {
     for (const extendParams of [undefined, ['thinkingLevel3', 'urlContext']]) {
       const profile = resolveReasoningProfile('gemini-4-hydrogen', 'google', extendParams)!;

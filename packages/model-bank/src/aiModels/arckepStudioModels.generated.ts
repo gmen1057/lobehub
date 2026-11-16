@@ -28,7 +28,7 @@ export interface ArckepStudioReasoningSpec {
   levels: readonly ArckepReasoningLevel[];
 }
 
-export const ARCKEP_STUDIO_MODEL_COUNT = 35;
+export const ARCKEP_STUDIO_MODEL_COUNT = 36;
 
 export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatModelCard[]> = {
   anthropic: [
@@ -769,6 +769,34 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
         functionCall: true,
         reasoning: true,
         search: true,
+        structuredOutput: true,
+        video: true,
+        vision: true,
+      },
+      contextWindowTokens: 1_000_000,
+      description:
+        'Qwen4 Max — код, документы и задачи с инструментами; текст, изображения и видео на входе.',
+      displayName: 'Qwen4 Max',
+      enabled: true,
+      id: 'qwen4-max',
+      maxOutput: 262_144,
+      pricing: {
+        units: [
+          { name: 'textInput', rate: 1.5, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textOutput', rate: 4.5, strategy: 'fixed', unit: 'millionTokens' },
+        ],
+      },
+      settings: {
+        extendParams: ['reasoningEffort'],
+        searchImpl: 'params',
+      },
+      type: 'chat',
+    },
+    {
+      abilities: {
+        functionCall: true,
+        reasoning: true,
+        search: true,
         structuredOutput: false,
         video: true,
         vision: true,
@@ -998,6 +1026,7 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
     '+inception/mercury-3=Mercury 3<1000000:fc:reasoning>',
   ],
   qwen: [
+    '+qwen4-max=Qwen4 Max<1000000:fc:vision:reasoning>',
     '+qwen3.8-max=Qwen 3.8 Max<1000000:fc:vision:reasoning>',
     '+qwen3.8-flash=Qwen 3.8 Flash<1000000:fc:vision:reasoning>',
     '+qwen3.8-omni-flash=Qwen 3.8 Omni Flash<1000000:fc:vision:reasoning>',
@@ -1130,6 +1159,11 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
       auto: 'none',
       kind: 'budget',
       levels: ['none', 'low', 'medium', 'high'],
+    },
+    'qwen4-max': {
+      auto: 'high',
+      kind: 'reasoningEffort',
+      levels: ['none', 'low', 'high', 'xhigh'],
     },
   },
   xai: {
