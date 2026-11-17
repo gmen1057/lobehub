@@ -12,6 +12,12 @@ import { agentRuntimeStreamKey } from './StreamEventManager';
 
 const log = debug('lobe-server:agent-runtime:agent-state-manager');
 
+/**
+ * Distributed step lock TTL (35 minutes): covers a single 25-30 minute LLM stream
+ * plus transient retries; normal completion/error releases the lock immediately in finally.
+ */
+export const DEFAULT_STEP_LOCK_TTL_SECONDS = 35 * 60;
+
 export interface StepResult {
   events?: AgentEvent[];
   executionTime: number;
@@ -373,7 +379,7 @@ export class AgentStateManager {
   async tryClaimStep(
     operationId: string,
     stepIndex: number,
-    ttlSeconds: number = 35,
+    ttlSeconds: number = DEFAULT_STEP_LOCK_TTL_SECONDS,
   ): Promise<boolean> {
     try {
       const result = await this.redis.set(

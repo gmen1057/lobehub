@@ -5,6 +5,7 @@ import type { Stream } from 'openai/streaming';
 import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
 import type { LobeOpenAICompatibleRuntime } from '../../core/BaseAI';
 import type { ChatStreamCallbacks, ChatStreamPayload } from '../../types/chat';
 import { AgentRuntimeErrorType } from '../../types/error';
@@ -73,6 +74,44 @@ describe('LobeOpenAICompatibleFactory', () => {
       const instance = new LobeMockProvider({ apiKey: 'test_api_key' });
       expect(instance).toBeInstanceOf(LobeMockProvider);
       expect(instance.baseURL).toEqual(defaultBaseURL);
+      expect(instance.client.timeout).toBe(DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+    });
+
+    it('should preserve an explicitly provided timeout option', () => {
+      const instance = new LobeMockProvider({ apiKey: 'test_api_key', timeout: 10_000 });
+      expect(instance.client.timeout).toBe(10_000);
+    });
+
+    it('should fall back to 26m timeout when timeout is explicitly undefined', () => {
+      const instance = new LobeMockProvider({ apiKey: 'test_api_key', timeout: undefined });
+      expect(instance.client.timeout).toBe(DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+      expect(DEFAULT_LLM_REQUEST_TIMEOUT_MS).toBe(1_560_000);
+    });
+
+    it('should set maxRetries=0 when x-arckep-retry-owner=engine is active, preserving explicit override', () => {
+      const normalInstance = new LobeMockProvider({ apiKey: 'test_api_key' });
+      expect(normalInstance.client.maxRetries).toBe(2);
+
+      const engineInstance = new LobeMockProvider({
+        apiKey: 'test_api_key',
+        baseURL: 'http://proxy.test/v1',
+        defaultHeaders: {
+          'X-Arckep-Token': 'internal-test',
+          'x-arckep-retry-owner': 'engine',
+        },
+      });
+      expect(engineInstance.client.maxRetries).toBe(0);
+
+      const overriddenInstance = new LobeMockProvider({
+        apiKey: 'test_api_key',
+        baseURL: 'http://proxy.test/v1',
+        defaultHeaders: {
+          'X-Arckep-Token': 'internal-test',
+          'x-arckep-retry-owner': 'engine',
+        },
+        maxRetries: 1,
+      });
+      expect(overriddenInstance.client.maxRetries).toBe(1);
     });
   });
 
@@ -1763,9 +1802,9 @@ describe('LobeOpenAICompatibleFactory', () => {
     });
 
     it('passes reasoningEffort as reasoning_effort to Chat Completions and omits it when unset', async () => {
-      const responses = vi.spyOn(instance['client'].responses, 'create').mockRejectedValue(
-        new Error('This fixture must use Chat Completions'),
-      );
+      const responses = vi
+        .spyOn(instance['client'].responses, 'create')
+        .mockRejectedValue(new Error('This fixture must use Chat Completions'));
       const create = vi.spyOn(instance['client'].chat.completions, 'create').mockResolvedValue({
         choices: [{ message: { content: '{"ok": true}' } }],
       } as any);
@@ -1804,7 +1843,12 @@ describe('LobeOpenAICompatibleFactory', () => {
         serviceTier: 'flex',
       });
       // gpt-6-luna is forced onto Responses, so use a neutral model for the other API path.
-      await instance.generateObject({ messages, model: 'test-chat-model', schema, serviceTier: 'flex' });
+      await instance.generateObject({
+        messages,
+        model: 'test-chat-model',
+        schema,
+        serviceTier: 'flex',
+      });
       await instance.generateObject({ messages, model: 'test-chat-model', schema });
       await instance.generateObject({ messages, model: 'gpt-6-luna', responseApi: true, schema });
 

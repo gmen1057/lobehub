@@ -14,8 +14,11 @@ import type {
 import {
   convertIterableToStream,
   createCallbacksTransformer,
+  createFirstErrorHandleTransformer,
   createSSEProtocolTransformer,
   createTokenSpeedCalculator,
+  FIRST_CHUNK_ERROR_KEY,
+  transformFirstChunkError,
 } from './protocol';
 
 export const transformAnthropicStream = (
@@ -23,6 +26,10 @@ export const transformAnthropicStream = (
   context: StreamContext,
   payload?: ChatPayloadForTransformStream,
 ): StreamProtocolChunk | StreamProtocolChunk[] => {
+  if (chunk && typeof chunk === 'object' && FIRST_CHUNK_ERROR_KEY in chunk) {
+    return transformFirstChunkError(chunk as unknown as Record<string, unknown>);
+  }
+
   // maybe need another structure to add support for multiple choices
   switch (chunk.type) {
     case 'message_start': {
@@ -243,6 +250,7 @@ export const AnthropicStream = (
     transformAnthropicStream(chunk, ctx, payload);
 
   return readableStream
+    .pipeThrough(createFirstErrorHandleTransformer(undefined, payload?.provider))
     .pipeThrough(
       createTokenSpeedCalculator(transformWithPayload, {
         enableStreaming,

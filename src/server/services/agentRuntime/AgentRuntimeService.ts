@@ -429,7 +429,13 @@ export class AgentRuntimeService {
     } = params;
 
     // ===== Distributed lock: prevent duplicate execution from QStash retries =====
-    const claimed = await this.coordinator.tryClaimStep(operationId, stepIndex, 35);
+    // 35 minutes covers a 25-30 minute LLM step + retries; normal exit releases in finally.
+    const STEP_LOCK_TTL_SECONDS = 35 * 60;
+    const claimed = await this.coordinator.tryClaimStep(
+      operationId,
+      stepIndex,
+      STEP_LOCK_TTL_SECONDS,
+    );
     if (!claimed) {
       log(
         '[%s][%d] Step lock conflict — another instance is executing this step, returning locked',

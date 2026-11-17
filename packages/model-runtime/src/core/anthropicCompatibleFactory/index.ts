@@ -5,6 +5,7 @@ import type { ChatModelCard } from '@lobechat/types';
 import debug from 'debug';
 import type { Pricing } from 'model-bank';
 
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
 import type {
   ChatCompletionErrorPayload,
   ChatMethodOptions,
@@ -38,6 +39,21 @@ import { resolveCacheTTL } from './resolveCacheTTL';
 import { resolveMaxTokens } from './resolveMaxTokens';
 
 type ConstructorOptions<T extends Record<string, any> = any> = ClientOptions & T;
+
+const isEngineRetryOwner = (
+  baseURL?: string | null,
+  defaultHeaders?: Record<string, any>,
+): boolean => {
+  if (!baseURL || !defaultHeaders) return false;
+  try {
+    const headers = new Headers(defaultHeaders);
+    return Boolean(
+      headers.get('x-arckep-token') && headers.get('x-arckep-retry-owner') === 'engine',
+    );
+  } catch {
+    return false;
+  }
+};
 
 type AnthropicTools = Anthropic.Tool | Anthropic.WebSearchTool20250305;
 
@@ -199,7 +215,10 @@ export const buildDefaultAnthropicPayload = async (
   ) {
     const adaptiveThinking =
       model === 'claude-fable-5-2'
-        ? ({ display: 'summarized', type: 'adaptive' } as unknown as Anthropic.MessageCreateParams['thinking'])
+        ? ({
+            display: 'summarized',
+            type: 'adaptive',
+          } as unknown as Anthropic.MessageCreateParams['thinking'])
         : ({ type: 'adaptive' } as Anthropic.MessageCreateParams['thinking']);
     return {
       max_tokens: resolvedMaxTokens,
@@ -295,7 +314,15 @@ export const createDefaultAnthropicClient = <T extends Record<string, any> = any
     ...(betaHeaders ? { 'anthropic-beta': betaHeaders } : {}),
   };
 
-  return new Anthropic({ ...options, defaultHeaders });
+  const resolvedMaxRetries =
+    options.maxRetries ?? (isEngineRetryOwner(options.baseURL, defaultHeaders) ? 0 : undefined);
+
+  return new Anthropic({
+    ...options,
+    defaultHeaders,
+    ...(resolvedMaxRetries !== undefined ? { maxRetries: resolvedMaxRetries } : {}),
+    timeout: options.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+  });
 };
 
 /**
@@ -478,11 +505,23 @@ export const createAnthropicCompatibleRuntime = <T extends Record<string, any> =
 
       if (!finalApiKey) throw AgentRuntimeError.createError(ErrorType.invalidAPIKey);
 
+      const resolvedMaxRetries =
+        rest.maxRetries ??
+        constructorOptions?.maxRetries ??
+        (isEngineRetryOwner(
+          finalBaseURL,
+          (rest.defaultHeaders ?? constructorOptions?.defaultHeaders) as
+            Record<string, any> | undefined,
+        )
+          ? 0
+          : undefined);
       const initOptions = {
         apiKey: finalApiKey,
         baseURL: finalBaseURL,
         ...constructorOptions,
         ...rest,
+        ...(resolvedMaxRetries !== undefined ? { maxRetries: resolvedMaxRetries } : {}),
+        timeout: rest.timeout ?? constructorOptions?.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
       };
 
       if (customClient?.createClient) {

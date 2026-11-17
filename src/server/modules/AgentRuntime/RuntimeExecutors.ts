@@ -107,6 +107,12 @@ const getDocumentFileId = (result: ToolExecutionResultResponse) => {
 const LLM_MAX_RETRIES = 5;
 const LLM_RETRY_BASE_DELAY_MS = 1000;
 const LLM_RETRY_MAX_DELAY_MS = 30_000;
+/**
+ * Hard wall-clock ceiling for automatic same-turn LLM replay: if an attempt already
+ * ran for >= 60s before failing (e.g. long thinking timeout, client/socket abort, or
+ * mid-stream reset without retrySafe metadata), never restart another multi-minute run.
+ */
+export const LONG_LLM_ATTEMPT_NO_RETRY_MS = 60_000;
 
 type ToolFailureKind = 'replan' | 'retry' | 'stop';
 
@@ -759,6 +765,8 @@ export const createRuntimeExecutors = (
             usage: currentStepUsage,
           });
 
+        let attemptStartedAt = Date.now();
+
         try {
           throwIfAborted(ctx.signal);
           log(
@@ -783,6 +791,7 @@ export const createRuntimeExecutors = (
           );
 
           // Call model-runtime chat
+          attemptStartedAt = Date.now();
           const response = await modelRuntime.chat(chatPayload, {
             callback: withEngineTrace(engineTrace, {
               onCompletion: async (data) => {
@@ -1315,13 +1324,24 @@ export const createRuntimeExecutors = (
             clearAttemptBuffers();
           }
 
+          const attemptElapsedMs = Date.now() - attemptStartedAt;
           const classified = classifyLLMError(error);
+          const effectiveKind: LLMErrorKind =
+            attemptElapsedMs >= LONG_LLM_ATTEMPT_NO_RETRY_MS ? 'stop' : classified.kind;
+          if (classified.kind === 'retry' && effectiveKind === 'stop') {
+            log(
+              '[%s] Suppressing LLM retry after long attempt (%dms >= %dms)',
+              operationLogId,
+              attemptElapsedMs,
+              LONG_LLM_ATTEMPT_NO_RETRY_MS,
+            );
+          }
           const interrupted = await isOperationInterrupted(ctx);
 
           if (
             !hasReceivedResult &&
             !interrupted &&
-            shouldRetryLLM(classified.kind, attempt, LLM_MAX_RETRIES)
+            shouldRetryLLM(effectiveKind, attempt, LLM_MAX_RETRIES)
           ) {
             const delayMs = getLLMRetryDelayMs(attempt);
 

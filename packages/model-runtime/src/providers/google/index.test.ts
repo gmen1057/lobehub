@@ -3,6 +3,7 @@ import type { GenerateContentResponse } from '@google/genai';
 import OpenAI from 'openai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS } from '../../const/timeout';
 import { LOBE_ERROR_KEY } from '../../core/streams';
 import { AgentRuntimeErrorType } from '../../types/error';
 import * as debugStreamModule from '../../utils/debugStream';
@@ -31,11 +32,36 @@ afterEach(() => {
 
 describe('LobeGoogleAI', () => {
   describe('init', () => {
-    it('should correctly initialize with an API key', async () => {
-      const instance = new LobeGoogleAI({ apiKey: 'test_api_key' });
-      expect(instance).toBeInstanceOf(LobeGoogleAI);
+    it('should correctly initialize with an API key and 30m stream timeout with or without baseURL', async () => {
+      const withoutBaseUrl = new LobeGoogleAI({ apiKey: 'test_api_key' });
+      expect(withoutBaseUrl).toBeInstanceOf(LobeGoogleAI);
+      expect((withoutBaseUrl['client'] as any).httpOptions?.timeout).toBe(
+        DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS,
+      );
+      expect(DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS).toBe(1_800_000);
 
-      // expect(instance.baseURL).toEqual(defaultBaseURL);
+      const withBaseUrl = new LobeGoogleAI({
+        apiKey: 'test_api_key',
+        baseURL: 'http://proxy.test',
+        defaultHeaders: { 'X-Custom': '1' },
+      });
+      expect((withBaseUrl['client'] as any).httpOptions).toMatchObject({
+        baseUrl: 'http://proxy.test',
+        headers: { 'X-Custom': '1' },
+        timeout: DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS,
+      });
+    });
+
+    it('should preserve explicit timeout and httpOptions.timeout overrides', () => {
+      const withDirectTimeout = new LobeGoogleAI({ apiKey: 'test_api_key', timeout: 10_000 });
+      expect((withDirectTimeout['client'] as any).httpOptions?.timeout).toBe(10_000);
+
+      const withHttpOptionsTimeout = new LobeGoogleAI({
+        apiKey: 'test_api_key',
+        baseURL: 'http://proxy.test',
+        httpOptions: { timeout: 15_000 },
+      });
+      expect((withHttpOptionsTimeout['client'] as any).httpOptions?.timeout).toBe(15_000);
     });
   });
 

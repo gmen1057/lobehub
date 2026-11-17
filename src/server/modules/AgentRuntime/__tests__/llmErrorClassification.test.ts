@@ -1,10 +1,15 @@
 import Anthropic from '@anthropic-ai/sdk';
+import { Stream as AnthropicSDKStream } from '@anthropic-ai/sdk/streaming';
 import OpenAI from 'openai';
 import { Stream } from 'openai/streaming';
 import { describe, expect, it, vi } from 'vitest';
 
 import { handleAnthropicError } from '../../../../../packages/model-runtime/src/core/anthropicCompatibleFactory/handleAnthropicError';
+import { AnthropicStream } from '../../../../../packages/model-runtime/src/core/streams/anthropic';
+import { OpenAIStream } from '../../../../../packages/model-runtime/src/core/streams/openai/openai';
 import { OpenAIResponsesStream } from '../../../../../packages/model-runtime/src/core/streams/openai/responsesStream';
+import { QwenAIStream } from '../../../../../packages/model-runtime/src/core/streams/qwen';
+import { LobeGoogleAI } from '../../../../../packages/model-runtime/src/providers/google';
 import { consumeStreamUntilDone } from '../../../../../packages/model-runtime/src/utils/consumeStream';
 import { parseGoogleErrorMessage } from '../../../../../packages/model-runtime/src/utils/googleErrorParser';
 import { handleOpenAIError } from '../../../../../packages/model-runtime/src/utils/handleOpenAIError';
@@ -355,5 +360,227 @@ describe('classifyLLMError', () => {
         retrySafe: false,
       });
     });
+  });
+
+  describe('billing_proxy 504 upstream_timeout (retrySafe: false) vs 502 upstream_unavailable (retrySafe: true)', () => {
+    const toStreamExecutionError = (streamError: Record<string, unknown>) => {
+      const { message, ...rest } = streamError;
+      return Object.assign(new Error(`LLM stream error: ${String(message)}`), rest);
+    };
+
+    it.each([
+      {
+        expectedKind: 'stop' as const,
+        reason: 'upstream_timeout',
+        retrySafe: false,
+        status: 504,
+      },
+      {
+        expectedKind: 'retry' as const,
+        reason: 'upstream_unavailable',
+        retrySafe: true,
+        status: 502,
+      },
+    ])(
+      'OpenAIStream, OpenAIResponsesStream, and QwenAIStream classify $status $reason (retrySafe=$retrySafe) as $expectedKind',
+      async ({ status, reason, retrySafe, expectedKind }) => {
+        const ssePayload = {
+          error: {
+            code: reason,
+            details: [
+              {
+                hasOutput: false,
+                hasUsage: false,
+                reason,
+                retryOwner: 'engine',
+                retrySafe,
+              },
+            ],
+            message:
+              status === 504
+                ? 'Upstream provider openai timed out.'
+                : 'Upstream provider openai unavailable.',
+            status,
+            type: reason,
+          },
+        };
+
+        for (const [label, wrapStream] of [
+          [
+            'OpenAIStream (data-only SSE)',
+            (s: Stream<any>, onError: any) =>
+              OpenAIStream(s, { callbacks: { onError }, payload: { provider: 'openai' } }),
+          ],
+          [
+            'OpenAIResponsesStream (event: error SSE)',
+            (s: Stream<any>, onError: any) =>
+              OpenAIResponsesStream(s, {
+                callbacks: { onError },
+                payload: { provider: 'openai' },
+              }),
+          ],
+          [
+            'QwenAIStream',
+            (s: Stream<any>, onError: any) =>
+              QwenAIStream(s, { callbacks: { onError }, payload: { provider: 'qwen' } }),
+          ],
+        ] as const) {
+          const rawSse = label.includes('event: error')
+            ? `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`
+            : `: ping\n\ndata: ${JSON.stringify(ssePayload)}\n\n`;
+          const sseResponse = new Response(rawSse, {
+            headers: { 'content-type': 'text/event-stream' },
+          });
+          const openAIStream = Stream.fromSSEResponse<any>(sseResponse, new AbortController());
+          const onError = vi.fn();
+
+          await consumeStreamUntilDone(new Response(wrapStream(openAIStream, onError)));
+
+          expect(onError, label).toHaveBeenCalledOnce();
+          const classified = classifyLLMError(toStreamExecutionError(onError.mock.calls[0][0]));
+          expect(classified, label).toMatchObject({
+            kind: expectedKind,
+            retrySafe,
+            status,
+          });
+        }
+      },
+    );
+
+    it.each([
+      {
+        expectedKind: 'stop' as const,
+        reason: 'upstream_timeout',
+        retrySafe: false,
+        status: 504,
+      },
+      {
+        expectedKind: 'retry' as const,
+        reason: 'upstream_unavailable',
+        retrySafe: true,
+        status: 502,
+      },
+    ])(
+      'AnthropicStream classifies $status $reason (retrySafe=$retrySafe) as $expectedKind',
+      async ({ status, reason, retrySafe, expectedKind }) => {
+        const ssePayload = {
+          error: {
+            code: reason,
+            details: [
+              {
+                hasOutput: false,
+                hasUsage: false,
+                reason,
+                retryOwner: 'engine',
+                retrySafe,
+              },
+            ],
+            message:
+              status === 504
+                ? 'Upstream provider anthropic timed out.'
+                : 'Upstream provider anthropic unavailable.',
+            status,
+            type: reason,
+          },
+          type: 'error',
+        };
+        const sseResponse = new Response(
+          `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+          { headers: { 'content-type': 'text/event-stream' } },
+        );
+        const sdkStream = AnthropicSDKStream.fromSSEResponse(sseResponse, new AbortController());
+        const onError = vi.fn();
+
+        const protocolStream = AnthropicStream(sdkStream, {
+          callbacks: { onError },
+          payload: { provider: 'anthropic' },
+        });
+        await consumeStreamUntilDone(new Response(protocolStream));
+
+        expect(onError).toHaveBeenCalledOnce();
+        const classified = classifyLLMError(toStreamExecutionError(onError.mock.calls[0][0]));
+        expect(classified).toMatchObject({
+          kind: expectedKind,
+          retrySafe,
+          status,
+        });
+      },
+    );
+
+    it.each([
+      {
+        expectedKind: 'stop' as const,
+        grpcStatus: 'DEADLINE_EXCEEDED',
+        reason: 'upstream_timeout',
+        retrySafe: false,
+        status: 504,
+      },
+      {
+        expectedKind: 'retry' as const,
+        grpcStatus: 'UNAVAILABLE',
+        reason: 'upstream_unavailable',
+        retrySafe: true,
+        status: 502,
+      },
+    ])(
+      'LobeGoogleAI classifies $status $reason (retrySafe=$retrySafe) via arckepProxyError as $expectedKind',
+      async ({ status, grpcStatus, reason, retrySafe, expectedKind }) => {
+        const errorBody = {
+          code: status,
+          details: [
+            {
+              hasOutput: false,
+              hasUsage: false,
+              reason,
+              retryOwner: 'engine',
+              retrySafe,
+            },
+          ],
+          message:
+            status === 504
+              ? 'Upstream provider google timed out.'
+              : 'Upstream provider google unavailable.',
+          status: grpcStatus,
+        };
+        const wireChunk = {
+          error: errorBody,
+          promptFeedback: {
+            blockReason: 'OTHER',
+            blockReasonMessage: JSON.stringify({ arckepProxyError: 1, error: errorBody }),
+          },
+        };
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+          new Response(`: ping\n\ndata: ${JSON.stringify(wireChunk)}\n\n`, {
+            headers: { 'content-type': 'text/event-stream' },
+          }),
+        );
+        try {
+          const google = new LobeGoogleAI({
+            apiKey: 'test',
+            baseURL: 'http://proxy.test',
+            defaultHeaders: { 'X-Arckep-Token': 'internal-test', 'x-arckep-retry-owner': 'engine' },
+          });
+          const onError = vi.fn();
+          const res = await google.chat(
+            {
+              messages: [{ content: 'hi', role: 'user' }],
+              model: 'gemini-4-argon',
+            },
+            { callback: { onError } },
+          );
+          await consumeStreamUntilDone(res);
+
+          expect(onError).toHaveBeenCalledOnce();
+          const classified = classifyLLMError(toStreamExecutionError(onError.mock.calls[0][0]));
+          expect(classified).toMatchObject({
+            kind: expectedKind,
+            retrySafe,
+            status,
+          });
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      },
+    );
   });
 });

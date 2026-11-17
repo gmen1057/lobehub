@@ -1,4 +1,4 @@
-import type { Stream } from '@anthropic-ai/sdk/streaming';
+import { Stream } from '@anthropic-ai/sdk/streaming';
 import { describe, expect, it, vi } from 'vitest';
 
 import { AnthropicStream } from './anthropic';
@@ -900,5 +900,58 @@ describe('AnthropicStream', () => {
         'data: {"type":"content_block_delta","index":0,"delta":{"type":"abc","abc":"123"}}\n',
       ].map((item) => `${item}\n`),
     );
+  });
+
+  it('preserves status, code, and details[].retrySafe when Anthropic SSE emits event: error', async () => {
+    const ssePayload = {
+      error: {
+        code: 'upstream_timeout',
+        details: [
+          {
+            hasOutput: false,
+            hasUsage: false,
+            reason: 'upstream_timeout',
+            retryOwner: 'engine',
+            retrySafe: false,
+          },
+        ],
+        message: 'Upstream provider anthropic timed out.',
+        status: 504,
+        type: 'upstream_timeout',
+      },
+      type: 'error',
+    };
+    const sseResponse = new Response(
+      `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+      { headers: { 'content-type': 'text/event-stream' } },
+    );
+    const sdkStream = Stream.fromSSEResponse(sseResponse, new AbortController());
+    const onError = vi.fn();
+
+    const protocolStream = AnthropicStream(sdkStream, {
+      callbacks: { onError },
+      payload: { provider: 'anthropic' },
+    });
+
+    const reader = protocolStream.getReader();
+    while (!(await reader.read()).done) {
+      // drain stream
+    }
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError.mock.calls[0][0]).toMatchObject({
+      code: 'upstream_timeout',
+      details: [
+        expect.objectContaining({
+          reason: 'upstream_timeout',
+          retryOwner: 'engine',
+          retrySafe: false,
+        }),
+      ],
+      message: 'Upstream provider anthropic timed out.',
+      retrySafe: false,
+      status: 504,
+      type: 'ProviderBizError',
+    });
   });
 });

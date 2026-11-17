@@ -512,6 +512,7 @@ describe('initModelRuntimeWithUserPayload method', () => {
           );
           const options = initialize.mock.calls.at(-1)![1];
           expect(options.defaultHeaders?.['x-arckep-retry-owner']).toBe(expected);
+          expect(options.maxRetries).toBe(expected === 'engine' ? 0 : undefined);
           expect(options).not.toHaveProperty('retryOwner');
           expect(options).not.toHaveProperty('assistantMessageId');
           initialize.mockRestore();

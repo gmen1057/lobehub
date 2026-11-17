@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { readFileSync } from 'node:fs';
 
+import { Stream as AnthropicSDKStream } from '@anthropic-ai/sdk/streaming';
 import type { AgentState } from '@lobechat/agent-runtime';
 import { AgentRuntime } from '@lobechat/agent-runtime';
 import { Stream } from 'openai/streaming';
@@ -8,13 +9,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
+import { AnthropicStream } from '../../../../../packages/model-runtime/src/core/streams/anthropic';
+import { OpenAIStream } from '../../../../../packages/model-runtime/src/core/streams/openai/openai';
 import { OpenAIResponsesStream } from '../../../../../packages/model-runtime/src/core/streams/openai/responsesStream';
 import { LobeGoogleAI } from '../../../../../packages/model-runtime/src/providers/google';
 import { consumeStreamUntilDone } from '../../../../../packages/model-runtime/src/utils/consumeStream';
 import { parseGoogleErrorMessage } from '../../../../../packages/model-runtime/src/utils/googleErrorParser';
 import { classifyLLMError } from '../llmErrorClassification';
 import type { RuntimeExecutorContext } from '../RuntimeExecutors';
-import { createRuntimeExecutors } from '../RuntimeExecutors';
+import { createRuntimeExecutors, LONG_LLM_ATTEMPT_NO_RETRY_MS } from '../RuntimeExecutors';
 
 vi.mock('@/server/modules/ModelRuntime', () => ({ initModelRuntimeFromDB: vi.fn() }));
 vi.mock('@/server/modules/Mecha/ContextEngineering', () => ({ serverMessagesEngine: vi.fn() }));
@@ -396,6 +399,138 @@ describe('same-turn recovery through native Google SDK streams', () => {
         initialState(),
       ),
     ).rejects.toThrow(/Invalid JSON schema: regex lookaround is not supported/);
+
+    expect(chat).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(ctx.streamManager.publishStreamEvent).mock.calls.map(([, event]) => event.type),
+    ).not.toContain('stream_retry');
+  });
+
+  it('stops after 1 attempt on 504 upstream_timeout (retrySafe: false) for OpenAI and Anthropic SSE streams', async () => {
+    const details = [
+      {
+        hasOutput: false,
+        hasUsage: false,
+        reason: 'upstream_timeout',
+        retryOwner: 'engine',
+        retrySafe: false,
+      },
+    ];
+
+    // 1. OpenAI chat completions SSE stream
+    const openAIChat = vi.fn(async (_payload: unknown, options: { callback?: any }) => {
+      const ssePayload = {
+        error: {
+          code: 'upstream_timeout',
+          details,
+          message: 'Upstream provider openai timed out.',
+          status: 504,
+          type: 'upstream_timeout',
+        },
+      };
+      const sseResponse = new Response(`: ping\n\ndata: ${JSON.stringify(ssePayload)}\n\n`, {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+      const openAIStream = Stream.fromSSEResponse<any>(sseResponse, new AbortController());
+      return new Response(
+        OpenAIStream(openAIStream, {
+          callbacks: options?.callback,
+          payload: { provider: 'openai' },
+        }),
+      );
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat: openAIChat } as unknown as Awaited<
+      ReturnType<typeof initModelRuntimeFromDB>
+    >);
+
+    await expect(
+      createRuntimeExecutors(ctx).call_llm!(
+        {
+          ...instruction,
+          payload: { ...instruction.payload, model: 'gpt-6-astra', provider: 'openai' },
+        },
+        initialState(),
+      ),
+    ).rejects.toThrow(/Upstream provider openai timed out/);
+    expect(openAIChat).toHaveBeenCalledOnce();
+
+    // 2. Anthropic messages SSE stream
+    const anthropicChat = vi.fn(async (_payload: unknown, options: { callback?: any }) => {
+      const ssePayload = {
+        error: {
+          code: 'upstream_timeout',
+          details,
+          message: 'Upstream provider anthropic timed out.',
+          status: 504,
+          type: 'upstream_timeout',
+        },
+        type: 'error',
+      };
+      const sseResponse = new Response(
+        `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+      const anthropicStream = AnthropicSDKStream.fromSSEResponse(
+        sseResponse,
+        new AbortController(),
+      );
+      return new Response(
+        AnthropicStream(anthropicStream, {
+          callbacks: options?.callback,
+          payload: { provider: 'anthropic' },
+        }),
+      );
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({
+      chat: anthropicChat,
+    } as unknown as Awaited<ReturnType<typeof initModelRuntimeFromDB>>);
+
+    await expect(
+      createRuntimeExecutors(ctx).call_llm!(
+        {
+          ...instruction,
+          payload: { ...instruction.payload, model: 'claude-sonnet-5-5', provider: 'anthropic' },
+        },
+        initialState(),
+      ),
+    ).rejects.toThrow(/Upstream provider anthropic timed out/);
+    expect(anthropicChat).toHaveBeenCalledOnce();
+    expect(
+      vi.mocked(ctx.streamManager.publishStreamEvent).mock.calls.map(([, event]) => event.type),
+    ).not.toContain('stream_retry');
+  });
+
+  it('never retries when an LLM attempt fails after >= 60s even without retrySafe: false (socket drop / AbortError)', async () => {
+    vi.useFakeTimers();
+
+    const chat = vi.fn(async (_payload: unknown, options: { callback?: any }) => {
+      return new Response(
+        new ReadableStream({
+          start(controller) {
+            setTimeout(async () => {
+              // Simulate a generic StreamChunkError / AbortError without retrySafe: false
+              // (which classifyLLMError alone would classify as 'retry')
+              await options.callback?.onError?.({
+                body: { message: 'This operation was aborted', name: 'AbortError' },
+                message: 'This operation was aborted',
+                name: 'AbortError',
+                type: 'StreamChunkError',
+              });
+              controller.close();
+            }, LONG_LLM_ATTEMPT_NO_RETRY_MS);
+          },
+        }),
+      );
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat } as unknown as Awaited<
+      ReturnType<typeof initModelRuntimeFromDB>
+    >);
+
+    const callPromise = createRuntimeExecutors(ctx).call_llm!(instruction, initialState());
+    // Attach rejection handler before advancing fake timers to prevent unhandled rejection warnings
+    const assertion = expect(callPromise).rejects.toThrow(/This operation was aborted/);
+    await vi.advanceTimersByTimeAsync(LONG_LLM_ATTEMPT_NO_RETRY_MS + 100);
+    await assertion;
 
     expect(chat).toHaveBeenCalledOnce();
     expect(

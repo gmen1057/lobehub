@@ -7,6 +7,7 @@ import {
 import { GoogleGenAI } from '@google/genai';
 import debug from 'debug';
 
+import { DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS } from '../../const/timeout';
 import { type LobeRuntimeAI } from '../../core/BaseAI';
 import { buildGoogleMessages, buildGoogleTools } from '../../core/contextBuilders/google';
 import { GoogleGenerativeAIStream } from '../../core/streams';
@@ -108,8 +109,10 @@ interface LobeGoogleAIParams {
   baseURL?: string;
   client?: GoogleGenAI;
   defaultHeaders?: Record<string, any>;
+  httpOptions?: HttpOptions;
   id?: string;
   isVertexAi?: boolean;
+  timeout?: number;
 }
 
 const isAbortError = (error: Error): boolean => {
@@ -135,15 +138,24 @@ export class LobeGoogleAI implements LobeRuntimeAI {
     apiKey,
     baseURL,
     client,
+    httpOptions: customHttpOptions,
     isVertexAi,
     id,
     defaultHeaders,
+    timeout,
   }: LobeGoogleAIParams = {}) {
     if (!apiKey) throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
 
-    const httpOptions = baseURL
-      ? ({ baseUrl: baseURL, headers: defaultHeaders } as HttpOptions)
-      : undefined;
+    const resolvedHeaders =
+      customHttpOptions?.headers || defaultHeaders
+        ? { ...customHttpOptions?.headers, ...defaultHeaders }
+        : undefined;
+    const httpOptions: HttpOptions = {
+      ...customHttpOptions,
+      ...(baseURL ? { baseUrl: baseURL } : {}),
+      ...(resolvedHeaders ? { headers: resolvedHeaders } : {}),
+      timeout: customHttpOptions?.timeout ?? timeout ?? DEFAULT_GOOGLE_TOTAL_STREAM_TIMEOUT_MS,
+    };
 
     const headers = new Headers(defaultHeaders);
     this.internalProxyRecovery = Boolean(
