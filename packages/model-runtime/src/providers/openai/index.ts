@@ -185,12 +185,13 @@ export const params = {
           reasoning.effort = 'high';
         }
         if (model.startsWith('gpt-6')) {
-          // Astra and GPT-6.1 Sol: no `none` / `minimal`. GPT-6.1 Terra allows `none`.
+          // Astra, GPT-6.1 Sol, and GPT-6.2 Sol/Astra: no `none` / `minimal`. GPT-6.1 Terra and GPT-6 Sol/Luna allow `none`.
           const effort = reasoning.effort || payload.reasoning_effort;
           const allowsNone =
             model === 'gpt-6.1-terra' || model === 'gpt-6-sol' || model === 'gpt-6-luna';
           if (!effort || effort === 'minimal' || (effort === 'none' && !allowsNone)) {
-            reasoning.effort = model.startsWith('gpt-6.1') ? 'medium' : 'low';
+            reasoning.effort =
+              model.startsWith('gpt-6.1') || model.startsWith('gpt-6.2') ? 'medium' : 'low';
           } else {
             reasoning.effort = effort;
           }

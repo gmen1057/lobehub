@@ -137,14 +137,19 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       }
     }
 
-    // Owner decision: keep BOTH GPT-6 Sol and GPT-6.1 Sol, and BOTH Gemini 4 Carbon and Argon
-    expect(activeChatKeys).toContain('openai/gpt-6-sol');
-    expect(activeChatKeys).toContain('openai/gpt-6.1-sol');
+    // Active OpenAI lineup: GPT-6.2 Sol, GPT-6.1 Terra, GPT-6 Luna, GPT-6.2 Astra; Google: both Carbon and Argon
+    expect(activeChatKeys).toContain('openai/gpt-6.2-sol');
+    expect(activeChatKeys).toContain('openai/gpt-6.2-astra');
+    expect(activeChatKeys).toContain('openai/gpt-6.1-terra');
+    expect(activeChatKeys).toContain('openai/gpt-6-luna');
     expect(activeChatKeys).toContain('google/gemini-4-carbon');
     expect(activeChatKeys).toContain('google/gemini-4-argon');
 
     // Previous-generation API-only models & retired 1st-gen Qwen image IDs must not appear
     for (const excluded of [
+      'openai/gpt-6.1-sol',
+      'openai/gpt-6-sol',
+      'openai/gpt-6-astra',
       'openai/gpt-5.5',
       'openai/gpt-5.4',
       'openai/gpt-5.6-sol',
@@ -189,6 +194,8 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       ['gemini-4-carbon', 'google'],
       ['claude-fable-5-2', 'anthropic'],
       ['tencent/hy4', 'openrouter'],
+      ['gpt-6.2-sol', 'openai'],
+      ['gpt-6.2-astra', 'openai'],
       ['gpt-6.1-sol', 'openai'],
       ['deepseek-flash', 'deepseek'],
       ['qwen3.8-omni-flash', 'qwen'],
@@ -196,6 +203,33 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     ];
     for (const [model, provider] of visionStudioModels) {
       expect(await modelHasVision(model, provider), `${provider}/${model}`).toBe(true);
+    }
+  });
+
+  it('exposes GPT-6.2 Sol and GPT-6.2 Astra with 1.05M context, 128K output, search and reasoning controls', async () => {
+    const models = await transformToAiModelList({
+      defaultModels: AiModels.openai,
+      modelString: ARCKEP_STUDIO_MODEL_LISTS.openai,
+      providerId: 'openai',
+    });
+
+    for (const id of ['gpt-6.2-sol', 'gpt-6.2-astra']) {
+      const card = models?.find((model) => model.id === id);
+      expect(card, id).toBeDefined();
+      expect(card?.abilities).toMatchObject({
+        functionCall: true,
+        reasoning: true,
+        search: true,
+        structuredOutput: true,
+        video: false,
+        vision: true,
+      });
+      expect(card?.contextWindowTokens).toBe(1_050_000);
+      expect(card?.maxOutput).toBe(128_000);
+      expect(card?.settings).toMatchObject({
+        extendParams: ['gpt6ReasoningEffort', 'textVerbosity'],
+        searchImpl: 'params',
+      });
     }
   });
 
@@ -229,9 +263,9 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     });
 
     const overlaidWithMedia = AiModels.withArckepOverlay('openai', [
-      { id: 'gpt-6.1-sol', type: 'image' } as AiFullModelCard,
+      { id: 'gpt-6.2-sol', type: 'image' } as AiFullModelCard,
     ]);
-    expect(overlaidWithMedia.filter((m) => m.id === 'gpt-6.1-sol').map((m) => m.type)).toEqual([
+    expect(overlaidWithMedia.filter((m) => m.id === 'gpt-6.2-sol').map((m) => m.type)).toEqual([
       'chat',
       'image',
     ]);

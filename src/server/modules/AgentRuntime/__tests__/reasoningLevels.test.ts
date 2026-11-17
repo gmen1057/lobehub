@@ -113,13 +113,31 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
         'max',
       ]);
     }
-    expect(resolveReasoningProfile('gpt-6.1-sol', 'openai', undefined)?.levels).toEqual([
-      'low',
-      'medium',
-      'high',
-      'xhigh',
-      'max',
-    ]);
+    for (const id of [
+      'gpt-6-astra',
+      'gpt-6.1-sol',
+      'gpt-6.2-sol',
+      'gpt-6.2-astra',
+      'gpt-6.2-sol-20261117',
+      'gpt-6.2-astra-20261117',
+    ]) {
+      expect(resolveReasoningProfile(id, 'openai', undefined), id).toEqual({
+        kind: 'reasoningEffort',
+        levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      });
+    }
+    expect(
+      snapReasoningLevel(
+        'none',
+        resolveReasoningProfile('gpt-6.2-sol', 'openai', ['gpt6ReasoningEffort'])!.levels,
+      ),
+    ).toBe('low');
+    expect(
+      snapReasoningLevel(
+        'minimal',
+        resolveReasoningProfile('gpt-6.2-astra', 'openai', ['gpt6ReasoningEffort'])!.levels,
+      ),
+    ).toBe('low');
     expect(
       resolveReasoningProfile('mistralai/mistral-large-4-0', 'openrouter', [])?.levels,
     ).toEqual(['none', 'high']);
@@ -284,6 +302,10 @@ describe('resolveReasoningAuto (что значит «Авто», 19.10)', () =>
     expect(auto('gpt-6-sol', 'openai')).toBe('medium');
     expect(auto('gpt-6.1-sol', 'openai')).toBe('medium');
     expect(auto('gpt-6.1-terra', 'openai')).toBe('medium');
+    expect(auto('gpt-6.2-sol', 'openai')).toBe('medium');
+    expect(auto('gpt-6.2-astra', 'openai')).toBe('medium');
+    expect(auto('gpt-6.2-sol-20261117', 'openai')).toBe('medium');
+    expect(auto('gpt-6.2-astra-20261117', 'openai')).toBe('medium');
     expect(auto('gpt-5.6-luna', 'openai')).toBe('medium');
     expect(auto('o3', 'openai')).toBe('medium');
     expect(auto('claude-fable-5', 'anthropic')).toBe('high');
