@@ -299,6 +299,63 @@ describe('LobeOpenAI', () => {
       expect(createCall.tools[0].name).toBe('weather');
     });
 
+    it.each(['gpt-6.2-sol', 'gpt-6.2-astra', 'gpt-6.2-sol-20261117', 'gpt-6.2-astra-20261117'])(
+      'uses Responses API for %s with medium default effort and omits temperature/top_p',
+      async (model) => {
+        await instance.chat({
+          messages: [{ content: 'Hello', role: 'user' as const }],
+          model,
+          temperature: 0.7,
+          top_p: 0.9,
+          verbosity: 'medium',
+          tools: [
+            {
+              type: 'function' as const,
+              function: { name: 'weather', parameters: { type: 'object' } },
+            },
+          ],
+        } as any);
+
+        expect(instance['client'].responses.create).toHaveBeenCalled();
+        const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+        expect(createCall.model).toBe(model);
+        expect(createCall.reasoning).toEqual({ effort: 'medium', summary: 'auto' });
+        expect(createCall.temperature).toBeUndefined();
+        expect(createCall.top_p).toBeUndefined();
+        expect(createCall.text).toEqual({ verbosity: 'medium' });
+        expect(createCall.tools[0].name).toBe('weather');
+      },
+    );
+
+    it.each([
+      ['gpt-6.2-sol', 'none', 'medium'],
+      ['gpt-6.2-sol', 'minimal', 'medium'],
+      ['gpt-6.2-astra', 'none', 'medium'],
+      ['gpt-6.2-astra', 'minimal', 'medium'],
+      ['gpt-6.2-sol', 'low', 'low'],
+      ['gpt-6.2-sol', 'xhigh', 'xhigh'],
+      ['gpt-6.2-astra', 'max', 'max'],
+    ] as const)(
+      'normalizes reasoning_effort for %s (%s -> %s) and strips sampling params',
+      async (model, inputEffort, expectedEffort) => {
+        await instance.chat({
+          messages: [{ content: 'Hello', role: 'user' as const }],
+          model,
+          reasoning_effort: inputEffort as any,
+          temperature: 0.5,
+          top_p: 0.8,
+        });
+
+        expect(instance['client'].responses.create).toHaveBeenCalled();
+        const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+        expect(createCall.model).toBe(model);
+        expect(createCall.reasoning).toEqual({ effort: expectedEffort, summary: 'auto' });
+        expect(createCall.reasoning_effort).toBeUndefined();
+        expect(createCall.temperature).toBeUndefined();
+        expect(createCall.top_p).toBeUndefined();
+      },
+    );
+
     it('uses Responses and preserves none effort for GPT-6.1 Terra tools', async () => {
       const payload = {
         messages: [{ content: 'Hello', role: 'user' as const }],

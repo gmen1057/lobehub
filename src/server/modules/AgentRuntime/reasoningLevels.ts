@@ -119,14 +119,14 @@ const ARCKEP_PROFILES: ReadonlyArray<{
     profile: { kind: 'anthropicEffort', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
     provider: 'anthropic',
   },
-  // GPT-5.6, GPT-6 Sol/Luna, GPT-6.1 Terra: none…max; GPT-6.1 Sol: low…max (без none).
+  // GPT-5.6, GPT-6 Sol/Luna, GPT-6.1 Terra: none…max; GPT-6 Astra, GPT-6.1 Sol и GPT-6.2 Sol/Astra: low…max (без none).
   {
-    match: /^(?:gpt-5\.6-|gpt-6-(?:sol|luna)$|gpt-6\.1-terra$)/,
+    match: /^(?:gpt-5\.6-|gpt-6-(?:sol|luna)(?:-\d{8})?$|gpt-6\.1-terra(?:-\d{8})?$)/,
     profile: { kind: 'reasoningEffort', levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] },
     provider: 'openai',
   },
   {
-    match: /^gpt-6\.1-sol$/,
+    match: /^(?:gpt-6-astra|gpt-6\.1-sol|gpt-6\.2-(?:sol|astra))(?:-\d{8})?$/,
     profile: { kind: 'reasoningEffort', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
     provider: 'openai',
   },
@@ -213,7 +213,7 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
   {
     auto: 'medium',
     match:
-      /^(?:gpt-6-astra|gpt-6-(?:sol|luna)|gpt-6\.1-(?:sol|terra)|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)$/,
+      /^(?:gpt-6-astra|gpt-6-(?:sol|luna)|gpt-6\.1-(?:sol|terra)|gpt-6\.2-(?:sol|astra)|gpt-5\.5|gpt-5\.6-(?:sol|terra|luna)|o3)(?:-\d{8})?$/,
     provider: 'openai',
   },
   { auto: 'medium', match: /^claude-(?:opus-5-5|haiku-5-5)(?:-|$)/, provider: 'anthropic' },

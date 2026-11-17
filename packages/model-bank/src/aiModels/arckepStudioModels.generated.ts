@@ -28,7 +28,7 @@ export interface ArckepStudioReasoningSpec {
   levels: readonly ArckepReasoningLevel[];
 }
 
-export const ARCKEP_STUDIO_MODEL_COUNT = 36;
+export const ARCKEP_STUDIO_MODEL_COUNT = 35;
 
 export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatModelCard[]> = {
   anthropic: [
@@ -351,10 +351,11 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
         vision: true,
       },
       contextWindowTokens: 1_050_000,
-      description: 'GPT-6.1 Sol — сложные задачи, код и документы, контекст 1 млн токенов',
-      displayName: 'GPT-6.1 Sol',
+      description:
+        'GPT-6.2 Sol — основная модель OpenAI для кода, документов и многошаговых задач, контекст 1 млн токенов',
+      displayName: 'GPT-6.2 Sol',
       enabled: true,
-      id: 'gpt-6.1-sol',
+      id: 'gpt-6.2-sol',
       maxOutput: 128_000,
       pricing: {
         units: [
@@ -407,34 +408,6 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
       },
       contextWindowTokens: 1_050_000,
       description:
-        'GPT-6 Sol - повседневный сильный OpenAI, дешевле 5.6 Sol; 1.05M контекст, vision, reasoning.effort none...max',
-      displayName: 'GPT-6 Sol',
-      enabled: true,
-      id: 'gpt-6-sol',
-      maxOutput: 128_000,
-      pricing: {
-        units: [
-          { name: 'textInput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
-          { name: 'textOutput', rate: 10, strategy: 'fixed', unit: 'millionTokens' },
-        ],
-      },
-      settings: {
-        extendParams: ['gpt5_2ReasoningEffort', 'textVerbosity'],
-        searchImpl: 'params',
-      },
-      type: 'chat',
-    },
-    {
-      abilities: {
-        functionCall: true,
-        reasoning: true,
-        search: true,
-        structuredOutput: true,
-        video: false,
-        vision: true,
-      },
-      contextWindowTokens: 1_050_000,
-      description:
         'GPT-6 Luna - быстрый/дешёвый tier GPT-6; 1.05M контекст, vision, reasoning.effort none...max',
       displayName: 'GPT-6 Luna',
       enabled: true,
@@ -462,15 +435,16 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
         vision: true,
       },
       contextWindowTokens: 1_050_000,
-      description: 'Самый сильный GPT. Сложная работа, длинный текст, картинки на входе',
-      displayName: 'GPT-6 Astra',
+      description:
+        'GPT-6.2 Astra — старший флагман OpenAI для трудного кода, исследований и больших документов, контекст 1 млн токенов',
+      displayName: 'GPT-6.2 Astra',
       enabled: true,
-      id: 'gpt-6-astra',
+      id: 'gpt-6.2-astra',
       maxOutput: 128_000,
       pricing: {
         units: [
-          { name: 'textInput', rate: 10, strategy: 'fixed', unit: 'millionTokens' },
-          { name: 'textOutput', rate: 50, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textInput', rate: 8, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textOutput', rate: 40, strategy: 'fixed', unit: 'millionTokens' },
         ],
       },
       settings: {
@@ -1005,11 +979,10 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
     '+gemini-3.1-flash-lite=Gemini 3.1 Flash Lite<1048576:fc:vision>',
   ],
   openai: [
-    '+gpt-6.1-sol=GPT-6.1 Sol<1050000:fc:vision:reasoning>',
+    '+gpt-6.2-sol=GPT-6.2 Sol<1050000:fc:vision:reasoning>',
     '+gpt-6.1-terra=GPT-6.1 Terra<1050000:fc:vision:reasoning>',
-    '+gpt-6-sol=GPT-6 Sol<1050000:fc:vision:reasoning>',
     '+gpt-6-luna=GPT-6 Luna<1050000:fc:vision:reasoning>',
-    '+gpt-6-astra=GPT-6 Astra<1050000:fc:vision:reasoning>',
+    '+gpt-6.2-astra=GPT-6.2 Astra<1050000:fc:vision:reasoning>',
   ],
   openrouter: [
     '+openrouter/free=Бесплатные модели<200000:fc:vision>',
@@ -1082,30 +1055,25 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
     },
   },
   openai: {
-    'gpt-6-astra': {
-      auto: 'medium',
-      kind: 'reasoningEffort',
-      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
-    },
     'gpt-6-luna': {
       auto: 'medium',
       kind: 'reasoningEffort',
       levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
     },
-    'gpt-6-sol': {
-      auto: 'medium',
-      kind: 'reasoningEffort',
-      levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
-    },
-    'gpt-6.1-sol': {
-      auto: 'medium',
-      kind: 'reasoningEffort',
-      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
-    },
     'gpt-6.1-terra': {
       auto: 'medium',
       kind: 'reasoningEffort',
       levels: ['none', 'low', 'medium', 'high', 'xhigh', 'max'],
+    },
+    'gpt-6.2-astra': {
+      auto: 'medium',
+      kind: 'reasoningEffort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    },
+    'gpt-6.2-sol': {
+      auto: 'medium',
+      kind: 'reasoningEffort',
+      levels: ['low', 'medium', 'high', 'xhigh', 'max'],
     },
   },
   openrouter: {
