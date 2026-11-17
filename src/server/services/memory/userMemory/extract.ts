@@ -84,6 +84,8 @@ import { LayersEnum, MemorySourceType, TypesEnum } from '@/types/userMemory';
 import { trimBasedOnBatchProbe } from '@/utils/chunkers';
 import { encodeAsync } from '@/utils/tokenizer';
 
+import { observeMemoryFetch } from './arckepAttemptReceipt';
+
 const SOURCE_ALIAS_MAP: Record<string, MemorySourceType> = {
   benchmark_locomo: MemorySourceType.BenchmarkLocomo,
   chatTopic: MemorySourceType.ChatTopic,
@@ -310,6 +312,7 @@ export type ProviderCredential = { apiKey?: string; baseURL?: string };
 
 export type RuntimeResolveOptions = {
   fallback?: ProviderCredential;
+  observeDigestCalls?: boolean;
   preferred?: {
     providerIds?: string[];
   };
@@ -378,6 +381,10 @@ export const resolveRuntimeAgentConfig = (
   });
 
   return ModelRuntime.initializeWithProvider(agent.provider || 'openai', {
+    ...(options?.observeDigestCalls &&
+      (agent.provider || 'openai') === 'openai' && {
+        fetch: observeMemoryFetch,
+      }),
     apiKey: agent.apiKey || options?.fallback?.apiKey,
     baseURL: agent.baseURL || options?.fallback?.baseURL,
     userId: options?.userId,
@@ -2370,6 +2377,7 @@ export class MemoryExtractionExecutor {
     };
 
     const gatekeeperOptions: RuntimeResolveOptions = {
+      observeDigestCalls: true,
       fallback: {
         apiKey: this.privateConfig.agentGateKeeper.apiKey,
         baseURL: this.privateConfig.agentGateKeeper.baseURL,
@@ -2379,6 +2387,7 @@ export class MemoryExtractionExecutor {
     };
 
     const layerExtractorOptions: RuntimeResolveOptions = {
+      observeDigestCalls: true,
       fallback: {
         apiKey: this.privateConfig.agentLayerExtractor.apiKey,
         baseURL: this.privateConfig.agentLayerExtractor.baseURL,

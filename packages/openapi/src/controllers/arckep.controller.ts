@@ -30,6 +30,7 @@ import {
 } from '@/server/modules/AgentRuntime/serverModelParams';
 import { AgentService as ServerAgentService } from '@/server/services/agent';
 import { defaultInboxPlugins } from '@/server/services/agent/inboxPlugins';
+import { withMemoryBillingRun } from '@/server/services/memory/userMemory/arckepAttemptReceipt';
 import {
   runAutoExtract,
   runDailyDigest,
@@ -371,7 +372,12 @@ export class ArckepController extends BaseController {
         idleMinutes?: number;
         limit?: number;
         mode?: 'digest' | 'topics';
+        billingOperationId?: string;
+        studioUserId?: number;
       }>(c);
+      if (body.billingOperationId && body.studioUserId !== this.getAuthData(c)?.studioUserId) {
+        return this.error(c, 'Digest billing owner mismatch', 403);
+      }
       const settings = await new UserModel(db, userId).getUserSettings();
       const memory = memorySettingsOf(settings?.memory);
       if (!memory.enabled || !memory.autoExtract) {
@@ -379,13 +385,21 @@ export class ArckepController extends BaseController {
       }
 
       if (body.mode === 'digest') {
-        const digest = await runDailyDigest(db, userId, {
-          contextLimit: Number(process.env.MEMORY_USER_MEMORY_DIGEST_CONTEXT_LIMIT) || 60_000,
-          days: body.days ?? 30,
-          idleMinutes: body.idleMinutes ?? 60,
-          maxMemories: Number(process.env.MEMORY_USER_MEMORY_DIGEST_MAX_MEMORIES) || 300,
-          maxTopics: body.limit ?? 50,
-        });
+        const extract = () =>
+          runDailyDigest(db, userId, {
+            contextLimit: Number(process.env.MEMORY_USER_MEMORY_DIGEST_CONTEXT_LIMIT) || 60_000,
+            days: body.days ?? 30,
+            idleMinutes: body.idleMinutes ?? 60,
+            maxMemories: Number(process.env.MEMORY_USER_MEMORY_DIGEST_MAX_MEMORIES) || 300,
+            maxTopics: body.limit ?? 50,
+          });
+        const digest =
+          body.billingOperationId && body.studioUserId
+            ? await withMemoryBillingRun(
+                { billingOperationId: body.billingOperationId, userId: body.studioUserId },
+                extract,
+              )
+            : await extract();
         return this.success(c, digest, 'memories extracted (daily digest)');
       }
 

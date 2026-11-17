@@ -2,6 +2,8 @@ import { Hono } from 'hono';
 import { HTTPException } from 'hono/http-exception';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import * as memoryBilling from '@/server/services/memory/userMemory/arckepAttemptReceipt';
+
 import MemoriesRoutes from '../../routes/memories.route';
 
 // arckep (20.10.2026, автосбор памяти): REST /api/v1/memories/settings и /api/v1/memories/extract.
@@ -75,6 +77,7 @@ const buildApp = (authType: string | null = 'arckep-service') => {
   app.use('*', async (c: any, next) => {
     c.set('userId', USER);
     c.set('authType', authType);
+    c.set('authData', { studioUserId: 15 });
     await next();
   });
   app.route('/api/v1/memories', MemoriesRoutes);
@@ -209,6 +212,26 @@ describe('POST /extract', () => {
     });
     expect(mocks.runAutoExtract).not.toHaveBeenCalled();
     expect(body.data.memories).toBe(3);
+  });
+
+  it('attaches an optional Studio billing run only on service-authenticated digests', async () => {
+    mocks.memory = { autoExtract: true };
+    const billingOperationId = 'memauto-123456789012345678901234';
+    const body = { billingOperationId, mode: 'digest', studioUserId: 15 };
+    const scope = vi.spyOn(memoryBilling, 'withMemoryBillingRun');
+    mocks.runDailyDigest.mockResolvedValue({});
+
+    expect((await call('POST', '/extract', body)).status).toBe(200);
+    expect((await call('POST', '/extract', body, buildApp('api-key'))).status).toBe(403);
+    expect((await call('POST', '/extract', { ...body, studioUserId: 99 })).status).toBe(403);
+    expect((await call('POST', '/extract', { ...body, studioUserId: undefined })).status).toBe(400);
+    expect((await call('POST', '/extract', { ...body, mode: 'topics' })).status).toBe(400);
+    expect((await call('POST', '/extract', { ...body, billingOperationId: 'bad' })).status).toBe(
+      400,
+    );
+    expect(mocks.runDailyDigest).toHaveBeenCalledTimes(1);
+    expect(scope).toHaveBeenCalledWith({ billingOperationId, userId: 15 }, expect.any(Function));
+    scope.mockRestore();
   });
 
   it('mode=digest принимает limit до 100; почасовой — до 10', async () => {
