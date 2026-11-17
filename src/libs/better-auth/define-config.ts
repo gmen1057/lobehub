@@ -3,6 +3,7 @@ import { passkey } from '@better-auth/passkey';
 import { ENABLE_BUSINESS_FEATURES } from '@lobechat/business-const';
 import { createNanoId, idGenerator, serverDB } from '@lobechat/database';
 import * as schema from '@lobechat/database/schemas';
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '@lobechat/model-runtime';
 import bcrypt from 'bcryptjs';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { verifyPassword as defaultVerifyPassword } from 'better-auth/crypto';
@@ -43,7 +44,11 @@ if (process.env.NODE_ENV === 'development') {
     process.env.http_proxy;
 
   if (proxyUrl) {
-    const proxyAgent = new ProxyAgent(proxyUrl);
+    const proxyAgent = new ProxyAgent({
+      bodyTimeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+      headersTimeout: DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+      uri: proxyUrl,
+    });
     setGlobalDispatcher(proxyAgent);
   }
 }

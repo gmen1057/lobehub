@@ -204,11 +204,21 @@ const serializeStreamErrorChunk = (e: unknown): string => {
       : undefined,
   );
   const code = raw?.code ?? nested?.code ?? nestedError?.code;
-  const type = raw?.type ?? nested?.type ?? nestedError?.type;
+  const type =
+    raw?.type ??
+    (nested?.type === 'error' && nestedError?.type !== undefined
+      ? nestedError.type
+      : (nested?.type ?? nestedError?.type));
   const retrySafe = pickRetrySafe(
     [raw?.retrySafe, nested?.retrySafe, nestedError?.retrySafe],
     details,
   );
+  const message =
+    typeof error?.message === 'string' && !/^\s*\{/.test(error.message)
+      ? error.message
+      : (typeof nestedError?.message === 'string' && nestedError.message) ||
+        (typeof nested?.message === 'string' && nested.message) ||
+        error?.message;
 
   try {
     return (
@@ -216,7 +226,7 @@ const serializeStreamErrorChunk = (e: unknown): string => {
       JSON.stringify({
         ...(code !== undefined ? { code } : {}),
         ...(details !== undefined ? { details } : {}),
-        message: error?.message ?? nested?.message ?? nestedError?.message,
+        message,
         name: error?.name,
         ...(retrySafe !== undefined ? { retrySafe } : {}),
         stack: error?.stack,
@@ -486,6 +496,33 @@ export function createCallbacksTransformer(cb: ChatStreamCallbacks | undefined) 
 }
 
 export const FIRST_CHUNK_ERROR_KEY = '_isFirstChunkError';
+
+export const transformFirstChunkError = (chunk: Record<string, unknown>): StreamProtocolChunk => {
+  delete chunk[FIRST_CHUNK_ERROR_KEY];
+  delete chunk['name'];
+  delete chunk['stack'];
+
+  const errorData = {
+    body: chunk,
+    message: typeof chunk.message === 'string' ? chunk.message : JSON.stringify(chunk),
+    type:
+      typeof chunk.errorType === 'string'
+        ? (chunk.errorType as typeof AgentRuntimeErrorType.ProviderBizError)
+        : AgentRuntimeErrorType.ProviderBizError,
+  };
+
+  return {
+    data: {
+      ...errorData,
+      ...(chunk.code !== undefined ? { code: chunk.code } : {}),
+      ...(chunk.details !== undefined ? { details: chunk.details } : {}),
+      ...(chunk.retrySafe !== undefined ? { retrySafe: chunk.retrySafe } : {}),
+      ...(chunk.status !== undefined ? { status: chunk.status } : {}),
+    },
+    id: 'first_chunk_error',
+    type: 'error',
+  };
+};
 
 export const createFirstErrorHandleTransformer = (
   errorHandler?: (errorJson: any) => any,

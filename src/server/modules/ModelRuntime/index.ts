@@ -21,8 +21,10 @@ import { getLLMConfig } from '@/envs/llm';
 
 import { KeyVaultsGateKeeper } from '../KeyVaultsEncrypt';
 import apiKeyManager from './apiKeyManager';
+import { ensureServerUndiciDispatcher } from './undiciDispatcher';
 
 export * from './trace';
+export { ensureServerUndiciDispatcher } from './undiciDispatcher';
 
 /**
  * Combined KeyVaults type for all providers
@@ -395,6 +397,7 @@ export const initModelRuntimeWithUserPayload = (
   params: any = {},
   hooks?: ModelRuntimeHooks,
 ) => {
+  ensureServerUndiciDispatcher();
   const runtimeProvider = payload.runtimeProvider ?? provider;
 
   // VertexAI uses Google Cloud auth (service account), not API key + PROXY_URL.
@@ -446,6 +449,9 @@ export const initModelRuntimeWithUserPayload = (
     if (assistantMessageId) headers['x-assistant-message-id'] = assistantMessageId;
     if (internalKey && assistantMessageId && retryOwner === 'engine') {
       headers['x-arckep-retry-owner'] = 'engine';
+      if (resolvedParams.maxRetries === undefined) {
+        resolvedParams.maxRetries = 0;
+      }
     }
     resolvedParams.defaultHeaders = headers;
   }

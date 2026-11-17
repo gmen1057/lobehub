@@ -8,6 +8,7 @@ import type { Stream } from 'openai/streaming';
 import type { ChatStreamCallbacks } from '../../types';
 import { convertOpenAIUsage } from '../usageConverters';
 import type {
+  ChatPayloadForTransformStream,
   StreamContext,
   StreamProtocolChunk,
   StreamProtocolToolCallChunk,
@@ -16,15 +17,21 @@ import type {
 import {
   convertIterableToStream,
   createCallbacksTransformer,
+  createFirstErrorHandleTransformer,
   createSSEProtocolTransformer,
   createTokenSpeedCalculator,
+  FIRST_CHUNK_ERROR_KEY,
   generateToolCallId,
+  transformFirstChunkError,
 } from './protocol';
 
 export const transformQwenStream = (
   chunk: OpenAI.ChatCompletionChunk,
   streamContext?: StreamContext,
 ): StreamProtocolChunk | StreamProtocolChunk[] => {
+  if (chunk && typeof chunk === 'object' && FIRST_CHUNK_ERROR_KEY in chunk) {
+    return transformFirstChunkError(chunk as unknown as Record<string, unknown>);
+  }
   if (Array.isArray(chunk.choices) && chunk.choices.length === 0 && chunk.usage) {
     const usage = convertOpenAIUsage({
       ...chunk.usage,
@@ -151,13 +158,20 @@ export const QwenAIStream = (
     callbacks,
     inputStartAt,
     enableStreaming = true,
-  }: { callbacks?: ChatStreamCallbacks; enableStreaming?: boolean; inputStartAt?: number } = {},
+    payload,
+  }: {
+    callbacks?: ChatStreamCallbacks;
+    enableStreaming?: boolean;
+    inputStartAt?: number;
+    payload?: ChatPayloadForTransformStream;
+  } = {},
 ) => {
   const streamContext: StreamContext = { id: '' };
   const readableStream =
     stream instanceof ReadableStream ? stream : convertIterableToStream(stream);
 
   return readableStream
+    .pipeThrough(createFirstErrorHandleTransformer(undefined, payload?.provider))
     .pipeThrough(
       createTokenSpeedCalculator(transformQwenStream, {
         enableStreaming,

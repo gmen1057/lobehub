@@ -5,6 +5,7 @@ import { AzureOpenAI } from 'openai';
 import type { Stream } from 'openai/streaming';
 
 import { systemToUserModels } from '../../const/models';
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
 import type { LobeRuntimeAI } from '../../core/BaseAI';
 import { convertImageUrlToFile, convertOpenAIMessages } from '../../core/contextBuilders/openai';
 import { transformResponseToStream } from '../../core/openaiCompatibleFactory';
@@ -27,7 +28,9 @@ const azureImageLogger = debug('lobe-image:azure');
 export class LobeAzureOpenAI implements LobeRuntimeAI {
   client: AzureOpenAI;
 
-  constructor(params: { apiKey?: string; apiVersion?: string; baseURL?: string } = {}) {
+  constructor(
+    params: { apiKey?: string; apiVersion?: string; baseURL?: string; timeout?: number } = {},
+  ) {
     if (!params.apiKey || !params.baseURL)
       throw AgentRuntimeError.createError(AgentRuntimeErrorType.InvalidProviderAPIKey);
 
@@ -36,6 +39,7 @@ export class LobeAzureOpenAI implements LobeRuntimeAI {
       apiVersion: params.apiVersion,
       dangerouslyAllowBrowser: true,
       endpoint: params.baseURL,
+      timeout: params.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
     });
 
     this.baseURL = params.baseURL;

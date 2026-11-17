@@ -3,12 +3,19 @@ import type { Stream } from 'openai/streaming';
 
 import type { ChatStreamCallbacks } from '../../types';
 import { convertOpenAIUsage } from '../usageConverters';
-import type { StreamProtocolChunk, StreamProtocolToolCallChunk } from './protocol';
+import type {
+  ChatPayloadForTransformStream,
+  StreamProtocolChunk,
+  StreamProtocolToolCallChunk,
+} from './protocol';
 import {
   convertIterableToStream,
   createCallbacksTransformer,
+  createFirstErrorHandleTransformer,
   createSSEProtocolTransformer,
+  FIRST_CHUNK_ERROR_KEY,
   generateToolCallId,
+  transformFirstChunkError,
 } from './protocol';
 
 export function transformSparkResponseToStream(data: OpenAI.ChatCompletion) {
@@ -81,6 +88,10 @@ export function transformSparkResponseToStream(data: OpenAI.ChatCompletion) {
 }
 
 export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamProtocolChunk => {
+  if (chunk && typeof chunk === 'object' && FIRST_CHUNK_ERROR_KEY in chunk) {
+    return transformFirstChunkError(chunk as unknown as Record<string, unknown>);
+  }
+
   const item = chunk.choices[0];
 
   if (!item) {
@@ -160,13 +171,22 @@ export const transformSparkStream = (chunk: OpenAI.ChatCompletionChunk): StreamP
 export const SparkAIStream = (
   stream: Stream<OpenAI.ChatCompletionChunk> | ReadableStream,
   // TODO: preserve for RFC 097
-  // eslint-disable-next-line unused-imports/no-unused-vars
-  { callbacks, inputStartAt }: { callbacks?: ChatStreamCallbacks; inputStartAt?: number } = {},
+  {
+    callbacks,
+    // eslint-disable-next-line unused-imports/no-unused-vars
+    inputStartAt,
+    payload,
+  }: {
+    callbacks?: ChatStreamCallbacks;
+    inputStartAt?: number;
+    payload?: ChatPayloadForTransformStream;
+  } = {},
 ) => {
   const readableStream =
     stream instanceof ReadableStream ? stream : convertIterableToStream(stream);
 
   return readableStream
+    .pipeThrough(createFirstErrorHandleTransformer(undefined, payload?.provider))
     .pipeThrough(createSSEProtocolTransformer(transformSparkStream))
     .pipeThrough(createCallbacksTransformer(callbacks));
 };

@@ -9,6 +9,7 @@ import OpenAI from 'openai';
 import type { Stream } from 'openai/streaming';
 
 import { responsesAPIModels } from '../../const/models';
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
 import type {
   ChatCompletionErrorPayload,
   ChatCompletionTool,
@@ -72,6 +73,18 @@ export const CHAT_MODELS_BLOCK_LIST = [
 ];
 
 type ConstructorOptions<T extends Record<string, any> = any> = ClientOptions & T;
+
+const isEngineRetryOwner = (baseURL?: string, defaultHeaders?: Record<string, any>): boolean => {
+  if (!baseURL || !defaultHeaders) return false;
+  try {
+    const headers = new Headers(defaultHeaders);
+    return Boolean(
+      headers.get('x-arckep-token') && headers.get('x-arckep-retry-owner') === 'engine',
+    );
+  } catch {
+    return false;
+  }
+};
 export type CreateImageOptions = Omit<ClientOptions, 'apiKey'> & {
   apiKey: string;
   provider: string;
@@ -233,7 +246,20 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
 
       if (!apiKey) throw AgentRuntimeError.createError(ErrorType?.invalidAPIKey);
 
-      const initOptions = { apiKey, baseURL, ...constructorOptions, ...res };
+      const resolvedMaxRetries =
+        res.maxRetries ??
+        constructorOptions?.maxRetries ??
+        (isEngineRetryOwner(baseURL, res.defaultHeaders ?? constructorOptions?.defaultHeaders)
+          ? 0
+          : undefined);
+      const initOptions = {
+        apiKey,
+        baseURL,
+        ...constructorOptions,
+        ...res,
+        ...(resolvedMaxRetries !== undefined ? { maxRetries: resolvedMaxRetries } : {}),
+        timeout: res.timeout ?? constructorOptions?.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
+      };
 
       // if the custom client is provided, use it as client
       if (customClient?.createClient) {
@@ -429,11 +455,23 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
             baseURL: targetBaseURL,
           } as ConstructorOptions<T>;
 
+          const resolvedMaxRetries =
+            restOptions.maxRetries ??
+            constructorOptions?.maxRetries ??
+            (isEngineRetryOwner(
+              targetBaseURL,
+              restOptions.defaultHeaders ?? constructorOptions?.defaultHeaders,
+            )
+              ? 0
+              : undefined);
           const initOptions = {
             apiKey: sanitizedApiKey,
             baseURL: targetBaseURL,
             ...constructorOptions,
             ...restOptions,
+            ...(resolvedMaxRetries !== undefined ? { maxRetries: resolvedMaxRetries } : {}),
+            timeout:
+              restOptions.timeout ?? constructorOptions?.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
           } as ConstructorOptions<T> & Record<string, any>;
 
           this._options = nextOptions;

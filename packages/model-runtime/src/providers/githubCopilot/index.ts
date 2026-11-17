@@ -4,6 +4,7 @@ import { ModelProvider } from 'model-bank';
 import OpenAI from 'openai';
 
 import { responsesAPIModels } from '../../const/models';
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
 import { buildDefaultAnthropicPayload } from '../../core/anthropicCompatibleFactory';
 import { type LobeRuntimeAI } from '../../core/BaseAI';
 import {
@@ -132,19 +133,23 @@ export interface LobeGithubCopilotAIParams {
    * OAuth access token (e.g., GitHub's ghu_xxx)
    */
   oauthAccessToken?: string;
+  timeout?: number;
 }
 
 export class LobeGithubCopilotAI implements LobeRuntimeAI {
   baseURL = COPILOT_BASE_URL;
   private cachedBearerToken?: string;
   private githubToken: string;
+  private timeout?: number;
 
   constructor({
     apiKey,
     oauthAccessToken,
     bearerToken,
     bearerTokenExpiresAt,
+    timeout,
   }: LobeGithubCopilotAIParams = {}) {
+    this.timeout = timeout;
     // Priority 1: Use cached bearer token if still valid (refresh 5 minutes early)
     if (bearerToken && bearerTokenExpiresAt && Date.now() < bearerTokenExpiresAt - 300_000) {
       this.cachedBearerToken = bearerToken;
@@ -185,6 +190,7 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
             'Editor-Version': 'LobeChat/1.0',
             'anthropic-version': '2023-06-01',
           },
+          timeout: this.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
         });
 
         const anthropicPayload = await buildDefaultAnthropicPayload({
@@ -246,6 +252,7 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
           'Editor-Plugin-Version': 'LobeChat/1.0',
           'Editor-Version': 'LobeChat/1.0',
         },
+        timeout: this.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
       });
 
       if (

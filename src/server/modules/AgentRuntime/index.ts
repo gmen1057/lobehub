@@ -1,5 +1,6 @@
 export type { AgentRuntimeCoordinatorOptions } from './AgentRuntimeCoordinator';
 export { AgentRuntimeCoordinator } from './AgentRuntimeCoordinator';
+export { DEFAULT_STEP_LOCK_TTL_SECONDS } from './AgentStateManager';
 export { AgentStateManager } from './AgentStateManager';
 export { createAgentStateManager, createStreamEventManager, isRedisAvailable } from './factory';
 export { InMemoryAgentStateManager } from './InMemoryAgentStateManager';

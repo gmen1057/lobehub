@@ -2,7 +2,13 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { describe, expect, it, vi } from 'vitest';
 
-import { buildDefaultAnthropicPayload, createDefaultAnthropicClient } from './index';
+import { DEFAULT_LLM_REQUEST_TIMEOUT_MS } from '../../const/timeout';
+import {
+  buildDefaultAnthropicPayload,
+  createAnthropicCompatibleParams,
+  createAnthropicCompatibleRuntime,
+  createDefaultAnthropicClient,
+} from './index';
 
 vi.mock('@anthropic-ai/sdk', () => {
   const MockAnthropic = vi.fn();
@@ -44,6 +50,37 @@ describe('createDefaultAnthropicClient', () => {
       'User-Agent': 'lobehub/1.0.0-test',
       'X-Custom': 'value',
     });
+    expect(passedOptions.timeout).toBe(DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+  });
+
+  it('should default timeout to 26m, disable SDK retries when engine owns retries, and respect explicit overrides', () => {
+    MockedAnthropic.mockClear();
+    createDefaultAnthropicClient({ apiKey: 'test-key', timeout: 10_000 });
+    expect((MockedAnthropic.mock.calls[0][0] as any).timeout).toBe(10_000);
+    expect((MockedAnthropic.mock.calls[0][0] as any).maxRetries).toBeUndefined();
+
+    MockedAnthropic.mockClear();
+    const Runtime = createAnthropicCompatibleRuntime(
+      createAnthropicCompatibleParams({ provider: 'anthropic' as any }),
+    );
+    new Runtime({ apiKey: 'test-key' });
+    expect((MockedAnthropic.mock.calls[0][0] as any).timeout).toBe(DEFAULT_LLM_REQUEST_TIMEOUT_MS);
+    expect(DEFAULT_LLM_REQUEST_TIMEOUT_MS).toBe(1_560_000);
+
+    MockedAnthropic.mockClear();
+    new Runtime({
+      apiKey: 'test-key',
+      baseURL: 'http://proxy.test',
+      defaultHeaders: {
+        'X-Arckep-Token': 'internal-test',
+        'x-arckep-retry-owner': 'engine',
+      },
+    });
+    expect((MockedAnthropic.mock.calls[0][0] as any).maxRetries).toBe(0);
+
+    MockedAnthropic.mockClear();
+    new Runtime({ apiKey: 'test-key', timeout: 10_000 });
+    expect((MockedAnthropic.mock.calls[0][0] as any).timeout).toBe(10_000);
   });
 });
 

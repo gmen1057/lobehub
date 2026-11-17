@@ -306,7 +306,7 @@ describe('AgentRuntimeService.executeStep - step idempotency (distributed lock)'
       stepIndex: 42,
     });
 
-    expect(coordinator.tryClaimStep).toHaveBeenCalledWith('op-args', 42, 35);
+    expect(coordinator.tryClaimStep).toHaveBeenCalledWith('op-args', 42, 2100);
   });
 });
 
