@@ -57,6 +57,12 @@ export const FINISHED_TTL_MS = 10 * 60 * 1000;
 /** Потолок истории одной операции (символы текста событий). */
 export const MAX_HISTORY_CHARS = 4 * 1024 * 1024;
 
+const isToolsCallingChunk = (event: StreamEvent | undefined): boolean =>
+  event?.type === 'stream_chunk' &&
+  typeof event.data === 'object' &&
+  event.data !== null &&
+  (event.data as StreamChunkData).chunkType === 'tools_calling';
+
 const approxSize = (event: StreamEvent): number => {
   const data = event.data;
   if (event.type === 'stream_chunk' && data && typeof data === 'object') {
@@ -213,10 +219,30 @@ export class ResponsesStreamHub implements IStreamEventManager {
     const op = this.operations.get(operationId);
     if (op) {
       if (!op.truncated) {
-        op.bytes += approxSize(data);
+        const newSize = approxSize(data);
+        const lastEvent = op.events.at(-1);
+        const replaceLast =
+          isToolsCallingChunk(data) &&
+          isToolsCallingChunk(lastEvent) &&
+          lastEvent!.stepIndex === data.stepIndex;
+
+        if (replaceLast) {
+          const prevSize = approxSize(lastEvent!);
+          op.bytes = Math.max(0, op.bytes - prevSize + newSize);
+        } else {
+          op.bytes += newSize;
+        }
+
         if (op.bytes > this.maxHistoryChars) {
           op.truncated = true;
           op.events = [];
+          console.warn('[ResponsesStreamHub] history truncated', {
+            bytes: op.bytes,
+            operationId,
+            topicId: op.topicId,
+          });
+        } else if (replaceLast) {
+          op.events[op.events.length - 1] = data;
         } else {
           op.events.push(data);
         }

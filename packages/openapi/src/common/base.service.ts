@@ -77,6 +77,15 @@ export abstract class BaseService implements IBaseService {
   }
 
   /**
+   * Conflict error class (HTTP 409)
+   */
+  protected createConflictError(message: string): Error {
+    const error = new Error(message);
+    error.name = 'ConflictError';
+    return error;
+  }
+
+  /**
    * Validation error class
    */
   protected createValidationError(message: string): Error {
@@ -109,6 +118,7 @@ export abstract class BaseService implements IBaseService {
         'AuthenticationError',
         'AuthorizationError',
         'NotFoundError',
+        'ConflictError',
         'ValidationError',
       ].includes(error.name)
     ) {

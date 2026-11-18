@@ -98,6 +98,11 @@ export abstract class BaseController {
         return this.error(c, error.message, 404);
       }
 
+      // Handle conflict errors
+      if (error.name === 'ConflictError') {
+        return this.error(c, error.message, 409);
+      }
+
       // Other errors
       return this.error(c, error.message, 500);
     }

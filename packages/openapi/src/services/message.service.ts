@@ -18,6 +18,7 @@ import type {
   SearchMessagesByKeywordRequest,
 } from '../types/message.type';
 import { ChatService } from './chat.service';
+import { responsesStreamHub } from './responsesStreamHub';
 
 /**
  * Message count result type
@@ -613,12 +614,42 @@ export class MessageService extends BaseService {
   }
 
   /**
+   * arckep (chat-resume-guard, Г1): запретить удаление сообщений темы, в которой сейчас идёт ответ.
+   */
+  private async assertMessagesTopicsIdle(messageIds: string[]): Promise<void> {
+    if (!messageIds.length || !this.userId) return;
+    if (responsesStreamHub.runningTopics(this.userId).length === 0) return;
+
+    const rows = await this.db.query.messages.findMany({
+      columns: { topicId: true },
+      where: and(inArray(messages.id, messageIds), eq(messages.userId, this.userId)),
+    });
+
+    const seenTopics = new Set<string>();
+    for (const row of rows) {
+      if (!row.topicId || seenTopics.has(row.topicId)) continue;
+      seenTopics.add(row.topicId);
+      const op = responsesStreamHub.findByTopic(this.userId, row.topicId);
+      if (op && !op.done) {
+        throw this.createConflictError('Response is already in progress for this topic');
+      }
+    }
+  }
+
+  /**
    * Delete a single message
    * @param messageId Message ID
    * @returns Promise<void>
    */
-  async deleteMessage(messageId: string): Promise<void> {
+  async deleteMessage(
+    messageId: string,
+    options?: { skipTopicIdleCheck?: boolean },
+  ): Promise<void> {
     try {
+      if (!options?.skipTopicIdleCheck) {
+        await this.assertMessagesTopicsIdle([messageId]);
+      }
+
       // Permission check
       const permissionResult = await this.resolveOperationPermission('MESSAGE_DELETE', {
         targetMessageId: messageId,
@@ -659,6 +690,8 @@ export class MessageService extends BaseService {
     success: number;
   }> {
     try {
+      await this.assertMessagesTopicsIdle(messageIds);
+
       const result = {
         errors: [] as Array<{ error: string; messageId: string }>,
         failed: 0,
@@ -667,7 +700,7 @@ export class MessageService extends BaseService {
 
       for (const messageId of messageIds) {
         try {
-          await this.deleteMessage(messageId);
+          await this.deleteMessage(messageId, { skipTopicIdleCheck: true });
           result.success++;
         } catch (error) {
           result.failed++;
