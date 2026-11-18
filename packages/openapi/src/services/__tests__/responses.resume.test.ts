@@ -209,6 +209,239 @@ describe('ResponsesService — ответ в реестре и переподк�
       expect(replay.at(-1).response.error).toEqual(last.response.error);
     },
   );
+
+  it('1000+ чанков tools_calling до >50 КБ не усекают историю и при resumeStreamingResponse отдают полный вызов инструмента', async () => {
+    const sender = new ResponsesService({} as any, 'u1');
+    const abortSender = new AbortController();
+    const gen = sender.createStreamingResponse(params, abortSender.signal);
+    await take(gen, 2);
+    const firstPending = take(gen, 2);
+    await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
+
+    let codeBody = '';
+    const piece = 'x'.repeat(50);
+    for (let i = 0; i < 1050; i++) {
+      codeBody += piece;
+      await responsesStreamHub.publishStreamChunk(OP, 1, {
+        chunkType: 'tools_calling',
+        toolsCalling: [
+          {
+            apiName: 'executeCode',
+            arguments: `{"code":"${codeBody}`,
+            id: 'call_1',
+            identifier: 'lobe-cloud-sandbox',
+            type: 'builtin',
+          } as any,
+        ],
+      });
+      if (i === 0) {
+        await firstPending;
+        abortSender.abort();
+        await gen.next();
+      }
+    }
+
+    expect(codeBody.length).toBe(52_500);
+    expect(responsesStreamHub.get(OP)?.truncated).toBe(false);
+    expect(sender.getResponseStatus('tpc_1')).toMatchObject({
+      resumable: true,
+      status: 'in_progress',
+    });
+
+    const reader = new ResponsesService({} as any, 'u1');
+    const resumed = reader.resumeStreamingResponse('tpc_1');
+    const replay = await take(resumed, 4);
+    expect(replay.map((e) => e.type)).toEqual([
+      'response.created',
+      'response.in_progress',
+      'response.output_item.added',
+      'response.function_call_arguments.delta',
+    ]);
+    expect(replay[3].delta).toBe(`{"code":"${codeBody}`);
+
+    const tailPromise = drain(resumed);
+    const fullArgs = `{"code":"${codeBody}"}`;
+    await responsesStreamHub.publishStreamChunk(OP, 1, {
+      chunkType: 'tools_calling',
+      toolsCalling: [
+        {
+          apiName: 'executeCode',
+          arguments: fullArgs,
+          id: 'call_1',
+          identifier: 'lobe-cloud-sandbox',
+          type: 'builtin',
+        } as any,
+      ],
+    });
+    await responsesStreamHub.publishStreamEvent(OP, {
+      data: {
+        isSuccess: true,
+        payload: { toolCalling: { id: 'call_1' } },
+        result: { content: 'ok' },
+      },
+      stepIndex: 1,
+      type: 'tool_end',
+    });
+    finish({
+      messages: [
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: fullArgs,
+                name: 'lobe-cloud-sandbox____executeCode____builtin',
+              },
+              id: 'call_1',
+              type: 'function',
+            },
+          ],
+        },
+        { content: 'ok', role: 'tool', tool_call_id: 'call_1' },
+        { content: 'Готово', role: 'assistant' },
+      ],
+      status: 'done',
+    });
+
+    const tail = await tailPromise;
+    const argsDone = tail.find((e) => e.type === 'response.function_call_arguments.done');
+    expect(argsDone?.arguments).toBe(fullArgs);
+    const completed = tail.at(-1);
+    expect(completed.type).toBe('response.completed');
+    expect(completed.response.output_text).toBe('Готово');
+    const fcItem = completed.response.output.find((o: any) => o.type === 'function_call');
+    expect(fcItem).toMatchObject({
+      arguments: fullArgs,
+      call_id: 'call_1',
+      name: 'lobe-cloud-sandbox/executeCode',
+    });
+  });
+
+  it('waitStreamingResponse (mode=wait) ждёт завершения даже при op.truncated === true и чисто отписывается по AbortSignal', async () => {
+    const sender = new ResponsesService({} as any, 'u1');
+    const abortSender = new AbortController();
+    const gen = sender.createStreamingResponse(params, abortSender.signal);
+    await take(gen, 2);
+    const pendingInit = take(gen, 3);
+    await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
+    await responsesStreamHub.publishStreamChunk(OP, 0, { chunkType: 'text', content: 'старт' });
+    await pendingInit;
+    abortSender.abort();
+    await gen.next();
+
+    // Имитируем переполнение истории длинного ответа
+    const op = responsesStreamHub.get(OP)!;
+    op.truncated = true;
+    op.events = [];
+    expect(sender.getResponseStatus('tpc_1')).toMatchObject({
+      resumable: false,
+      status: 'in_progress',
+    });
+    await expect(drain(sender.resumeStreamingResponse('tpc_1'))).rejects.toMatchObject({
+      name: 'NotFoundError',
+    });
+
+    // Первый ожидающий подключается и отменяет чтение по AbortSignal — отписка происходит сразу
+    const abortWaiter1 = new AbortController();
+    const waiter1 = new ResponsesService({} as any, 'u1').waitStreamingResponse(
+      'tpc_1',
+      abortWaiter1.signal,
+    );
+    const head1 = await take(waiter1, 2);
+    expect(head1.map((e) => e.type)).toEqual(['response.created', 'response.in_progress']);
+    const next1 = waiter1.next();
+    await vi.waitFor(() => expect(op.subscribers.size).toBe(1));
+    abortWaiter1.abort();
+    expect((await next1).done).toBe(true);
+    expect(op.subscribers.size).toBe(0);
+    expect(op.done).toBe(false);
+
+    // Второй ожидающий дожидается финала без промежуточных дельт
+    const waiter2 = new ResponsesService({} as any, 'u1').waitStreamingResponse('tpc_1');
+    const head2 = await take(waiter2, 2);
+    expect(head2.map((e) => e.type)).toEqual(['response.created', 'response.in_progress']);
+    const finalPromise = drain(waiter2);
+    await vi.waitFor(() => expect(op.subscribers.size).toBe(1));
+
+    await responsesStreamHub.publishStreamChunk(OP, 0, {
+      chunkType: 'text',
+      content: 'промежуточный кусок',
+    });
+    finish({
+      messages: [{ content: 'Полный ответ после усечения', role: 'assistant' }],
+      status: 'done',
+      usage: { llm: { tokens: { input: 10, output: 20, total: 30 } } },
+    });
+
+    const tail2 = await finalPromise;
+    expect(tail2).toHaveLength(1);
+    expect(tail2[0].type).toBe('response.completed');
+    expect(tail2[0].response).toMatchObject({
+      id: 'tpc_1',
+      output_text: 'Полный ответ после усечения',
+      status: 'completed',
+      usage: {
+        input_tokens: 10,
+        output_tokens: 20,
+        total_tokens: 30,
+      },
+    });
+  });
+
+  it('параллельный запуск ответа в той же теме при !op.done отклоняется ConflictError до второго execAgent', async () => {
+    const sender = new ResponsesService({} as any, 'u1');
+    const gen = sender.createStreamingResponse(params);
+    await take(gen, 2);
+    const pending = take(gen, 3);
+    await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
+    expect(mockExecAgent).toHaveBeenCalledTimes(1);
+
+    const duplicate = new ResponsesService({} as any, 'u1');
+    await expect(
+      duplicate.createResponse({
+        input: 'второе сообщение подряд',
+        model: 'agt_1',
+        previous_response_id: 'tpc_1',
+      } as any),
+    ).rejects.toMatchObject({ name: 'ConflictError' });
+
+    await expect(
+      drain(
+        duplicate.createStreamingResponse({
+          input: 'второе потоковое сообщение',
+          model: 'agt_1',
+          previous_response_id: 'tpc_1',
+          stream: true,
+        } as any),
+      ),
+    ).rejects.toMatchObject({ name: 'ConflictError' });
+
+    expect(mockExecAgent).toHaveBeenCalledTimes(1);
+
+    // Завершаем первый ответ — после этого следующий запрос в тему разрешён
+    await responsesStreamHub.publishStreamChunk(OP, 0, { chunkType: 'text', content: 'ок' });
+    await pending;
+    finish({ messages: [{ content: 'ок', role: 'assistant' }], status: 'done' });
+    await drain(gen);
+
+    mockExecAgent.mockResolvedValueOnce({
+      operationId: 'op_2',
+      success: true,
+      topicId: 'tpc_1',
+    });
+    mockExecuteSync.mockResolvedValueOnce({
+      messages: [{ content: 'второй ок', role: 'assistant' }],
+      status: 'done',
+    });
+    const afterDone = await duplicate.createResponse({
+      input: 'теперь можно',
+      model: 'agt_1',
+      previous_response_id: 'tpc_1',
+    } as any);
+    expect(afterDone.status).toBe('completed');
+    expect(mockExecAgent).toHaveBeenCalledTimes(2);
+  });
 });
 
 it('emits native grounding and clears already accumulated partial text on terminal refusal, including replay', async () => {

@@ -26,6 +26,7 @@ export class ResponsesController extends BaseController {
 
       // Тема из previous_response_id — этого человека, иначе 404 до начала ответа
       await service.assertPreviousTopicAccess(body);
+      service.assertPreviousTopicIdle(body);
 
       if (body.stream) {
         return this.handleStreamingResponse(c, service, body);
@@ -80,7 +81,8 @@ export class ResponsesController extends BaseController {
 
   /**
    * GET /api/v1/responses/:id/stream — arckep (F8): переподключиться к ответу темы — события
-   * с начала и живой хвост. Нет ответа — 404 до открытия потока.
+   * с начала и живой хвост; при `mode=wait` — ждать только завершения без истории (работает даже
+   * когда история переполнилась). Нет ответа — 404 до открытия потока.
    */
   async streamResponse(c: Context): Promise<Response> {
     try {
@@ -89,6 +91,10 @@ export class ResponsesController extends BaseController {
       const db = await this.getDatabase();
       const service = new ResponsesService(db, userId);
       const status = service.getResponseStatus(id);
+      if (c.req.query('mode') === 'wait') {
+        if (!status) return this.error(c, `No response for ${id}`, 404);
+        return this.streamEvents(c, (signal) => service.waitStreamingResponse(id, signal));
+      }
       if (!status || !status.resumable) return this.error(c, `No response for ${id}`, 404);
       return this.streamEvents(c, (signal) => service.resumeStreamingResponse(id, signal));
     } catch (error) {

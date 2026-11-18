@@ -83,6 +83,12 @@ const notFound = (message: string): Error => {
   return error;
 };
 
+const conflict = (message: string): Error => {
+  const error = new Error(message);
+  error.name = 'ConflictError';
+  return error;
+};
+
 /**
  * Response API Service
  * Handles OpenResponses protocol request execution via AiAgentService.execAgent
@@ -115,6 +121,22 @@ export class ResponsesService extends BaseService {
     const topicId = this.extractTopicIdFromResponseId(params.previous_response_id);
     if (!topicId) return;
     await new AiAgentService(this.db, this.userId).assertTopicAccess(topicId);
+  }
+
+  /**
+   * arckep (chat-resume-guard, Г1): если в теме из previous_response_id уже идёт ответ (!op.done)
+   * и это не продолжение клиентского вызова инструмента (function_call_output), отклоняем 409
+   * до запуска второго execAgent и создания дублирующих сообщений.
+   */
+  assertPreviousTopicIdle(params: CreateResponseRequest): void {
+    if (!params.previous_response_id) return;
+    const previousTopicId = this.extractTopicIdFromResponseId(params.previous_response_id);
+    if (!previousTopicId) return;
+    if (this.hasFunctionCallOutputs(params.input)) return;
+    const op = responsesStreamHub.findByTopic(this.userId, previousTopicId);
+    if (op && !op.done) {
+      throw conflict('Response is already in progress for this topic');
+    }
   }
 
   /**
@@ -418,6 +440,7 @@ export class ResponsesService extends BaseService {
    * Calls execAgent with autoStart: false, then executeSync to wait for completion
    */
   async createResponse(params: CreateResponseRequest): Promise<ResponseObject> {
+    this.assertPreviousTopicIdle(params);
     const createdAt = Math.floor(Date.now() / 1000);
 
     try {
@@ -526,6 +549,7 @@ export class ResponsesService extends BaseService {
     params: CreateResponseRequest,
     signal?: AbortSignal,
   ): AsyncGenerator<ResponseStreamEvent> {
+    this.assertPreviousTopicIdle(params);
     const createdAt = Math.floor(Date.now() / 1000);
     let sequenceNumber = 0;
 
@@ -665,6 +689,65 @@ export class ResponsesService extends BaseService {
     yield { response, sequence_number: sequenceNumber++, type: 'response.created' as const };
     yield { response, sequence_number: sequenceNumber++, type: 'response.in_progress' as const };
     yield* this.streamOperationEvents(op, response, sequenceNumber, signal);
+  }
+
+  /**
+   * arckep (chat-resume-guard, В1): лёгкое ожидание завершения ответа темы (`?mode=wait`).
+   * Работает даже при `op.truncated === true` (`resumable === false`): шлёт `response.created` и
+   * `response.in_progress`, пропускает промежуточные чанки, дожидается `op.done` (с отпиской по
+   * `signal`) и шлёт финальное `response.completed` / `response.incomplete` из `op.finalState`.
+   */
+  async *waitStreamingResponse(
+    topicId: string,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ResponseStreamEvent> {
+    const op = this.findOperation(topicId);
+    if (!op) throw notFound(`No response is running for ${topicId}`);
+    const response = this.buildResponseObject({
+      createdAt: op.createdAt,
+      id: op.responseId,
+      output: [],
+      outputText: '',
+      params: op.params,
+      status: 'in_progress',
+    });
+    let sequenceNumber = 0;
+    yield { response, sequence_number: sequenceNumber++, type: 'response.created' as const };
+    yield { response, sequence_number: sequenceNumber++, type: 'response.in_progress' as const };
+
+    if (!op.done) {
+      let onAbort: (() => void) | undefined;
+      let unsubscribe: (() => void) | undefined;
+      try {
+        await new Promise<void>((resolve) => {
+          const attachment = responsesStreamHub.attach(op.operationId, {
+            onDone: () => resolve(),
+            onEvents: () => undefined,
+          });
+          unsubscribe = attachment.unsubscribe;
+          if (attachment.done || signal?.aborted) {
+            attachment.unsubscribe();
+            resolve();
+            return;
+          }
+          if (signal) {
+            onAbort = () => {
+              attachment.unsubscribe();
+              resolve();
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+          }
+        });
+      } finally {
+        unsubscribe?.();
+        if (signal && onAbort) {
+          signal.removeEventListener('abort', onAbort);
+        }
+      }
+    }
+
+    if (signal?.aborted) return;
+    yield this.buildFinalStreamEvent(op, response, sequenceNumber);
   }
 
   /** arckep (F8): состояние ответа темы; null — ответа нет или он уже вычищен из реестра. */
@@ -1030,83 +1113,91 @@ export class ResponsesService extends BaseService {
       sequenceNumber = seq.n;
 
       if (signal?.aborted) return;
-      const finalState = op.finalState;
-
-      // If no text came through streaming, extract from final state
-      if (!accumulatedText && finalState) {
-        accumulatedText = this.extractAssistantContent(finalState);
-      }
-
-      const usage = finalState
-        ? this.extractUsage(finalState)
-        : { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
-
-      // 7. Build final output including tool calls from AgentState
-      const fullOutput = finalState
-        ? this.extractOutputItems(finalState, responseId)
-        : { output: [], outputText: accumulatedText };
-
-      // Determine if agent was interrupted for client tool execution
-      const incompleteReason = this.resolveIncompleteReason(finalState);
-      const isClientToolInterrupt = !!incompleteReason;
-
-      if (isClientToolInterrupt) {
-        yield {
-          response: {
-            ...response,
-            completed_at: null,
-            incomplete_details: { reason: incompleteReason },
-            output: fullOutput.output,
-            output_text: fullOutput.outputText || accumulatedText,
-            status: 'incomplete' as any,
-            usage: {
-              input_tokens: usage.input_tokens,
-              input_tokens_details: { cached_tokens: 0 },
-              output_tokens: usage.output_tokens,
-              output_tokens_details: { reasoning_tokens: 0 },
-              total_tokens: usage.total_tokens,
-            },
-          },
-          sequence_number: sequenceNumber,
-          type: 'response.incomplete' as const,
-        };
-      } else {
-        // arckep: при ошибке модели (например, отказ биллинг-прокси) клиенту нужен текст ошибки,
-        // а не пустой ответ со status=failed (план lobechat-engine-studio-chat, Phase 2).
-        const stateError = finalState?.status === 'error' ? finalState?.error : undefined;
-        const stateErrorMessage =
-          stateError?.error?.message || stateError?.message || stateError?.errorType;
-
-        yield {
-          response: {
-            ...response,
-            completed_at: Math.floor(Date.now() / 1000),
-            error: stateError
-              ? {
-                  code: 'model_error' as const,
-                  message: String(stateErrorMessage || 'Model execution failed'),
-                  status: stateError.body?.status,
-                }
-              : null,
-            output: fullOutput.output,
-            output_text: fullOutput.outputText || accumulatedText,
-            status: (finalState?.status === 'error' ? 'failed' : 'completed') as any,
-            usage: {
-              input_tokens: usage.input_tokens,
-              input_tokens_details: { cached_tokens: 0 },
-              output_tokens: usage.output_tokens,
-              output_tokens_details: { reasoning_tokens: 0 },
-              total_tokens: usage.total_tokens,
-            },
-          },
-          sequence_number: sequenceNumber,
-          type: 'response.completed' as const,
-        };
-      }
+      yield this.buildFinalStreamEvent(op, response, sequenceNumber, accumulatedText);
     } finally {
       attachment.unsubscribe();
       signal?.removeEventListener('abort', onAbort);
     }
+  }
+
+  /**
+   * Сборка терминального SSE-события (`response.completed` или `response.incomplete`) по `op.finalState`
+   * — общая для полного потока (`streamOperationEvents`) и режима ожидания (`waitStreamingResponse`).
+   */
+  private buildFinalStreamEvent(
+    op: HubOperation,
+    response: ResponseObject,
+    sequenceNumber: number,
+    fallbackText: string = '',
+  ): ResponseStreamEvent {
+    const finalState = op.finalState;
+    let text = fallbackText;
+    if (!text && finalState) {
+      text = this.extractAssistantContent(finalState);
+    }
+
+    const usage = finalState
+      ? this.extractUsage(finalState)
+      : { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+
+    const fullOutput = finalState
+      ? this.extractOutputItems(finalState, op.responseId)
+      : { output: [], outputText: text };
+
+    const incompleteReason = this.resolveIncompleteReason(finalState);
+    if (incompleteReason) {
+      return {
+        response: {
+          ...response,
+          completed_at: null,
+          incomplete_details: { reason: incompleteReason },
+          output: fullOutput.output,
+          output_text: fullOutput.outputText || text,
+          status: 'incomplete' as any,
+          usage: {
+            input_tokens: usage.input_tokens,
+            input_tokens_details: { cached_tokens: 0 },
+            output_tokens: usage.output_tokens,
+            output_tokens_details: { reasoning_tokens: 0 },
+            total_tokens: usage.total_tokens,
+          },
+        },
+        sequence_number: sequenceNumber,
+        type: 'response.incomplete' as const,
+      };
+    }
+
+    // arckep: при ошибке модели (например, отказ биллинг-прокси) клиенту нужен текст ошибки,
+    // а не пустой ответ со status=failed (план lobechat-engine-studio-chat, Phase 2).
+    const stateError = finalState?.status === 'error' ? finalState?.error : undefined;
+    const stateErrorMessage =
+      stateError?.error?.message || stateError?.message || stateError?.errorType;
+
+    return {
+      response: {
+        ...response,
+        completed_at: Math.floor(Date.now() / 1000),
+        error: stateError
+          ? {
+              code: 'model_error' as const,
+              message: String(stateErrorMessage || 'Model execution failed'),
+              status: stateError.body?.status,
+            }
+          : null,
+        output: fullOutput.output,
+        output_text: fullOutput.outputText || text,
+        status: (finalState?.status === 'error' ? 'failed' : 'completed') as any,
+        usage: {
+          input_tokens: usage.input_tokens,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens: usage.output_tokens,
+          output_tokens_details: { reasoning_tokens: 0 },
+          total_tokens: usage.total_tokens,
+        },
+      },
+      sequence_number: sequenceNumber,
+      type: 'response.completed' as const,
+    };
   }
 
   /**

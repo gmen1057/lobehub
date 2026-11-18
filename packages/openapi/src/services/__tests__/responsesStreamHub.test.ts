@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { ResponsesStreamHub } from '../responsesStreamHub';
 
@@ -101,20 +101,89 @@ describe('ResponsesStreamHub (arckep F8)', () => {
     expect(hub.findByTopic('u1', 'tpc_1')).toBeUndefined();
   });
 
-  it('переполнение истории: события дальше идут подписчикам, история пуста и помечена усечённой', async () => {
-    const hub = makeHub({ t: 1 }, 1000, 100);
-    register(hub, 'op_1');
-    const live: number[] = [];
-    hub.attach('op_1', { onDone: () => undefined, onEvents: (events) => live.push(events.length) });
-    await hub.publishStreamChunk('op_1', 0, { chunkType: 'text', content: 'x'.repeat(60) });
-    await hub.publishStreamChunk('op_1', 0, { chunkType: 'text', content: 'y'.repeat(60) });
-    const op = hub.get('op_1')!;
-    expect(op.truncated).toBe(true);
-    expect(op.events).toEqual([]);
-    expect(live).toEqual([1, 1]);
-    expect(
-      hub.attach('op_1', { onDone: () => undefined, onEvents: () => undefined }).truncated,
-    ).toBe(true);
+  it('переполнение истории: события дальше идут подписчикам, история пуста и помечена усечённой, пишется одиночный warn', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const hub = makeHub({ t: 1 }, 1000, 100);
+      register(hub, 'op_1');
+      const live: number[] = [];
+      hub.attach('op_1', {
+        onDone: () => undefined,
+        onEvents: (events) => live.push(events.length),
+      });
+      await hub.publishStreamChunk('op_1', 0, { chunkType: 'text', content: 'x'.repeat(60) });
+      await hub.publishStreamChunk('op_1', 0, { chunkType: 'text', content: 'y'.repeat(60) });
+      await hub.publishStreamChunk('op_1', 0, { chunkType: 'text', content: 'z'.repeat(60) });
+      const op = hub.get('op_1')!;
+      expect(op.truncated).toBe(true);
+      expect(op.events).toEqual([]);
+      expect(live).toEqual([1, 1, 1]);
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith('[ResponsesStreamHub] history truncated', {
+        bytes: expect.any(Number),
+        operationId: 'op_1',
+        topicId: 'tpc_1',
+      });
+      expect(
+        hub.attach('op_1', { onDone: () => undefined, onEvents: () => undefined }).truncated,
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('1000+ чанков tools_calling одного шага заменяются на месте и не переполняют историю, живой подписчик получает каждый чанк', async () => {
+    const hub = makeHub({ t: 1 });
+    register(hub, 'op_tools');
+    let liveChunks = 0;
+    hub.attach('op_tools', {
+      onDone: () => undefined,
+      onEvents: (events) => {
+        liveChunks += events.length;
+      },
+    });
+
+    const chunkCount = 1100;
+    let args = '{"code":"';
+    const piece = 'a'.repeat(50); // 1100 * 50 = 55 КБ итоговых аргументов (суммарно >30 МБ без схлопывания)
+    for (let i = 0; i < chunkCount; i++) {
+      args += piece;
+      await hub.publishStreamChunk('op_tools', 2, {
+        chunkType: 'tools_calling',
+        toolsCalling: [
+          {
+            apiName: 'executeCode',
+            arguments: i === chunkCount - 1 ? `${args}"}` : args,
+            id: 'call_big',
+            identifier: 'lobe-cloud-sandbox',
+            type: 'builtin',
+          } as any,
+        ],
+      });
+    }
+
+    const op = hub.get('op_tools')!;
+    expect(liveChunks).toBe(chunkCount);
+    expect(op.truncated).toBe(false);
+    expect(op.events).toHaveLength(1);
+    expect(op.bytes).toBeGreaterThan(55_000);
+    expect(op.bytes).toBeLessThan(100_000);
+    expect(op.events[0].data.toolsCalling[0].arguments.length).toBe(args.length + 2);
+
+    // Следующий шаг (другой stepIndex) не затирает предыдущий шаг
+    await hub.publishStreamChunk('op_tools', 3, {
+      chunkType: 'tools_calling',
+      toolsCalling: [
+        {
+          apiName: 'executeCode',
+          arguments: '{"code":"step3"}',
+          id: 'call_step3',
+          identifier: 'lobe-cloud-sandbox',
+          type: 'builtin',
+        } as any,
+      ],
+    });
+    expect(op.events).toHaveLength(2);
   });
 
   it('события чужой операции (не зарегистрированной) не падают и не хранятся', async () => {
