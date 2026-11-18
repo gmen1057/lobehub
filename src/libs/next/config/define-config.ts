@@ -31,7 +31,7 @@ export function defineConfig(config: CustomNextConfig) {
         'public/**/*',
         '.next/static/**/*',
 
-        // Only needed for Docker standalone builds.
+        // Only needed for Docker / self-hosted standalone builds.
         // On Vercel (serverless), including native bindings can easily exceed function size limits.
         ...(buildWithDocker
           ? [
@@ -41,7 +41,10 @@ export function defineConfig(config: CustomNextConfig) {
               'dist/mobile/**',
 
               'packages/database/migrations/**',
-
+            ]
+          : []),
+        ...(isStandaloneMode && !process.env.VERCEL_ENV
+          ? [
               // Ensure native bindings are included in standalone output.
               // `@napi-rs/canvas` is loaded via dynamic `require()` (see packages/file-loaders),
               // which may not be picked up by Next.js output tracing.
@@ -50,6 +53,10 @@ export function defineConfig(config: CustomNextConfig) {
               // pnpm real package locations (including platform-specific bindings with `.node`)
               'node_modules/.pnpm/@napi-rs+canvas*/**/*',
               'node_modules/.pnpm/@napi-rs+canvas-*/**/*',
+              'node_modules/sharp/**/*',
+              'node_modules/@img/**/*',
+              'node_modules/.pnpm/sharp*/**/*',
+              'node_modules/.pnpm/@img+*/**/*',
             ]
           : []),
       ],

@@ -1,8 +1,22 @@
 // @vitest-environment node
-import sharp from 'sharp';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import dns from 'node:dns';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { type ServerResponse } from 'node:http';
+import https from 'node:https';
+import { syncBuiltinESMExports } from 'node:module';
+import { type AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-import { ingestAttachment } from '../ingestAttachment';
+import sharp from 'sharp';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  ingestAttachment,
+  type IngestAttachmentOptions,
+  MAX_UPLOAD_BYTES,
+} from '../ingestAttachment';
 
 // arckep (19.10.2026): ingest отдаёт модели все куски длинной картинки по порядку, обычную — одним файлом.
 
@@ -15,8 +29,10 @@ const fileService = {
   })),
 };
 
-const ingest = (source: Parameters<typeof ingestAttachment>[0]) =>
-  ingestAttachment(source, fileService as any, 'user_1');
+const ingest = (
+  source: Parameters<typeof ingestAttachment>[0],
+  options?: IngestAttachmentOptions,
+) => ingestAttachment(source, fileService as any, 'user_1', options);
 
 const canvas = (width: number, height: number, format: 'jpeg' | 'png' = 'jpeg') => {
   const image = sharp({ create: { background: '#445566', channels: 3, height, width } });
@@ -39,7 +55,6 @@ describe('ingestAttachment — картинки', () => {
     expect(result.images.map((image) => image.name)).toEqual(
       Array.from({ length: 8 }, (_, i) => `letter.jpg.part-0${i + 1}-of-08.png`),
     );
-    // загружены по порядку, ключи под папкой человека
     const uploaded = fileService.uploadFromBuffer.mock.calls.map((call) => call[2]);
     expect(uploaded).toHaveLength(8);
     expect(uploaded.every((path) => path.startsWith('files/user_1/'))).toBe(true);
@@ -51,13 +66,11 @@ describe('ingestAttachment — картинки', () => {
       const meta = await sharp(call[0]).metadata();
       expect([meta.width, meta.height]).toEqual([1536, 2048]);
     }
-    // для списка вложений: размер исходной картинки и признак «сохранённое — не оригинал»; размеры кусков в точках
     expect(result.source).toEqual({ height: 23_050, width: 2512 });
     expect(result.unchanged).toBe(false);
     expect(result.images.every((image) => image.width === 1536 && image.height === 2048)).toBe(
       true,
     );
-    // прежние поля — первый кусок
     expect(result.fileId).toBe(result.images[0].fileId);
     expect(result.key).toBe(result.images[0].key);
     expect(result.resolvedUrl).toBe(result.images[0].resolvedUrl);
@@ -76,7 +89,6 @@ describe('ingestAttachment — картинки', () => {
       total: 1,
       width: 1200,
     });
-    // сохранён оригинал: байты те же, размер исходной известен
     expect(result.unchanged).toBe(true);
     expect(result.source).toEqual({ height: 800, width: 1200 });
     expect(fileService.uploadFromBuffer).toHaveBeenCalledTimes(1);
@@ -94,7 +106,6 @@ describe('ingestAttachment — картинки', () => {
     expect(mime).toBe('image/png');
     const meta = await sharp(buffer).metadata();
     expect([meta.width, meta.height]).toEqual([1536, 1152]);
-    // сохранена ужатая копия, не оригинал; размер исходной (4000×3000) известен — его увидит модель в списке
     expect(result.unchanged).toBe(false);
     expect(result.source).toEqual({ height: 3000, width: 4000 });
     expect(result.images[0]).toMatchObject({ height: 1152, width: 1536 });
@@ -108,20 +119,19 @@ describe('ingestAttachment — картинки', () => {
 
   it('картинка по ссылке тоже режется', async () => {
     const tall = await canvas(1600, 9000);
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(
-        async () =>
-          new Response(new Uint8Array(tall), { headers: { 'content-type': 'image/jpeg' } }),
-      ),
+    const result = await ingest(
+      { name: 'long.jpg', url: 'https://example.com/long.jpg' },
+      {
+        baseFetch: vi.fn(
+          async () =>
+            new Response(new Uint8Array(tall), {
+              headers: { 'content-type': 'image/jpeg; charset=binary' },
+            }),
+        ),
+      },
     );
-    try {
-      const result = await ingest({ name: 'long.jpg', url: 'https://example.com/long.jpg' });
-      expect(result.images.length).toBeGreaterThan(1);
-      expect(result.images.every((image) => image.total === result.images.length)).toBe(true);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(result.images.length).toBeGreaterThan(1);
+    expect(result.images.every((image) => image.total === result.images.length)).toBe(true);
   }, 60_000);
 });
 
@@ -136,7 +146,6 @@ describe('ingestAttachment — не картинки', () => {
     expect(result.isImage).toBe(false);
     expect(result.images).toEqual([]);
     expect(result.resolvedUrl).toBe('');
-    // не картинка: сохранён сам файл, размера нет
     expect(result.unchanged).toBe(true);
     expect(result.source).toBeUndefined();
     expect(result.fileId).toBe('file_1');
@@ -148,3 +157,213 @@ describe('ingestAttachment — не картинки', () => {
     await expect(ingest({ name: 'x' })).rejects.toThrow('buffer or url');
   });
 });
+
+describe('ingestAttachment — защита SSRF и лимит размера', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    syncBuiltinESMExports();
+  });
+
+  it('MAX_UPLOAD_BYTES равен 50 МБ', () => {
+    expect(MAX_UPLOAD_BYTES).toBe(50 * 1024 * 1024);
+  });
+
+  it.each([
+    ['http://127.0.0.1:8202/api/internal', /Only https/],
+    ['http://169.254.169.254/latest/meta-data/', /Only https/],
+    ['file:///etc/passwd', /Only https/],
+    ['https://user:secret@example.com/a.pdf', /credentials/],
+  ])('отклоняет небезопасную схему/учётные данные: %s', async (url, pattern) => {
+    await expect(ingest({ name: 'a.pdf', url })).rejects.toThrow(pattern);
+    expect(fileService.uploadFromBuffer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'https://127.0.0.1/secret.pdf',
+    'https://169.254.169.254/latest/meta-data/',
+    'https://10.0.0.5/internal.pdf',
+    'https://[::1]/secret.pdf',
+  ])('блокирует внутренний/метаданные IP даже по https: %s', async (url) => {
+    vi.stubEnv('SSRF_ALLOW_PRIVATE_IP_ADDRESS', '1');
+    try {
+      await expect(ingest({ name: 'a.pdf', url })).rejects.toThrow(
+        /SSRF blocked|is not allowed|Fetch failed/,
+      );
+      expect(fileService.uploadFromBuffer).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('блокирует DNS-резолв публичного домена в 127.0.0.1 и 169.254.169.254', async () => {
+    const realLookup = dns.lookup;
+    vi.spyOn(dns, 'lookup').mockImplementation(((hostname: string, options: any, callback: any) => {
+      const cb = typeof options === 'function' ? options : callback;
+      const mapped =
+        hostname === 'rebind-local.example.test'
+          ? '127.0.0.1'
+          : hostname === 'rebind-meta.example.test'
+            ? '169.254.169.254'
+            : undefined;
+      if (!mapped) return (realLookup as any)(hostname, options, callback);
+      if (typeof options === 'object' && options?.all) cb(null, [{ address: mapped, family: 4 }]);
+      else cb(null, mapped, 4);
+    }) as any);
+    syncBuiltinESMExports();
+
+    await expect(
+      ingest({ name: 'a.pdf', url: 'https://rebind-local.example.test/a.pdf' }),
+    ).rejects.toThrow(/SSRF blocked|is not allowed/);
+    await expect(
+      ingest({ name: 'a.pdf', url: 'https://rebind-meta.example.test/a.pdf' }),
+    ).rejects.toThrow(/SSRF blocked|is not allowed/);
+  });
+
+  it('блокирует редирект https -> http://127.0.0.1', async () => {
+    const baseFetch = vi.fn(
+      async () =>
+        new Response(null, {
+          headers: { location: 'http://127.0.0.1:8202/internal' },
+          status: 302,
+        }),
+    );
+
+    await expect(
+      ingest({ name: 'a.pdf', url: 'https://cdn.example.com/start' }, { baseFetch }),
+    ).rejects.toThrow(
+      /Only https attachment URLs are allowed \(redirect to http:\/\/127\.0\.0\.1:8202\)/,
+    );
+    expect(baseFetch).toHaveBeenCalledTimes(1);
+    expect(fileService.uploadFromBuffer).not.toHaveBeenCalled();
+  });
+
+  it('аварийно обрывает потоковое чтение при превышении лимита размера без чтения хвоста потока', async () => {
+    let chunksPulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+      pull(controller) {
+        chunksPulled += 1;
+        controller.enqueue(new Uint8Array(600));
+      },
+    });
+
+    const baseFetch = vi.fn(
+      async () =>
+        new Response(stream, {
+          headers: { 'content-type': 'application/pdf' },
+          status: 200,
+        }),
+    );
+
+    await expect(
+      ingest(
+        { name: 'huge.pdf', url: 'https://cdn.example.com/huge.pdf' },
+        { baseFetch, maxBytes: 1024 },
+      ),
+    ).rejects.toThrow(/exceeds limit \(1024 bytes\)/);
+
+    expect(chunksPulled).toBeLessThanOrEqual(3);
+    expect(cancelled).toBe(true);
+    expect(fileService.uploadFromBuffer).not.toHaveBeenCalled();
+  });
+});
+
+const hasOpenssl = (() => {
+  try {
+    execFileSync('openssl', ['version'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+describe.runIf(hasOpenssl)(
+  'ingestAttachment — реальный локальный HTTPS-сервер (редиректы и размер)',
+  () => {
+    let dir: string;
+    let server: https.Server;
+    let port: number;
+    let handlers: Record<string, (res: ServerResponse) => void>;
+    let previousTls: string | undefined;
+
+    beforeAll(async () => {
+      dir = mkdtempSync(path.join(tmpdir(), 'ingest-safe-fetch-'));
+      execFileSync(
+        'openssl',
+        [
+          'req',
+          '-x509',
+          '-newkey',
+          'rsa:2048',
+          '-nodes',
+          '-days',
+          '1',
+          '-keyout',
+          path.join(dir, 'key.pem'),
+          '-out',
+          path.join(dir, 'cert.pem'),
+          '-subj',
+          '/CN=127.0.0.1',
+          '-addext',
+          'subjectAltName=IP:127.0.0.1',
+        ],
+        { stdio: 'ignore' },
+      );
+      previousTls = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+      handlers = {};
+      server = https.createServer(
+        {
+          cert: readFileSync(path.join(dir, 'cert.pem')),
+          key: readFileSync(path.join(dir, 'key.pem')),
+        },
+        (req, res) => {
+          const handler = handlers[req.url || '/'];
+          if (handler) handler(res);
+          else {
+            res.writeHead(404);
+            res.end();
+          }
+        },
+      );
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      port = (server.address() as AddressInfo).port;
+    });
+
+    afterAll(async () => {
+      if (previousTls === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = previousTls;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      rmSync(dir, { force: true, recursive: true });
+    });
+
+    it('блокирует 302 редирект с https на http://127.0.0.1 и обрывает ответ крупнее maxBytes на лету', async () => {
+      handlers['/to-http'] = (res) => {
+        res.writeHead(302, { Location: 'http://127.0.0.1:8202/secret' });
+        res.end();
+      };
+      handlers['/too-big'] = (res) => {
+        res.writeHead(200, { 'Content-Type': 'application/pdf' });
+        res.end(Buffer.alloc(4096, 0x41));
+      };
+
+      await expect(
+        ingest(
+          { name: 'a.pdf', url: `https://127.0.0.1:${port}/to-http` },
+          { ssrf: { allowIPAddressList: ['127.0.0.1'] } },
+        ),
+      ).rejects.toThrow(/Only https attachment URLs are allowed/);
+
+      await expect(
+        ingest(
+          { name: 'big.pdf', url: `https://127.0.0.1:${port}/too-big` },
+          { maxBytes: 1024, ssrf: { allowIPAddressList: ['127.0.0.1'] } },
+        ),
+      ).rejects.toThrow(/over limit|exceeds limit/);
+    });
+  },
+);

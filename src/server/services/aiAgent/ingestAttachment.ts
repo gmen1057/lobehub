@@ -1,3 +1,4 @@
+import { type SSRFOptions, ssrfSafeFetch } from '@lobechat/ssrf-safe-fetch';
 import mime from 'mime';
 
 import type { FileService } from '@/server/services/file';
@@ -7,6 +8,129 @@ import { prepareImageForModel } from './imageSlicing';
 // --------------- Constants ---------------
 
 const COMPRESSIBLE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+/** Maximum allowed attachment download / buffer size (50 MiB). */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+/** Maximum number of HTTPS redirects followed when fetching external attachment URLs. */
+export const MAX_ATTACHMENT_REDIRECTS = 5;
+
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+export interface IngestAttachmentOptions {
+  /** Network fetcher (defaults to ssrfSafeFetch; injectable for tests). */
+  baseFetch?: typeof ssrfSafeFetch;
+  /** Maximum payload size in bytes (defaults to MAX_UPLOAD_BYTES). */
+  maxBytes?: number;
+  /** Maximum redirect hops (defaults to MAX_ATTACHMENT_REDIRECTS). */
+  maxRedirects?: number;
+  /** SSRF overrides (only used in tests with a local HTTPS server). */
+  ssrf?: SSRFOptions;
+}
+
+const assertAllowedAttachmentUrl = (url: URL, redirected: boolean) => {
+  if (url.protocol !== 'https:') {
+    throw new Error(
+      redirected
+        ? `Only https attachment URLs are allowed (redirect to ${url.protocol}//${url.host})`
+        : 'Only https attachment URLs are allowed',
+    );
+  }
+  if (url.username || url.password) {
+    throw new Error('Attachment URLs with credentials are not allowed');
+  }
+};
+
+const fetchAttachmentSafely = async (
+  rawUrl: string,
+  options: IngestAttachmentOptions = {},
+): Promise<{ buffer: Buffer; contentType: string | null }> => {
+  const baseFetch = options.baseFetch ?? ssrfSafeFetch;
+  const maxBytes = options.maxBytes ?? MAX_UPLOAD_BYTES;
+  const maxRedirects = options.maxRedirects ?? MAX_ATTACHMENT_REDIRECTS;
+  const ssrf: SSRFOptions = {
+    allowIPAddressList: options.ssrf?.allowIPAddressList ?? [],
+    allowPrivateIPAddress: options.ssrf?.allowPrivateIPAddress ?? false,
+  };
+
+  let current: URL;
+  try {
+    current = new URL(rawUrl);
+  } catch {
+    throw new Error('Invalid attachment URL');
+  }
+
+  let response: Response | undefined;
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    assertAllowedAttachmentUrl(current, hop > 0);
+
+    const hopResponse = await baseFetch(
+      current.href,
+      { redirect: 'manual', size: maxBytes } as RequestInit,
+      ssrf,
+    );
+
+    if (!REDIRECT_STATUSES.has(hopResponse.status)) {
+      response = hopResponse;
+      break;
+    }
+
+    const location = hopResponse.headers.get('location');
+    if (!location) {
+      throw new Error(`Redirect (${hopResponse.status}) without a Location header`);
+    }
+    try {
+      current = new URL(location, current);
+    } catch {
+      throw new Error('Invalid redirect URL while fetching attachment');
+    }
+  }
+
+  if (!response) {
+    throw new Error(`Too many redirects (more than ${maxRedirects})`);
+  }
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch attachment: ${response.status} ${response.statusText}`);
+  }
+
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Error(`Attachment size (${declaredLength} bytes) exceeds limit (${maxBytes} bytes)`);
+  }
+
+  const reader = response.body?.getReader();
+  let buffer: Buffer;
+  if (reader) {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error(`Attachment size exceeds limit (${maxBytes} bytes)`);
+      }
+      chunks.push(value);
+    }
+    buffer = Buffer.concat(chunks, total);
+  } else {
+    const arrayBuffer = await response.arrayBuffer();
+    if (arrayBuffer.byteLength > maxBytes) {
+      throw new Error(
+        `Attachment size (${arrayBuffer.byteLength} bytes) exceeds limit (${maxBytes} bytes)`,
+      );
+    }
+    buffer = Buffer.from(arrayBuffer);
+  }
+
+  return {
+    buffer,
+    contentType: response.headers.get('content-type'),
+  };
+};
 
 // --------------- Types ---------------
 
@@ -69,22 +193,26 @@ export async function ingestAttachment(
   source: AttachmentSource,
   fileService: FileService,
   userId: string,
+  options?: IngestAttachmentOptions,
 ): Promise<IngestResult> {
+  const maxBytes = options?.maxBytes ?? MAX_UPLOAD_BYTES;
   let buffer: Buffer;
   let mimeType = source.mimeType || 'application/octet-stream';
 
   // 1. Resolve buffer
   if (source.buffer) {
+    if (source.buffer.byteLength > maxBytes) {
+      throw new Error(
+        `Attachment size (${source.buffer.byteLength} bytes) exceeds limit (${maxBytes} bytes)`,
+      );
+    }
     buffer = source.buffer;
   } else if (source.url) {
-    const response = await fetch(source.url);
-    if (!response.ok) {
-      throw new Error(`Failed to fetch attachment: ${response.status} ${response.statusText}`);
-    }
-    buffer = Buffer.from(await response.arrayBuffer());
+    const fetched = await fetchAttachmentSafely(source.url, options);
+    buffer = fetched.buffer;
 
     // Use response header if more specific than what we have
-    const headerType = response.headers.get('content-type');
+    const headerType = fetched.contentType?.split(';')[0]?.trim().toLowerCase();
     if (headerType && headerType !== 'application/octet-stream') {
       mimeType = headerType;
     }

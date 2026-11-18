@@ -1,5 +1,5 @@
 // generate('1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ', 16); //=> "4f90d13a42"
-import { customAlphabet } from 'nanoid/non-secure';
+import { customAlphabet } from 'nanoid';
 import { generate } from 'random-words';
 
 export const createNanoId = (size = 8) =>
@@ -36,11 +36,15 @@ const prefixes = {
   user: 'user',
 } as const;
 
-export const idGenerator = (namespace: keyof typeof prefixes, size = 12) => {
-  const hash = createNanoId(size);
+export const FILE_ID_SUFFIX_LENGTH = 21;
+
+export const idGenerator = (namespace: keyof typeof prefixes, size?: number) => {
   const prefix = prefixes[namespace];
 
   if (!prefix) throw new Error(`Invalid namespace: ${namespace}, please check your code.`);
+
+  const resolvedSize = size ?? (namespace === 'files' ? FILE_ID_SUFFIX_LENGTH : 12);
+  const hash = createNanoId(resolvedSize);
 
   return `${prefix}_${hash()}`;
 };
