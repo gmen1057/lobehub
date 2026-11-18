@@ -80,7 +80,7 @@ STATE_LOCK_HASH="$PROD/.deployed-lockhash"
 LOCK_HASH=$(cat pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc packages/*/package.json 2>/dev/null | sha256sum | cut -d' ' -f1)
 if [[ "$MODE" == "--install" || ( "$MODE" != "--stage-only" && ( ! -f "$STATE_LOCK_HASH" || "$(cat "$STATE_LOCK_HASH")" != "$LOCK_HASH" ) ) ]]; then
     echo "[engine] pnpm install --frozen-lockfile"
-    pnpm install --frozen-lockfile
+    CI=true pnpm install --frozen-lockfile --config.confirmModulesPurge=false
 else
     echo "[engine] pnpm install skipped (lockfile/manifests unchanged or stage-only)"
 fi
