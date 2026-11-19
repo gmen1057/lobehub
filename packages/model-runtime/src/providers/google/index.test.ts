@@ -856,6 +856,56 @@ describe('buildGoogleToolsWithSearch', () => {
     // Pre-Gemini 3 models should only have search tools, no functionDeclarations
     expect(config.tools).toEqual([{ urlContext: {} }, { googleSearch: {} }]);
   });
+
+  describe('Gemini 4 Neon thinking config and sync maxOutputTokens cap (arckep)', () => {
+    it('defaults to thinkingLevel=high, clamps max_tokens > 65536 to 65536, and enables includeServerSideToolInvocations with combined tools', async () => {
+      await instance.chat({
+        enabledSearch: true,
+        max_tokens: 128_000,
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'gemini-4-neon',
+        tools: [{ function: { description: 'A test tool', name: 'test_tool' }, type: 'function' }],
+        urlContext: true,
+      });
+
+      const callArgs = (instance['client'].models.generateContentStream as any).mock.calls[0];
+      const config = callArgs[0].config as any;
+      expect(config.maxOutputTokens).toBe(65_536);
+      expect(config.thinkingConfig).toEqual({
+        includeThoughts: true,
+        thinkingBudget: undefined,
+        thinkingLevel: 'high',
+      });
+      expect(config.toolConfig).toEqual({ includeServerSideToolInvocations: true });
+    });
+
+    it('preserves xhigh and keeps max_tokens <= 65536 or undefined untouched', async () => {
+      await instance.chat({
+        max_tokens: 4096,
+        messages: [{ content: 'Hello', role: 'user' }],
+        model: 'gemini-4-neon',
+        thinkingLevel: 'xhigh',
+      });
+
+      const firstConfig = (instance['client'].models.generateContentStream as any).mock.calls[0][0]
+        .config as any;
+      expect(firstConfig.maxOutputTokens).toBe(4096);
+      expect(firstConfig.thinkingConfig).toEqual({
+        includeThoughts: true,
+        thinkingBudget: undefined,
+        thinkingLevel: 'xhigh',
+      });
+
+      await instance.chat({
+        messages: [{ content: 'Hello again', role: 'user' }],
+        model: 'gemini-4-neon',
+      });
+
+      const secondConfig = (instance['client'].models.generateContentStream as any).mock.calls[1][0]
+        .config as any;
+      expect(secondConfig.maxOutputTokens).toBeUndefined();
+    });
+  });
 });
 
 describe('models', () => {

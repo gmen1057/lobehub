@@ -264,15 +264,15 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
       },
       contextWindowTokens: 1_048_576,
       description:
-        'Gemini 4 Argon — флагман Google: сложный код, агенты, анализ длинных документов, 1M контекст; рассуждает всегда',
-      displayName: 'Gemini 4 Argon',
+        'Gemini 4 Neon — флагман Google для сложного кода, агентов, науки и длинных документов; четыре уровня глубины размышлений и контекст до 1 млн токенов',
+      displayName: 'Gemini 4 Neon',
       enabled: true,
-      id: 'gemini-4-argon',
+      id: 'gemini-4-neon',
       maxOutput: 65_536,
       pricing: {
         units: [
-          { name: 'textInput', rate: 4, strategy: 'fixed', unit: 'millionTokens' },
-          { name: 'textOutput', rate: 20, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textInput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+          { name: 'textOutput', rate: 15, strategy: 'fixed', unit: 'millionTokens' },
         ],
       },
       settings: {
@@ -974,7 +974,7 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
   google: [
     '+gemini-4-hydrogen=Gemini 4 Hydrogen<1048576:fc:vision:reasoning>',
     '+gemini-4-carbon=Gemini 4 Carbon<1048576:fc:vision:reasoning>',
-    '+gemini-4-argon=Gemini 4 Argon<1048576:fc:vision:reasoning>',
+    '+gemini-4-neon=Gemini 4 Neon<1048576:fc:vision:reasoning>',
     '+gemini-3.8-flash=Gemini 3.8 Flash<1048576:fc:vision:reasoning>',
     '+gemini-3.1-flash-lite=Gemini 3.1 Flash Lite<1048576:fc:vision>',
   ],
@@ -1046,9 +1046,13 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
       levels: ['minimal', 'low', 'medium', 'high'],
     },
     'gemini-3.8-flash': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
-    'gemini-4-argon': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     'gemini-4-carbon': { auto: 'medium', kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     'gemini-4-hydrogen': {
+      auto: 'high',
+      kind: 'geminiLevel',
+      levels: ['low', 'medium', 'high', 'xhigh'],
+    },
+    'gemini-4-neon': {
       auto: 'high',
       kind: 'geminiLevel',
       levels: ['low', 'medium', 'high', 'xhigh'],

@@ -19,19 +19,22 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
     expect(resolveReasoningProfile('qwen3.8-max', 'qwen', undefined)?.kind).toBe('budget');
   });
 
-  it('Hydrogen uses its generated four-level profile before the legacy thinkingLevel3 control', () => {
-    for (const extendParams of [undefined, ['thinkingLevel3', 'urlContext']]) {
-      const profile = resolveReasoningProfile('gemini-4-hydrogen', 'google', extendParams)!;
-      expect(profile).toEqual({ kind: 'geminiLevel', levels: ['low', 'medium', 'high', 'xhigh'] });
-      expect(snapReasoningLevel('xhigh', profile.levels)).toBe('xhigh');
-      expect(snapReasoningLevel('none', profile.levels)).toBe('low');
-      expect(snapReasoningLevel('minimal', profile.levels)).toBe('low');
-      expect(reasoningCallParams(profile, 'xhigh')).toEqual({ thinkingLevel: 'xhigh' });
+  it('Hydrogen and Neon use their four-level profile and default high before the legacy thinkingLevel3 control', () => {
+    for (const modelId of ['gemini-4-hydrogen', 'gemini-4-neon']) {
+      for (const extendParams of [undefined, ['thinkingLevel3', 'urlContext']]) {
+        const profile = resolveReasoningProfile(modelId, 'google', extendParams)!;
+        expect(profile, modelId).toEqual({
+          kind: 'geminiLevel',
+          levels: ['low', 'medium', 'high', 'xhigh'],
+        });
+        expect(snapReasoningLevel('xhigh', profile.levels)).toBe('xhigh');
+        expect(snapReasoningLevel('none', profile.levels)).toBe('low');
+        expect(snapReasoningLevel('minimal', profile.levels)).toBe('low');
+        expect(reasoningCallParams(profile, 'xhigh')).toEqual({ thinkingLevel: 'xhigh' });
+      }
+      expect(resolveReasoningAuto(modelId, 'google', {})).toBe('high');
+      expect(resolveReasoningAuto(modelId, 'google', { thinkingLevel: 'xhigh' })).toBe('xhigh');
     }
-    expect(resolveReasoningAuto('gemini-4-hydrogen', 'google', {})).toBe('high');
-    expect(resolveReasoningAuto('gemini-4-hydrogen', 'google', { thinkingLevel: 'xhigh' })).toBe(
-      'xhigh',
-    );
   });
 
   it('по полю карточки: GPT-5.x, GPT-6, Grok, Gemini, o3', () => {
@@ -316,6 +319,8 @@ describe('resolveReasoningAuto (что значит «Авто», 19.10)', () =>
     expect(auto('deepseek-v4-pro', 'deepseek')).toBe('high');
     expect(auto('gemini-4-argon', 'google')).toBe('medium');
     expect(auto('gemini-4-carbon', 'google')).toBe('medium');
+    expect(auto('gemini-4-hydrogen', 'google')).toBe('high');
+    expect(auto('gemini-4-neon', 'google')).toBe('high');
     expect(auto('gemini-3.8-flash', 'google')).toBe('medium');
     expect(auto('gemini-3.6-flash', 'google')).toBe('auto');
     expect(auto('grok-4.6', 'xai')).toBe('auto');

@@ -66,31 +66,33 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
     expect(models?.some((model) => model.id === 'qwen3.8-max')).toBe(true);
   });
 
-  it('exposes Hydrogen alongside Carbon and Argon with the synchronous output limit', async () => {
+  it('exposes Hydrogen and Neon alongside Carbon with the synchronous output limit and retires Argon', async () => {
     const models = await transformToAiModelList({
       defaultModels: AiModels.google,
       modelString: ARCKEP_STUDIO_MODEL_LISTS.google,
       providerId: 'google',
     });
-    const hydrogen = models?.find((model) => model.id === 'gemini-4-hydrogen');
-    expect(hydrogen?.abilities).toMatchObject({
-      functionCall: true,
-      reasoning: true,
-      search: true,
-      structuredOutput: true,
-      video: true,
-      vision: true,
-    });
-    expect(hydrogen?.abilities.imageOutput).toBeFalsy();
-    expect(hydrogen?.contextWindowTokens).toBe(1_048_576);
-    expect(hydrogen?.maxOutput).toBe(65_536);
-    expect(hydrogen?.settings).toMatchObject({
-      extendParams: ['thinkingLevel3', 'urlContext'],
-      searchImpl: 'params',
-      searchProvider: 'google',
-    });
+    for (const id of ['gemini-4-hydrogen', 'gemini-4-neon']) {
+      const model = models?.find((item) => item.id === id);
+      expect(model?.abilities, id).toMatchObject({
+        functionCall: true,
+        reasoning: true,
+        search: true,
+        structuredOutput: true,
+        video: true,
+        vision: true,
+      });
+      expect(model?.abilities.imageOutput, id).toBeFalsy();
+      expect(model?.contextWindowTokens, id).toBe(1_048_576);
+      expect(model?.maxOutput, id).toBe(65_536);
+      expect(model?.settings, id).toMatchObject({
+        extendParams: ['thinkingLevel3', 'urlContext'],
+        searchImpl: 'params',
+        searchProvider: 'google',
+      });
+    }
     expect(models?.some((model) => model.id === 'gemini-4-carbon')).toBe(true);
-    expect(models?.some((model) => model.id === 'gemini-4-argon')).toBe(true);
+    expect(models?.some((model) => model.id === 'gemini-4-argon')).toBe(false);
   });
 
   it('keeps activeChatKeys, LOBE_DEFAULT_MODEL_LIST and AiModels[provider] synced with ARCKEP_STUDIO_MODEL_CARDS and excludes retired IDs', async () => {
@@ -137,13 +139,14 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       }
     }
 
-    // Active OpenAI lineup: GPT-6.2 Sol, GPT-6.1 Terra, GPT-6 Luna, GPT-6.2 Astra; Google: both Carbon and Argon
+    // Active OpenAI lineup: GPT-6.2 Sol, GPT-6.1 Terra, GPT-6 Luna, GPT-6.2 Astra; Google: Hydrogen, Carbon and Neon
     expect(activeChatKeys).toContain('openai/gpt-6.2-sol');
     expect(activeChatKeys).toContain('openai/gpt-6.2-astra');
     expect(activeChatKeys).toContain('openai/gpt-6.1-terra');
     expect(activeChatKeys).toContain('openai/gpt-6-luna');
+    expect(activeChatKeys).toContain('google/gemini-4-hydrogen');
     expect(activeChatKeys).toContain('google/gemini-4-carbon');
-    expect(activeChatKeys).toContain('google/gemini-4-argon');
+    expect(activeChatKeys).toContain('google/gemini-4-neon');
 
     // Previous-generation API-only models & retired 1st-gen Qwen image IDs must not appear
     for (const excluded of [
@@ -157,6 +160,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'anthropic/claude-opus-5',
       'anthropic/claude-fable-5-1',
       'anthropic/claude-fable-5',
+      'google/gemini-4-argon',
       'google/gemini-3.7-flash',
       'google/gemini-3.1-pro-preview',
       'xai/grok-4.6',
@@ -192,6 +196,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
 
     const visionStudioModels: ReadonlyArray<[string, string]> = [
       ['gemini-4-carbon', 'google'],
+      ['gemini-4-neon', 'google'],
       ['claude-fable-5-2', 'anthropic'],
       ['tencent/hy4', 'openrouter'],
       ['gpt-6.2-sol', 'openai'],
@@ -241,6 +246,18 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
 
     const fable52 = AiModels.anthropic.find((item) => item.id === 'claude-fable-5-2');
     expect(fable52?.pricing?.units.some((u) => u.name === 'textInput_cacheRead')).toBe(true);
+
+    const neon = AiModels.google.find((item) => item.id === 'gemini-4-neon');
+    expect(neon?.releasedAt).toBe('2026-11-18');
+    expect(neon?.pricing?.units).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'textInput_cacheRead', rate: 0.15 }),
+        expect.objectContaining({ name: 'textInput', rate: 3 }),
+        expect.objectContaining({ name: 'textOutput', rate: 15 }),
+      ]),
+    );
+    const argon = AiModels.google.find((item) => item.id === 'gemini-4-argon');
+    expect(argon?.enabled).toBe(false);
 
     const kimiK31Pro = LOBE_DEFAULT_MODEL_LIST.find(
       (item) => item.providerId === 'openrouter' && item.id === 'moonshotai/kimi-k3.1-pro',

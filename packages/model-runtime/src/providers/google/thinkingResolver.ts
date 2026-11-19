@@ -85,7 +85,7 @@ const THINKING_ENABLED_PATTERNS: RegExp[] = [
   /gemini-\d+(?:\.\d+)?-flash(?!-lite)/i, // gemini-2.5-flash, gemini-3-flash (but not flash-lite)
   /gemini-\d+-pro-image/i, // gemini-3-pro-image-preview
   /nano-banana-pro/i,
-  /gemini-\d+(?:\.\d+)?-(?:argon|carbon|hydrogen)/i, // arckep: Gemini 4 thinking cannot be turned off
+  /gemini-\d+(?:\.\d+)?-(?:argon|carbon|hydrogen|neon)/i, // arckep: Gemini 4 thinking cannot be turned off
   /thinking/i, // Any model with "thinking" in the name
 ];
 
@@ -278,11 +278,11 @@ export const resolveGoogleThinkingConfig = (
 ): ResolvedGoogleThinkingConfig => {
   const { thinkingBudget, thinkingLevel } = options;
 
-  // Hydrogen accepts four levels, defaults to high, and cannot disable thinking via a budget.
-  if (/^gemini-4-hydrogen$/i.test(model)) {
+  // Hydrogen and Neon accept four levels, default to high, and cannot disable thinking via a budget.
+  if (/^gemini-4-(?:hydrogen|neon)$/i.test(model)) {
     const level = thinkingLevel ?? 'high';
     if (!['low', 'medium', 'high', 'xhigh'].includes(level)) {
-      throw new TypeError('Gemini 4 Hydrogen thinkingLevel must be low, medium, high or xhigh');
+      throw new TypeError(`${model} thinkingLevel must be low, medium, high or xhigh`);
     }
     return { includeThoughts: true, thinkingBudget: undefined, thinkingLevel: level };
   }
