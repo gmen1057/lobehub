@@ -89,6 +89,8 @@ describe('thinkingResolver', () => {
       'gemini-3-pro-image-preview',
       'gemini-4-argon',
       'gemini-4-carbon',
+      'gemini-4-hydrogen',
+      'gemini-4-neon',
     ])('should return true for %s', (model) => {
       expect(isGemini3Model(model)).toBe(true);
     });
@@ -104,6 +106,55 @@ describe('thinkingResolver', () => {
         });
       },
     );
+
+    describe('gemini-4-neon (arckep)', () => {
+      it('is recognized as Gemini 3+ and thinking-enabled', () => {
+        expect(isGemini3Model('gemini-4-neon')).toBe(true);
+        expect(isThinkingEnabledModel('gemini-4-neon')).toBe(true);
+      });
+
+      it.each(['low', 'medium', 'high', 'xhigh'] as const)(
+        'passes thinkingLevel=%s with includeThoughts=true and strips thinkingBudget',
+        (thinkingLevel) => {
+          expect(
+            resolveGoogleThinkingConfig('gemini-4-neon', {
+              thinkingBudget: 0,
+              thinkingLevel,
+            }),
+          ).toEqual({
+            includeThoughts: true,
+            thinkingBudget: undefined,
+            thinkingLevel,
+          });
+        },
+      );
+
+      it('defaults to high and ignores stale thinkingBudget', () => {
+        expect(resolveGoogleThinkingConfig('gemini-4-neon')).toEqual({
+          includeThoughts: true,
+          thinkingBudget: undefined,
+          thinkingLevel: 'high',
+        });
+        expect(resolveGoogleThinkingConfig('gemini-4-neon', {})).toEqual({
+          includeThoughts: true,
+          thinkingBudget: undefined,
+          thinkingLevel: 'high',
+        });
+        expect(resolveGoogleThinkingConfig('gemini-4-neon', { thinkingBudget: 0 })).toEqual({
+          includeThoughts: true,
+          thinkingBudget: undefined,
+          thinkingLevel: 'high',
+        });
+      });
+
+      it.each(['minimal', 'none'])('rejects unsupported thinkingLevel=%s', (invalidLevel) => {
+        expect(() =>
+          resolveGoogleThinkingConfig('gemini-4-neon', {
+            thinkingLevel: invalidLevel as any,
+          }),
+        ).toThrow(TypeError);
+      });
+    });
 
     it.each([
       'gemini-2.5-pro',

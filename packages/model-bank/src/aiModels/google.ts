@@ -41,9 +41,44 @@ const googleChatModels: AIChatModelCard[] = [
     },
     type: 'chat',
   },
-  // arckep: Gemini 4 Argon (GA 2026-10-13) — list $4/$20 (intro $2/$10 through 2026-11-30 is not
-  // passed on; billing is the studio proxy). Unified 1M window (input + thinking + output), sync
-  // output 65_536; thinkingLevel low|medium|high, thinking cannot be turned off.
+  // arckep: Gemini 4 Neon (GA 2026-11-18) — flat $3/$15 across full 1M context, implicit cache
+  // read $0.15 (95% discount). Unified 1M window (input + thinking + output), sync output 65_536;
+  // thinkingLevel low|medium|high|xhigh (default high), thinking cannot be turned off.
+  {
+    abilities: {
+      functionCall: true,
+      reasoning: true,
+      search: true,
+      structuredOutput: true,
+      video: true,
+      vision: true,
+    },
+    contextWindowTokens: 1_048_576,
+    description:
+      'Gemini 4 Neon — Google frontier reasoning model (November 2026): complex code, agents, science, long documents. 1M context, multimodal input, text output.',
+    displayName: 'Gemini 4 Neon',
+    enabled: true,
+    id: 'gemini-4-neon',
+    maxOutput: 65_536,
+    pricing: {
+      units: [
+        { name: 'textInput_cacheRead', rate: 0.15, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textInput', rate: 3, strategy: 'fixed', unit: 'millionTokens' },
+        { name: 'textOutput', rate: 15, strategy: 'fixed', unit: 'millionTokens' },
+      ],
+    },
+    releasedAt: '2026-11-18',
+    settings: {
+      extendParams: ['thinkingLevel3', 'urlContext'],
+      searchImpl: 'params',
+      searchProvider: 'google',
+    },
+    type: 'chat',
+  },
+  // arckep: Gemini 4 Argon (GA 2026-10-13, archived in studio chat in favour of Gemini 4 Neon) —
+  // list $4/$20 (intro $2/$10 through 2026-11-30 is not passed on; billing is the studio proxy).
+  // Unified 1M window (input + thinking + output), sync output 65_536; thinkingLevel
+  // low|medium|high, thinking cannot be turned off.
   {
     abilities: {
       functionCall: true,
@@ -57,7 +92,7 @@ const googleChatModels: AIChatModelCard[] = [
     description:
       'Gemini 4 Argon — Google flagship reasoning model (October 2026): complex code, agents, long documents. 1M context, multimodal input, text output.',
     displayName: 'Gemini 4 Argon',
-    enabled: true,
+    enabled: false,
     id: 'gemini-4-argon',
     maxOutput: 65_536,
     pricing: {

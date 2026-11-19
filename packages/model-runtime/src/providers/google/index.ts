@@ -59,6 +59,13 @@ const isGemini3OrAbove = (model?: string): boolean => {
   return Number.parseInt(match[1], 10) >= 3;
 };
 
+const GEMINI_4_SYNC_MAX_OUTPUT_TOKENS = 65_536;
+
+// arckep: Gemini 4 synchronous generateContentStream caps output at 65,536 tokens
+// (prevents HTTP 400 for legacy agents carrying 128K max_tokens).
+const isGemini4SyncOutputCapped = (model?: string): boolean =>
+  Boolean(model && /^gemini-4-(?:argon|carbon|hydrogen|neon)$/i.test(model));
+
 const modelsDisableInstuction = new Set([
   'gemini-2.0-flash-exp',
   'gemini-2.0-flash-exp-image-generation',
@@ -204,7 +211,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
                 imageSize: imageResolution,
               }
             : undefined,
-        maxOutputTokens: payload.max_tokens,
+        maxOutputTokens:
+          typeof payload.max_tokens === 'number' && isGemini4SyncOutputCapped(model)
+            ? Math.min(payload.max_tokens, GEMINI_4_SYNC_MAX_OUTPUT_TOKENS)
+            : payload.max_tokens,
         responseModalities: modelsWithModalities.has(model) ? ['Text', 'Image'] : undefined,
         // avoid wide sensitive words
         // refs: https://github.com/lobehub/lobe-chat/pull/1418

@@ -132,6 +132,11 @@ const ARCKEP_PROFILES: ReadonlyArray<{
   },
   // Gemini: уровни мышления проверены студией вживую (GEMINI_THINKING_LEVELS); выключить нельзя.
   {
+    match: /^gemini-4-(?:hydrogen|neon)$/,
+    profile: { kind: 'geminiLevel', levels: ['low', 'medium', 'high', 'xhigh'] },
+    provider: 'google',
+  },
+  {
     match: /^gemini-(?:4-(?:argon|carbon)|3\.8-flash|3\.7-flash|3\.1-pro-preview)$/,
     profile: { kind: 'geminiLevel', levels: ['low', 'medium', 'high'] },
     provider: 'google',
@@ -219,6 +224,11 @@ const PROVIDER_AUTO: ReadonlyArray<{ auto: ReasoningAuto; match: RegExp; provide
   { auto: 'medium', match: /^claude-(?:opus-5-5|haiku-5-5)(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^claude-(?:fable|mythos|opus|sonnet)-5(?:-|$)/, provider: 'anthropic' },
   { auto: 'high', match: /^deepseek-(?:flash|v4)/, provider: 'deepseek' },
+  {
+    auto: 'high',
+    match: /^gemini-4-(?:hydrogen|neon)$/,
+    provider: 'google',
+  },
   {
     auto: 'medium',
     match: /^gemini-(?:4-(?:argon|carbon)|3\.8-flash|3\.7-flash)$/,
