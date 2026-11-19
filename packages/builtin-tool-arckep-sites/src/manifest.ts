@@ -120,8 +120,7 @@ export const ArckepSitesManifest: BuiltinToolManifest = {
   identifier: ArckepSitesIdentifier,
   meta: {
     avatar: '🌐',
-    description:
-      'Мои сайты: создать, править и опубликовать сайт пользователя (страницы, стили, публикация). Картинки — только внутри собираемого сайта; картинки по просьбе в чате делает «Студия Arckep».',
+    description: 'Создать, править и опубликовать сайт пользователя (страницы, стили, публикация).',
     title: 'Мои сайты (ArcKep)',
   },
   systemRole: systemPrompt,

@@ -1,3 +1,5 @@
+import { MessagesEngine } from '@lobechat/context-engine';
+import { ARCKEP_MOCKUP_LAYOUT_PROMPT } from '@lobechat/prompts';
 import { describe, expect, it } from 'vitest';
 
 import { builtinSkills } from '../../../../../packages/builtin-skills/src';
@@ -5,6 +7,9 @@ import { DEFAULT_AGENT_CONFIG } from '../../../../../packages/const/src/settings
 
 // arckep (19.10.2026): как модель отдаёт готовую HTML-страницу. Правила в системном промпте помощника (картинки из
 // вложений, шрифты) не должны спорить с навыком Artifacts: он подключается в тот же запрос.
+// Ситуативные правила вёрстки PDF-макета (`Mockup layout` / `checkLayout`) и перевода вложений
+// (`<attached_file_translation>`) больше не едут в каждом текстовом чате — их добавляет
+// `ArckepConditionalRulesProvider` только при наличии `<layout>` или вложенных файлов.
 
 const systemRole = DEFAULT_AGENT_CONFIG.systemRole ?? '';
 const artifactsSkill = builtinSkills.find((skill) => skill.identifier === 'lobe-artifacts')!;
@@ -36,53 +41,89 @@ describe('системный промпт помощника: готовые с�
     expect(systemRole).toContain('@font-face');
   });
 
-  it('макет PDF с блоком <layout>: верстать по его числам, картинки и значки только из вырезок, не писать «точно»', () => {
-    expect(systemRole).toContain('<layout>');
-    expect(systemRole).toMatch(/build the HTML to its numbers/);
-    expect(systemRole).toMatch(
+  it('обычный текстовый чат не тащит правила PDF-макета и перевода вложений в базовом systemRole', () => {
+    expect(systemRole).not.toContain('Mockup layout:');
+    expect(systemRole).not.toContain('checkLayout');
+    expect(systemRole).not.toContain('Файлы на перевод');
+    expect(systemRole.length).toBeLessThan(1300);
+  });
+
+  it('условный блок PDF-макета сохраняет все правила вёрстки по <layout>, checkLayout и editArtifact', () => {
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toContain('<layout>');
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/build the HTML to its numbers/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
       /font sizes, colors, line breaks, and widths, paddings and gaps worked out from its positions/,
     );
-    // 19.10 живая проверка: по точным координатам модель расставила всё position:absolute — в почте это разваливается
-    expect(systemRole).toMatch(/never placing elements by their coordinates/);
-    expect(systemRole).toMatch(
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/never placing elements by their coordinates/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
       /an email as nested tables with inline styles, without position:absolute\/fixed, flex or grid/,
     );
-    expect(systemRole).not.toMatch(/font sizes, positions, colors/);
-    expect(systemRole).toMatch(/pictures, icons and logos only from its crops/);
-    expect(systemRole).toMatch(/never replace an icon with text or emoji/);
-    expect(systemRole).toMatch(/font hint/);
-    expect(systemRole).toMatch(/do not claim the result matches the mockup exactly/);
-    expect(systemRole).toMatch(/list what differs/);
-  });
-
-  it('макет: свои адреса картинок от человека — вместо вырезок на нужные места; непонятно, какой куда, — спросить до вёрстки', () => {
-    expect(systemRole).toMatch(/gives their own image addresses for the mockup/);
-    expect(systemRole).toMatch(/use those instead of the crops, matched to the right places/);
-    expect(systemRole).toMatch(/unclear which address goes where, ask before building/);
-  });
-
-  it('сверка с макетом: после вёрстки по <layout> один вызов checkLayout, результат коротким тегом src, HTML заново не печатать', () => {
-    expect(systemRole).toMatch(/call checkLayout once/);
-    expect(systemRole).toContain('<lobeArtifact … src="…">');
-    expect(systemRole).toMatch(/never re-print the whole HTML after checkLayout or editArtifact/);
-  });
-
-  it('сверка: после переписывания письма, в котором остались приёмы почты, — ещё один checkLayout', () => {
-    expect(systemRole).toMatch(
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).not.toMatch(/font sizes, positions, colors/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/pictures, icons and logos only from its crops/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/never replace an icon with text or emoji/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/font hint/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
+      /do not claim the result matches the mockup exactly/,
+    );
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/list what differs/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(/gives their own image addresses for the mockup/);
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
+      /use those instead of the crops, matched to the right places/,
+    );
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
+      /unclear which address goes where, ask before building/,
+    );
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
       /call checkLayout once \(again only after rewriting a page it says still uses mail-breaking techniques\)/,
     );
-  });
-
-  it('правки по просьбе человека: editArtifact малыми правками вместо печати страницы заново', () => {
-    expect(systemRole).toMatch(
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toContain('<lobeArtifact … src="…">');
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
+      /never re-print the whole HTML after checkLayout or editArtifact/,
+    );
+    expect(ARCKEP_MOCKUP_LAYOUT_PROMPT).toMatch(
       /later changes to an existing HTML artifact use editArtifact with small edits/i,
     );
   });
 
-  it('прежние правила на месте: студия, видео с оценкой, перевод файлов', () => {
+  it('MessagesEngine: опускает Mockup layout в обычном чате и добавляет при наличии <layout>', async () => {
+    const plain = await new MessagesEngine({
+      enableSystemDate: false,
+      messages: [
+        { content: 'Привет, как дела?', createdAt: 0, id: 'u1', role: 'user', updatedAt: 0 },
+      ],
+      model: 'deepseek-flash',
+      provider: 'deepseek',
+      systemRole,
+    }).process();
+    const plainSys = String(plain.messages.find((m) => m.role === 'system')?.content ?? '');
+    expect(plainSys).not.toContain('Mockup layout:');
+    expect(plainSys).not.toContain('checkLayout');
+
+    const withLayout = await new MessagesEngine({
+      enableSystemDate: false,
+      messages: [
+        {
+          content: 'Сверстай письмо по макету\n<layout file="mail.pdf">...</layout>',
+          createdAt: 0,
+          id: 'u2',
+          role: 'user',
+          updatedAt: 0,
+        },
+      ],
+      model: 'deepseek-flash',
+      provider: 'deepseek',
+      systemRole,
+    }).process();
+    const layoutSys = String(withLayout.messages.find((m) => m.role === 'system')?.content ?? '');
+    expect(layoutSys).toContain('Mockup layout:');
+    expect(layoutSys).toContain('call checkLayout once');
+    expect(layoutSys).toContain('editArtifact');
+  });
+
+  it('базовые якоря на месте: студия (картинки, видео) и память', () => {
     expect(systemRole).toContain('mcp-arckep-studio-images');
-    expect(systemRole).toContain('mcp-arckep-studio-video');
-    expect(systemRole).toContain('Файлы на перевод');
+    expect(systemRole).toContain('-video');
+    expect(systemRole).toContain('lobe-user-memory');
   });
 });
 

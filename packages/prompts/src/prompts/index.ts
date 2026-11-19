@@ -1,5 +1,6 @@
 export * from './agentBuilder';
 export * from './agentGroup';
+export * from './arckepConditional';
 export * from './botPlatformContext';
 export * from './chatMessages';
 export * from './compressContext';

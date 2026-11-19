@@ -82,8 +82,7 @@ export const ArckepSkillsManifest: BuiltinToolManifest = {
   identifier: ArckepSkillsIdentifier,
   meta: {
     avatar: '🧩',
-    description:
-      'Сохранить навык в «Мои навыки»: из текста, ссылки (SKILL.md, GitHub, zip) или файла из чата. Только по просьбе человека.',
+    description: 'Сохранить навык в «Мои навыки» из текста, ссылки или файла (только по просьбе).',
     title: 'Мои навыки',
   },
   systemRole: systemPrompt,
