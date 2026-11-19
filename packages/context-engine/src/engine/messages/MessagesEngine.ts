@@ -30,6 +30,7 @@ import {
   AgentDocumentSystemAppendInjector,
   AgentDocumentSystemReplaceInjector,
   AgentManagementContextInjector,
+  ArckepConditionalRulesProvider,
   BotPlatformContextInjector,
   DiscordContextProvider,
   EvalContextSystemInjector,
@@ -240,6 +241,13 @@ export class MessagesEngine {
         manifests: toolsConfig?.manifests,
         model,
         provider,
+      }),
+      // Conditional situational Arckep rules (mockup <layout>, attached files, Figma playbook)
+      new ArckepConditionalRulesProvider({
+        availableToolIds: toolDiscoveryConfig?.availableTools?.map((t) => t.identifier),
+        hasKnowledgeFiles: Boolean(knowledge?.fileContents && knowledge.fileContents.length > 0),
+        manifests: toolsConfig?.manifests,
+        toolIds: toolsConfig?.tools,
       }),
       // History summary (conversation summary from compression)
       new HistorySummaryProvider({ formatHistorySummary, historySummary }),

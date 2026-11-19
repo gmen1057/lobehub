@@ -26,7 +26,7 @@ export const ArckepConnectorsManifest: BuiltinToolManifest = {
   meta: {
     avatar: '🔌',
     description:
-      'Найти подключение (сервис или MCP-сервер) и показать карточку «Подключить …». Подключает человек кнопкой, ключи в чате не нужны.',
+      'Найти подключение/MCP-сервер и показать карточку «Подключить …» (без ключей в чате).',
     title: 'Подключения',
   },
   systemRole: systemPrompt,

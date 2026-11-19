@@ -9,6 +9,7 @@ export {
   AgentDocumentSystemReplaceInjector,
 } from './AgentDocumentInjector';
 export { AgentManagementContextInjector } from './AgentManagementContextInjector';
+export { ArckepConditionalRulesProvider } from './ArckepConditionalRulesProvider';
 export { BotPlatformContextInjector } from './BotPlatformContextInjector';
 export { DiscordContextProvider } from './DiscordContextProvider';
 export { EvalContextSystemInjector } from './EvalContextSystemInjector';
@@ -63,6 +64,7 @@ export type {
   AvailablePluginInfo,
   AvailableProviderInfo,
 } from './AgentManagementContextInjector';
+export type { ArckepConditionalRulesConfig } from './ArckepConditionalRulesProvider';
 export type {
   BotPlatformContext,
   BotPlatformContextInjectorConfig,

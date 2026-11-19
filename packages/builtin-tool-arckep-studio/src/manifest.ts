@@ -134,8 +134,7 @@ export const ArckepStudioManifest: BuiltinToolManifest = {
   identifier: ArckepStudioIdentifier,
   meta: {
     avatar: '🎨',
-    description:
-      'Студия Arckep: нарисовать картинку, посчитать цену, озвучить текст, узнать баланс. Платно с баланса пользователя, результат сохраняется в «Истории».',
+    description: 'Картинки, озвучка текста, оценка цены и баланс (платно, результат в «Истории»).',
     title: 'Студия Arckep',
   },
   systemRole: systemPrompt,

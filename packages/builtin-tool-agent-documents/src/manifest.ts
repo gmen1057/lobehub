@@ -216,7 +216,7 @@ export const AgentDocumentsManifest: BuiltinToolManifest = {
   identifier: AgentDocumentsIdentifier,
   meta: {
     avatar: '🗂️',
-    description: 'Управление документами агента: создание, редактирование, шаблоны',
+    description: 'Создание и редактирование документов агента',
     title: 'Документы агента',
   },
   systemRole: systemPrompt,
