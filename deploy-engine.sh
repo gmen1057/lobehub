@@ -46,6 +46,18 @@ check_live_health() {
     return 1
 }
 
+reload_auditd_watches() {
+    # После атомарного mv $PROD меняется inode каталога и $PROD/.env — перегружаем правила auditd,
+    # чтобы inode-watch на $PROD/.env не остался висеть на старом слоте ($BACKUP_DIR).
+    if command -v augenrules >/dev/null 2>&1; then
+        if augenrules --load >/dev/null 2>&1; then
+            echo "[engine] auditd rules reloaded (augenrules --load)"
+        else
+            echo "[engine] WARN: augenrules --load failed — auditd inode watch for $PROD/.env may need manual reload" >&2
+        fi
+    fi
+}
+
 if [[ "$MODE" == "--rollback" ]]; then
     if [[ ! -d "$BACKUP_DIR" || ! -f "$BACKUP_DIR/server.js" ]]; then
         echo "ERROR: backup slot $BACKUP_DIR is missing or incomplete — cannot rollback." >&2
@@ -61,6 +73,7 @@ if [[ "$MODE" == "--rollback" ]]; then
     mv "$BACKUP_DIR" "$PROD"
     systemctl restart "$SERVICE"
     check_live_health
+    reload_auditd_watches
     echo "[engine] ROLLBACK OK: restored $PROD (commit $(cat "$PROD/.deployed-commit" 2>/dev/null || echo unknown))"
     exit 0
 fi
@@ -299,8 +312,10 @@ if ! check_live_health; then
     mv "$BACKUP_DIR" "$PROD"
     systemctl restart "$SERVICE"
     check_live_health || true
+    reload_auditd_watches
     echo "ERROR: deploy rolled back to previous slot; inspect $FAILED_SLOT and /var/log/$SERVICE.log" >&2
     exit 1
 fi
 
+reload_auditd_watches
 echo "[engine] OK: next@$STAGED_NEXT_VER, commit $HEAD_COMMIT deployed to $PROD (backup at $BACKUP_DIR)"
