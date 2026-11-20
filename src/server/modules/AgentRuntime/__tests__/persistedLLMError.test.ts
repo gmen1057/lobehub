@@ -12,7 +12,8 @@ describe('persisted model errors', () => {
     'keeps HTTP %s through the message schema and JSON round trip without provider details',
     (status) => {
       const original = Object.assign(new Error('secret sk-private at https://private.example'), {
-        error: { message: 'provider details', status }, errorType: 'ProviderBizError',
+        error: { message: 'provider details', status },
+        errorType: 'ProviderBizError',
       });
       const saved = formatPersistedLLMError(original);
       const serialized = JSON.stringify(saved);
@@ -27,10 +28,45 @@ describe('persisted model errors', () => {
     },
   );
 
+  it.each([
+    { errorType: 'ProviderBizError', error: { status: 402, code: 'provider_credits_exhausted' } },
+    { status: 429, body: { error: { code: 429, type: 'provider_credits_exhausted' } } },
+    { cause: { message: JSON.stringify({ error: { code: 'provider_credits_exhausted' } }) } },
+    new Error('402 Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.'),
+  ])('preserves a vendor wallet failure without proposing a user top-up', (error) => {
+    const saved = ChatMessageErrorSchema.parse(formatPersistedLLMError(error));
+    expect(saved).toEqual({
+      body: { code: 'provider_credits_exhausted', status: 503 },
+      message: 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.',
+      type: 503,
+    });
+  });
+
+  it.each([
+    ['content_policy_violation', 'provider_moderation', 400],
+    ['openai_url_timeout', 'provider_invalid_media', 400],
+    ['invalid_parameter', 'provider_invalid_parameters', 400],
+    ['rate_limit_exceeded', 'provider_rate_limit', 429],
+    ['overloaded_error', 'provider_overloaded', 503],
+    ['upstream_timeout', 'provider_timeout', 504],
+    ['free_router_unavailable', 'provider_unavailable', 503],
+  ])('preserves the reason behind a generic wrapper for %s', (vendorCode, code, status) => {
+    const saved = formatPersistedLLMError({
+      status: 500,
+      body: { error: { code: vendorCode, message: 'private provider details' } },
+    });
+    expect(saved.body).toEqual({ code, status });
+    expect(saved.type).toBe(status);
+    expect(saved.message).not.toContain('private');
+  });
+
   it('recognizes a nested billing refusal without mistaking provider quota for customer balance', () => {
-    const billing = formatPersistedLLMError({ errorType: 'ProviderBizError', error: {
-      error: { code: 'billing_error', type: 'insufficient_balance', message: 'hidden' },
-    } });
+    const billing = formatPersistedLLMError({
+      errorType: 'ProviderBizError',
+      error: {
+        error: { code: 'billing_error', type: 'insufficient_balance', message: 'hidden' },
+      },
+    });
     expect(billing.body.status).toBe(402);
     expect(formatPersistedLLMError({ errorType: 'InsufficientQuota' }).body.status).toBe(429);
   });

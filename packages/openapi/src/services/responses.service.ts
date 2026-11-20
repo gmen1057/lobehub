@@ -1,6 +1,10 @@
 import type { AgentState } from '@lobechat/agent-runtime';
 
 import { FileModel } from '@/database/models/file';
+import {
+  isProviderFailureCode,
+  providerModelFailure,
+} from '@/server/modules/AgentRuntime/providerModelFailure';
 import { ARCKEP_REASONING_LEVEL_KEY } from '@/server/modules/AgentRuntime/reasoningLevels';
 import type {
   StreamChunkData,
@@ -16,6 +20,7 @@ import type {
   FunctionCallOutputItem,
   InputItem,
   OutputItem,
+  ResponseError,
   ResponseObject,
   ResponseStreamEvent,
   ResponseUsage,
@@ -76,6 +81,11 @@ export interface ResponseStatusInfo {
   resumable: boolean;
   status: 'completed' | 'failed' | 'in_progress' | 'incomplete';
 }
+
+const knownProviderError = (state?: AgentState): ResponseError | undefined => {
+  const code = state?.status === 'error' ? state.error?.body?.code : undefined;
+  if (isProviderFailureCode(code)) return providerModelFailure(code);
+};
 
 const notFound = (message: string): Error => {
   const error = new Error(message);
@@ -510,6 +520,7 @@ export class ResponsesService extends BaseService {
       return this.buildResponseObject({
         completedAt: isClientToolInterrupt ? null : Math.floor(Date.now() / 1000),
         createdAt,
+        error: knownProviderError(finalState),
         id: responseId,
         incompleteDetails: incompleteReason ? { reason: incompleteReason } : undefined,
         output,
@@ -1169,21 +1180,22 @@ export class ResponsesService extends BaseService {
 
     // arckep: при ошибке модели (например, отказ биллинг-прокси) клиенту нужен текст ошибки,
     // а не пустой ответ со status=failed (план lobechat-engine-studio-chat, Phase 2).
-    const stateError = finalState?.status === 'error' ? finalState?.error : undefined;
+    const stateError = finalState?.status === 'error' ? finalState.error : undefined;
     const stateErrorMessage =
       stateError?.error?.message || stateError?.message || stateError?.errorType;
-
     return {
       response: {
         ...response,
         completed_at: Math.floor(Date.now() / 1000),
-        error: stateError
-          ? {
-              code: 'model_error' as const,
-              message: String(stateErrorMessage || 'Model execution failed'),
-              status: stateError.body?.status,
-            }
-          : null,
+        error:
+          knownProviderError(finalState) ??
+          (stateError
+            ? {
+                code: 'model_error' as const,
+                message: String(stateErrorMessage || 'Model execution failed'),
+                status: stateError.body?.status,
+              }
+            : null),
         output: fullOutput.output,
         output_text: fullOutput.outputText || text,
         status: (finalState?.status === 'error' ? 'failed' : 'completed') as any,
@@ -1227,7 +1239,7 @@ export class ResponsesService extends BaseService {
   private buildResponseObject(opts: {
     completedAt?: number | null;
     createdAt: number;
-    error?: { code: 'server_error'; message: string };
+    error?: ResponseError;
     id: string;
     incompleteDetails?: { reason: string };
     output: OutputItem[];

@@ -197,6 +197,26 @@ describe('classifyLLMError', () => {
       ).toBe('stop');
     });
 
+    it('distinguishes the vendor wallet through the OpenAI, Anthropic and Google SDK wrappers', () => {
+      const message = 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.';
+      const vendor = {
+        error: { code: 'provider_credits_exhausted', message, type: 'provider_credits_exhausted' },
+      };
+      const openai = OpenAI.APIError.generate(402, vendor, undefined, new Headers() as any);
+      const anthropic = Anthropic.APIError.generate(429, vendor, undefined, new Headers() as any);
+      for (const error of [
+        handleOpenAIError(openai).errorResult,
+        handleAnthropicError(anthropic).errorResult,
+        googlePayload({ error: { ...vendor.error, code: 429, status: 'RESOURCE_EXHAUSTED' } }),
+      ]) {
+        expect(classifyLLMError(error)).toMatchObject({
+          billing: false,
+          code: 'provider_credits_exhausted',
+          kind: 'stop',
+        });
+      }
+    });
+
     it('статус 402 сам по себе, в любом виде → stop', () => {
       expect(
         classifyLLMError({ errorType: 'ProviderBizError', message: 'x', status: 402 }).kind,
