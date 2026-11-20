@@ -43,6 +43,7 @@ describe('persisted model errors', () => {
   });
 
   it.each([
+    ['context_length_exceeded', 'context_length_exceeded', 413],
     ['content_policy_violation', 'provider_moderation', 400],
     ['openai_url_timeout', 'provider_invalid_media', 400],
     ['invalid_parameter', 'provider_invalid_parameters', 400],
@@ -67,16 +68,30 @@ describe('persisted model errors', () => {
         error: { code: 'billing_error', type: 'insufficient_balance', message: 'hidden' },
       },
     });
-    expect(billing.body).toEqual({ code: 'INSUFFICIENT_BALANCE', status: 402 });
+    expect(billing.body).toEqual({ code: 'studio_insufficient_balance', status: 402 });
     expect(formatPersistedLLMError(new Error('Insufficient balance')).body.code).not.toBe(
-      'INSUFFICIENT_BALANCE',
+      'studio_insufficient_balance',
     );
     expect(formatPersistedLLMError({ errorType: 'InsufficientQuota' }).body.status).toBe(429);
   });
 
+  it('keeps old generic 402 rows unverified and recognizes verified Studio rows', () => {
+    const legacy = {
+      body: { code: 'INSUFFICIENT_BALANCE', status: 402 },
+      message: 'Insufficient balance',
+      type: 402,
+    };
+    expect(formatPersistedLLMError(legacy).body).toEqual({ code: 'HTTP_402', status: 402 });
+    const fresh = { ...legacy, body: { code: 'studio_insufficient_balance', status: 402 } };
+    expect(formatPersistedLLMError(fresh)).toEqual(fresh);
+  });
+
   it('uses known error types when no HTTP status survived and keeps unknown errors generic', () => {
     expect(formatPersistedLLMError({ errorType: 'ModelNotFound' }).body.status).toBe(404);
-    expect(formatPersistedLLMError({ errorType: 'ExceededContextWindow' }).body.status).toBe(400);
+    expect(formatPersistedLLMError({ errorType: 'ExceededContextWindow' }).body).toEqual({
+      code: 'context_length_exceeded',
+      status: 413,
+    });
     expect(formatPersistedLLMError('unknown secret').body.status).toBe(500);
     expect(getPersistedLLMError(new Error('another error'))).toBeUndefined();
   });

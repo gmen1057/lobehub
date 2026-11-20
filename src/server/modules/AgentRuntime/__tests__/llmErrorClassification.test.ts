@@ -212,9 +212,28 @@ describe('classifyLLMError', () => {
         expect(classifyLLMError(error)).toMatchObject({
           billing: false,
           code: 'provider_credits_exhausted',
-          kind: 'stop',
         });
       }
+    });
+
+    it.each([
+      { status: 402, retrySafe: true },
+      { status: 429, retrySafe: true },
+      { status: 503, retrySafe: false },
+    ])('decides recovery from transport and retry metadata for $status', (transport) => {
+      const ordinary = { ...transport, errorType: 'ProviderBizError' };
+      const marked = { ...ordinary, body: { code: 'provider_credits_exhausted' } };
+      expect(classifyLLMError(marked).kind).toBe(classifyLLMError(ordinary).kind);
+    });
+
+    it('preserves the context limit through the Google SDK error parser', () => {
+      const wrapped = googlePayload({
+        error: { code: 400, message: 'This request exceeds the context window of this model' },
+      });
+      expect(classifyLLMError(wrapped)).toMatchObject({
+        code: 'context_length_exceeded',
+        kind: 'stop',
+      });
     });
 
     it('статус 402 сам по себе, в любом виде → stop', () => {

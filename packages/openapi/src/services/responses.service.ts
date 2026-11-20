@@ -84,7 +84,7 @@ export interface ResponseStatusInfo {
 
 const knownModelError = (state?: AgentState): ResponseError | undefined => {
   const code = state?.status === 'error' ? state.error?.body?.code : undefined;
-  if (code === 'INSUFFICIENT_BALANCE') {
+  if (code === 'studio_insufficient_balance') {
     return { code, message: 'Insufficient balance', status: 402 };
   }
   if (isProviderFailureCode(code)) return providerModelFailure(code);

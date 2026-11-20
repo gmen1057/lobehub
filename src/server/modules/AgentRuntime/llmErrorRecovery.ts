@@ -29,8 +29,9 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
       if (value.length > 64_000) return;
       if (!/^\s*[[{]/.test(value)) {
         if (
-          value.includes('Недостаточно средств на балансе') ||
-          value.includes('arckep.ru/settings#balance')
+          value.includes(
+            'Недостаточно средств на балансе. Пополните баланс: https://arckep.ru/settings#balance',
+          )
         ) {
           customerBalance = true;
         }
@@ -52,7 +53,7 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
     }
     const record = value as Record<string, unknown>;
     if (
-      record.code === 'INSUFFICIENT_BALANCE' ||
+      record.code === 'studio_insufficient_balance' ||
       (record.code === 'billing_error' && record.type === 'insufficient_balance')
     ) {
       customerBalance = true;

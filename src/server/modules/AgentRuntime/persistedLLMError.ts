@@ -18,7 +18,7 @@ export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
   const signal = classifyLLMError(error);
   if (!signal.billing && isProviderFailureCode(signal.code)) {
     const { code, message, status } = providerModelFailure(signal.code);
-    return { body: { code, status }, message, type: status };
+    return { body: { code, status }, message, type: status as ChatMessageError['type'] };
   }
   const candidate = signal.status ?? TYPE_STATUS[signal.type || ''];
   const status = signal.billing
@@ -28,7 +28,7 @@ export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
       : 500;
 
   return {
-    body: { code: signal.billing ? 'INSUFFICIENT_BALANCE' : `HTTP_${status}`, status },
+    body: { code: signal.billing ? 'studio_insufficient_balance' : `HTTP_${status}`, status },
     message: signal.billing ? 'Insufficient balance' : 'Model request failed',
     // ChatMessageErrorSchema accepts any numeric HTTP status, including 402.
     type: status as ChatMessageError['type'],

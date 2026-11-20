@@ -374,7 +374,7 @@ export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
   return {
     billing: !providerWallet && recovery.customerBalance,
     code: recovery.providerCode ?? (signal.code || signal.errorType),
-    kind: providerWallet ? 'stop' : classifyKind(signal),
+    kind: classifyKind(signal),
     message: signal.message,
     retrySafe: signal.retrySafe,
     status: signal.status,
