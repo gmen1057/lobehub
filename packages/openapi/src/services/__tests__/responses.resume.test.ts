@@ -216,6 +216,7 @@ describe('ResponsesService — ответ в реестре и переподк�
       message: 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.',
       status: 503,
     },
+    { code: 'INSUFFICIENT_BALANCE', message: 'Insufficient balance', status: 402 },
     {
       code: 'provider_moderation',
       message: 'Фильтр безопасности модели отклонил запрос. Измените описание или вложение.',

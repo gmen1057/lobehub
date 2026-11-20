@@ -20,7 +20,7 @@ describe('persisted model errors', () => {
       const restored = ChatMessageErrorSchema.parse(JSON.parse(serialized));
       expect(restored.type).toBe(status);
       expect(restored.body.status).toBe(status);
-      expect(restored.body.code).toBe(status === 402 ? 'INSUFFICIENT_BALANCE' : `HTTP_${status}`);
+      expect(restored.body.code).toBe(`HTTP_${status}`);
       expect(JSON.stringify(restored)).not.toMatch(/sk-private|private\.example|provider details/);
       expect(rememberPersistedLLMError(original, saved)).toBe(original);
       expect(getPersistedLLMError(original)).toEqual(restored);
@@ -67,7 +67,10 @@ describe('persisted model errors', () => {
         error: { code: 'billing_error', type: 'insufficient_balance', message: 'hidden' },
       },
     });
-    expect(billing.body.status).toBe(402);
+    expect(billing.body).toEqual({ code: 'INSUFFICIENT_BALANCE', status: 402 });
+    expect(formatPersistedLLMError(new Error('Insufficient balance')).body.code).not.toBe(
+      'INSUFFICIENT_BALANCE',
+    );
     expect(formatPersistedLLMError({ errorType: 'InsufficientQuota' }).body.status).toBe(429);
   });
 

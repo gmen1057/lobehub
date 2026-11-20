@@ -5,6 +5,7 @@ import {
 } from './providerModelFailure';
 
 interface LLMRecoverySignal {
+  customerBalance: boolean;
   providerCode?: ProviderFailureCode;
   retrySafe?: boolean;
   status?: number;
@@ -14,6 +15,7 @@ interface LLMRecoverySignal {
 export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   const seen = new Set<object>();
   const statuses: number[] = [];
+  let customerBalance = false;
   let providerCode: ProviderFailureCode | undefined;
   const rememberCode = (code?: ProviderFailureCode) => {
     if (!providerCode || code === 'provider_credits_exhausted') providerCode = code;
@@ -26,6 +28,12 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
     if (typeof value === 'string') {
       if (value.length > 64_000) return;
       if (!/^\s*[[{]/.test(value)) {
+        if (
+          value.includes('Недостаточно средств на балансе') ||
+          value.includes('arckep.ru/settings#balance')
+        ) {
+          customerBalance = true;
+        }
         rememberCode(providerFailureFromMessage(value));
         return;
       }
@@ -43,6 +51,12 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
       return;
     }
     const record = value as Record<string, unknown>;
+    if (
+      record.code === 'INSUFFICIENT_BALANCE' ||
+      (record.code === 'billing_error' && record.type === 'insufficient_balance')
+    ) {
+      customerBalance = true;
+    }
     for (const field of ['code', 'type', 'status', 'errorType']) {
       rememberCode(providerFailureFromCode(record[field]));
     }
@@ -64,5 +78,5 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   const permanent = statuses.find(
     (status) => status >= 400 && status < 500 && ![408, 425, 429].includes(status),
   );
-  return { providerCode, retrySafe, status: permanent ?? statuses.at(-1) };
+  return { customerBalance, providerCode, retrySafe, status: permanent ?? statuses.at(-1) };
 };

@@ -82,8 +82,11 @@ export interface ResponseStatusInfo {
   status: 'completed' | 'failed' | 'in_progress' | 'incomplete';
 }
 
-const knownProviderError = (state?: AgentState): ResponseError | undefined => {
+const knownModelError = (state?: AgentState): ResponseError | undefined => {
   const code = state?.status === 'error' ? state.error?.body?.code : undefined;
+  if (code === 'INSUFFICIENT_BALANCE') {
+    return { code, message: 'Insufficient balance', status: 402 };
+  }
   if (isProviderFailureCode(code)) return providerModelFailure(code);
 };
 
@@ -520,7 +523,7 @@ export class ResponsesService extends BaseService {
       return this.buildResponseObject({
         completedAt: isClientToolInterrupt ? null : Math.floor(Date.now() / 1000),
         createdAt,
-        error: knownProviderError(finalState),
+        error: knownModelError(finalState),
         id: responseId,
         incompleteDetails: incompleteReason ? { reason: incompleteReason } : undefined,
         output,
@@ -1188,7 +1191,7 @@ export class ResponsesService extends BaseService {
         ...response,
         completed_at: Math.floor(Date.now() / 1000),
         error:
-          knownProviderError(finalState) ??
+          knownModelError(finalState) ??
           (stateError
             ? {
                 code: 'model_error' as const,

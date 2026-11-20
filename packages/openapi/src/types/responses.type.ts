@@ -150,6 +150,7 @@ export type ResponseErrorCode =
   | 'server_error'
   | 'invalid_request_error'
   | 'not_found'
+  | 'INSUFFICIENT_BALANCE'
   | 'model_error'
   | 'rate_limit_error'
   | ProviderFailureCode;

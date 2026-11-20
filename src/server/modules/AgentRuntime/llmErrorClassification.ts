@@ -372,7 +372,7 @@ export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
 
   const providerWallet = recovery.providerCode === 'provider_credits_exhausted';
   return {
-    billing: !providerWallet && signal.billing,
+    billing: !providerWallet && recovery.customerBalance,
     code: recovery.providerCode ?? (signal.code || signal.errorType),
     kind: providerWallet ? 'stop' : classifyKind(signal),
     message: signal.message,

@@ -28,8 +28,8 @@ export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
       : 500;
 
   return {
-    body: { code: status === 402 ? 'INSUFFICIENT_BALANCE' : `HTTP_${status}`, status },
-    message: status === 402 ? 'Insufficient balance' : 'Model request failed',
+    body: { code: signal.billing ? 'INSUFFICIENT_BALANCE' : `HTTP_${status}`, status },
+    message: signal.billing ? 'Insufficient balance' : 'Model request failed',
     // ChatMessageErrorSchema accepts any numeric HTTP status, including 402.
     type: status as ChatMessageError['type'],
   };
