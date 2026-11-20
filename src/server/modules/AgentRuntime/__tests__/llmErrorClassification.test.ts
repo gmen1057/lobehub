@@ -197,6 +197,45 @@ describe('classifyLLMError', () => {
       ).toBe('stop');
     });
 
+    it('distinguishes the vendor wallet through the OpenAI, Anthropic and Google SDK wrappers', () => {
+      const message = 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.';
+      const vendor = {
+        error: { code: 'provider_credits_exhausted', message, type: 'provider_credits_exhausted' },
+      };
+      const openai = OpenAI.APIError.generate(402, vendor, undefined, new Headers() as any);
+      const anthropic = Anthropic.APIError.generate(429, vendor, undefined, new Headers() as any);
+      for (const error of [
+        handleOpenAIError(openai).errorResult,
+        handleAnthropicError(anthropic).errorResult,
+        googlePayload({ error: { ...vendor.error, code: 429, status: 'RESOURCE_EXHAUSTED' } }),
+      ]) {
+        expect(classifyLLMError(error)).toMatchObject({
+          billing: false,
+          code: 'provider_credits_exhausted',
+        });
+      }
+    });
+
+    it.each([
+      { status: 402, retrySafe: true },
+      { status: 429, retrySafe: true },
+      { status: 503, retrySafe: false },
+    ])('decides recovery from transport and retry metadata for $status', (transport) => {
+      const ordinary = { ...transport, errorType: 'ProviderBizError' };
+      const marked = { ...ordinary, body: { code: 'provider_credits_exhausted' } };
+      expect(classifyLLMError(marked).kind).toBe(classifyLLMError(ordinary).kind);
+    });
+
+    it('preserves the context limit through the Google SDK error parser', () => {
+      const wrapped = googlePayload({
+        error: { code: 400, message: 'This request exceeds the context window of this model' },
+      });
+      expect(classifyLLMError(wrapped)).toMatchObject({
+        code: 'context_length_exceeded',
+        kind: 'stop',
+      });
+    });
+
     it('статус 402 сам по себе, в любом виде → stop', () => {
       expect(
         classifyLLMError({ errorType: 'ProviderBizError', message: 'x', status: 402 }).kind,

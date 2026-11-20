@@ -1,4 +1,12 @@
+import {
+  type ProviderFailureCode,
+  providerFailureFromCode,
+  providerFailureFromMessage,
+} from './providerModelFailure';
+
 interface LLMRecoverySignal {
+  customerBalance: boolean;
+  providerCode?: ProviderFailureCode;
   retrySafe?: boolean;
   status?: number;
 }
@@ -7,13 +15,29 @@ interface LLMRecoverySignal {
 export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   const seen = new Set<object>();
   const statuses: number[] = [];
+  let customerBalance = false;
+  let providerCode: ProviderFailureCode | undefined;
+  const rememberCode = (code?: ProviderFailureCode) => {
+    if (!providerCode || code === 'provider_credits_exhausted') providerCode = code;
+  };
   let retrySafe: boolean | undefined;
   let remaining = 128;
 
   const visit = (value: unknown, depth = 0): void => {
     if (depth > 8 || remaining-- <= 0) return;
     if (typeof value === 'string') {
-      if (value.length > 64_000 || !/^\s*[[{]/.test(value)) return;
+      if (value.length > 64_000) return;
+      if (!/^\s*[[{]/.test(value)) {
+        if (
+          value.includes(
+            'Недостаточно средств на балансе. Пополните баланс: https://arckep.ru/settings#balance',
+          )
+        ) {
+          customerBalance = true;
+        }
+        rememberCode(providerFailureFromMessage(value));
+        return;
+      }
       try {
         visit(JSON.parse(value), depth + 1);
       } catch {
@@ -28,6 +52,15 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
       return;
     }
     const record = value as Record<string, unknown>;
+    if (
+      record.code === 'studio_insufficient_balance' ||
+      (record.code === 'billing_error' && record.type === 'insufficient_balance')
+    ) {
+      customerBalance = true;
+    }
+    for (const field of ['code', 'type', 'status', 'errorType']) {
+      rememberCode(providerFailureFromCode(record[field]));
+    }
     // A refusal to replay wins over every outer wrapper's generic retry flag.
     if (record.retrySafe === false) retrySafe = false;
     else if (record.retrySafe === true && retrySafe === undefined) retrySafe = true;
@@ -46,5 +79,5 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   const permanent = statuses.find(
     (status) => status >= 400 && status < 500 && ![408, 425, 429].includes(status),
   );
-  return { retrySafe, status: permanent ?? statuses.at(-1) };
+  return { customerBalance, providerCode, retrySafe, status: permanent ?? statuses.at(-1) };
 };

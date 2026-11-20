@@ -1,6 +1,7 @@
 import type { ChatMessageError } from '@lobechat/types';
 
 import { classifyLLMError } from './llmErrorClassification';
+import { isProviderFailureCode, providerModelFailure } from './providerModelFailure';
 
 const TYPE_STATUS: Record<string, number> = {
   ExceededContextWindow: 400,
@@ -15,6 +16,10 @@ const TYPE_STATUS: Record<string, number> = {
 /** Persist only an HTTP category and a stable code, never a provider body or credentials. */
 export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
   const signal = classifyLLMError(error);
+  if (!signal.billing && isProviderFailureCode(signal.code)) {
+    const { code, message, status } = providerModelFailure(signal.code);
+    return { body: { code, status }, message, type: status as ChatMessageError['type'] };
+  }
   const candidate = signal.status ?? TYPE_STATUS[signal.type || ''];
   const status = signal.billing
     ? 402
@@ -23,8 +28,8 @@ export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
       : 500;
 
   return {
-    body: { code: status === 402 ? 'INSUFFICIENT_BALANCE' : `HTTP_${status}`, status },
-    message: status === 402 ? 'Insufficient balance' : 'Model request failed',
+    body: { code: signal.billing ? 'studio_insufficient_balance' : `HTTP_${status}`, status },
+    message: signal.billing ? 'Insufficient balance' : 'Model request failed',
     // ChatMessageErrorSchema accepts any numeric HTTP status, including 402.
     type: status as ChatMessageError['type'],
   };

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import type { ProviderFailureCode } from '@/server/modules/AgentRuntime/providerModelFailure';
+
 // ==================== Content Types ====================
 
 export const InputTextContentSchema = z.object({
@@ -145,7 +147,13 @@ export interface ResponseUsage {
 // ==================== Error Types ====================
 
 export type ResponseErrorCode =
-  'server_error' | 'invalid_request_error' | 'not_found' | 'model_error' | 'rate_limit_error';
+  | 'server_error'
+  | 'invalid_request_error'
+  | 'not_found'
+  | 'studio_insufficient_balance'
+  | 'model_error'
+  | 'rate_limit_error'
+  | ProviderFailureCode;
 
 export interface ResponseError {
   code: ResponseErrorCode;

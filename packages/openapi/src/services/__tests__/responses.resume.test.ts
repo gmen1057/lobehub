@@ -210,6 +210,61 @@ describe('ResponsesService — ответ в реестре и переподк�
     },
   );
 
+  it.each([
+    {
+      code: 'provider_credits_exhausted',
+      message: 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.',
+      status: 503,
+    },
+    {
+      code: 'context_length_exceeded',
+      message: 'Текст слишком длинный для этой модели. Сократите сообщение или начните новый чат.',
+      status: 413,
+    },
+    { code: 'studio_insufficient_balance', message: 'Insufficient balance', status: 402 },
+    {
+      code: 'provider_moderation',
+      message: 'Фильтр безопасности модели отклонил запрос. Измените описание или вложение.',
+      status: 400,
+    },
+  ])('preserves $code for HTTP responses, streamed responses and replay', async (expected) => {
+    const sender = new ResponsesService({} as any, 'u1');
+    const finalState = {
+      error: {
+        body: { code: expected.code, status: expected.status },
+        message: expected.message,
+        type: expected.status,
+      },
+      messages: [],
+      status: 'error',
+    };
+    mockExecuteSync.mockResolvedValue(finalState);
+    expect((await sender.createResponse({ ...params, stream: false })).error).toEqual(expected);
+    const live = await drain(sender.createStreamingResponse(params));
+    expect(live.at(-1).response.error).toEqual(expected);
+    const replay = await drain(sender.resumeStreamingResponse('tpc_1'));
+    expect(replay.at(-1).response.error).toEqual(expected);
+  });
+
+  it('does not certify the historical ambiguous wallet record on a response or replay', async () => {
+    const sender = new ResponsesService({} as any, 'u1');
+    mockExecuteSync.mockResolvedValue({
+      error: {
+        body: { code: 'INSUFFICIENT_BALANCE', status: 402 },
+        message: 'Insufficient balance',
+        type: 402,
+      },
+      messages: [],
+      status: 'error',
+    });
+    expect((await sender.createResponse({ ...params, stream: false })).error).toBeNull();
+    const expected = { code: 'model_error', message: 'Insufficient balance', status: 402 };
+    const live = await drain(sender.createStreamingResponse(params));
+    expect(live.at(-1).response.error).toEqual(expected);
+    const replay = await drain(sender.resumeStreamingResponse('tpc_1'));
+    expect(replay.at(-1).response.error).toEqual(expected);
+  });
+
   it('1000+ чанков tools_calling до >50 КБ не усекают историю и при resumeStreamingResponse отдают полный вызов инструмента', async () => {
     const sender = new ResponsesService({} as any, 'u1');
     const abortSender = new AbortController();
