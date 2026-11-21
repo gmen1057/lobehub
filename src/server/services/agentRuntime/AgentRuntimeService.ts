@@ -11,6 +11,7 @@ import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
 import { type AgentRuntimeCoordinatorOptions } from '@/server/modules/AgentRuntime';
 import { AgentRuntimeCoordinator, createStreamEventManager } from '@/server/modules/AgentRuntime';
+import { resolveCompressionThresholds } from '@/server/modules/AgentRuntime/compressionThresholds';
 import { getPersistedLLMError } from '@/server/modules/AgentRuntime/persistedLLMError';
 import { type RuntimeExecutorContext } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { createRuntimeExecutors } from '@/server/modules/AgentRuntime/RuntimeExecutors';
@@ -1471,10 +1472,16 @@ export class AgentRuntimeService {
     signal?: AbortSignal;
     stepIndex: number;
   }) {
+    const resolvedCompressionThresholds = resolveCompressionThresholds(
+      metadata?.modelRuntimeConfig?.model,
+      metadata?.modelRuntimeConfig?.provider,
+    );
+
     // Create Durable Agent instance
     const agent = new GeneralChatAgent({
       agentConfig: metadata?.agentConfig,
       compressionConfig: {
+        ...resolvedCompressionThresholds,
         enabled: metadata?.agentConfig?.chatConfig?.enableContextCompression ?? true,
       },
       dynamicInterventionAudits,

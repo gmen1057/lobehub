@@ -6,6 +6,8 @@ import {
 } from '@lobechat/types';
 
 export interface GeneralAgentCallLLMInstructionPayload {
+  /** Pre-allocated assistant placeholder ID to reuse instead of creating a new row */
+  assistantMessageId?: string;
   /** Force create a new assistant message (e.g., after compression) */
   createAssistantMessage?: boolean;
   isFirstMessage?: boolean;
@@ -105,6 +107,7 @@ export interface GeneralAgentConfig {
      * Used for context compression tasks
      */
     compressionModel?: {
+      effort?: 'low' | 'medium' | 'high' | 'max';
       model: string;
       provider: string;
     };
@@ -119,6 +122,8 @@ export interface GeneralAgentConfig {
  * Payload for compression_result phase
  */
 export interface GeneralAgentCompressionResultPayload {
+  /** Pre-allocated assistant placeholder ID preserved across compression */
+  assistantMessageId?: string;
   /** Compressed messages (summary + pinned + recent). Optional — callers may rely on state.messages. */
   compressedMessages?: any[];
   /** Compression group ID in database */

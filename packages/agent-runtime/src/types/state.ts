@@ -82,6 +82,7 @@ export interface AgentState {
      * Used for context compression tasks
      */
     compressionModel?: {
+      effort?: 'low' | 'medium' | 'high' | 'max';
       model: string;
       provider: string;
     };

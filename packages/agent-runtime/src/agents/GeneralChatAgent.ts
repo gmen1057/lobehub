@@ -383,12 +383,15 @@ export class GeneralChatAgent implements Agent {
     const compress = this.maybeCompress(payload.messages);
     if (!compress) return { payload, type: 'call_llm' };
 
-    // Compression must keep the tool-chain parent. Dropping it made the next
-    // assistant message hang off the first tool-calling turn, and the chat UI
-    // never painted the reply. Incident 2026-09-17.
+    // Compression must keep the tool-chain parent and any pre-allocated assistant placeholder.
+    // Dropping parentMessageId made the next assistant message hang off the first tool-calling
+    // turn, and the chat UI never painted the reply. Incident 2026-09-17.
     return {
       payload: {
         ...compress.payload,
+        ...(payload.assistantMessageId !== undefined
+          ? { assistantMessageId: payload.assistantMessageId }
+          : {}),
         parentMessageId: payload.parentMessageId,
       },
       type: 'compress_context',
@@ -436,8 +439,23 @@ export class GeneralChatAgent implements Agent {
     switch (context.phase) {
       case 'init':
       case 'user_input': {
+        const incomingPayload = (context.payload ??
+          {}) as Partial<GeneralAgentCallLLMInstructionPayload>;
         const compression = this.maybeCompress(state.messages);
-        if (compression) return compression;
+        if (compression) {
+          return {
+            ...compression,
+            payload: {
+              ...compression.payload,
+              ...(incomingPayload.assistantMessageId !== undefined
+                ? { assistantMessageId: incomingPayload.assistantMessageId }
+                : {}),
+              ...(incomingPayload.parentMessageId !== undefined
+                ? { parentMessageId: incomingPayload.parentMessageId }
+                : {}),
+            },
+          };
+        }
 
         // User input received, call LLM to generate response
         // At this point, messages may have been preprocessed with RAG/Search
@@ -695,13 +713,13 @@ export class GeneralChatAgent implements Agent {
         // Context compression completed, continue to call LLM
         const compressionPayload = context.payload as GeneralAgentCompressionResultPayload;
 
-        // If compression was skipped (no messages to compress), just call LLM
-        // Otherwise, messages have been updated with compressed content
-        // Pass parentMessageId and createAssistantMessage=true to force new message creation
+        // Reuse the pre-allocated assistant placeholder when present (e.g. execAgent Step 0);
+        // otherwise force a new assistant message creation (mid-turn tool compression or regenerate).
         return {
           payload: {
-            // Force create new assistant message after compression
-            createAssistantMessage: true,
+            ...(compressionPayload.assistantMessageId
+              ? { assistantMessageId: compressionPayload.assistantMessageId }
+              : { createAssistantMessage: true }),
             messages: compressionPayload.compressedMessages ?? state.messages,
             model: this.config.modelRuntimeConfig?.model,
             parentMessageId: compressionPayload.parentMessageId,

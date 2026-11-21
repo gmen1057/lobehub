@@ -1464,6 +1464,96 @@ describe('GeneralChatAgent', () => {
         }),
       );
     });
+
+    it('should preserve assistantMessageId and parentMessageId from user_input through compress_context to call_llm', async () => {
+      const agent = createCompressionAgent();
+      const state = createMockState({
+        messages: [
+          { content: 'Old history turn', id: 'msg-1', role: 'user' },
+          { content: 'Old assistant reply', id: 'msg-2', role: 'assistant' },
+          { content: 'New user prompt', id: 'msg-user-3', role: 'user' },
+        ] as any,
+        tools: [{ name: 'search' }] as any,
+      });
+
+      const compressInstruction = await agent.runner(
+        createMockContext('user_input', {
+          assistantMessageId: 'assistant-placeholder-3',
+          isFirstMessage: true,
+          parentMessageId: 'msg-user-3',
+        }),
+        state,
+      );
+
+      expect(compressInstruction).toEqual({
+        payload: {
+          assistantMessageId: 'assistant-placeholder-3',
+          currentTokenCount: expect.any(Number),
+          existingSummary: undefined,
+          messages: state.messages,
+          parentMessageId: 'msg-user-3',
+        },
+        type: 'compress_context',
+      });
+
+      const compressedMessages = [
+        { content: 'Compressed summary', id: 'group-1', role: 'compressedGroup' },
+        { content: 'New user prompt', id: 'msg-user-3', role: 'user' },
+      ] as any;
+
+      const llmInstruction = await agent.runner(
+        createMockContext('compression_result', {
+          assistantMessageId: 'assistant-placeholder-3',
+          compressedMessages,
+          groupId: 'group-1',
+          parentMessageId: 'msg-user-3',
+        }),
+        state,
+      );
+
+      expect(llmInstruction).toEqual({
+        payload: {
+          assistantMessageId: 'assistant-placeholder-3',
+          messages: compressedMessages,
+          model: 'gpt-4o-mini',
+          parentMessageId: 'msg-user-3',
+          provider: 'openai',
+          tools: state.tools,
+        },
+        type: 'call_llm',
+      });
+    });
+
+    it('should preserve assistantMessageId when htmlArtifactSyntaxError repair pass triggers compress_context', async () => {
+      const agent = createCompressionAgent();
+      const state = createMockState({
+        messages: [
+          { content: 'Create an interactive dashboard', id: 'msg-1', role: 'user' },
+          { content: '<lobeArtifact>broken', id: 'asst-broken', role: 'assistant' },
+        ] as any,
+      });
+
+      const result = await agent.runner(
+        createMockContext('llm_result', {
+          hasToolsCalling: false,
+          htmlArtifactSyntaxError: 'Unclosed tag',
+          parentMessageId: 'asst-broken',
+          toolsCalling: [],
+        }),
+        state,
+      );
+
+      expect(result).toEqual({
+        payload: {
+          assistantMessageId: 'asst-broken',
+          currentTokenCount: expect.any(Number),
+          existingSummary: undefined,
+          messages: state.messages,
+          parentMessageId: 'asst-broken',
+        },
+        type: 'compress_context',
+      });
+    });
   });
 
   describe('context compression hysteresis', () => {

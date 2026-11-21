@@ -18,6 +18,7 @@ import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
+import { LOADING_FLAT } from '@lobechat/const';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -64,6 +65,10 @@ import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
 import { resolveServerEnabledSearch } from './arckepSearch';
+import {
+  DATA_GUARD_COMPRESSION_MODEL,
+  isDeepSeekDataGuardProtected,
+} from './compressionThresholds';
 import { assertDeepSeekDocumentsGuardCompatible } from './deepseekDocumentGuard';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
@@ -1540,7 +1545,12 @@ export const createRuntimeExecutors = (
 
   compress_context: async (instruction, state) => {
     const { payload } = instruction as AgentInstructionCompressContext;
-    const { messages, currentTokenCount, parentMessageId: incomingParentMessageId } = payload;
+    const {
+      assistantMessageId: incomingAssistantMessageId,
+      messages,
+      currentTokenCount,
+      parentMessageId: incomingParentMessageId,
+    } = payload;
     const { operationId, stepIndex } = ctx;
     const operationLogId = `${operationId}:${stepIndex}`;
     const stagePrefix = `[${operationLogId}][compress_context]`;
@@ -1553,10 +1563,52 @@ export const createRuntimeExecutors = (
     const preservedMessageIds = new Set(
       preservedMessages.map((message) => message.id).filter((id): id is string => Boolean(id)),
     );
+    if (incomingAssistantMessageId) {
+      preservedMessageIds.add(incomingAssistantMessageId);
+    }
+    const isEmptyAssistantPlaceholder = (message: {
+      content?: unknown;
+      imageList?: unknown;
+      reasoning?: unknown;
+      role?: string;
+      tool_calls?: unknown;
+      tools?: unknown;
+    }): boolean => {
+      if (message?.role !== 'assistant') return false;
+      if (
+        message.content !== undefined &&
+        message.content !== null &&
+        typeof message.content !== 'string'
+      ) {
+        return false;
+      }
+      const text = typeof message.content === 'string' ? message.content.trim() : '';
+      if (text !== '' && text !== LOADING_FLAT) return false;
+      const hasTools =
+        (Array.isArray(message.tools) && message.tools.length > 0) ||
+        (Array.isArray(message.tool_calls) && message.tool_calls.length > 0);
+      const hasReasoning = Boolean(
+        typeof message.reasoning === 'string'
+          ? message.reasoning.trim()
+          : (message.reasoning as { content?: string } | null | undefined)?.content?.trim?.(),
+      );
+      const hasImages = Array.isArray(message.imageList) && message.imageList.length > 0;
+      return !hasTools && !hasReasoning && !hasImages;
+    };
     const messagesToCompress = preservedMessages.length > 0 ? messages.slice(0, -1) : messages;
     const compressedMessagesFallback = [...messagesToCompress, ...preservedMessages];
-    const compressionModel =
-      newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
+    const assistantPlaceholderPatch = incomingAssistantMessageId
+      ? { assistantMessageId: incomingAssistantMessageId }
+      : {};
+    const dataGuardProtected = isDeepSeekDataGuardProtected(
+      ctx.agentConfig ?? state.metadata?.agentConfig,
+    );
+    const compressionModel = dataGuardProtected
+      ? DATA_GUARD_COMPRESSION_MODEL
+      : newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
+    const compressionEffort = dataGuardProtected
+      ? undefined
+      : newState.modelRuntimeConfig?.compressionModel?.effort;
     let summaryUsage: any;
 
     if (!topicId || !ctx.userId) {
@@ -1565,6 +1617,7 @@ export const createRuntimeExecutors = (
         newState,
         nextContext: {
           payload: {
+            ...assistantPlaceholderPatch,
             compressedMessages: compressedMessagesFallback,
             groupId: '',
             parentMessageId: incomingParentMessageId,
@@ -1590,11 +1643,14 @@ export const createRuntimeExecutors = (
 
       // Keep the exact source snapshot while the model is running. Messages added
       // concurrently must not be hidden by a summary that never saw them.
+      // Exclude both the active turn's LOADING_FLAT placeholder (preservedMessageIds)
+      // and any historical empty/loading assistant stubs without tools or reasoning.
       const messagesToSummarize = dbMessages.filter(
         (message) =>
           message.role !== 'compressedGroup' &&
           Boolean(message.id) &&
-          !preservedMessageIds.has(message.id),
+          !preservedMessageIds.has(message.id) &&
+          !isEmptyAssistantPlaceholder(message),
       );
       const messageIds = messagesToSummarize.map((message) => message.id);
 
@@ -1604,6 +1660,7 @@ export const createRuntimeExecutors = (
           newState,
           nextContext: {
             payload: {
+              ...assistantPlaceholderPatch,
               compressedMessages: compressedMessagesFallback,
               groupId: '',
               parentMessageId: incomingParentMessageId,
@@ -1620,7 +1677,12 @@ export const createRuntimeExecutors = (
         };
       }
 
-      const latestAssistantMessage = dbMessages.findLast((message) => message.role === 'assistant');
+      const latestAssistantMessage = dbMessages.findLast(
+        (message) =>
+          message.role === 'assistant' &&
+          message.id !== incomingAssistantMessageId &&
+          !isEmptyAssistantPlaceholder(message),
+      );
       const followUpParentId = incomingParentMessageId ?? latestAssistantMessage?.id;
       const messageService = new MessageService(ctx.serverDB, ctx.userId);
 
@@ -1630,6 +1692,7 @@ export const createRuntimeExecutors = (
           newState,
           nextContext: {
             payload: {
+              ...assistantPlaceholderPatch,
               compressedMessages: compressedMessagesFallback,
               groupId: '',
               parentMessageId: followUpParentId,
@@ -1647,11 +1710,20 @@ export const createRuntimeExecutors = (
       }
 
       const compressionPayload = chainCompressContext(messagesToSummarize);
+      // Do NOT forward assistantMessageId here: billing_proxy's _persist_assistant_message_content
+      // writes any x-assistant-message-id stream directly into LobeChat's messages row when
+      // content is '...' (LOADING_FLAT) or reasoning is NULL, which would leak the internal
+      // compression summary/thinking into the user's assistant bubble. Billing attribution uses
+      // x-session-id + x-topic-id.
       const compressionRuntime = await initModelRuntimeFromDB(
         ctx.serverDB,
         ctx.userId,
         compressionModel.provider,
-        { sessionId: state.metadata?.sessionId, topicId },
+        {
+          sessionId: state.metadata?.sessionId,
+          ...(state.metadata?.studioWebChat === true ? { studioWebChat: true } : {}),
+          topicId,
+        },
       );
 
       let summaryContent = '';
@@ -1660,9 +1732,11 @@ export const createRuntimeExecutors = (
       ctx.signal?.throwIfAborted();
       const compressionResponse = await compressionRuntime.chat(
         {
+          enabledContextCaching: false,
           messages: compressionPayload.messages!,
           model: compressionModel.model,
           stream: true,
+          ...(compressionEffort ? { effort: compressionEffort } : {}),
         },
         {
           callback: {
@@ -1710,7 +1784,20 @@ export const createRuntimeExecutors = (
         summaryContent,
       );
 
-      const compressedMessagesBase = compressionResult.messages || messagesToSummarize;
+      const preservedTargetAssistant = incomingAssistantMessageId
+        ? dbMessages.find(
+            (message) =>
+              message.id === incomingAssistantMessageId && !isEmptyAssistantPlaceholder(message),
+          )
+        : undefined;
+      const rawCompressedBase =
+        compressionResult.messages ||
+        (preservedTargetAssistant
+          ? [...messagesToSummarize, preservedTargetAssistant]
+          : messagesToSummarize);
+      const compressedMessagesBase = rawCompressedBase.filter(
+        (message) => !isEmptyAssistantPlaceholder(message),
+      );
       const compressedMessages = [...compressedMessagesBase];
 
       for (const preservedMessage of preservedMessages) {
@@ -1740,6 +1827,7 @@ export const createRuntimeExecutors = (
         newState,
         nextContext: {
           payload: {
+            ...assistantPlaceholderPatch,
             compressedMessages,
             groupId: compressionResult.messageGroupId,
             parentMessageId: followUpParentId,
@@ -1771,6 +1859,7 @@ export const createRuntimeExecutors = (
         newState,
         nextContext: {
           payload: {
+            ...assistantPlaceholderPatch,
             compressedMessages: compressedMessagesFallback,
             groupId: '',
             parentMessageId: incomingParentMessageId,
