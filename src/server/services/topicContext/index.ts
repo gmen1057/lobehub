@@ -1,3 +1,4 @@
+import type { GetTopicContextParams } from '@lobechat/builtin-tool-topic-reference/executor';
 import type { LobeChatDatabase } from '@lobechat/database';
 import { readFilePage } from '@lobechat/prompts';
 
@@ -5,13 +6,9 @@ import { MessageModel } from '@/database/models/message';
 import { TopicModel } from '@/database/models/topic';
 import { messagePlugins } from '@/database/schemas';
 
-export interface TopicContextParams {
-  mode?: 'summary' | 'archive';
-  offset?: number;
-  query?: string;
-  snapshotAt?: string;
-  topicId: string;
-}
+import { readCodeArtifacts } from './codeArtifacts';
+
+export type TopicContextParams = GetTopicContextParams;
 
 /** Same owner-scoped source access for browser tools and background agents. */
 export async function getTopicContext(
@@ -21,6 +18,8 @@ export async function getTopicContext(
 ) {
   const topic = await new TopicModel(db, userId).findById(params.topicId);
   if (!topic) return { content: 'Topic not found', success: false };
+
+  if (params.mode === 'code_artifacts') return readCodeArtifacts(db, userId, params);
 
   if (params.mode === 'archive') {
     const snapshot = params.snapshotAt ? new Date(params.snapshotAt) : new Date();

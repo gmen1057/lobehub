@@ -97,6 +97,7 @@ import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { markTopicIfUserMcp } from '@/server/services/toolExecution/topicTrust';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
+import { topicHasCodeArtifacts } from '../topicContext/codeArtifacts';
 import { compactHistoryMessages } from './compactHistoryMessages';
 import { fileAddress } from './fileAddress';
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
@@ -281,6 +282,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
    * Defaults to true. Set to false for non-streaming scenarios (e.g., bot integrations).
    */
   stream?: boolean;
+  /** Only set by the authenticated Studio chat streaming route. */
+  studioWebChat?: boolean;
   /** Task ID that triggered this execution (if trigger is 'task') */
   taskId?: string;
   /**
@@ -602,6 +605,7 @@ export class AiAgentService {
       excludePluginIds,
       paramsOverride,
       stream,
+      studioWebChat,
       title,
       trigger,
       cronJobId,
@@ -756,6 +760,11 @@ export class AiAgentService {
         ? `${agentConfig.systemRole}\n\n${instructions}`
         : instructions;
       log('execAgent: appended additional instructions to systemRole');
+    }
+    if (studioWebChat) {
+      const filenameRule =
+        'For complete source files, put the filename after the language in the Markdown code fence (for example: vba Module1.bas). Keep the filename when revising the same file.';
+      agentConfig.systemRole = [agentConfig.systemRole, filenameRule].filter(Boolean).join('\n\n');
     }
 
     let resumeParentMessage;
@@ -1079,8 +1088,34 @@ export class AiAgentService {
         isModelSupportToolUse,
       };
 
-      // Dynamically inject topic-reference tool when prompt contains <refer_topic> tags
-      const hasTopicReference = /refer_topic/.test(prompt ?? '');
+      // Keep exact code reachable even if the visible history was compressed.
+      const canReadTopicCode =
+        studioWebChat &&
+        !!appContext?.topicId &&
+        isModelSupportToolUse(model, provider) &&
+        !excludedPluginIds.has(TopicReferenceIdentifier);
+      let hasSavedCode = false;
+      if (canReadTopicCode) {
+        try {
+          hasSavedCode = await topicHasCodeArtifacts(this.db, this.userId, topicId);
+        } catch (error) {
+          log('execAgent: could not find saved code versions: %O', error);
+        }
+      }
+      const hasCompressedHistory =
+        canReadTopicCode &&
+        (await loadHistoryMessages()).some((message) => message.role === 'compressedGroup');
+      if (hasSavedCode || hasCompressedHistory) {
+        pickedPluginIds.push(TopicReferenceIdentifier);
+        const codeSourceRules = hasSavedCode
+          ? `Saved code versions are available for this topic. When continuing or editing earlier code, call getTopicContext with topicId=${JSON.stringify(topicId)} and mode="code_artifacts". Select the requested version from the list, then read its source using its fileId and follow nextOffset until you have the needed code. Use the exact source when editing. If the desired code has no saved version, look it up in the original archive.`
+          : `When asked to continue or edit code from compressed history, retrieve the exact original with getTopicContext and topicId=${JSON.stringify(topicId)}, mode="archive" before writing changes.`;
+        agentConfig.systemRole = [agentConfig.systemRole, codeSourceRules]
+          .filter(Boolean)
+          .join('\n\n');
+      }
+      const hasTopicReference =
+        /refer_topic/.test(prompt ?? '') || hasSavedCode || hasCompressedHistory;
       agentPlugins = [
         ...agentPlugins,
         ...(hasTopicReference ? ['lobe-topic-reference'] : []),
@@ -1864,6 +1899,7 @@ export class AiAgentService {
         appContext: {
           agentId: resolvedAgentId,
           groupId: appContext?.groupId,
+          studioWebChat,
           taskId,
           threadId: appContext?.threadId,
           topicId,

@@ -119,8 +119,11 @@ export class FileService {
     key: string,
     buffer: Buffer,
     contentType: string,
+    privateFile?: boolean,
   ): Promise<{ key: string }> {
-    return this.impl.uploadBuffer(key, buffer, contentType);
+    return privateFile
+      ? this.impl.uploadBuffer(key, buffer, contentType, true)
+      : this.impl.uploadBuffer(key, buffer, contentType);
   }
 
   /**
@@ -132,7 +135,7 @@ export class FileService {
    * @returns File record and proxy URL
    */
   public async createFileRecord(params: {
-    fileHash: string;
+    fileHash?: string;
     fileType: string;
     id?: string;
     metadata?: Record<string, unknown>;
@@ -141,7 +144,8 @@ export class FileService {
     url: string;
   }): Promise<{ fileId: string; url: string }> {
     // Check if hash already exists in globalFiles
-    const { isExist } = await this.fileModel.checkHash(params.fileHash);
+    const insertToGlobalFiles =
+      params.fileHash !== undefined && !(await this.fileModel.checkHash(params.fileHash)).isExist;
 
     // Create database record
     // If hash doesn't exist, also create globalFiles record
@@ -155,7 +159,7 @@ export class FileService {
         size: params.size,
         url: params.url,
       },
-      !isExist, // insertToGlobalFiles
+      insertToGlobalFiles,
     );
 
     // Return unified proxy URL: ${APP_URL}/f/:id
@@ -298,14 +302,18 @@ export class FileService {
     buffer: Buffer,
     mimeType: string,
     pathname: string,
+    options?: {
+      metadata?: Record<string, unknown>;
+      privateFile?: boolean;
+      skipGlobalDedup?: boolean;
+    },
   ): Promise<{ fileId: string; key: string; url: string }> {
     // Use uploadBuffer with explicit contentType so S3 Content-Type matches
     // the actual bytes (e.g. PNG buffer won't get image/jpeg from .jpg pathname)
-    const { key } = await this.uploadBuffer(pathname, buffer, mimeType);
+    const { key } = await this.uploadBuffer(pathname, buffer, mimeType, options?.privateFile);
 
     const name = pathname.split('/').pop() || 'unknown';
     const size = buffer.length;
-    const hash = sha256(buffer);
     const fileId = uuid();
 
     // Derive dirname from pathname for metadata compatibility with UI upload path.
@@ -316,10 +324,16 @@ export class FileService {
     const dirname = parts.join('/');
 
     const { fileId: createdId, url } = await this.createFileRecord({
-      fileHash: hash,
+      fileHash: options?.skipGlobalDedup ? undefined : sha256(buffer),
       fileType: mimeType,
       id: fileId,
-      metadata: { date: new Date().toISOString().slice(0, 10), dirname, filename, path: pathname },
+      metadata: {
+        ...options?.metadata,
+        date: new Date().toISOString().slice(0, 10),
+        dirname,
+        filename,
+        path: pathname,
+      },
       name,
       size,
       url: key,

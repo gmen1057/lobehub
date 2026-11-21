@@ -7,6 +7,7 @@ interface ClassifiedLLMError {
   code?: string;
   kind: LLMErrorKind;
   message: string;
+  resetAt?: number;
   retrySafe?: boolean;
   status?: number;
   type?: string;
@@ -358,8 +359,19 @@ const classifyKind = ({
 };
 
 export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
-  const normalized = normalizeSignal(error);
   const recovery = readLLMRecoverySignal(error);
+  const quota = recovery.studioChatHourlyLimit;
+  if (quota) {
+    return {
+      code: quota.code,
+      kind: 'stop',
+      message: quota.message,
+      resetAt: quota.reset_at,
+      retrySafe: false,
+      status: quota.status,
+    };
+  }
+  const normalized = normalizeSignal(error);
   const retrySafe =
     recovery.retrySafe === false || normalized.retrySafe === false
       ? false

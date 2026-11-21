@@ -1,15 +1,10 @@
-import { TopicReferenceExecutor } from '@lobechat/builtin-tool-topic-reference/executor';
+import {
+  type GetTopicContextParams,
+  TopicReferenceExecutor,
+} from '@lobechat/builtin-tool-topic-reference/executor';
 import type { BuiltinToolResult } from '@lobechat/types';
 
 import { lambdaClient } from '@/libs/trpc/client';
-
-interface GetTopicContextParams {
-  mode?: 'summary' | 'archive';
-  offset?: number;
-  query?: string;
-  snapshotAt?: string;
-  topicId: string;
-}
 
 class TopicReferenceExecutionRuntime {
   getTopicContext = async (params: GetTopicContextParams): Promise<BuiltinToolResult> => {

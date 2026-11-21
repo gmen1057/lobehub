@@ -151,6 +151,7 @@ export type ResponseErrorCode =
   | 'invalid_request_error'
   | 'not_found'
   | 'studio_insufficient_balance'
+  | 'studio_chat_hourly_limit'
   | 'model_error'
   | 'rate_limit_error'
   | ProviderFailureCode;
@@ -158,6 +159,8 @@ export type ResponseErrorCode =
 export interface ResponseError {
   code: ResponseErrorCode;
   message: string;
+  /** Unix seconds when the Studio chat hourly quota resets. */
+  reset_at?: number;
   /** Original safe HTTP category of a model failure, also persisted on its message. */
   status?: number;
 }

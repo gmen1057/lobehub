@@ -75,6 +75,31 @@ describe('persisted model errors', () => {
     expect(formatPersistedLLMError({ errorType: 'InsufficientQuota' }).body.status).toBe(429);
   });
 
+  it('persists the Studio quota reset from Google details without retaining the provider body', () => {
+    const resetAt = 1_800_000_000;
+    const original = {
+      body: {
+        error: {
+          code: 429,
+          details: [
+            { reason: 'studio_chat_hourly_limit', reset_at: resetAt },
+            { reason: 'studio_chat_hourly_limit', retrySafe: false },
+          ],
+          message: 'private provider details',
+          status: 'RESOURCE_EXHAUSTED',
+        },
+      },
+      status: 500,
+    };
+    const serialized = JSON.stringify(formatPersistedLLMError(original));
+    const restored = ChatMessageErrorSchema.parse(JSON.parse(serialized));
+    expect(restored).toEqual({
+      body: { code: 'studio_chat_hourly_limit', reset_at: resetAt, status: 429 },
+      message: 'Hourly chat request limit reached.',
+      type: 429,
+    });
+  });
+
   it('keeps old generic 402 rows unverified and recognizes verified Studio rows', () => {
     const legacy = {
       body: { code: 'INSUFFICIENT_BALANCE', status: 402 },

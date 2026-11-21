@@ -6,7 +6,7 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
   api: [
     {
       description:
-        'Retrieve context from a referenced topic conversation. Returns the topic summary if available, otherwise returns the most recent messages. Use this when you see a topic reference tag in the user message and need to understand what was discussed in that topic.',
+        'Retrieve a topic summary, original archived messages, or saved code. When editing previous code, use mode="code_artifacts" to find a version and then read its exact source using its fileId.',
       name: TopicReferenceApiName.getTopicContext,
       parameters: {
         additionalProperties: false,
@@ -17,14 +17,20 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
           },
           mode: {
             type: 'string',
-            enum: ['summary', 'archive'],
+            enum: ['summary', 'archive', 'code_artifacts'],
             description:
-              'Use archive to retrieve original messages, including compressed history, without relying on summaries.',
+              'Use archive for original messages, including compressed history. Use code_artifacts to list saved code versions or read the version selected by fileId.',
+          },
+          fileId: {
+            description:
+              'In code_artifacts mode, omit to list versions; provide the exact fileId to read source.',
+            type: 'string',
           },
           offset: {
             type: 'integer',
             minimum: 0,
-            description: 'For archive pages: start at 0, then follow nextOffset automatically.',
+            description:
+              'For archive and code artifact pages, start at 0 and then follow nextOffset.',
           },
           snapshotAt: {
             type: 'string',

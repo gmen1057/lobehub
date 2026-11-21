@@ -7,8 +7,9 @@ const TopicReferenceApiName = {
   getTopicContext: 'getTopicContext',
 } as const;
 
-interface GetTopicContextParams {
-  mode?: 'summary' | 'archive';
+export interface GetTopicContextParams {
+  fileId?: string;
+  mode?: 'summary' | 'archive' | 'code_artifacts';
   offset?: number;
   query?: string;
   snapshotAt?: string;

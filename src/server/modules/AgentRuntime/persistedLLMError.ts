@@ -1,6 +1,7 @@
 import type { ChatMessageError } from '@lobechat/types';
 
 import { classifyLLMError } from './llmErrorClassification';
+import { STUDIO_CHAT_HOURLY_LIMIT } from './llmErrorRecovery';
 import { isProviderFailureCode, providerModelFailure } from './providerModelFailure';
 
 const TYPE_STATUS: Record<string, number> = {
@@ -13,9 +14,16 @@ const TYPE_STATUS: Record<string, number> = {
   Unauthorized: 401,
 };
 
-/** Persist only an HTTP category and a stable code, never a provider body or credentials. */
+/** Persist a stable code, HTTP category, and quota reset time when present. */
 export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
   const signal = classifyLLMError(error);
+  if (signal.code === STUDIO_CHAT_HOURLY_LIMIT) {
+    return {
+      body: { code: signal.code, reset_at: signal.resetAt, status: 429 },
+      message: signal.message,
+      type: 429 as ChatMessageError['type'],
+    };
+  }
   if (!signal.billing && isProviderFailureCode(signal.code)) {
     const { code, message, status } = providerModelFailure(signal.code);
     return { body: { code, status }, message, type: status as ChatMessageError['type'] };

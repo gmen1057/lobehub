@@ -99,12 +99,7 @@ export interface StepLifecycleCallbacks {
  * Step completion reason
  */
 export type StepCompletionReason =
-  | 'done'
-  | 'error'
-  | 'interrupted'
-  | 'max_steps'
-  | 'cost_limit'
-  | 'waiting_for_human';
+  'done' | 'error' | 'interrupted' | 'max_steps' | 'cost_limit' | 'waiting_for_human';
 
 // ==================== Execution Params ====================
 
@@ -136,6 +131,7 @@ export interface OperationCreationParams {
   appContext: {
     agentId?: string;
     groupId?: string | null;
+    studioWebChat?: boolean;
     taskId?: string;
     threadId?: string | null;
     topicId?: string | null;

@@ -43,7 +43,8 @@ export const topicRouter = router({
     .input(
       z.object({
         topicId: z.string(),
-        mode: z.enum(['summary', 'archive']).optional(),
+        mode: z.enum(['summary', 'archive', 'code_artifacts']).optional(),
+        fileId: z.string().max(64).optional(),
         offset: z.number().int().min(0).optional(),
         query: z.string().max(500).optional(),
         snapshotAt: z.string().datetime().optional(),

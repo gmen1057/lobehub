@@ -180,6 +180,27 @@ describe('ResponsesService — ответ в реестре и переподк�
     });
   });
 
+  it('passes the Studio origin into execution and keeps the quota reset in the replay', async () => {
+    const sender = new ResponsesService({} as any, 'u1');
+    const pending = drain(sender.createStreamingResponse(params, undefined, true));
+    await vi.waitFor(() => expect(responsesStreamHub.get(OP)).toBeDefined());
+    expect(mockExecAgent).toHaveBeenCalledWith(expect.objectContaining({ studioWebChat: true }));
+
+    const body = { code: 'studio_chat_hourly_limit', reset_at: 1_800_000_000, status: 429 };
+    finish({
+      error: { body, message: 'Details from the underlying failure', type: 429 },
+      messages: [],
+      status: 'error',
+    });
+    const events = await pending;
+    expect(events.at(-1).response).toMatchObject({
+      error: { ...body, message: 'Hourly chat request limit reached.' },
+      status: 'failed',
+    });
+    const replay = await drain(sender.resumeStreamingResponse('tpc_1'));
+    expect(replay.at(-1).response.error).toEqual(events.at(-1).response.error);
+  });
+
   it.each([402, 404, 429, 504])(
     'ошибка HTTP %s сохраняет причину при отправке и переподключении',
     async (status) => {

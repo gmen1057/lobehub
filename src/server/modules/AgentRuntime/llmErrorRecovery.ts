@@ -4,11 +4,25 @@ import {
   providerFailureFromMessage,
 } from './providerModelFailure';
 
+export const STUDIO_CHAT_HOURLY_LIMIT = 'studio_chat_hourly_limit';
+
+export const studioChatHourlyLimitError = (resetAt: unknown) =>
+  ({
+    code: STUDIO_CHAT_HOURLY_LIMIT,
+    message: 'Hourly chat request limit reached.',
+    reset_at:
+      typeof resetAt === 'number' && Number.isSafeInteger(resetAt) && resetAt > 0
+        ? resetAt
+        : undefined,
+    status: 429,
+  }) as const;
+
 interface LLMRecoverySignal {
   customerBalance: boolean;
   providerCode?: ProviderFailureCode;
   retrySafe?: boolean;
   status?: number;
+  studioChatHourlyLimit?: ReturnType<typeof studioChatHourlyLimitError>;
 }
 
 /** Read the proxy's recovery decision through SDK/error/SSE wrappers. */
@@ -21,6 +35,7 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
     if (!providerCode || code === 'provider_credits_exhausted') providerCode = code;
   };
   let retrySafe: boolean | undefined;
+  let studioChatHourlyLimit: LLMRecoverySignal['studioChatHourlyLimit'];
   let remaining = 128;
 
   const visit = (value: unknown, depth = 0): void => {
@@ -53,6 +68,12 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
     }
     const record = value as Record<string, unknown>;
     if (
+      (record.code === STUDIO_CHAT_HOURLY_LIMIT || record.reason === STUDIO_CHAT_HOURLY_LIMIT) &&
+      studioChatHourlyLimit?.reset_at === undefined
+    ) {
+      studioChatHourlyLimit = studioChatHourlyLimitError(record.reset_at);
+    }
+    if (
       record.code === 'studio_insufficient_balance' ||
       (record.code === 'billing_error' && record.type === 'insufficient_balance')
     ) {
@@ -79,5 +100,11 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   const permanent = statuses.find(
     (status) => status >= 400 && status < 500 && ![408, 425, 429].includes(status),
   );
-  return { customerBalance, providerCode, retrySafe, status: permanent ?? statuses.at(-1) };
+  return {
+    customerBalance,
+    providerCode,
+    retrySafe,
+    status: permanent ?? statuses.at(-1),
+    studioChatHourlyLimit,
+  };
 };
