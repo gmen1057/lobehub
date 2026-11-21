@@ -207,4 +207,46 @@ describe('ResponsesStreamHub (arckep F8)', () => {
     await finished;
     expect(got).toEqual(['a', 'b']);
   });
+
+  it('getDrainSnapshot и hasTopic корректно разделяют активные, удерживаемые в TTL и вычищенные темы', () => {
+    const now = { t: 50_000 };
+    const hub = makeHub(now, 1000);
+
+    register(hub, 'op_active_1', 'tpc_active', 'u1');
+    register(hub, 'op_active_2', 'tpc_active', 'u1'); // вторая операция в той же теме
+    register(hub, 'op_done_recent', 'tpc_recent', 'u2');
+    hub.markDone('op_done_recent');
+
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 2,
+      activeTopicIds: ['tpc_active'],
+      retainedTopicIds: ['tpc_active', 'tpc_recent'],
+    });
+
+    expect(hub.hasTopic('tpc_active')).toBe(true);
+    expect(hub.hasTopic('tpc_active', { activeOnly: true })).toBe(true);
+    expect(hub.hasTopic('tpc_recent')).toBe(true);
+    expect(hub.hasTopic('tpc_recent', { activeOnly: true })).toBe(false);
+    expect(hub.hasTopic('tpc_unknown')).toBe(false);
+    expect(hub.hasTopic('')).toBe(false);
+
+    // Истечение FINISHED_TTL_MS убирает завершённую тему при чтении снимка и hasTopic
+    now.t += 1001;
+    expect(hub.hasTopic('tpc_recent')).toBe(false);
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 2,
+      activeTopicIds: ['tpc_active'],
+      retainedTopicIds: ['tpc_active'],
+    });
+
+    hub.markDone('op_active_1');
+    hub.markDone('op_active_2');
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 0,
+      activeTopicIds: [],
+      retainedTopicIds: ['tpc_active'],
+    });
+    expect(hub.hasTopic('tpc_active', { activeOnly: true })).toBe(false);
+    expect(hub.hasTopic('tpc_active')).toBe(true);
+  });
 });

@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FinishedModule from '../finished';
-import { buildRunTitle, clearCronRunCache, formatRunTime, runCronJob } from '../run';
+import {
+  buildRunTitle,
+  clearCronRunCache,
+  formatRunTime,
+  getActiveCronSnapshot,
+  runCronJob,
+} from '../run';
 
 // arckep (19.10.2026, задачи помощника по расписанию): запуск задачи по просьбе студии.
 
@@ -65,7 +71,9 @@ describe('buildRunTitle', () => {
     expect(buildRunTitle({ name: 'Дайджест', timezone: 'Europe/Moscow' }, at)).toBe(
       'Дайджест · 19.10 12:05',
     );
-    expect(buildRunTitle({ name: '  ', timezone: 'Europe/Moscow' }, at)).toBe('Задача · 19.10 12:05');
+    expect(buildRunTitle({ name: '  ', timezone: 'Europe/Moscow' }, at)).toBe(
+      'Задача · 19.10 12:05',
+    );
     expect(buildRunTitle({ name: null, timezone: null }, at)).toBe('Задача · 19.10 12:05');
   });
 });
@@ -301,6 +309,69 @@ describe('runCronJob', () => {
       await runCronJob(db, 'user-1', job(), 'run-1');
 
       expect(mockExecAgent).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getActiveCronSnapshot (zero-downtime drain)', () => {
+    it('учитывает запуск от старта execAgent до onComplete-хука и очищает при ошибке или по TTL 45 мин', async () => {
+      let resolveExec!: (value: any) => void;
+      mockExecAgent.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveExec = resolve;
+          }),
+      );
+
+      const runPromise = runCronJob(db, 'user-1', job(), 'run-drain-1');
+      // Во время ожидания самого execAgent слот уже видит 1 активный запуск
+      expect(getActiveCronSnapshot().activeCount).toBe(1);
+
+      resolveExec({
+        operationId: 'op_cron_live',
+        success: true,
+        topicId: 'tpc_cron_live',
+      });
+      await runPromise;
+
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 1,
+        activeTopicIds: ['tpc_cron_live'],
+      });
+
+      const onCompleteHook = mockExecAgent.mock.calls[0][0].hooks[0];
+      await onCompleteHook.handler({
+        operationId: 'op_cron_live',
+        reason: 'done',
+        status: 'done',
+        topicId: 'tpc_cron_live',
+      });
+
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 0,
+        activeTopicIds: [],
+      });
+
+      // Ошибка старта не оставляет висящих записей
+      mockExecAgent.mockResolvedValueOnce({
+        error: 'failed to start',
+        operationId: 'op_fail',
+        success: false,
+        topicId: 'tpc_fail',
+      });
+      await runCronJob(db, 'user-1', job(), 'run-drain-fail');
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
+
+      // Страховочный TTL 45 минут сбрасывает зависшую запись
+      mockExecAgent.mockResolvedValueOnce({
+        operationId: 'op_stuck',
+        success: true,
+        topicId: 'tpc_stuck',
+      });
+      await runCronJob(db, 'user-1', job(), 'run-drain-stuck');
+      expect(getActiveCronSnapshot().activeTopicIds).toEqual(['tpc_stuck']);
+
+      vi.setSystemTime(new Date('2026-10-19T09:51:00Z')); // +46 минут
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
     });
   });
 });

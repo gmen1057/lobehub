@@ -52,6 +52,12 @@ export interface HubAttachment {
   unsubscribe: () => void;
 }
 
+export interface HubDrainSnapshot {
+  activeCount: number;
+  activeTopicIds: string[];
+  retainedTopicIds: string[];
+}
+
 /** Сколько завершённый ответ остаётся доступным для переподключения. */
 export const FINISHED_TTL_MS = 10 * 60 * 1000;
 /** Потолок истории одной операции (символы текста событий). */
@@ -164,6 +170,43 @@ export class ResponsesStreamHub implements IStreamEventManager {
       if (op.userId === userId && !op.done) out.add(op.topicId);
     }
     return [...out];
+  }
+
+  /** Чистый неразрушающий снимок состояния хаба для Blue-Green дренирования слота. */
+  getDrainSnapshot(): HubDrainSnapshot {
+    this.prune();
+    let activeCount = 0;
+    const activeTopics = new Set<string>();
+    const retainedTopics = new Set<string>();
+
+    for (const op of this.operations.values()) {
+      if (op.topicId) retainedTopics.add(op.topicId);
+      if (!op.done) {
+        activeCount += 1;
+        if (op.topicId) activeTopics.add(op.topicId);
+      }
+    }
+
+    return {
+      activeCount,
+      activeTopicIds: [...activeTopics],
+      retainedTopicIds: [...retainedTopics],
+    };
+  }
+
+  /** Есть ли тема в реестре слота (активная или ещё хранимая в пределах FINISHED_TTL_MS). */
+  hasTopic(topicId: string, opts?: { activeOnly?: boolean }): boolean {
+    if (!topicId) return false;
+    this.prune();
+    const activeOnly = Boolean(opts?.activeOnly);
+
+    for (const op of this.operations.values()) {
+      if (op.topicId !== topicId) continue;
+      if (activeOnly && op.done) continue;
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -344,5 +387,13 @@ export class ResponsesStreamHub implements IStreamEventManager {
   }
 }
 
+interface ResponsesStreamHubGlobal {
+  __arckepResponsesStreamHub?: ResponsesStreamHub;
+}
+
+const globalForHub = globalThis as unknown as ResponsesStreamHubGlobal;
+
 /** Один реестр на процесс: к нему ходят и отправка, и переподключение, и состояние ответа. */
-export const responsesStreamHub = new ResponsesStreamHub();
+export const responsesStreamHub =
+  globalForHub.__arckepResponsesStreamHub ??
+  (globalForHub.__arckepResponsesStreamHub = new ResponsesStreamHub());

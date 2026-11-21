@@ -82,6 +82,50 @@ const createFinishedHook = (
 
 // Повтор того же runId (студия не дождалась ответа и повторила запрос) не запускает задачу второй раз.
 const RUN_CACHE_TTL_MS = 15 * 60 * 1000;
+const CRON_ACTIVE_TTL_MS = 45 * 60 * 1000;
+
+interface ActiveCronEntry {
+  startedAt: number;
+  topicId: string | null;
+}
+
+interface ArckepCronGlobal {
+  __arckepActiveCronRuns?: Map<string, ActiveCronEntry>;
+}
+
+const globalForCron = globalThis as unknown as ArckepCronGlobal;
+const activeCronRuns =
+  globalForCron.__arckepActiveCronRuns ??
+  (globalForCron.__arckepActiveCronRuns = new Map<string, ActiveCronEntry>());
+
+let pendingCronSeq = 0;
+
+const pruneActiveCronRuns = (now = Date.now()) => {
+  for (const [opId, entry] of activeCronRuns) {
+    if (now - entry.startedAt > CRON_ACTIVE_TTL_MS) {
+      activeCronRuns.delete(opId);
+    }
+  }
+};
+
+export const getActiveCronSnapshot = (
+  now = Date.now(),
+): { activeCount: number; activeTopicIds: string[] } => {
+  pruneActiveCronRuns(now);
+  const topics = new Set<string>();
+  for (const entry of activeCronRuns.values()) {
+    if (entry.topicId) topics.add(entry.topicId);
+  }
+  return {
+    activeCount: activeCronRuns.size,
+    activeTopicIds: [...topics],
+  };
+};
+
+export const clearActiveCronRuns = () => {
+  activeCronRuns.clear();
+};
+
 const runCache = new Map<string, { at: number; promise: Promise<CronRunResult> }>();
 
 const pruneRunCache = () => {
@@ -91,7 +135,10 @@ const pruneRunCache = () => {
   }
 };
 
-export const clearCronRunCache = () => runCache.clear();
+export const clearCronRunCache = () => {
+  runCache.clear();
+  activeCronRuns.clear();
+};
 
 /** Модель и провайдер этого запуска; без них работает модель помощника. */
 export interface CronRunModel {
@@ -106,7 +153,23 @@ const startRun = async (
   runId: string,
   modelOverride?: CronRunModel,
 ): Promise<CronRunResult> => {
-  const ref: { operationId?: string; topicId?: string } = {};
+  const ref: { completed?: boolean; operationId?: string; pendingKey: string; topicId?: string } = {
+    pendingKey: `__starting_cron_${++pendingCronSeq}_${runId}`,
+  };
+  pruneActiveCronRuns();
+  activeCronRuns.set(ref.pendingKey, { startedAt: Date.now(), topicId: null });
+
+  const baseFinishedHook = createFinishedHook(job, runId, ref);
+  const trackedFinishedHook: AgentHook = {
+    ...baseFinishedHook,
+    handler: async (event: AgentHookEvent) => {
+      ref.completed = true;
+      activeCronRuns.delete(ref.pendingKey);
+      const opId = event.operationId || ref.operationId;
+      if (opId) activeCronRuns.delete(opId);
+      await baseFinishedHook.handler(event);
+    },
+  };
 
   let result: Awaited<ReturnType<AiAgentService['execAgent']>>;
   try {
@@ -114,7 +177,7 @@ const startRun = async (
       agentId: job.agentId,
       autoStart: true,
       cronJobId: job.id,
-      hooks: [createFinishedHook(job, runId, ref)],
+      hooks: [trackedFinishedHook],
       ...(modelOverride ? { model: modelOverride.model, provider: modelOverride.provider } : {}),
       prompt: job.content,
       title: buildRunTitle(job),
@@ -122,15 +185,18 @@ const startRun = async (
       userInterventionConfig: { approvalMode: 'headless' },
     });
   } catch (error) {
+    activeCronRuns.delete(ref.pendingKey);
     const message = error instanceof Error ? error.message : String(error);
     log('execAgent threw for job %s run %s: %s', job.id, runId, message);
     return { error: message, operationId: null, success: false, topicId: null };
   }
 
+  activeCronRuns.delete(ref.pendingKey);
   ref.operationId = result.operationId;
   ref.topicId = result.topicId;
 
   if (!result.success) {
+    if (result.operationId) activeCronRuns.delete(result.operationId);
     // Операция не стартовала: исполнение не засчитываем, хук не сработает — студия закроет запуск сама.
     return {
       error: result.error || 'Agent operation failed to start',
@@ -138,6 +204,13 @@ const startRun = async (
       success: false,
       topicId: result.topicId ?? null,
     };
+  }
+
+  if (result.operationId && !ref.completed) {
+    activeCronRuns.set(result.operationId, {
+      startedAt: Date.now(),
+      topicId: result.topicId ?? null,
+    });
   }
 
   try {

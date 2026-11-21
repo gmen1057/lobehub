@@ -10,12 +10,17 @@ export async function register() {
     await import('./libs/debug-file-logger');
   }
 
+  const skipBackgroundAutostart = process.env.ARCKEP_SKIP_BACKGROUND_AUTOSTART === '1';
+
   // Auto-start GatewayManager for non-Vercel environments so that
   // persistent bots (e.g. Discord gateway, WeChat long-polling) reconnect after server restart.
+  // NOTE: On slot drain/shutdown we intentionally NEVER call GatewayManager.stop(), because
+  // TelegramWebhookClient.stop() invokes Telegram deleteWebhook and would break the active slot.
   if (
     process.env.NEXT_RUNTIME === 'nodejs' &&
     !process.env.VERCEL_ENV &&
-    process.env.DATABASE_URL
+    process.env.DATABASE_URL &&
+    !skipBackgroundAutostart
   ) {
     const { GatewayService } = await import('./server/services/gateway');
     const service = new GatewayService();
@@ -29,7 +34,8 @@ export async function register() {
   if (
     process.env.NEXT_RUNTIME === 'nodejs' &&
     !process.env.VERCEL_ENV &&
-    process.env.DATABASE_URL
+    process.env.DATABASE_URL &&
+    !skipBackgroundAutostart
   ) {
     const { ensureRunning: ensureSandboxWorker } = await import('./server/services/sandboxJobs');
     ensureSandboxWorker().catch((err) => {
