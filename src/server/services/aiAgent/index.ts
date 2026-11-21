@@ -281,6 +281,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
    * Defaults to true. Set to false for non-streaming scenarios (e.g., bot integrations).
    */
   stream?: boolean;
+  /** Only set by the authenticated Studio chat streaming route. */
+  studioWebChat?: boolean;
   /** Task ID that triggered this execution (if trigger is 'task') */
   taskId?: string;
   /**
@@ -602,6 +604,7 @@ export class AiAgentService {
       excludePluginIds,
       paramsOverride,
       stream,
+      studioWebChat,
       title,
       trigger,
       cronJobId,
@@ -1864,6 +1867,7 @@ export class AiAgentService {
         appContext: {
           agentId: resolvedAgentId,
           groupId: appContext?.groupId,
+          studioWebChat,
           taskId,
           threadId: appContext?.threadId,
           topicId,

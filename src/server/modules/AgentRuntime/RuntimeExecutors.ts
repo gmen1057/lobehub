@@ -576,6 +576,7 @@ export const createRuntimeExecutors = (
         assistantMessageId: assistantMessageItem.id,
         retryOwner: 'engine',
         sessionId: state.metadata?.sessionId,
+        studioWebChat: state.metadata?.studioWebChat === true,
         topicId: state.metadata?.topicId ?? ctx.topicId,
       });
 

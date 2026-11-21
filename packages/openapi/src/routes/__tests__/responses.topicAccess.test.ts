@@ -19,6 +19,10 @@ vi.mock('@/database/schemas', () => ({}));
 vi.mock('../../middleware/auth', () => ({
   requireAuth: async (c: any, next: any) => {
     c.set('userId', 'user_1');
+    c.set(
+      'authType',
+      c.req.header('Authorization') === 'Bearer test-studio-key' ? 'arckep-service' : 'apikey',
+    );
     await next();
   },
 }));
@@ -58,10 +62,10 @@ vi.mock('../../services/responses.service', async (importOriginal) => {
 // до начала ответа, в потоковом режиме тоже (иначе ошибка пришла бы событием посреди потока).
 
 const app = new Hono().route('/responses', ResponsesRoutes);
-const post = (body: Record<string, unknown>) =>
+const post = (body: Record<string, unknown>, headers: Record<string, string> = {}) =>
   app.request('/responses', {
     body: JSON.stringify({ input: 'Привет', model: 'agent-1', ...body }),
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     method: 'POST',
   });
 
@@ -72,6 +76,29 @@ beforeEach(() => {
     yield { type: 'response.created' };
   });
 });
+
+it.each([
+  { authorized: true, marked: true, expected: true },
+  { authorized: true, marked: false, expected: false },
+  { authorized: false, marked: true, expected: false },
+])(
+  'marks Studio streaming only with service auth ($authorized) and a Studio header ($marked)',
+  async ({ authorized, marked, expected }) => {
+    const response = await post(
+      { stream: true, studioWebChat: true },
+      {
+        Authorization: authorized ? 'Bearer test-studio-key' : 'Bearer test-public-api-key',
+        ...(marked && { 'x-arckep-chat-source': 'studio' }),
+      },
+    );
+    await response.text();
+    expect(createStreamingResponse).toHaveBeenCalledWith(
+      expect.objectContaining({ stream: true }),
+      expect.any(AbortSignal),
+      expected,
+    );
+  },
+);
 
 describe('POST /responses — тема из previous_response_id', () => {
   it.each([false, true])(

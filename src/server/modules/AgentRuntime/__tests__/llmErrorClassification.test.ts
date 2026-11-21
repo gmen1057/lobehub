@@ -402,6 +402,13 @@ describe('classifyLLMError', () => {
   });
 
   describe('billing_proxy 504 upstream_timeout (retrySafe: false) vs 502 upstream_unavailable (retrySafe: true)', () => {
+    const quota = {
+      expectedKind: 'stop' as const,
+      reason: 'studio_chat_hourly_limit',
+      resetAt: 1_800_000_000,
+      retrySafe: false,
+      status: 429,
+    };
     const toStreamExecutionError = (streamError: Record<string, unknown>) => {
       const { message, ...rest } = streamError;
       return Object.assign(new Error(`LLM stream error: ${String(message)}`), rest);
@@ -420,13 +427,16 @@ describe('classifyLLMError', () => {
         retrySafe: true,
         status: 502,
       },
+      quota,
     ])(
       'OpenAIStream, OpenAIResponsesStream, and QwenAIStream classify $status $reason (retrySafe=$retrySafe) as $expectedKind',
       async ({ status, reason, retrySafe, expectedKind }) => {
+        const resetAt = reason === quota.reason ? quota.resetAt : undefined;
         const ssePayload = {
           error: {
             code: reason,
             details: [
+              ...(resetAt ? [{ reason, reset_at: resetAt }] : []),
               {
                 hasOutput: false,
                 hasUsage: false,
@@ -464,9 +474,10 @@ describe('classifyLLMError', () => {
               QwenAIStream(s, { callbacks: { onError }, payload: { provider: 'qwen' } }),
           ],
         ] as const) {
-          const rawSse = label.includes('event: error')
-            ? `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`
-            : `: ping\n\ndata: ${JSON.stringify(ssePayload)}\n\n`;
+          const rawSse =
+            resetAt || label.includes('event: error')
+              ? `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`
+              : `: ping\n\ndata: ${JSON.stringify(ssePayload)}\n\n`;
           const sseResponse = new Response(rawSse, {
             headers: { 'content-type': 'text/event-stream' },
           });
@@ -482,6 +493,7 @@ describe('classifyLLMError', () => {
             retrySafe,
             status,
           });
+          if (resetAt) expect(classified, label).toMatchObject({ code: reason, resetAt });
         }
       },
     );
@@ -499,13 +511,16 @@ describe('classifyLLMError', () => {
         retrySafe: true,
         status: 502,
       },
+      quota,
     ])(
       'AnthropicStream classifies $status $reason (retrySafe=$retrySafe) as $expectedKind',
       async ({ status, reason, retrySafe, expectedKind }) => {
+        const resetAt = reason === quota.reason ? quota.resetAt : undefined;
         const ssePayload = {
           error: {
             code: reason,
             details: [
+              ...(resetAt ? [{ reason, reset_at: resetAt }] : []),
               {
                 hasOutput: false,
                 hasUsage: false,
@@ -521,7 +536,7 @@ describe('classifyLLMError', () => {
             status,
             type: reason,
           },
-          type: 'error',
+          ...(!resetAt && { type: 'error' }),
         };
         const sseResponse = new Response(
           `: ping\n\nevent: error\ndata: ${JSON.stringify(ssePayload)}\n\n`,
@@ -543,6 +558,7 @@ describe('classifyLLMError', () => {
           retrySafe,
           status,
         });
+        if (resetAt) expect(classified).toMatchObject({ code: reason, resetAt });
       },
     );
 
@@ -561,12 +577,15 @@ describe('classifyLLMError', () => {
         retrySafe: true,
         status: 502,
       },
+      { ...quota, grpcStatus: 'RESOURCE_EXHAUSTED' },
     ])(
       'LobeGoogleAI classifies $status $reason (retrySafe=$retrySafe) via arckepProxyError as $expectedKind',
       async ({ status, grpcStatus, reason, retrySafe, expectedKind }) => {
+        const resetAt = reason === quota.reason ? quota.resetAt : undefined;
         const errorBody = {
           code: status,
           details: [
+            ...(resetAt ? [{ reason, reset_at: resetAt }] : []),
             {
               hasOutput: false,
               hasUsage: false,
@@ -616,6 +635,7 @@ describe('classifyLLMError', () => {
             retrySafe,
             status,
           });
+          if (resetAt) expect(classified).toMatchObject({ code: reason, resetAt });
         } finally {
           fetchSpy.mockRestore();
         }

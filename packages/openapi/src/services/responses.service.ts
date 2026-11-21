@@ -2,6 +2,10 @@ import type { AgentState } from '@lobechat/agent-runtime';
 
 import { FileModel } from '@/database/models/file';
 import {
+  STUDIO_CHAT_HOURLY_LIMIT,
+  studioChatHourlyLimitError,
+} from '@/server/modules/AgentRuntime/llmErrorRecovery';
+import {
   isProviderFailureCode,
   providerModelFailure,
 } from '@/server/modules/AgentRuntime/providerModelFailure';
@@ -83,10 +87,12 @@ export interface ResponseStatusInfo {
 }
 
 const knownModelError = (state?: AgentState): ResponseError | undefined => {
-  const code = state?.status === 'error' ? state.error?.body?.code : undefined;
+  const body = state?.status === 'error' ? state.error?.body : undefined;
+  const code = body?.code;
   if (code === 'studio_insufficient_balance') {
     return { code, message: 'Insufficient balance', status: 402 };
   }
+  if (code === STUDIO_CHAT_HOURLY_LIMIT) return studioChatHourlyLimitError(body.reset_at);
   if (isProviderFailureCode(code)) return providerModelFailure(code);
 };
 
@@ -562,6 +568,7 @@ export class ResponsesService extends BaseService {
   async *createStreamingResponse(
     params: CreateResponseRequest,
     signal?: AbortSignal,
+    studioWebChat = false,
   ): AsyncGenerator<ResponseStreamEvent> {
     this.assertPreviousTopicIdle(params);
     const createdAt = Math.floor(Date.now() / 1000);
@@ -601,6 +608,7 @@ export class ResponsesService extends BaseService {
         instructions,
         prompt,
         stream: true,
+        studioWebChat,
       });
 
       if (!execResult.success) {

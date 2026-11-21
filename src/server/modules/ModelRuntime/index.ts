@@ -374,6 +374,7 @@ export type ModelRuntimeConversationContext = {
   assistantMessageId?: string | null;
   /** The server agent loop owns retries for this LLM step; the proxy must not nest another loop. */
   retryOwner?: 'engine';
+  studioWebChat?: boolean;
 };
 
 /** Chat message ids are nanoid-style. Reject anything else; do not truncate. */
@@ -417,6 +418,7 @@ export const initModelRuntimeWithUserPayload = (
     topicId: convTopicId,
     assistantMessageId: rawAssistantMessageId,
     retryOwner,
+    studioWebChat,
     ...restParams
   } = params;
 
@@ -449,6 +451,7 @@ export const initModelRuntimeWithUserPayload = (
     if (assistantMessageId) headers['x-assistant-message-id'] = assistantMessageId;
     if (internalKey && assistantMessageId && retryOwner === 'engine') {
       headers['x-arckep-retry-owner'] = 'engine';
+      if (studioWebChat) headers['x-arckep-chat-source'] = 'studio';
       if (resolvedParams.maxRetries === undefined) {
         resolvedParams.maxRetries = 0;
       }
@@ -515,6 +518,7 @@ export const initModelRuntimeFromDB = async (
       topicId: conversation?.topicId,
       assistantMessageId: conversation?.assistantMessageId,
       retryOwner: conversation?.retryOwner,
+      studioWebChat: conversation?.studioWebChat,
     },
     hooks,
   );

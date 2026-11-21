@@ -491,12 +491,13 @@ describe('initModelRuntimeWithUserPayload method', () => {
     });
 
     it.each([
-      ['msg_VqfAoxBtmD01N7', 'test-internal-key', 'engine'],
-      ['../etc/passwd', 'test-internal-key', undefined],
-      ['msg_VqfAoxBtmD01N7', '', undefined],
+      ['msg_VqfAoxBtmD01N7', 'test-internal-key', true, 'engine', 'studio'],
+      ['msg_VqfAoxBtmD01N7', 'test-internal-key', false, 'engine', undefined],
+      ['../etc/passwd', 'test-internal-key', true, undefined, undefined],
+      ['msg_VqfAoxBtmD01N7', '', true, undefined, undefined],
     ])(
       'arckep: forwards retry ownership only with a valid placeholder and internal auth (%s)',
-      async (assistantMessageId, internalKey, expected) => {
+      async (assistantMessageId, internalKey, studioWebChat, expected, expectedSource) => {
         vi.stubEnv('OPENAI_PROXY_URL', 'http://127.0.0.1:8202/api/billing-proxy/openai');
         vi.stubEnv('LOBECHAT_BACKEND_KEY', internalKey);
         try {
@@ -508,13 +509,16 @@ describe('initModelRuntimeWithUserPayload method', () => {
               userId: 'user_abc',
               assistantMessageId,
               retryOwner: 'engine',
+              studioWebChat,
             },
           );
           const options = initialize.mock.calls.at(-1)![1];
           expect(options.defaultHeaders?.['x-arckep-retry-owner']).toBe(expected);
+          expect(options.defaultHeaders?.['x-arckep-chat-source']).toBe(expectedSource);
           expect(options.maxRetries).toBe(expected === 'engine' ? 0 : undefined);
           expect(options).not.toHaveProperty('retryOwner');
           expect(options).not.toHaveProperty('assistantMessageId');
+          expect(options).not.toHaveProperty('studioWebChat');
           initialize.mockRestore();
         } finally {
           vi.unstubAllEnvs();

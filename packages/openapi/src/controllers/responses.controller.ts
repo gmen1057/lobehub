@@ -107,7 +107,11 @@ export class ResponsesController extends BaseController {
     service: ResponsesService,
     params: CreateResponseRequest,
   ): Response {
-    return this.streamEvents(c, (signal) => service.createStreamingResponse(params, signal));
+    const studioWebChat =
+      this.getAuthType(c) === 'arckep-service' && c.req.header('x-arckep-chat-source') === 'studio';
+    return this.streamEvents(c, (signal) =>
+      service.createStreamingResponse(params, signal, studioWebChat),
+    );
   }
 
   /**
