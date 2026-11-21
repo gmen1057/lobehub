@@ -1,4 +1,5 @@
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
+import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import type { ActivatedStepTool, LobeToolManifest } from '@lobechat/context-engine';
 
 /**
@@ -121,7 +122,8 @@ export const seedActivatedStepToolsFromHistory = (
   const seeded: ActivatedStepTool[] = [];
 
   for (const id of collectActivatedToolIdsFromMessages(messages)) {
-    if (alreadyEnabled.has(id)) continue;
+    // Writing is an intent of this turn. A durable continuation is already in enabledToolIds.
+    if (id === TEXT_FILE_TOOL || alreadyEnabled.has(id)) continue;
 
     const manifest = toolSet.manifestMap[id];
     if (!manifest) continue;

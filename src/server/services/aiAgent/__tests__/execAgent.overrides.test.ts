@@ -3,6 +3,7 @@ import type * as ModelBankModule from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
+import { createServerAgentToolsEngine as realToolsEngine } from '@/server/modules/Mecha/AgentToolsEngine';
 import { TextFileStore } from '@/server/services/textFiles/store';
 
 import { AiAgentService } from '../index';
@@ -135,6 +136,7 @@ vi.mock('model-bank', async (importOriginal) => {
   return {
     ...actual,
     LOBE_DEFAULT_MODEL_LIST: [
+      { abilities: { functionCall: false }, id: 'no-tools', providerId: 'openai' },
       {
         abilities: { functionCall: true, video: false, vision: true },
         id: 'gpt-4',
@@ -202,6 +204,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
   ])(
     'writer requires a capable Studio client and respects Data Guard (%s %s %s)',
     async (studioWebChat, studioTextFilesEnabled, guard, expected) => {
+      vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
       await service.execAgent({
         agentId: 'agent-1',
         appContext: { topicId: 'topic-1' },
@@ -212,11 +215,53 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
       });
       const [opts] = mockCreateOperation.mock.calls[0];
       expect(opts.appContext.studioTextFileEnabled).toBe(expected);
-      const engine = vi.mocked(createServerAgentToolsEngine).mock.results[0].value;
-      const cfg = vi.mocked(engine.generateToolsDetailed).mock.calls.at(-1)![0]!;
-      expect(cfg.toolIds?.includes('arckep-text-file')).toBe(expected);
+      expect(opts.toolSet.enabledToolIds).not.toContain('arckep-text-file');
+      expect(Boolean(opts.toolSet.manifestMap['arckep-text-file'])).toBe(expected);
+      expect(opts.agentConfig.systemRole).not.toContain('use writePart');
     },
   );
+  it.each([
+    { disableTools: true },
+    { excludePluginIds: ['arckep-text-file'] },
+    { excludePluginIds: ['lobe-activator'] },
+    { chatConfigOverride: { skillActivateMode: 'manual' as const } },
+  ])(
+    'keeps the writer out of the catalogue when discovery or tools are disabled',
+    async (overrides) => {
+      if (!('disableTools' in overrides))
+        vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+      await service.execAgent({
+        agentId: 'agent-1',
+        studioWebChat: true,
+        studioTextFilesEnabled: true,
+        additionalPluginIds: ['arckep-text-file'],
+        prompt: 'собери модуль',
+        ...overrides,
+      });
+      const [{ toolSet, appContext }] = mockCreateOperation.mock.calls[0];
+      expect(appContext.studioTextFileEnabled).toBe(false);
+      expect(toolSet.enabledToolIds).not.toContain('arckep-text-file');
+      expect(toolSet.manifestMap['arckep-text-file']).toBeUndefined();
+    },
+  );
+  it('omits the writer for models without tool calling', async () => {
+    mockGetAgentConfig.mockResolvedValue({
+      ...agentConfig(),
+      model: 'no-tools',
+      plugins: ['arckep-text-file'],
+    });
+    vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+    await service.execAgent({
+      agentId: 'agent-1',
+      studioWebChat: true,
+      studioTextFilesEnabled: true,
+      prompt: 'Собери модуль',
+    });
+    const [{ toolSet, appContext }] = mockCreateOperation.mock.calls[0];
+    expect(appContext.studioTextFileEnabled).toBe(false);
+    expect(toolSet.tools ?? []).toHaveLength(0);
+    expect(toolSet.manifestMap['arckep-text-file']).toBeUndefined();
+  });
   it('restarts from the durable checkpoint even with empty or compressed active history', async () => {
     const documentId = '0bfce14d-edce-4846-ba54-a6531d3e4122';
     const receipt = {

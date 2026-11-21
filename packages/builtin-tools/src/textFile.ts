@@ -33,6 +33,10 @@ export const TextFileManifest: BuiltinToolManifest = {
   ],
   systemRole: 'Save complete text and source files with consecutive writePart calls.',
   identifier: TEXT_FILE_TOOL,
-  meta: { avatar: '📄', description: 'Запись исходного текста по частям', title: 'Текстовый файл' },
+  meta: {
+    avatar: '📄',
+    description: 'Создать файл с полным модулем, скриптом, конфигурацией или длинным текстом',
+    title: 'Текстовый файл',
+  },
   type: 'builtin',
 };

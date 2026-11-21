@@ -973,7 +973,7 @@ export class AiAgentService {
 
     let continueDocumentId = studioCodeFileContinueId;
     let continuationData: string | undefined;
-    const enableTextFile =
+    const supportsTextFile =
       studioTextFilesEnabled === true &&
       studioWebChat === true &&
       !isBotConversation &&
@@ -981,10 +981,7 @@ export class AiAgentService {
       !(agentConfig.chatConfig as any)?.deepseekDataGuardProtected &&
       isModelSupportToolUse(model, provider) &&
       !excludedPluginIds.has(TEXT_FILE_TOOL);
-    if (enableTextFile) {
-      pickedPluginIds.push(TEXT_FILE_TOOL);
-      let sourceRules =
-        'For requests to build a complete source module, script, configuration or long text file, use writePart from the first section. Continue automatically in consecutive small calls until the complete file is saved. If a call is interrupted, resume from the last committed part. The server shows a file card; do not produce private file tags or file links yourself.';
+    if (supportsTextFile) {
       if (
         !continueDocumentId &&
         appContext?.topicId &&
@@ -1003,8 +1000,8 @@ export class AiAgentService {
         ).resume(continueDocumentId);
         continuationReceipt = receipt;
         continuationData = JSON.stringify({ fileName: receipt.fileName, originalRequest, tail });
-        sourceRules +=
-          '\nContinue this saved file at part ' +
+        const resumeRule =
+          'Continue this saved file at part ' +
           (receipt.part + 1) +
           ' using documentId ' +
           receipt.documentId +
@@ -1013,17 +1010,21 @@ export class AiAgentService {
           ' in topic ' +
           topicId +
           '.';
+        agentConfig.systemRole = [agentConfig.systemRole, resumeRule].filter(Boolean).join('\n\n');
       }
-      agentConfig.systemRole = [agentConfig.systemRole, sourceRules].filter(Boolean).join('\n\n');
-    } else {
-      excludedPluginIds.add(TEXT_FILE_TOOL);
-      if (studioCodeFileContinueId)
-        throw new Error('File continuation unavailable for this conversation.');
+    } else if (studioCodeFileContinueId) {
+      throw new Error('File continuation unavailable for this conversation.');
     }
+    const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
+    const enableTextFile =
+      supportsTextFile &&
+      (!!continuationReceipt || (!isManualMode && !excludedPluginIds.has(LobeActivatorIdentifier)));
+    if (!enableTextFile) excludedPluginIds.add(TEXT_FILE_TOOL);
     const dropExcluded = (ids: string[]) => ids.filter((id) => !excludedPluginIds.has(id));
     let agentPlugins: string[] = dropExcluded([
       ...(agentConfig?.plugins ?? []),
       ...pickedPluginIds,
+      ...(enableTextFile ? [TEXT_FILE_TOOL] : []),
     ]);
 
     if (params.disableTools) {
@@ -1252,7 +1253,6 @@ export class AiAgentService {
       // 2 раза; без включённых баз знаний KB-инструмент впустую занимал первый шаг. Боты и встроенные
       // помощники (keepsOwnToolSet) сохраняют свой набор, как и раньше. В ручном режиме навыков активатор
       // выключен — подключить отложенное нечем, поэтому новые категории остаются в первом шаге.
-      const isManualMode = agentConfig.chatConfig?.skillActivateMode === 'manual';
       const defersLightweight = !keepsOwnToolSet && !isManualMode;
       const lazyMcpConnectorIds = defersLightweight
         ? (agentConfig.plugins || []).filter(isArckepLazyMcpConnectorId)
@@ -1309,6 +1309,10 @@ export class AiAgentService {
         isManualMode,
         pickedToolIds,
       });
+
+      // Only a scoped, committed continuation gets the writer on step one.
+      // Saved agent plugins and tools picked by a client must follow the same discovery path.
+      if (enableTextFile && !continuationReceipt) lazyToolIds.push(TEXT_FILE_TOOL);
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),

@@ -17,6 +17,7 @@ import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -226,6 +227,12 @@ export const buildToolDiscoveryConfig = (
 
   return { availableTools };
 };
+
+// A model can repeat a function name from conversation history even when its schema is absent.
+const canWriteTextFile = (state: AgentState) =>
+  state.metadata?.studioTextFileEnabled === true &&
+  (state.operationToolSet?.enabledToolIds.includes(TEXT_FILE_TOOL) === true ||
+    state.activatedStepTools?.some((tool) => tool.id === TEXT_FILE_TOOL) === true);
 
 const formatErrorEventData = (error: unknown, phase: string) => {
   let errorMessage = 'Unknown error';
@@ -1884,7 +1891,7 @@ export const createRuntimeExecutors = (
             dataGuardProtected:
               state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
             studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
-            studioTextFileEnabled: state.metadata?.studioTextFileEnabled === true,
+            studioTextFileEnabled: canWriteTextFile(state),
             studioTextFileContinueId: state.metadata?.studioTextFileContinueId,
             toolResultMaxLength,
             topicId: ctx.topicId,
@@ -2207,7 +2214,7 @@ export const createRuntimeExecutors = (
                 dataGuardProtected:
                   state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
                 studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
-                studioTextFileEnabled: state.metadata?.studioTextFileEnabled === true,
+                studioTextFileEnabled: canWriteTextFile(state),
                 studioTextFileContinueId: state.metadata?.studioTextFileContinueId,
                 toolResultMaxLength: batchAgentConfig?.chatConfig?.toolResultMaxLength,
                 topicId: ctx.topicId,
