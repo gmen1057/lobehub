@@ -1142,6 +1142,72 @@ describe('anthropicHelpers', () => {
         },
       ]);
     });
+
+    it('should apply cacheTTL: "1h" to string and array last messages when context caching is enabled', async () => {
+      const stringMessages: OpenAIChatMessage[] = [{ content: 'Hello', role: 'user' }];
+      const stringResult = await buildAnthropicMessages(stringMessages, {
+        cacheTTL: '1h',
+        enabledContextCaching: true,
+      });
+
+      expect(stringResult).toEqual([
+        {
+          content: [
+            { cache_control: { ttl: '1h', type: 'ephemeral' }, text: 'Hello', type: 'text' },
+          ],
+          role: 'user',
+        },
+      ]);
+
+      const arrayMessages: OpenAIChatMessage[] = [
+        {
+          content: [
+            { text: 'First block', type: 'text' },
+            { text: 'Second block', type: 'text' },
+          ],
+          role: 'user',
+        },
+      ];
+      const arrayResult = await buildAnthropicMessages(arrayMessages, {
+        cacheTTL: '1h',
+        enabledContextCaching: true,
+      });
+
+      expect(arrayResult).toEqual([
+        {
+          content: [
+            { text: 'First block', type: 'text' },
+            {
+              cache_control: { ttl: '1h', type: 'ephemeral' },
+              text: 'Second block',
+              type: 'text',
+            },
+          ],
+          role: 'user',
+        },
+      ]);
+    });
+
+    it('should omit ttl for cacheTTL: "5m" and emit no cache_control when enabledContextCaching is false', async () => {
+      const messages: OpenAIChatMessage[] = [{ content: 'Hello', role: 'user' }];
+
+      const fiveMin = await buildAnthropicMessages(messages, {
+        cacheTTL: '5m',
+        enabledContextCaching: true,
+      });
+      expect(fiveMin).toEqual([
+        {
+          content: [{ cache_control: { type: 'ephemeral' }, text: 'Hello', type: 'text' }],
+          role: 'user',
+        },
+      ]);
+
+      const disabled = await buildAnthropicMessages(messages, {
+        cacheTTL: '1h',
+        enabledContextCaching: false,
+      });
+      expect(disabled).toEqual([{ content: 'Hello', role: 'user' }]);
+    });
   });
 
   describe('buildAnthropicTools', () => {
@@ -1213,6 +1279,41 @@ describe('anthropicHelpers', () => {
           cache_control: { type: 'ephemeral' },
         },
       ]);
+    });
+
+    it('should apply cacheTTL: "1h" only on the last tool and omit cache_control when disabled', () => {
+      const tools: OpenAI.ChatCompletionTool[] = [
+        {
+          function: {
+            description: 'First tool',
+            name: 'first',
+            parameters: { properties: {}, type: 'object' },
+          },
+          type: 'function',
+        },
+        {
+          function: {
+            description: 'Last tool',
+            name: 'last',
+            parameters: { properties: {}, type: 'object' },
+          },
+          type: 'function',
+        },
+      ];
+
+      const oneHour = buildAnthropicTools(tools, {
+        cacheTTL: '1h',
+        enabledContextCaching: true,
+      });
+      expect(oneHour?.[0].cache_control).toBeUndefined();
+      expect(oneHour?.[1].cache_control).toEqual({ ttl: '1h', type: 'ephemeral' });
+
+      const disabled = buildAnthropicTools(tools, {
+        cacheTTL: '1h',
+        enabledContextCaching: false,
+      });
+      expect(disabled?.[0].cache_control).toBeUndefined();
+      expect(disabled?.[1].cache_control).toBeUndefined();
     });
   });
 });
