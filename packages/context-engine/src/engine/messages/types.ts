@@ -9,6 +9,7 @@ import type {
 
 import type { OpenAIChatMessage, UIChatMessage } from '@/types/index';
 
+import type { ArckepToolResultTrimConfig } from '../../processors/ArckepToolResultTrim';
 import type { AgentInfo } from '../../processors/GroupRoleTransform';
 import type { ToolResultImage } from '../../processors/ToolResultImages';
 import type { AgentBuilderContext } from '../../providers/AgentBuilderContextInjector';
@@ -274,6 +275,8 @@ export interface MessagesEngineParams {
   // ========== Tools ==========
   /** Tools configuration */
   toolsConfig?: ToolsConfig;
+  /** Cache-safe stale tool result and inline artifact trimming configuration */
+  toolResultTrim?: ArckepToolResultTrimConfig;
 
   // ========== File handling ==========
   /** File context configuration */
@@ -346,6 +349,7 @@ export interface MessagesEngineResult {
 
 // Re-export types for convenience
 
+export { type ArckepToolResultTrimConfig } from '../../processors/ArckepToolResultTrim';
 export { type AgentInfo } from '../../processors/GroupRoleTransform';
 export { type AgentBuilderContext } from '../../providers/AgentBuilderContextInjector';
 export { type AgentManagementContext } from '../../providers/AgentManagementContextInjector';

@@ -3,6 +3,7 @@ import type {
   AgentBuilderContext,
   AgentContextDocument,
   AgentManagementContext,
+  ArckepToolResultTrimConfig,
   BotPlatformContext,
   DiscordContext,
   EvalContext,
@@ -141,6 +142,8 @@ export interface ServerMessagesEngineParams {
     maxImages?: number;
     resolveImageUrl: (image: ToolResultImage) => Promise<string | undefined>;
   };
+  /** Stale tool result trimming configuration (cache-aware sticky boundary) */
+  toolResultTrim?: ArckepToolResultTrimConfig;
   // ========== Topic References ==========
   /** Topic reference summaries to inject into last user message */
   topicReferences?: TopicReferenceItem[];
@@ -155,6 +158,7 @@ export {
   type AgentBuilderContext,
   type AgentContextDocument,
   type AgentManagementContext,
+  type ArckepToolResultTrimConfig,
   type BotPlatformContext,
   type DiscordContext,
   type EvalContext,

@@ -138,6 +138,8 @@ export interface OperationCreationParams {
     studioWebChat?: boolean;
     taskId?: string;
     threadId?: string | null;
+    topicCacheTtlMs?: number;
+    topicCacheWarm?: boolean;
     topicId?: string | null;
     trigger?: string;
   };

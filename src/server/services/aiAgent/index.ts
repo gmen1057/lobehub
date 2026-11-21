@@ -101,7 +101,6 @@ import { markTopicIfUserMcp } from '@/server/services/toolExecution/topicTrust';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 
 import { topicHasCodeArtifacts } from '../topicContext/codeArtifacts';
-import { compactHistoryMessages } from './compactHistoryMessages';
 import { fileAddress } from './fileAddress';
 import { ingestAttachment, type IngestedImage } from './ingestAttachment';
 import { modelHasVision } from './modelVision';
@@ -1848,6 +1847,7 @@ export class AiAgentService {
     // Create user message object for processing (include imageList for vision models)
     const userMessage = {
       content: continuationData ? (prompt ?? '') + CONTINUATION_CONTEXT + continuationData : prompt,
+      createdAt: userMessageRecord?.createdAt,
       fileList,
       id: userMessageRecord?.id,
       imageList,
@@ -1870,8 +1870,7 @@ export class AiAgentService {
     };
 
     // Combine history messages with user message
-    const compactedHistory = compactHistoryMessages(historyMessages);
-    const allMessages = resume ? compactedHistory : [...compactedHistory, userMessage];
+    const allMessages = resume ? historyMessages : [...historyMessages, userMessage];
 
     log('execAgent: prepared evalContext for executor');
 
@@ -1880,6 +1879,34 @@ export class AiAgentService {
     // 15. Generate operation ID: agt_{timestamp}_{agentId}_{topicId}_{random}
     const timestamp = Date.now();
     const operationId = `op_${timestamp}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
+
+    const topicCacheTtlMs = 5 * 60 * 1000;
+    const priorMessages = resume ? historyMessages.slice(0, -1) : historyMessages;
+    let lastActivityMs = 0;
+    for (const m of priorMessages) {
+      if (!m || m.role === 'system' || m.content === LOADING_FLAT) continue;
+      const rawTs = m.updatedAt ?? m.createdAt;
+      if (rawTs === undefined || rawTs === null) continue;
+      const ms = new Date(rawTs).getTime();
+      if (Number.isFinite(ms) && ms > lastActivityMs) {
+        lastActivityMs = ms;
+      }
+    }
+    const rawCurrentTurnTs = resume
+      ? (historyMessages.at(-1)?.createdAt ?? historyMessages.at(-1)?.updatedAt)
+      : userMessageRecord?.createdAt;
+    const parsedCurrentTurnMs =
+      rawCurrentTurnTs !== undefined && rawCurrentTurnTs !== null
+        ? new Date(rawCurrentTurnTs).getTime()
+        : Number.NaN;
+    const currentTurnReferenceMs =
+      Number.isFinite(parsedCurrentTurnMs) && parsedCurrentTurnMs > 0
+        ? parsedCurrentTurnMs
+        : timestamp;
+    const topicCacheWarm =
+      lastActivityMs > 0 &&
+      currentTurnReferenceMs >= lastActivityMs &&
+      currentTurnReferenceMs - lastActivityMs < topicCacheTtlMs;
 
     // 16. Create initial context
     const initialContext: AgentRuntimeContext = {
@@ -1976,6 +2003,8 @@ export class AiAgentService {
           studioWebChat,
           taskId,
           threadId: appContext?.threadId,
+          topicCacheTtlMs,
+          topicCacheWarm,
           topicId,
           trigger,
         },

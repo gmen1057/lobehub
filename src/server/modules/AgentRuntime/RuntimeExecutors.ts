@@ -24,6 +24,7 @@ import {
   buildStepSkillDelta,
   buildStepToolDelta,
   extractToolResultImages,
+  hydrateGroupMessages,
   type LobeToolManifest,
   type OperationToolSet,
   type ResolvedToolSet,
@@ -50,7 +51,6 @@ import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { throwIfAborted, waitForRetry } from '@/server/services/agentRuntime/abort';
 import { saveLongCodeArtifacts } from '@/server/services/aiAgent/codeArtifacts';
-import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistoryMessages';
 import { HtmlArtifactStreamGate } from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
@@ -548,6 +548,15 @@ export const createRuntimeExecutors = (
             ? {
                 toolResultImages: {
                   resolveImageUrl: createToolImageUrlResolver(ctx.serverDB, ctx.userId),
+                },
+              }
+            : {}),
+          ...(state.metadata?.topicCacheWarm !== undefined ||
+          state.metadata?.topicCacheTtlMs !== undefined
+            ? {
+                toolResultTrim: {
+                  cacheTtlMs: state.metadata?.topicCacheTtlMs,
+                  cacheWarm: state.metadata?.topicCacheWarm,
                 },
               }
             : {}),
@@ -2423,7 +2432,7 @@ export const createRuntimeExecutors = (
       // Use conversation-flow parse to resolve branching into linear flat list
       // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
       const { flatList } = parse(latestMessages);
-      newState.messages = compactHistoryMessages(flatList);
+      newState.messages = hydrateGroupMessages(flatList, latestMessages);
 
       log(
         `[${operationLogId}][call_tools_batch] Refreshed ${newState.messages.length} messages from database`,

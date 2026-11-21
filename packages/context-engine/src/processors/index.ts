@@ -1,7 +1,17 @@
 // Transformer processors
 export { AgentCouncilFlattenProcessor } from './AgentCouncilFlatten';
+export {
+  type ArckepToolResultTrimConfig,
+  type ArckepToolResultTrimMetadata,
+  ArckepToolResultTrimProcessor,
+  DEFAULT_CACHE_TTL_MS,
+  MAX_OLD_TOOL_ARGUMENTS_CHARS,
+  MAX_OLD_TOOL_CONTENT_CHARS,
+  MIN_ARTIFACT_BODY_TO_COMPACT,
+  RECENT_UNCOMPACTED_USER_TURNS,
+} from './ArckepToolResultTrim';
 export { CompressedGroupRoleTransformProcessor } from './CompressedGroupRoleTransform';
-export { GroupMessageFlattenProcessor } from './GroupMessageFlatten';
+export { GroupMessageFlattenProcessor, hydrateGroupMessages } from './GroupMessageFlatten';
 export {
   type GroupOrchestrationFilterConfig,
   GroupOrchestrationFilterProcessor,
