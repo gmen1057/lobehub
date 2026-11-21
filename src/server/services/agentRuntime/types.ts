@@ -131,6 +131,10 @@ export interface OperationCreationParams {
   appContext: {
     agentId?: string;
     groupId?: string | null;
+    studioTextFileCheckpoint?: { documentId: string; part: number; status: string };
+    studioTextFileContinueId?: string;
+    studioTextFileEnabled?: boolean;
+    studioTextFileRequestId?: string;
     studioWebChat?: boolean;
     taskId?: string;
     threadId?: string | null;

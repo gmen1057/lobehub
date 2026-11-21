@@ -3,6 +3,8 @@ import type * as ModelBankModule from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
+import { createServerAgentToolsEngine as realToolsEngine } from '@/server/modules/Mecha/AgentToolsEngine';
+import { TextFileStore } from '@/server/services/textFiles/store';
 
 import { AiAgentService } from '../index';
 
@@ -13,6 +15,7 @@ const {
   mockCreateOperation,
   mockGetAgentConfig,
   mockHasCodeArtifacts,
+  mockHistory,
   mockMessageCreate,
   mockIngestAttachment,
   mockParseFile,
@@ -20,6 +23,7 @@ const {
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
   mockHasCodeArtifacts: vi.fn(),
+  mockHistory: vi.fn().mockResolvedValue([]),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockParseFile: vi.fn(),
@@ -34,7 +38,7 @@ vi.mock('@/libs/trusted-client', () => ({
 vi.mock('@/database/models/message', () => ({
   MessageModel: vi.fn().mockImplementation(() => ({
     create: mockMessageCreate,
-    query: vi.fn().mockResolvedValue([]),
+    query: mockHistory,
     update: vi.fn().mockResolvedValue({}),
   })),
 }));
@@ -132,6 +136,7 @@ vi.mock('model-bank', async (importOriginal) => {
   return {
     ...actual,
     LOBE_DEFAULT_MODEL_LIST: [
+      { abilities: { functionCall: false }, id: 'no-tools', providerId: 'openai' },
       {
         abilities: { functionCall: true, video: false, vision: true },
         id: 'gpt-4',
@@ -189,6 +194,156 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(engine.generateToolsDetailed).toHaveBeenCalledWith(
       expect.objectContaining({ toolIds: expect.arrayContaining(['lobe-topic-reference']) }),
     );
+  });
+
+  it.each([
+    [true, true, false, true],
+    [true, false, false, false],
+    [false, true, false, false],
+    [true, true, true, false],
+  ])(
+    'writer requires a capable Studio client and respects Data Guard (%s %s %s)',
+    async (studioWebChat, studioTextFilesEnabled, guard, expected) => {
+      vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-1' },
+        studioWebChat,
+        studioTextFilesEnabled,
+        chatConfigOverride: { deepseekDataGuardProtected: guard },
+        prompt: 'Build a module',
+      });
+      const [opts] = mockCreateOperation.mock.calls[0];
+      expect(opts.appContext.studioTextFileEnabled).toBe(expected);
+      expect(opts.toolSet.enabledToolIds).not.toContain('arckep-text-file');
+      expect(Boolean(opts.toolSet.manifestMap['arckep-text-file'])).toBe(expected);
+      expect(opts.agentConfig.systemRole).not.toContain('use writePart');
+    },
+  );
+  it.each([
+    { disableTools: true },
+    { excludePluginIds: ['arckep-text-file'] },
+    { excludePluginIds: ['lobe-activator'] },
+    { chatConfigOverride: { skillActivateMode: 'manual' as const } },
+  ])(
+    'keeps the writer out of the catalogue when discovery or tools are disabled',
+    async (overrides) => {
+      if (!('disableTools' in overrides))
+        vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+      await service.execAgent({
+        agentId: 'agent-1',
+        studioWebChat: true,
+        studioTextFilesEnabled: true,
+        additionalPluginIds: ['arckep-text-file'],
+        prompt: 'собери модуль',
+        ...overrides,
+      });
+      const [{ toolSet, appContext }] = mockCreateOperation.mock.calls[0];
+      expect(appContext.studioTextFileEnabled).toBe(false);
+      expect(toolSet.enabledToolIds).not.toContain('arckep-text-file');
+      expect(toolSet.manifestMap['arckep-text-file']).toBeUndefined();
+    },
+  );
+  it('omits the writer for models without tool calling', async () => {
+    mockGetAgentConfig.mockResolvedValue({
+      ...agentConfig(),
+      model: 'no-tools',
+      plugins: ['arckep-text-file'],
+    });
+    vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+    await service.execAgent({
+      agentId: 'agent-1',
+      studioWebChat: true,
+      studioTextFilesEnabled: true,
+      prompt: 'Собери модуль',
+    });
+    const [{ toolSet, appContext }] = mockCreateOperation.mock.calls[0];
+    expect(appContext.studioTextFileEnabled).toBe(false);
+    expect(toolSet.tools ?? []).toHaveLength(0);
+    expect(toolSet.manifestMap['arckep-text-file']).toBeUndefined();
+  });
+  it('restarts from the durable checkpoint even with empty or compressed active history', async () => {
+    const documentId = '0bfce14d-edce-4846-ba54-a6531d3e4122';
+    const receipt = {
+      documentId,
+      fileId: '70414ac4-b671-4935-ac56-5ceffceac40d',
+      fileName: 'Файл кода',
+      part: 5,
+      status: 'draft' as const,
+    };
+    const restore = vi
+      .spyOn(TextFileStore.prototype, 'resume')
+      .mockResolvedValue({ receipt, tail: 'unique-source-tail' });
+    const list = vi.spyOn(TextFileStore.prototype, 'list').mockResolvedValue([receipt]);
+    mockHistory.mockResolvedValue([{ role: 'tool', content: 'stale-archive '.repeat(20000) }]);
+    try {
+      for (const id of [documentId, undefined]) {
+        await service.execAgent({
+          agentId: 'agent-1',
+          appContext: { topicId: 'topic-1' },
+          studioWebChat: true,
+          studioTextFilesEnabled: true,
+          studioCodeFileContinueId: id,
+          prompt: 'Продолжить',
+        });
+        const [options] = mockCreateOperation.mock.calls.at(-1)!;
+        expect(options.agentConfig.systemRole).toContain('part 6');
+        expect(options.agentConfig.systemRole).not.toContain('unique-source-tail');
+        expect(options.initialMessages.at(-1).content).toContain('unique-source-tail');
+        expect(options.initialMessages).toHaveLength(1);
+        expect(JSON.stringify(options.initialMessages)).not.toContain('stale-archive');
+        expect(
+          vi.mocked(createServerAgentToolsEngine).mock.results.at(-1)!.value.generateToolsDetailed,
+        ).toHaveBeenCalledWith(
+          expect.objectContaining({
+            skipDefaultTools: true,
+            toolIds: ['arckep-text-file', 'lobe-topic-reference'],
+          }),
+        );
+        expect(options.appContext.studioTextFileContinueId).toBe(documentId);
+      }
+      expect(list).toHaveBeenCalledTimes(1);
+    } finally {
+      restore.mockRestore();
+      list.mockRestore();
+      mockHistory.mockResolvedValue([]);
+    }
+  });
+
+  it('rejects unknown or protected continuations before starting a billable operation', async () => {
+    const resume = vi
+      .spyOn(TextFileStore.prototype, 'resume')
+      .mockRejectedValue(new Error('not_found'));
+    const options = {
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-1' },
+      studioWebChat: true,
+      studioTextFilesEnabled: true,
+      studioCodeFileContinueId: '0bfce14d-edce-4846-ba54-a6531d3e4122',
+      prompt: 'Continue',
+    };
+    try {
+      await expect(service.execAgent(options)).rejects.toThrow('not_found');
+      await expect(
+        service.execAgent({ ...options, chatConfigOverride: { deepseekDataGuardProtected: true } }),
+      ).rejects.toThrow('unavailable');
+      expect(mockCreateOperation).not.toHaveBeenCalled();
+      expect(resume).toHaveBeenCalledTimes(1);
+    } finally {
+      resume.mockRestore();
+    }
+  });
+
+  it('passes the persisted user ID to compression independently of enabled tools', async () => {
+    mockMessageCreate
+      .mockResolvedValueOnce({ id: 'new-user' })
+      .mockResolvedValueOnce({ id: 'placeholder' });
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Check my changes' });
+    expect(mockCreateOperation.mock.calls[0][0].initialMessages.at(-1)).toMatchObject({
+      content: 'Check my changes',
+      id: 'new-user',
+      role: 'user',
+    });
   });
 
   it('chatConfigOverride и paramsOverride сливаются с настройками помощника', async () => {

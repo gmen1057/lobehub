@@ -204,6 +204,8 @@ export const CreateResponseRequestSchema = z
       .max(20)
       .nullish(),
     read_url: z.boolean().nullish(),
+    studioTextFilesEnabled: z.boolean().optional(),
+    studioCodeFileContinueId: z.string().uuid().optional(),
     data_guard_protected: z.boolean().nullish(),
     safety_check: z.boolean().nullish(),
     input: z.union([z.string(), z.array(InputItemSchema)]),

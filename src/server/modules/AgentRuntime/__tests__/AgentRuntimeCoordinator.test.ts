@@ -154,6 +154,30 @@ describe('AgentRuntimeCoordinator', () => {
       );
     });
 
+    it('records max-steps interruption with the last committed part and no source', async () => {
+      const state = {
+        status: 'done',
+        stepCount: 9,
+        messages: [{ content: 'private source' }],
+        metadata: {
+          studioTextFileCheckpoint: { documentId: 'doc', part: 4, status: 'draft' },
+          studioTextFileFinish: 'max_steps_completed',
+        },
+      };
+      const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+      try {
+        mockStateManager.loadAgentState.mockResolvedValue({ status: 'running', stepCount: 8 });
+        await coordinator.saveAgentState('op', state as any);
+        expect(info).toHaveBeenCalledWith(
+          '[text-file]',
+          expect.objectContaining({ reason: 'max_steps_completed', lastPart: 4 }),
+        );
+        expect(JSON.stringify(info.mock.calls)).not.toContain('private source');
+      } finally {
+        info.mockRestore();
+      }
+    });
+
     it('should not publish end event when status was already done', async () => {
       const operationId = 'test-operation-id';
       const previousState = { status: 'done', stepCount: 5 };

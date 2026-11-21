@@ -3,6 +3,7 @@ import { TraceNameMap, TraceTagMap } from '@lobechat/types';
 import debug from 'debug';
 
 import { createTraceOptions } from '@/server/modules/ModelRuntime';
+import { redactTextFileDiagnostics } from '@/server/services/textFiles/diagnostics';
 
 const log = debug('lobe-server:agent-runtime:llm-trace');
 
@@ -39,18 +40,25 @@ export const createEngineTraceCallbacks = (
   if (process.env.ENABLE_LANGFUSE !== '1') return undefined;
 
   try {
-    return createTraceOptions(payload, {
-      outsideRequest: true,
-      provider,
-      trace: {
-        enabled: true,
-        sessionId,
-        tags: [TraceTagMap.Chat],
-        topicId,
-        traceName: TraceNameMap.EngineChat,
-        userId,
+    const { callback } = createTraceOptions(
+      { ...payload, messages: redactTextFileDiagnostics(payload.messages) },
+      {
+        outsideRequest: true,
+        provider,
+        trace: {
+          enabled: true,
+          sessionId,
+          tags: [TraceTagMap.Chat],
+          topicId,
+          traceName: TraceNameMap.EngineChat,
+          userId,
+        },
       },
-    }).callback;
+    );
+    return {
+      ...callback,
+      onCompletion: (data) => callback.onCompletion?.(redactTextFileDiagnostics(data)),
+    };
   } catch (error) {
     log('failed to start langfuse trace: %O', error);
     console.error('[EngineTrace] failed to start langfuse trace:', error);

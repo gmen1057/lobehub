@@ -20,6 +20,16 @@ export class ResponsesController extends BaseController {
   async createResponse(c: Context): Promise<Response> {
     try {
       const body = await this.getBody<CreateResponseRequest>(c);
+      if (
+        body.studioCodeFileContinueId &&
+        (!body.stream ||
+          !body.previous_response_id ||
+          !body.studioTextFilesEnabled ||
+          body.data_guard_protected ||
+          this.getAuthType(c) !== 'arckep-service' ||
+          c.req.header('x-arckep-chat-source') !== 'studio')
+      )
+        return this.error(c, 'File continuation is unavailable for this request', 400);
       const userId = this.getUserId(c);
       const db = await this.getDatabase();
       const service = new ResponsesService(db, userId);

@@ -17,6 +17,7 @@ import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -53,10 +54,12 @@ import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistory
 import { HtmlArtifactStreamGate } from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
+import { compactWriterContext } from '@/server/services/textFiles/context';
 import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
 } from '@/server/services/toolExecution';
+import { isTrustedPrivateCodeFile } from '@/server/services/topicContext/codeArtifacts';
 import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
@@ -67,6 +70,7 @@ import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
 import { persistFailedLLM } from './persistFailedLLM';
 import { persistInterruptedLLM } from './persistInterruptedLLM';
+import { fitRejectedPrompt } from './rejectedPrompt';
 import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
 
@@ -94,6 +98,11 @@ const TOOL_PRICING: Record<string, number> = {
 
 const TOOL_MAX_RETRIES = 2;
 const DOCUMENTS_TOOL_IDENTIFIER = 'lobe-documents';
+
+const diagnosticToolCall = (call: ChatToolPayload) =>
+  call.identifier === 'arckep-text-file'
+    ? { identifier: call.identifier, apiName: call.apiName, id: call.id }
+    : call;
 
 const getDocumentFileId = (result: ToolExecutionResultResponse) => {
   const state = result.state;
@@ -218,6 +227,12 @@ export const buildToolDiscoveryConfig = (
 
   return { availableTools };
 };
+
+// A model can repeat a function name from conversation history even when its schema is absent.
+const canWriteTextFile = (state: AgentState) =>
+  state.metadata?.studioTextFileEnabled === true &&
+  (state.operationToolSet?.enabledToolIds.includes(TEXT_FILE_TOOL) === true ||
+    state.activatedStepTools?.some((tool) => tool.id === TEXT_FILE_TOOL) === true);
 
 const formatErrorEventData = (error: unknown, phase: string) => {
   let errorMessage = 'Unknown error';
@@ -412,6 +427,7 @@ export const createRuntimeExecutors = (
       // Rebuild params from agentConfig at execution time (capabilities built dynamically)
       const agentConfig = ctx.agentConfig;
       let processedMessages;
+      let wireSourceIds: (string | undefined)[] = [];
       if (agentConfig) {
         const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
@@ -546,7 +562,12 @@ export const createRuntimeExecutors = (
           ...(topicReferences && { topicReferences }),
         };
 
-        processedMessages = await serverMessagesEngine(contextEngineInput);
+        processedMessages = await serverMessagesEngine({
+          ...contextEngineInput,
+          onSourceIds: (ids) => {
+            wireSourceIds = ids;
+          },
+        });
 
         // Emit context engine event for tracing
         // Omit large/redundant fields to reduce snapshot size:
@@ -590,7 +611,7 @@ export const createRuntimeExecutors = (
       // браузерном чате; раньше серверный вызов их не передавал вовсе.
       const modelParams = await resolveServerModelParams(agentConfig, model, provider);
       log(`[${operationLogId}] model params: %o`, modelParams);
-      const chatPayload = {
+      let chatPayload = {
         ...(modelParams as unknown as Partial<ChatStreamPayload>),
         messages: processedMessages,
         model,
@@ -670,6 +691,7 @@ export const createRuntimeExecutors = (
       };
 
       const maxAttempts = LLM_MAX_RETRIES + 1;
+      let recoveredInput = false;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         let content = '';
@@ -685,7 +707,19 @@ export const createRuntimeExecutors = (
         const reasoningParts: ContentPart[] = [];
         let hasContentImages = false;
         let hasReasoningImages = false;
-        const htmlStreamGate = new HtmlArtifactStreamGate();
+        const htmlStreamGate = new HtmlArtifactStreamGate(async (fileId) =>
+          Boolean(
+            ctx.serverDB &&
+            ctx.userId &&
+            (state.metadata?.topicId ?? ctx.topicId) &&
+            (await isTrustedPrivateCodeFile(
+              ctx.serverDB,
+              ctx.userId,
+              state.metadata?.topicId ?? ctx.topicId,
+              fileId,
+            )),
+          ),
+        );
         textBuffer = '';
         reasoningBuffer = '';
 
@@ -776,7 +810,7 @@ export const createRuntimeExecutors = (
             attempt,
             maxAttempts,
             model,
-            processedMessages.length,
+            chatPayload.messages.length,
             tools?.length ?? 0,
           );
 
@@ -888,7 +922,9 @@ export const createRuntimeExecutors = (
 
                 await streamManager.publishStreamChunk(operationId, stepIndex, {
                   chunkType: 'tools_calling',
-                  toolsCalling: payload,
+                  toolsCalling: payload.map((call) =>
+                    call.identifier === 'arckep-text-file' ? { ...call, arguments: '{}' } : call,
+                  ),
                 });
               },
               onError: async (errorData) => {
@@ -1052,7 +1088,7 @@ export const createRuntimeExecutors = (
             log(`[${operationLogId}][content]`, content);
           }
           if (toolsCalling.length > 0) {
-            log(`[${operationLogId}][toolsCalling] `, toolsCalling);
+            log(`[${operationLogId}][toolsCalling] `, toolsCalling.map(diagnosticToolCall));
           }
 
           // Log usage information
@@ -1215,7 +1251,12 @@ export const createRuntimeExecutors = (
               metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
               reasoning: finalReasoning,
               search: grounding,
-              tools: toolsCalling.length > 0 ? toolsCalling : undefined,
+              tools:
+                toolsCalling.length > 0
+                  ? toolsCalling.map((call) =>
+                      call.identifier === 'arckep-text-file' ? { ...call, arguments: '{}' } : call,
+                    )
+                  : undefined,
             });
           } catch (error) {
             console.error('[call_llm] Failed to update message:', error);
@@ -1387,6 +1428,36 @@ export const createRuntimeExecutors = (
             );
           }
           const interrupted = await isOperationInterrupted(ctx);
+
+          // A permanent input refusal forbids replaying the request. Only send a different
+          // prompt once, when the proxy and this attempt both confirm no work/output/usage.
+          if (
+            classified.rejectedInput &&
+            !recoveredInput &&
+            !grounding &&
+            !hasReceivedResult &&
+            !interrupted &&
+            attempt < maxAttempts &&
+            attemptElapsedMs < LONG_LLM_ATTEMPT_NO_RETRY_MS
+          ) {
+            const messages = fitRejectedPrompt(
+              chatPayload,
+              llmPayload.messages,
+              wireSourceIds,
+              classified.rejectedInput,
+            );
+            if (messages) {
+              recoveredInput = true;
+              chatPayload = { ...chatPayload, messages };
+              log(
+                '[%s] Reduced rejected input for the same assistant (provider tokens: %d, limit: %d)',
+                operationLogId,
+                classified.rejectedInput.inputTokens,
+                classified.rejectedInput.maxTokens,
+              );
+              continue;
+            }
+          }
 
           if (
             !hasReceivedResult &&
@@ -1731,11 +1802,14 @@ export const createRuntimeExecutors = (
     if (ctx.signal?.aborted) return { events, newState: { ...state, status: 'interrupted' } };
 
     const operationLogId = `${operationId}:${stepIndex}`;
-    log(`[${operationLogId}] payload: %O`, payload);
+    log(`[${operationLogId}] payload: %O`, {
+      ...payload,
+      toolCalling: diagnosticToolCall(payload.toolCalling),
+    });
 
     // Publish tool execution start event
     await streamManager.publishStreamEvent(operationId, {
-      data: payload,
+      data: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
       stepIndex,
       type: 'tool_start',
     });
@@ -1813,6 +1887,12 @@ export const createRuntimeExecutors = (
             serverDB: ctx.serverDB,
             taskId: state.metadata?.taskId,
             toolManifestMap: effectiveManifestMap,
+            operationId,
+            dataGuardProtected:
+              state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
+            studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
+            studioTextFileEnabled: canWriteTextFile(state),
+            studioTextFileContinueId: state.metadata?.studioTextFileContinueId,
             toolResultMaxLength,
             topicId: ctx.topicId,
             userId: ctx.userId,
@@ -1841,7 +1921,7 @@ export const createRuntimeExecutors = (
           isSuccess,
           attempts: execution.attempts,
           maxAttempts: TOOL_MAX_RETRIES + 1,
-          payload,
+          payload: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
           phase: 'tool_execution',
           result: executionResult,
         },
@@ -1857,7 +1937,9 @@ export const createRuntimeExecutors = (
           content: executionResult.content,
           metadata: { toolExecutionTimeMs: executionTime },
           parentId: payload.parentMessageId,
-          plugin: chatToolPayload as any,
+          plugin: (chatToolPayload.identifier === 'arckep-text-file'
+            ? { ...chatToolPayload, arguments: '{}' }
+            : chatToolPayload) as any,
           pluginError: executionResult.error,
           pluginState: executionResult.state,
           role: 'tool',
@@ -1874,6 +1956,15 @@ export const createRuntimeExecutors = (
 
       const newState = structuredClone(state);
 
+      if (
+        chatToolPayload.identifier === 'arckep-text-file' &&
+        executionResult.success &&
+        executionResult.state
+      )
+        newState.metadata = {
+          ...newState.metadata,
+          studioTextFileCheckpoint: executionResult.state,
+        };
       // arckep (19.10.2026): картинки из результата инструмента (блоки MCP `{type: 'image', data, fileId}`)
       // нужны ToolResultImagesProcessor на следующем шаге: после одиночного вызова состояние собирается здесь,
       // а не из базы (как в call_tools_batch), поэтому кладём в pluginState сообщения только сами блоки-картинки,
@@ -1896,6 +1987,11 @@ export const createRuntimeExecutors = (
         tool_call_id: chatToolPayload.id,
       });
 
+      if (newState.metadata?.studioTextFileCheckpoint)
+        newState.messages = compactWriterContext(
+          newState.messages,
+          newState.metadata.studioTextFileRequestId,
+        );
       events.push({ id: chatToolPayload.id, result: executionResult, type: 'tool_result' });
 
       // Get tool unit price
@@ -2084,7 +2180,7 @@ export const createRuntimeExecutors = (
 
         // Publish tool execution start event
         await streamManager.publishStreamEvent(operationId, {
-          data: { parentMessageId, toolCalling: chatToolPayload },
+          data: { parentMessageId, toolCalling: diagnosticToolCall(chatToolPayload) },
           stepIndex,
           type: 'tool_start',
         });
@@ -2114,6 +2210,12 @@ export const createRuntimeExecutors = (
                 serverDB: ctx.serverDB,
                 taskId: state.metadata?.taskId,
                 toolManifestMap: batchManifestMap,
+                operationId,
+                dataGuardProtected:
+                  state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
+                studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
+                studioTextFileEnabled: canWriteTextFile(state),
+                studioTextFileContinueId: state.metadata?.studioTextFileContinueId,
                 toolResultMaxLength: batchAgentConfig?.chatConfig?.toolResultMaxLength,
                 topicId: ctx.topicId,
                 userId: ctx.userId,
@@ -2141,7 +2243,7 @@ export const createRuntimeExecutors = (
               isSuccess,
               attempts: execution.attempts,
               maxAttempts: TOOL_MAX_RETRIES + 1,
-              payload: { parentMessageId, toolCalling: chatToolPayload },
+              payload: { parentMessageId, toolCalling: diagnosticToolCall(chatToolPayload) },
               phase: 'tool_execution',
               result: executionResult,
             },
@@ -2156,7 +2258,9 @@ export const createRuntimeExecutors = (
               content: executionResult.content,
               metadata: { toolExecutionTimeMs: executionTime },
               parentId: parentMessageId,
-              plugin: chatToolPayload as any,
+              plugin: (chatToolPayload.identifier === 'arckep-text-file'
+                ? { ...chatToolPayload, arguments: '{}' }
+                : chatToolPayload) as any,
               pluginError: executionResult.error,
               pluginState: executionResult.state,
               role: 'tool',
@@ -2217,6 +2321,12 @@ export const createRuntimeExecutors = (
     // Accumulate tool usage sequentially after all tools have finished
     const newState = structuredClone(state);
     for (const result of toolResults) {
+      if (
+        result.toolCall.identifier === 'arckep-text-file' &&
+        result.data.success &&
+        result.data.state
+      )
+        newState.metadata = { ...newState.metadata, studioTextFileCheckpoint: result.data.state };
       if (result.usageParams) {
         const { usage, cost } = UsageCounter.accumulateTool({
           ...result.usageParams,
@@ -2261,35 +2371,64 @@ export const createRuntimeExecutors = (
       }
     }
 
-    // Refresh messages from database to ensure state is in sync
+    if (newState.metadata?.studioTextFileCheckpoint) {
+      // This operation has a committed source. Keep only its active user turn; a full topic
+      // reload would reintroduce every prior tool dump and discard the exact continuation tail.
+      for (const { data, toolCallId } of toolResults) {
+        const images = extractToolResultImages(data.state);
+        newState.messages.push({
+          role: 'tool',
+          tool_call_id: toolCallId,
+          content: data.content,
+          ...(images.length
+            ? {
+                pluginState: {
+                  content: images.map((image) => ({
+                    type: 'image',
+                    data: image.url,
+                    fileId: image.fileId,
+                    mimeType: image.mimeType,
+                  })),
+                },
+              }
+            : {}),
+        });
+      }
+      newState.messages = compactWriterContext(
+        newState.messages,
+        newState.metadata.studioTextFileRequestId,
+      );
+    } else {
+      // Refresh messages from database to ensure state is in sync
 
-    // Query latest messages from database
-    // Must pass agentId to ensure correct query scope, otherwise when topicId is undefined,
-    // the query will use isNull(topicId) condition which won't find messages with actual topicId
-    // arckep (24.10.2026): pass postProcessUrl so imageList/fileList S3 keys (files/user_...) are resolved
-    // to presigned URLs instead of breaking subsequent OpenRouter/vision LLM steps with HTTP 400 Invalid URL format.
-    const fileService =
-      ctx.serverDB && ctx.userId ? new FileService(ctx.serverDB, ctx.userId) : undefined;
-    const postProcessUrl = fileService
-      ? (path: string | null) => fileService.getFullFileUrl(path)
-      : undefined;
-    const latestMessages = await ctx.messageModel.query(
-      {
-        agentId: state.metadata?.agentId,
-        threadId: state.metadata?.threadId,
-        topicId: state.metadata?.topicId,
-      },
-      postProcessUrl ? { postProcessUrl } : undefined,
-    );
+      // Query latest messages from database
+      // Must pass agentId to ensure correct query scope, otherwise when topicId is undefined,
+      // the query will use isNull(topicId) condition which won't find messages with actual topicId
+      // arckep (24.10.2026): pass postProcessUrl so imageList/fileList S3 keys (files/user_...) are resolved
+      // to presigned URLs instead of breaking subsequent OpenRouter/vision LLM steps with HTTP 400 Invalid URL format.
+      const fileService =
+        ctx.serverDB && ctx.userId ? new FileService(ctx.serverDB, ctx.userId) : undefined;
+      const postProcessUrl = fileService
+        ? (path: string | null) => fileService.getFullFileUrl(path)
+        : undefined;
+      const latestMessages = await ctx.messageModel.query(
+        {
+          agentId: state.metadata?.agentId,
+          threadId: state.metadata?.threadId,
+          topicId: state.metadata?.topicId,
+        },
+        postProcessUrl ? { postProcessUrl } : undefined,
+      );
 
-    // Use conversation-flow parse to resolve branching into linear flat list
-    // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
-    const { flatList } = parse(latestMessages);
-    newState.messages = compactHistoryMessages(flatList);
+      // Use conversation-flow parse to resolve branching into linear flat list
+      // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
+      const { flatList } = parse(latestMessages);
+      newState.messages = compactHistoryMessages(flatList);
 
-    log(
-      `[${operationLogId}][call_tools_batch] Refreshed ${newState.messages.length} messages from database`,
-    );
+      log(
+        `[${operationLogId}][call_tools_batch] Refreshed ${newState.messages.length} messages from database`,
+      );
+    }
 
     // Get the last tool message ID as parentMessageId for next LLM call
     const lastToolMessageId = toolMessageIds.at(-1);
@@ -2373,6 +2512,8 @@ export const createRuntimeExecutors = (
     const newState = structuredClone(state);
     newState.lastModified = new Date().toISOString();
     newState.status = 'done';
+    if (newState.metadata?.studioTextFileCheckpoint)
+      newState.metadata.studioTextFileFinish = reason;
 
     const events: AgentEvent[] = [
       {
@@ -2396,7 +2537,12 @@ export const createRuntimeExecutors = (
     >;
     const { operationId, stepIndex, streamManager } = ctx;
 
-    log('[%s:%d] Requesting human approval for %O', operationId, stepIndex, pendingToolsCalling);
+    log(
+      '[%s:%d] Requesting human approval for %O',
+      operationId,
+      stepIndex,
+      pendingToolsCalling.map(diagnosticToolCall),
+    );
 
     // Publish human approval request event
     await streamManager.publishStreamEvent(operationId, {

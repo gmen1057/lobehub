@@ -132,6 +132,7 @@ export class ToolExecutionService {
       // Source readers already return bounded pages with exact cursors. Cutting a page
       // again would silently skip source characters on the next read.
       const truncatedContent =
+        identifier === 'arckep-text-file' ||
         (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') ||
         (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext') ||
         (identifier === 'lobe-agent-documents' &&

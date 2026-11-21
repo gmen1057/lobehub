@@ -63,6 +63,14 @@ TopicsRoutes.get(
   },
 );
 
+TopicsRoutes.get(
+  '/:id/code-files',
+  requireAuth,
+  requireAnyPermission(getAllScopePermissions('TOPIC_READ'), 'Topic read permission required'),
+  zValidator('param', TopicGetParamSchema),
+  (c) => new TopicController().handleGetCodeFiles(c),
+);
+
 // PATCH /api/v1/topics/:id - Update topic
 TopicsRoutes.patch(
   '/:id',

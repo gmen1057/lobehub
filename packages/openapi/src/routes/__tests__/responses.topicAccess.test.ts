@@ -145,3 +145,28 @@ describe('POST /responses — тема из previous_response_id', () => {
     expect(createResponse).toHaveBeenCalledTimes(1);
   });
 });
+
+it.each([
+  [{ studioTextFilesEnabled: false }, true],
+  [{ data_guard_protected: true }, true],
+  [{ stream: false }, true],
+  [{ previous_response_id: undefined }, true],
+  [{}, false],
+])(
+  'rejects unsupported file continuation before any provider work (%j)',
+  async (override, bridge) => {
+    const response = await post(
+      {
+        stream: true,
+        previous_response_id: 'tpc_mine',
+        studioTextFilesEnabled: true,
+        studioCodeFileContinueId: '7d10c0e1-787e-437b-a72f-e52fac8360ff',
+        ...(override as object),
+      },
+      bridge ? { 'Authorization': 'Bearer test-studio-key', 'x-arckep-chat-source': 'studio' } : {},
+    );
+    expect(response.status).toBe(400);
+    expect(createStreamingResponse).not.toHaveBeenCalled();
+    expect(createResponse).not.toHaveBeenCalled();
+  },
+);

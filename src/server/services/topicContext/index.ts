@@ -15,11 +15,13 @@ export async function getTopicContext(
   db: LobeChatDatabase,
   userId: string,
   params: TopicContextParams,
+  includeTextFiles = true,
 ) {
   const topic = await new TopicModel(db, userId).findById(params.topicId);
   if (!topic) return { content: 'Topic not found', success: false };
 
-  if (params.mode === 'code_artifacts') return readCodeArtifacts(db, userId, params);
+  if (params.mode === 'code_artifacts')
+    return readCodeArtifacts(db, userId, params, includeTextFiles);
 
   if (params.mode === 'archive') {
     const snapshot = params.snapshotAt ? new Date(params.snapshotAt) : new Date();

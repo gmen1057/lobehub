@@ -1,4 +1,4 @@
-import { readLLMRecoverySignal } from './llmErrorRecovery';
+import { readLLMRecoverySignal, type RejectedInputSize } from './llmErrorRecovery';
 
 type LLMErrorKind = 'retry' | 'stop';
 
@@ -7,6 +7,7 @@ interface ClassifiedLLMError {
   code?: string;
   kind: LLMErrorKind;
   message: string;
+  rejectedInput?: RejectedInputSize;
   resetAt?: number;
   retrySafe?: boolean;
   status?: number;
@@ -387,6 +388,7 @@ export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
     billing: !providerWallet && recovery.customerBalance,
     code: recovery.providerCode ?? (signal.code || signal.errorType),
     kind: classifyKind(signal),
+    rejectedInput: recovery.rejectedInput,
     message: signal.message,
     retrySafe: signal.retrySafe,
     status: signal.status,

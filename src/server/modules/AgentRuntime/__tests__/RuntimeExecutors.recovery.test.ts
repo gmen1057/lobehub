@@ -3,11 +3,19 @@ import { readFileSync } from 'node:fs';
 
 import { Stream as AnthropicSDKStream } from '@anthropic-ai/sdk/streaming';
 import type { AgentState } from '@lobechat/agent-runtime';
-import { AgentRuntime } from '@lobechat/agent-runtime';
+import {
+  AgentRuntime,
+  calculatePromptTokens,
+  estimateTokens,
+  GeneralChatAgent,
+} from '@lobechat/agent-runtime';
+import type { ChatStreamPayload } from '@lobechat/model-runtime';
 import { Stream } from 'openai/streaming';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
+import { MessageService } from '@/server/services/message';
 
 import { AnthropicStream } from '../../../../../packages/model-runtime/src/core/streams/anthropic';
 import { OpenAIStream } from '../../../../../packages/model-runtime/src/core/streams/openai/openai';
@@ -113,6 +121,216 @@ describe('same-turn recovery through native Google SDK streams', () => {
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
+
+  const inputRefusal = {
+    code: 'invalid_request_error',
+    details: [
+      {
+        hasOutput: false,
+        hasUsage: false,
+        reason: 'upstream_error',
+        retryOwner: 'engine',
+        retrySafe: false,
+      },
+    ],
+    message: 'user input too long, 34968 tokens exceeds max 32768 tokens',
+    retrySafe: false,
+    status: 413,
+    type: 'invalid_request_error',
+  };
+
+  it('answers the current task after automatic compression and an empty native DeepSeek 413', async () => {
+    const modelRuntimeConfig = { model: 'deepseek-flash', provider: 'deepseek' };
+    const agent = new GeneralChatAgent({ modelRuntimeConfig, operationId: ctx.operationId });
+    const task = {
+      content: 'Как теперь проверить последнюю версию?',
+      id: 'user-task',
+      role: 'user',
+    };
+    const unit = 'Исходный пример кода и результат проверки. '.repeat(100);
+    const summaries = Array.from({ length: 12 }, (_, i) => ({
+      content:
+        unit.repeat(4).slice(0, Math.ceil((unit.length * 2850) / estimateTokens(unit))) + String(i),
+      id: 'archive-' + i,
+      role: 'compressedGroup',
+      topicId: 'topic',
+    }));
+    const source = { content: unit.repeat(120), id: 'recent-history', role: 'assistant' };
+    const state = {
+      ...initialState(),
+      modelRuntimeConfig,
+      messages: [...summaries.slice(0, -1), source, task],
+      tools: [
+        {
+          type: 'function' as const,
+          function: {
+            name: 'getTopicContext',
+            description: 'Read archived conversation',
+            parameters: { type: 'object', properties: {} },
+          },
+        },
+      ],
+    };
+    const session = {
+      messageCount: state.messages.length,
+      sessionId: 'operation',
+      status: 'running' as const,
+      stepCount: 0,
+    };
+    const compression = await agent.runner({ phase: 'init', payload: {}, session }, state);
+    if (Array.isArray(compression) || compression.type !== 'compress_context')
+      throw new Error('Expected automatic compression');
+    const createCompressionGroup = vi.fn(async () => ({
+      messageGroupId: 'archive-11',
+      messages: [...summaries, task],
+    }));
+    vi.mocked(MessageService).mockImplementationOnce(function () {
+      return { createCompressionGroup } as unknown as MessageService;
+    });
+    vi.mocked(ctx.messageModel.query).mockResolvedValue(state.messages as any);
+    const summarize = vi.fn(async (_request: unknown, options: { callback: any }) => {
+      await options.callback.onText(summaries[11].content);
+      return new Response();
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: summarize } as any);
+    const first = await createRuntimeExecutors(ctx).compress_context!(compression, state);
+    expect(first.nextContext?.phase).toBe('compression_result');
+    const followUp = await agent.runner(first.nextContext!, first.newState);
+    if (Array.isArray(followUp) || followUp.type !== 'call_llm')
+      throw new Error('Expected answer after compression');
+
+    const engine = await vi.importActual<{ serverMessagesEngine: typeof serverMessagesEngine }>(
+      '@/server/modules/Mecha/ContextEngineering',
+    );
+    vi.mocked(serverMessagesEngine).mockImplementationOnce(engine.serverMessagesEngine);
+    ctx.agentConfig = {
+      systemRole: 'Keep project instructions',
+      knowledgeBases: [{ id: 'project-docs', name: 'Project documents', enabled: true }],
+    };
+    const chat = vi.fn(async (payload: ChatStreamPayload, options: { callback: any }) => {
+      const count = calculatePromptTokens(payload.messages, payload.tools);
+      const event =
+        count > 32_768
+          ? { error: inputRefusal }
+          : {
+              choices: [
+                { index: 0, delta: { content: 'Проверка завершена.' }, finish_reason: 'stop' },
+              ],
+            };
+      const stream = Stream.fromSSEResponse<any>(eventResponse(event), new AbortController());
+      return new Response(
+        OpenAIStream(stream, { callbacks: options.callback, payload: modelRuntimeConfig }),
+      );
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat } as any);
+
+    const final = await createRuntimeExecutors({ ...ctx, stepIndex: 1 }).call_llm!(
+      followUp,
+      first.newState,
+    );
+    expect(final.newState.messages.at(-1)).toMatchObject({
+      content: 'Проверка завершена.',
+      role: 'assistant',
+    });
+    expect(await agent.runner(final.nextContext!, final.newState)).toMatchObject({
+      reason: 'completed',
+      type: 'finish',
+    });
+    expect(chat).toHaveBeenCalledTimes(2);
+    const [original, reduced] = chat.mock.calls.map(([payload]) => payload);
+    expect(calculatePromptTokens(original.messages, original.tools)).toBeGreaterThan(32_768);
+    expect(calculatePromptTokens(reduced.messages, reduced.tools)).toBeLessThan(32_768);
+    expect(reduced.tools).toEqual(state.tools);
+    expect(reduced.messages.at(-1)).toEqual({ content: task.content, role: 'user' });
+    expect(reduced.messages.filter((m) => m.role === 'system')).toEqual(
+      original.messages.filter((m) => m.role === 'system'),
+    );
+    const knowledge = original.messages.find((m) =>
+      JSON.stringify(m.content).includes('project-docs'),
+    );
+    expect(knowledge).toBeDefined();
+    expect(reduced.messages).toContainEqual(knowledge);
+    expect(
+      reduced.messages.filter((m) => String(m.content).includes('<original_history>')),
+    ).toHaveLength(12);
+    expect(final.newState.messages.slice(0, 12)).toEqual(summaries);
+    expect(summarize).toHaveBeenCalledOnce();
+    expect(createCompressionGroup).toHaveBeenCalledOnce();
+    expect(createCompressionGroup.mock.calls[0]).toEqual([
+      'topic',
+      [source.id],
+      expect.anything(),
+      summaries[11].content,
+    ]);
+    expect(ctx.messageModel.create).toHaveBeenCalledOnce();
+    expect(ctx.toolExecutionService.executeTool).not.toHaveBeenCalled();
+    expect(
+      vi.mocked(ctx.streamManager.publishStreamEvent).mock.calls.map(([, e]) => e.type),
+    ).not.toContain('error');
+  });
+
+  it('stops on a second refusal even when more old turns could fit a smaller limit', async () => {
+    const chat = vi.fn().mockRejectedValue(inputRefusal);
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat } as any);
+    const messages = Array.from({ length: 12 }, (_, i) => ({
+      id: String(i),
+      role: 'user',
+      content: 'Previous task. '.repeat(500),
+    }));
+    await expect(
+      createRuntimeExecutors(ctx).call_llm!(
+        {
+          ...instruction,
+          payload: { ...instruction.payload, messages },
+        },
+        initialState(),
+      ),
+    ).rejects.toBe(inputRefusal);
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(chat.mock.calls[1][0].messages.length).toBeLessThan(messages.length);
+    expect(ctx.messageModel.create).toHaveBeenCalledOnce();
+  });
+
+  it.each(['onText', 'onUsage', 'onToolsCalling', 'onGrounding'] as const)(
+    'does not resubmit a measured context rejection after %s',
+    async (callback) => {
+      const chat = vi.fn(async (_payload: unknown, options: { callback: any }) => {
+        const delta = {
+          onGrounding: { deepseek: { server_tool_calls: [{ id: 'already-executed' }] } },
+          onText: 'Partial',
+          onToolsCalling: {
+            toolsCalling: [
+              {
+                id: 'started',
+                type: 'function',
+                function: { name: 'getTopicContext', arguments: '{}' },
+              },
+            ],
+          },
+          onUsage: { totalInputTokens: 12 },
+        };
+        await options.callback[callback](delta[callback]);
+        throw inputRefusal;
+      });
+      vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat } as any);
+      await expect(
+        createRuntimeExecutors(ctx).call_llm!(
+          {
+            ...instruction,
+            payload: {
+              ...instruction.payload,
+              messages: [
+                { role: 'user', content: 'old'.repeat(20_000) },
+                ...instruction.payload.messages,
+              ],
+            },
+          },
+          initialState(),
+        ),
+      ).rejects.toBeDefined();
+      expect(chat).toHaveBeenCalledOnce();
+    },
+  );
 
   it('recovers a transient empty native SSE attempt within the same answer and keeps completed work', async () => {
     vi.useFakeTimers();

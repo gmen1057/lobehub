@@ -17,9 +17,15 @@ export const studioChatHourlyLimitError = (resetAt: unknown) =>
     status: 429,
   }) as const;
 
+export interface RejectedInputSize {
+  inputTokens: number;
+  maxTokens: number;
+}
+
 interface LLMRecoverySignal {
   customerBalance: boolean;
   providerCode?: ProviderFailureCode;
+  rejectedInput?: RejectedInputSize;
   retrySafe?: boolean;
   status?: number;
   studioChatHourlyLimit?: ReturnType<typeof studioChatHourlyLimitError>;
@@ -36,6 +42,9 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   };
   let retrySafe: boolean | undefined;
   let studioChatHourlyLimit: LLMRecoverySignal['studioChatHourlyLimit'];
+  let rejectedInput: RejectedInputSize | undefined;
+  let emptyUpstreamRefusal = false;
+  let upstreamReportedWork = false;
   let remaining = 128;
 
   const visit = (value: unknown, depth = 0): void => {
@@ -49,6 +58,20 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
           )
         ) {
           customerBalance = true;
+        }
+        // A measured input rejection is distinct from a generic HTTP body-size or max_output error.
+        const counts =
+          /user input too long, (\d+) tokens exceeds max (\d+) tokens/i.exec(value) ??
+          /prompt is too long:\s*(\d+)(?: tokens)?\s*>\s*(\d+) maximum/i.exec(value) ??
+          /input token count \((\d+)\) exceeds the maximum number of tokens allowed \((\d+)\)/i.exec(
+            value,
+          );
+        if (counts) {
+          const inputTokens = Number(counts[1]);
+          const maxTokens = Number(counts[2]);
+          if (Number.isSafeInteger(inputTokens) && inputTokens > maxTokens && maxTokens > 0) {
+            rejectedInput = { inputTokens, maxTokens };
+          }
         }
         rememberCode(providerFailureFromMessage(value));
         return;
@@ -82,6 +105,14 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
     for (const field of ['code', 'type', 'status', 'errorType']) {
       rememberCode(providerFailureFromCode(record[field]));
     }
+    if (record.hasOutput === true || record.hasUsage === true) upstreamReportedWork = true;
+    if (
+      record.retryOwner === 'engine' &&
+      record.reason === 'upstream_error' &&
+      record.hasOutput === false &&
+      record.hasUsage === false
+    )
+      emptyUpstreamRefusal = true;
     // A refusal to replay wins over every outer wrapper's generic retry flag.
     if (record.retrySafe === false) retrySafe = false;
     else if (record.retrySafe === true && retrySafe === undefined) retrySafe = true;
@@ -103,6 +134,10 @@ export const readLLMRecoverySignal = (error: unknown): LLMRecoverySignal => {
   return {
     customerBalance,
     providerCode,
+    rejectedInput:
+      permanent === 413 && emptyUpstreamRefusal && !upstreamReportedWork && !customerBalance
+        ? rejectedInput
+        : undefined,
     retrySafe,
     status: permanent ?? statuses.at(-1),
     studioChatHourlyLimit,

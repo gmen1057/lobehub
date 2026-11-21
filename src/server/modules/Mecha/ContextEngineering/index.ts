@@ -75,6 +75,7 @@ export const serverMessagesEngine = async ({
   topicReferences,
   additionalVariables,
   userTimezone,
+  onSourceIds,
 }: ServerMessagesEngineParams): Promise<OpenAIChatMessage[]> => {
   const engine = new MessagesEngine({
     // Capability injection
@@ -163,6 +164,7 @@ export const serverMessagesEngine = async ({
   });
 
   const result = await engine.process();
+  onSourceIds?.(result.metadata.messageSourceIds ?? []);
   return result.messages;
 };
 

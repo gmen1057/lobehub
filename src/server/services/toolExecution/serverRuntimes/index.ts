@@ -30,6 +30,7 @@ import { remoteDeviceRuntime } from './remoteDevice';
 import { skillsRuntime } from './skills';
 import { skillStoreRuntime } from './skillStore';
 import { taskRuntime } from './task';
+import { textFileRuntime } from './textFile';
 import { topicReferenceRuntime } from './topicReference';
 import { type ServerRuntimeFactory, type ServerRuntimeRegistration } from './types';
 import { userInteractionRuntime } from './userInteraction';
@@ -73,6 +74,7 @@ registerRuntimes([
   remoteDeviceRuntime,
   briefRuntime,
   taskRuntime,
+  textFileRuntime,
   topicReferenceRuntime,
   userInteractionRuntime,
   credsRuntime,
