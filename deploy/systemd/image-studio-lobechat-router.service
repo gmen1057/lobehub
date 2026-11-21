@@ -11,11 +11,13 @@ EnvironmentFile=/opt/lobechat-next/.env
 Environment=ROUTER_HOST=127.0.0.1
 Environment=ROUTER_PORT=3403
 Environment=ROUTER_STATE_FILE=/var/lib/lobechat-engine/state.json
+Environment=ROUTER_ENV_FILE=/opt/lobechat-next-router/.service-key.env
+Environment=ROUTER_SHUTDOWN_TIMEOUT_MS=1770000
 ExecStart=/usr/bin/node /opt/lobechat-next-router/engine-router.mjs
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=1
-TimeoutStopSec=15
+TimeoutStopSec=1800
 StandardOutput=append:/var/log/image-studio-lobechat-next.log
 StandardError=append:/var/log/image-studio-lobechat-next.log
 NoNewPrivileges=true

@@ -2,10 +2,19 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getServerDB } from '@/database/core/db-adaptor';
+import {
+  beginBotThreadExecution,
+  resetBotSlotActivityForTests,
+} from '@/server/services/bot/botSlotActivity';
 import { TelegramClientFactory } from '@/server/services/bot/platforms/telegram/client';
 import { GatewayManager } from '@/server/services/gateway/GatewayManager';
 
 import { userAuthMiddleware } from '../../middleware/auth';
+import {
+  beginResponseExecution,
+  engineSlotHttpActivityMiddleware,
+  resetEngineSlotActivityForTests,
+} from '../../services/engineSlotActivity';
 import { responsesStreamHub } from '../../services/responsesStreamHub';
 import ArckepRoutes from '../arckep.route';
 import { resetEngineSlotStateForTests } from '../arckep-engine-slot.route';
@@ -16,6 +25,7 @@ const {
   mockGatewayStop,
   mockGetActiveCronSnapshot,
   mockGetSandboxJobWorker,
+  mockRefreshActiveCronRuns,
   mockSelectWhere,
 } = vi.hoisted(() => ({
   mockEnsureGatewayRunning: vi.fn(async () => undefined),
@@ -23,6 +33,7 @@ const {
   mockGatewayStop: vi.fn(async () => undefined),
   mockGetActiveCronSnapshot: vi.fn(() => ({ activeCount: 0, activeTopicIds: [] as string[] })),
   mockGetSandboxJobWorker: vi.fn(),
+  mockRefreshActiveCronRuns: vi.fn(async () => undefined),
   mockSelectWhere: vi.fn(async () => [] as Array<{ topicId: string | null }>),
 }));
 
@@ -46,6 +57,7 @@ vi.mock('@/database/schemas', async (importOriginal) => {
 
 vi.mock('@/server/services/arckepCron/run', () => ({
   getActiveCronSnapshot: mockGetActiveCronSnapshot,
+  refreshActiveCronRuns: mockRefreshActiveCronRuns,
 }));
 
 vi.mock('@/server/services/sandboxJobs/worker', () => ({
@@ -63,9 +75,18 @@ vi.mock('@/server/services/sandboxJobs', () => ({
   ensureRunning: mockEnsureSandboxRunning,
 }));
 
+let slowPostRelease: (() => void) | null = null;
+
 const honoApp = new Hono().basePath('/api/v1');
+honoApp.use('*', engineSlotHttpActivityMiddleware);
 honoApp.use('*', userAuthMiddleware);
 honoApp.route('/arckep', ArckepRoutes);
+honoApp.post('/slow-work', async (c) => {
+  await new Promise<void>((resolve) => {
+    slowPostRelease = resolve;
+  });
+  return c.json({ ok: true });
+});
 
 const SERVICE_KEY = 'test-arckep-engine-service-key-minimum-32-chars!!';
 
@@ -76,8 +97,12 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
     vi.clearAllMocks();
     responsesStreamHub.clear();
     resetEngineSlotStateForTests();
+    resetEngineSlotActivityForTests();
+    resetBotSlotActivityForTests();
+    slowPostRelease = null;
     process.env.ARCKEP_ENGINE_SERVICE_KEY = SERVICE_KEY;
     mockGetActiveCronSnapshot.mockReturnValue({ activeCount: 0, activeTopicIds: [] });
+    mockRefreshActiveCronRuns.mockResolvedValue(undefined);
     mockGetSandboxJobWorker.mockReturnValue(undefined);
     mockSelectWhere.mockResolvedValue([]);
   });
@@ -87,10 +112,18 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
     vi.unstubAllGlobals();
   });
 
-  it('возвращает 503 при пустом ARCKEP_ENGINE_SERVICE_KEY и 401 без/с неверным ключом', async () => {
+  it('возвращает 503 при пустом или коротком (<32 симв.) ARCKEP_ENGINE_SERVICE_KEY и 401 без/с неверным ключом', async () => {
     delete process.env.ARCKEP_ENGINE_SERVICE_KEY;
     const unconfigured = await honoApp.request('/api/v1/arckep/engine-slot/status');
     expect(unconfigured.status).toBe(503);
+
+    // P2 #19: короткий ключ (<32 символов) отклоняется кодом 503 так же строго, как в arckepServiceAuth
+    process.env.ARCKEP_ENGINE_SERVICE_KEY = 'too-short-service-key-31-chars!';
+    expect(process.env.ARCKEP_ENGINE_SERVICE_KEY.length).toBe(31);
+    const shortConfigured = await honoApp.request('/api/v1/arckep/engine-slot/status', {
+      headers: { Authorization: `Bearer ${process.env.ARCKEP_ENGINE_SERVICE_KEY}` },
+    });
+    expect(shortConfigured.status).toBe(503);
 
     process.env.ARCKEP_ENGINE_SERVICE_KEY = SERVICE_KEY;
 
@@ -103,7 +136,7 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
     expect(wrongKey.status).toBe(401);
   });
 
-  it('работает по Bearer ARCKEP_ENGINE_SERVICE_KEY БЕЗ X-Arckep-User-Id и агрегирует responses + cron + sandbox', async () => {
+  it('агрегирует hub + in-flight HTTP/Responses + bot + cron + sandbox и поддерживает drain / undrain', async () => {
     responsesStreamHub.register({
       operationId: 'op_resp_live',
       params: { input: 'hi', model: 'agt_1' } as any,
@@ -120,53 +153,117 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
     });
     responsesStreamHub.markDone('op_resp_done');
 
+    // Sync/pre-hub response execution + deduplicated hub execution
+    const syncTracker = beginResponseExecution({
+      initialTopicId: 'tpc_sync_live',
+      userId: 'u1',
+    });
+    const dedupTracker = beginResponseExecution({
+      initialTopicId: 'tpc_resp_live',
+      userId: 'u1',
+    });
+    dedupTracker.setOperation('op_resp_live', 'tpc_resp_live');
+
+    // Active Telegram bot run
+    const botTracker = await beginBotThreadExecution({
+      agentId: 'agt_bot',
+      initialTopicId: 'tpc_bot_live',
+      threadId: 'telegram:123:456',
+      userId: 'u1',
+    });
+
+    // In-flight mutating OpenAPI HTTP request
+    const inFlightHttpPromise = honoApp.request('/api/v1/slow-work', { method: 'POST' });
+    await vi.waitFor(() => expect(slowPostRelease).not.toBeNull());
+
     mockGetActiveCronSnapshot.mockReturnValue({
       activeCount: 1,
       activeTopicIds: ['tpc_cron_live', 'tpc_resp_live'],
     });
 
-    const startDrainMock = vi.fn(async () => undefined);
-    mockGetSandboxJobWorker.mockReturnValue({
-      getActiveJobsCount: () => 2,
-      startDrain: startDrainMock,
+    let workerRunning = true;
+    let workerDraining = false;
+    const startDrainMock = vi.fn(async () => {
+      workerDraining = true;
+      workerRunning = false;
     });
+    const resumeFromDrainMock = vi.fn(async () => {
+      workerDraining = false;
+      workerRunning = true;
+    });
+
+    mockGetSandboxJobWorker.mockImplementation(() => ({
+      getActiveJobsCount: () => 2,
+      isDraining: () => workerDraining,
+      get isRunning() {
+        return workerRunning;
+      },
+      resumeFromDrain: resumeFromDrainMock,
+      startDrain: startDrainMock,
+    }));
 
     const statusRes = await honoApp.request('/api/v1/arckep/engine-slot/status', {
       headers: { Authorization: `Bearer ${SERVICE_KEY}` },
     });
     expect(statusRes.status).toBe(200);
     expect(await statusRes.json()).toEqual({
+      activeBotRuns: 1,
       activeCronRuns: 1,
-      activeResponses: 1,
+      activeHttpRequests: 1,
+      activeResponses: 2, // 1 in hub + 1 syncTracker (dedupTracker not double-counted!)
       activeSandboxJobs: 2,
-      activeTopicIds: ['tpc_resp_live', 'tpc_cron_live'],
-      activeTotal: 4,
+      activeTopicIds: ['tpc_resp_live', 'tpc_sync_live', 'tpc_cron_live', 'tpc_bot_live'],
+      activeTotal: 7,
       draining: false,
       retainedTopicIds: ['tpc_resp_live', 'tpc_resp_done'],
+      sandboxWorkerRunning: true,
     });
 
-    // POST /drain идемпотентно включает draining и переводит SandboxJobWorker в startDrain()
-    const drainRes1 = await honoApp.request('/api/v1/arckep/engine-slot/drain', {
+    // POST /drain включает draining и вызывает startDrain()
+    const drainRes = await honoApp.request('/api/v1/arckep/engine-slot/drain', {
       headers: { Authorization: `Bearer ${SERVICE_KEY}` },
       method: 'POST',
     });
-    expect(drainRes1.status).toBe(200);
-    expect(await drainRes1.json()).toMatchObject({
-      activeTotal: 4,
+    expect(drainRes.status).toBe(200);
+    expect(await drainRes.json()).toMatchObject({
+      activeTotal: 7,
       draining: true,
+      sandboxWorkerRunning: false,
     });
     expect(startDrainMock).toHaveBeenCalledTimes(1);
 
-    const drainRes2 = await honoApp.request('/api/v1/arckep/engine-slot/drain', {
+    // P1 #3: POST /undrain сбрасывает draining и возобновляет SandboxJobWorker
+    const undrainRes = await honoApp.request('/api/v1/arckep/engine-slot/undrain', {
       headers: { Authorization: `Bearer ${SERVICE_KEY}` },
       method: 'POST',
     });
-    expect(drainRes2.status).toBe(200);
-    expect(await drainRes2.json()).toMatchObject({ draining: true });
-    expect(startDrainMock).toHaveBeenCalledTimes(2);
+    expect(undrainRes.status).toBe(200);
+    expect(await undrainRes.json()).toMatchObject({
+      draining: false,
+      sandboxWorkerRunning: true,
+    });
+    expect(resumeFromDrainMock).toHaveBeenCalledTimes(1);
+
+    // Если воркер не смог перезапуститься — /undrain обязан вернуть 503
+    resumeFromDrainMock.mockImplementationOnce(async () => {
+      workerRunning = false;
+      workerDraining = true;
+    });
+    const failedUndrain = await honoApp.request('/api/v1/arckep/engine-slot/undrain', {
+      headers: { Authorization: `Bearer ${SERVICE_KEY}` },
+      method: 'POST',
+    });
+    expect(failedUndrain.status).toBe(503);
+
+    // Finish tracked operations -> activeTotal drops cleanly
+    syncTracker.finish();
+    dedupTracker.finish();
+    await botTracker.finish();
+    slowPostRelease?.();
+    await inFlightHttpPromise;
   });
 
-  it('POST /owns-messages мгновенно отвечает false без запроса в БД при пустом activeTopicIds и находит пересечение при активных темах', async () => {
+  it('POST /owns-messages поддерживает пакеты >2000 ID чанками по 1000 и отклоняет >20000 ID', async () => {
     const idleRes = await honoApp.request('/api/v1/arckep/engine-slot/owns-messages', {
       body: JSON.stringify({ messageIds: ['msg_1', 'msg_2'] }),
       headers: {
@@ -190,10 +287,15 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
       userId: 'u1',
     });
 
-    mockSelectWhere.mockResolvedValueOnce([{ topicId: 'tpc_other' }, { topicId: 'tpc_busy' }]);
+    // 2505 уникальных ID -> 3 чанка по 1000, 1000 и 505
+    const largeBatch = Array.from({ length: 2505 }, (_, idx) => `msg_${idx}`);
+    mockSelectWhere
+      .mockResolvedValueOnce([{ topicId: 'tpc_other' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ topicId: 'tpc_busy' }]);
 
     const busyRes = await honoApp.request('/api/v1/arckep/engine-slot/owns-messages', {
-      body: JSON.stringify({ messageIds: ['msg_other', 'msg_busy'] }),
+      body: JSON.stringify({ messageIds: largeBatch }),
       headers: {
         'Authorization': `Bearer ${SERVICE_KEY}`,
         'Content-Type': 'application/json',
@@ -205,7 +307,18 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
       matchedTopicIds: ['tpc_busy'],
       ownsActiveTopic: true,
     });
-    expect(getServerDB).toHaveBeenCalledTimes(1);
+    expect(mockSelectWhere).toHaveBeenCalledTimes(3);
+
+    const tooManyIds = Array.from({ length: 20_001 }, (_, idx) => `m_${idx}`);
+    const overflowRes = await honoApp.request('/api/v1/arckep/engine-slot/owns-messages', {
+      body: JSON.stringify({ messageIds: tooManyIds }),
+      headers: {
+        'Authorization': `Bearer ${SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      method: 'POST',
+    });
+    expect(overflowRes.status).toBe(400);
   });
 
   it('сохраняет Telegram-вебхуки при drain слота (никогда не вызывает GatewayManager.stop / deleteWebhook) и уважает ARCKEP_SKIP_BACKGROUND_AUTOSTART=1', async () => {

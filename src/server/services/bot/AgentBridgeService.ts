@@ -12,6 +12,13 @@ import { AiAgentService } from '@/server/services/aiAgent';
 import { isQueueAgentRuntimeEnabled } from '@/server/services/queue/impls';
 import { SystemAgentService } from '@/server/services/systemAgent';
 
+import {
+  beginBotThreadExecution,
+  type BotThreadRunTracker,
+  clearRedisBotThreadRecord,
+  consumeCrossSlotBotStopRequest,
+  isBotThreadActiveAcrossSlots,
+} from './botSlotActivity';
 import { formatPrompt as formatPromptUtil } from './formatPrompt';
 import type { PlatformClient } from './platforms';
 import { platformRegistry } from './platforms';
@@ -157,6 +164,7 @@ export class AgentBridgeService {
     AgentBridgeService.activeOperations.delete(threadId);
     AgentBridgeService.pendingStopThreads.delete(threadId);
     AgentBridgeService.startupControllers.delete(threadId);
+    void clearRedisBotThreadRecord(threadId);
   }
 
   /**
@@ -259,13 +267,21 @@ export class AgentBridgeService {
       message.text.slice(0, 80),
     );
 
-    // Skip if there's already an active execution for this thread
-    if (AgentBridgeService.activeThreads.has(thread.id)) {
+    // Skip if there's already an active execution for this thread (locally or on draining slot)
+    if (
+      AgentBridgeService.activeThreads.has(thread.id) ||
+      (await isBotThreadActiveAcrossSlots(thread.id))
+    ) {
       log('handleMention: skipping, thread=%s already has an active execution', thread.id);
       return;
     }
 
     AgentBridgeService.activeThreads.add(thread.id);
+    const runTracker = await beginBotThreadExecution({
+      agentId,
+      threadId: thread.id,
+      userId: this.userId,
+    });
 
     // Immediate feedback: mark as received + show typing
     const { client } = opts;
@@ -299,6 +315,7 @@ export class AgentBridgeService {
         charLimit,
         client,
         displayToolCalls,
+        runTracker,
         trigger: RequestTrigger.Bot,
       });
       queueHandoffSucceeded = queueMode;
@@ -315,9 +332,10 @@ export class AgentBridgeService {
       await thread.post(`**Agent Execution Failed**\n\`\`\`\n${msg}\n\`\`\``);
     } finally {
       AgentBridgeService.activeThreads.delete(thread.id);
-      // In queue mode, the callback owns cleanup only after webhook handoff succeeds.
-      // If setup fails before that point, clean up locally to avoid leaked reactions.
+      // In queue mode, keep Redis active_thread record alive until QStash completion or TTL;
+      // in local mode (headless engine), the entire bot turn just finished so clean up now.
       if (!queueMode || !queueHandoffSucceeded) {
+        await runTracker.finish();
         await this.removeReceivedReaction(thread, message, client);
       }
     }
@@ -347,7 +365,10 @@ export class AgentBridgeService {
     // a concurrent message clears topicId (stale reset) and then no-ops
     // in handleMention because the thread is active — dropping the message
     // but leaving state cleared so the next message starts a fresh topic.
-    if (AgentBridgeService.activeThreads.has(thread.id)) {
+    if (
+      AgentBridgeService.activeThreads.has(thread.id) ||
+      (await isBotThreadActiveAcrossSlots(thread.id))
+    ) {
       log(
         'handleSubscribedMessage: skipping, thread=%s already has an active execution',
         thread.id,
@@ -383,6 +404,12 @@ export class AgentBridgeService {
     }
 
     AgentBridgeService.activeThreads.add(thread.id);
+    const runTracker = await beginBotThreadExecution({
+      agentId,
+      initialTopicId: topicId,
+      threadId: thread.id,
+      userId: this.userId,
+    });
 
     // Read cached channel context from thread state
     const channelContext = threadState?.channelContext;
@@ -408,6 +435,7 @@ export class AgentBridgeService {
         charLimit,
         client: opts.client,
         displayToolCalls,
+        runTracker,
         topicId,
         trigger: RequestTrigger.Bot,
       });
@@ -424,6 +452,7 @@ export class AgentBridgeService {
           'handleSubscribedMessage: stale topicId=%s, resetting and retrying as new mention',
           topicId,
         );
+        await runTracker.finish();
         AgentBridgeService.activeThreads.delete(thread.id);
         await thread.setState({ ...threadState, topicId: undefined });
         return this.handleMention(thread, message, opts);
@@ -435,6 +464,7 @@ export class AgentBridgeService {
       AgentBridgeService.activeThreads.delete(thread.id);
       // In queue mode, the callback owns cleanup only after webhook handoff succeeds.
       if (!queueMode || !queueHandoffSucceeded) {
+        await runTracker.finish();
         await this.removeReceivedReaction(thread, message, opts.client);
       }
     }
@@ -456,6 +486,7 @@ export class AgentBridgeService {
       charLimit?: number;
       client?: PlatformClient;
       displayToolCalls?: boolean;
+      runTracker?: BotThreadRunTracker;
       topicId?: string;
       trigger?: string;
     },
@@ -479,6 +510,7 @@ export class AgentBridgeService {
       charLimit,
       client,
       displayToolCalls,
+      runTracker,
       topicId,
       trigger,
     } = opts;
@@ -527,6 +559,7 @@ export class AgentBridgeService {
         files,
         progressMessage,
         prompt,
+        runTracker,
         topicId,
         trigger,
         webhookBody,
@@ -546,6 +579,7 @@ export class AgentBridgeService {
       files,
       progressMessage,
       prompt,
+      runTracker,
       topicId,
       trigger,
       webhookBody,
@@ -568,6 +602,7 @@ export class AgentBridgeService {
       files?: any;
       progressMessage?: SentMessage;
       prompt: string;
+      runTracker?: BotThreadRunTracker;
       topicId?: string;
       trigger?: string;
       webhookBody: Record<string, unknown>;
@@ -582,6 +617,7 @@ export class AgentBridgeService {
       files,
       progressMessage,
       prompt,
+      runTracker,
       topicId,
       trigger,
       webhookBody,
@@ -669,8 +705,12 @@ export class AgentBridgeService {
 
     if (result.operationId) {
       AgentBridgeService.activeOperations.set(thread.id, result.operationId);
+      await runTracker?.setOperation(result.operationId, result.topicId);
 
-      if (AgentBridgeService.consumeStopRequest(thread.id)) {
+      const stopRequested =
+        AgentBridgeService.consumeStopRequest(thread.id) ||
+        (await consumeCrossSlotBotStopRequest(thread.id));
+      if (stopRequested) {
         try {
           await this.interruptTrackedOperation(thread.id, result.operationId);
         } catch (error) {
@@ -704,6 +744,7 @@ export class AgentBridgeService {
       files?: any;
       progressMessage?: SentMessage;
       prompt: string;
+      runTracker?: BotThreadRunTracker;
       topicId?: string;
       trigger?: string;
       webhookBody: Record<string, unknown>;
@@ -720,6 +761,7 @@ export class AgentBridgeService {
       displayToolCalls,
       files,
       prompt,
+      runTracker,
       topicId,
       trigger,
       webhookBody,
@@ -868,8 +910,7 @@ export class AgentBridgeService {
                       // The Chat SDK adapter renders markdown images as broken links,
                       // so we send them natively via the Telegram Bot API.
                       const mediaList = (event as any).media as
-                        | Array<{ kind: 'photo'; url: string }>
-                        | undefined;
+                        Array<{ kind: 'photo'; url: string }> | undefined;
                       if (mediaList && mediaList.length > 0) {
                         const messenger = client?.getMessenger(thread.id);
                         if (messenger?.sendMedia) {
@@ -968,8 +1009,12 @@ export class AgentBridgeService {
 
           if (result.operationId) {
             AgentBridgeService.activeOperations.set(thread.id, result.operationId);
+            await runTracker?.setOperation(result.operationId, result.topicId);
 
-            if (AgentBridgeService.consumeStopRequest(thread.id)) {
+            const stopRequested =
+              AgentBridgeService.consumeStopRequest(thread.id) ||
+              (await consumeCrossSlotBotStopRequest(thread.id));
+            if (stopRequested) {
               try {
                 await this.interruptTrackedOperation(thread.id, result.operationId);
               } catch (error) {
@@ -980,6 +1025,8 @@ export class AgentBridgeService {
                 );
               }
             }
+          } else if (result.topicId) {
+            await runTracker?.setTopicId(result.topicId);
           }
 
           log(
@@ -1152,8 +1199,7 @@ export class AgentBridgeService {
       const userModel = new UserModel(this.db, this.userId);
       const settings = await userModel.getUserSettings();
       this.timezone = (settings?.general as Record<string, unknown>)?.timezone as
-        | string
-        | undefined;
+        string | undefined;
     } catch {
       // Fall back to server time if settings can't be loaded
     }

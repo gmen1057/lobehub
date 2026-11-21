@@ -199,7 +199,10 @@ export interface MessagesDeleteBatchRequest {
 }
 
 export const MessagesDeleteBatchRequestSchema = z.object({
-  messageIds: z.array(z.string().min(1, '消息ID不能为空')).min(1, '消息ID数组不能为空'),
+  messageIds: z
+    .array(z.string().min(1, '消息ID不能为空'))
+    .min(1, '消息ID数组不能为空')
+    .max(20_000, '消息ID数量不能超过20000'),
 });
 
 // ==================== Message Response Types ====================

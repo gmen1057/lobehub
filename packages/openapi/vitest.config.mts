@@ -15,5 +15,6 @@ export default defineConfig({
   ],
   test: {
     environment: 'node',
+    exclude: ['**/.next/**', '**/dist/**', '**/node_modules/**'],
   },
 });

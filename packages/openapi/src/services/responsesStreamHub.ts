@@ -194,6 +194,15 @@ export class ResponsesStreamHub implements IStreamEventManager {
     };
   }
 
+  /** Идентификаторы активных (!done) операций в хабе (для дедупликации с in-flight трекером). */
+  getActiveOperationIds(): Set<string> {
+    const out = new Set<string>();
+    for (const op of this.operations.values()) {
+      if (!op.done) out.add(op.operationId);
+    }
+    return out;
+  }
+
   /** Есть ли тема в реестре слота (активная или ещё хранимая в пределах FINISHED_TTL_MS). */
   hasTopic(topicId: string, opts?: { activeOnly?: boolean }): boolean {
     if (!topicId) return false;

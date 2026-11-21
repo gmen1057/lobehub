@@ -18,6 +18,7 @@ import type {
   SearchMessagesByKeywordRequest,
 } from '../types/message.type';
 import { ChatService } from './chat.service';
+import { getInFlightResponseTopicsForUser, hasInFlightResponseTopic } from './engineSlotActivity';
 import { responsesStreamHub } from './responsesStreamHub';
 
 /**
@@ -618,20 +619,29 @@ export class MessageService extends BaseService {
    */
   private async assertMessagesTopicsIdle(messageIds: string[]): Promise<void> {
     if (!messageIds.length || !this.userId) return;
-    if (responsesStreamHub.runningTopics(this.userId).length === 0) return;
-
-    const rows = await this.db.query.messages.findMany({
-      columns: { topicId: true },
-      where: and(inArray(messages.id, messageIds), eq(messages.userId, this.userId)),
-    });
+    if (
+      responsesStreamHub.runningTopics(this.userId).length === 0 &&
+      getInFlightResponseTopicsForUser(this.userId).length === 0
+    ) {
+      return;
+    }
 
     const seenTopics = new Set<string>();
-    for (const row of rows) {
-      if (!row.topicId || seenTopics.has(row.topicId)) continue;
-      seenTopics.add(row.topicId);
-      const op = responsesStreamHub.findByTopic(this.userId, row.topicId);
-      if (op && !op.done) {
-        throw this.createConflictError('Response is already in progress for this topic');
+    const CHUNK_SIZE = 1000;
+    for (let offset = 0; offset < messageIds.length; offset += CHUNK_SIZE) {
+      const chunk = messageIds.slice(offset, offset + CHUNK_SIZE);
+      const rows = await this.db.query.messages.findMany({
+        columns: { topicId: true },
+        where: and(inArray(messages.id, chunk), eq(messages.userId, this.userId)),
+      });
+
+      for (const row of rows) {
+        if (!row.topicId || seenTopics.has(row.topicId)) continue;
+        seenTopics.add(row.topicId);
+        const op = responsesStreamHub.findByTopic(this.userId, row.topicId);
+        if ((op && !op.done) || hasInFlightResponseTopic(this.userId, row.topicId)) {
+          throw this.createConflictError('Response is already in progress for this topic');
+        }
       }
     }
   }

@@ -233,6 +233,40 @@ export class SandboxJobWorker {
     log('SandboxJobWorker tick loop drained (inFlight=%d)', this.getActiveJobsCount());
   }
 
+  /**
+   * Resume job claiming after a fast Blue-Green `--rollback` to a previously draining slot.
+   * Preserves `workerId` so any still-running E2B heartbeats keep matching DB claim ownership.
+   */
+  async resumeFromDrain(): Promise<void> {
+    if (this.running && !this.draining && !this.stopping && this.tickLoopPromise) {
+      return;
+    }
+
+    if (this.tickLoopPromise) {
+      await this.tickLoopPromise;
+      this.tickLoopPromise = undefined;
+    }
+
+    if (!this.workerId) {
+      this.workerId = generateWorkerId();
+    }
+
+    this.draining = false;
+    this.stopping = false;
+    this.stopController = new AbortController();
+    this.running = true;
+
+    log(
+      'SandboxJobWorker resuming from drain workerId=%s inFlight=%d',
+      this.workerId,
+      this.getActiveJobsCount(),
+    );
+
+    this.tickLoopPromise = this.tickLoop().catch((error) => {
+      console.error('[SandboxJobWorker] tick loop failed:', error);
+    });
+  }
+
   async stop(): Promise<void> {
     if (
       !this.running &&

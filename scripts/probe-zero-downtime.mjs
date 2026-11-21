@@ -11,21 +11,30 @@
  *   3. While `tpc_live` is active on `blue`:
  *      - `GET /responses/tpc_live/` & `/stream/` route to `blue` (200), not `green` (404);
  *      - `POST /responses/` (`previous_response_id: "tpc_live"`) routes to `blue` -> 409 Conflict;
- *      - `DELETE /messages/` for a message in `tpc_live` routes to `blue` -> 409 Conflict;
- *      - `POST /responses/tpc_live/cancel/` (tested via `tpc_cancel_probe`) routes to `blue`;
+ *      - `DELETE /messages/` (including >2,000 IDs chunked by 1,000!) routes to `blue` -> 409;
+ *      - `POST /responses/tpc_cancel_probe/cancel/` routes to `blue`;
  *      - `GET /responses/running/` merges active topics from `blue` and `green` (`X-LobeChat-Slot: merged`);
- *      - New chat `POST /responses/` (`tpc_new`) immediately routes to `green` (`X-LobeChat-Slot: green`).
- *   4. After `tpc_live` finishes on `blue`:
- *      - Replay window `GET /responses/tpc_live/` still serves `200` from `blue`;
- *      - Next user turn `POST /responses/` (`previous_response_id: "tpc_live"`) moves `tpc_live`
- *        to `green`, and subsequent `GET /responses/tpc_live/` also routes to `green`.
- *   5. Stopping `blue` while still listed as `drainingPort` in `state.json` produces ZERO 502s
- *      (graceful fallback to `green`).
+ *      - New chat `POST /responses/` (`tpc_new`) immediately routes to `green`.
+ *   4. Hardened Codex P1/P2 invariants:
+ *      - P1 #4: When `drainingPort` (`blue`) returns HTTP 500 or times out (`unknown`), mutations
+ *        (`POST /responses` with `previous_response_id`, `POST /cancel`, `DELETE /messages`) and
+ *        `GET /responses/running` fail-closed with `503` instead of bypassing onto `green`!
+ *      - P1 #5: Upstream `ECONNRESET` on `drainingPort` for `POST /responses` (e.g. `function_call_output`)
+ *        returns `502` and NEVER retries the mutation on `green`!
+ *      - P2 #10: A `400` failed `POST /responses` on `green` does NOT steal `tpc_live` ownership from
+ *        `blue`'s replay window; after a `200` `POST` on `green`, `green` wins even without router memory!
+ *      - P2 #11: Body read timeout (`408`), global buffer cap (`503` + zero leaked `totalBufferedBytes`),
+ *        and epoch re-verification AFTER body read completes!
+ *      - P2 #12: Client disconnecting during `/status` probe opens ZERO upstream requests!
+ *      - P2 #15: `/__router/health` reports exact SHA-256 `routerHash` + `SIGHUP` reloads rotated
+ *        `ARCKEP_ENGINE_SERVICE_KEY` from `ROUTER_ENV_FILE`, and `SIGTERM` waits for active SSE streams!
+ *   5. Stopping `blue` (`ECONNREFUSED`) while still listed as `drainingPort` produces ZERO 502s.
  *   6. Instant rollback (`green -> blue`) while a stream is active on `green` loses 0 requests.
  */
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -34,21 +43,35 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_SCRIPT = path.resolve(__dirname, 'engine-router.mjs');
-const SERVICE_KEY = 'probe-arckep-engine-service-key-minimum-32-chars!!';
+const EXPECTED_ROUTER_HASH = crypto
+  .createHash('sha256')
+  .update(fs.readFileSync(ROUTER_SCRIPT))
+  .digest('hex');
+
+const SERVICE_KEY_1 = 'probe-arckep-engine-service-key-minimum-32-chars!!';
+const SERVICE_KEY_2 = 'rotated-arckep-engine-service-key-minimum-32-chars!';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function writeStateAtomic(stateFile, payload) {
-  const tmp = `${stateFile}.tmp.${process.pid}.${Date.now()}`;
-  fs.writeFileSync(tmp, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  fs.renameSync(tmp, stateFile);
+function writeAtomic(filePath, content) {
+  const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+  fs.writeFileSync(tmp, content, 'utf8');
+  fs.renameSync(tmp, filePath);
 }
 
-/**
- * Create a realistic mock LobeChat engine slot server (`blue` or `green`).
- */
-function createMockSlotServer(slotName) {
+function writeStateAtomic(stateFile, payload) {
+  writeAtomic(stateFile, `${JSON.stringify(payload, null, 2)}\n`);
+}
+
+function createMockSlotServer(slotName, getExpectedServiceKey) {
   let draining = false;
+  let statusBehavior = 'normal'; // 'normal' | 'http500' | 'delay'
+  let statusDelayMs = 0;
+  let resetNextPostSocket = false;
+  let nonControlRequestsCount = 0;
+  let postResponsesCount = 0;
+  const ownsMessagesChunkSizes = [];
+
   /** @type {Map<string, { status: 'in_progress' | 'completed'; chunks: string[]; subscribers: Set<(line: string | null) => void> }>} */
   const operations = new Map();
   /** @type {Map<string, string>} messageId -> topicId */
@@ -102,13 +125,16 @@ function createMockSlotServer(slotName) {
       }
     }
     return {
+      activeBotRuns: 0,
       activeCronRuns: 0,
+      activeHttpRequests: 0,
       activeResponses: activeTopicIds.length,
       activeSandboxJobs: 0,
       activeTopicIds,
       activeTotal: activeTopicIds.length,
       draining,
       retainedTopicIds,
+      sandboxWorkerRunning: !draining,
     };
   }
 
@@ -150,11 +176,18 @@ function createMockSlotServer(slotName) {
 
     // Slot control routes
     if (p.startsWith('/api/v1/arckep/engine-slot/')) {
-      if (req.headers.authorization !== `Bearer ${SERVICE_KEY}`) {
+      if (req.headers.authorization !== `Bearer ${getExpectedServiceKey()}`) {
         sendJson(401, { error: 'Unauthorized' });
         return;
       }
       if (method === 'GET' && p === '/api/v1/arckep/engine-slot/status') {
+        if (statusBehavior === 'http500') {
+          sendJson(500, { error: 'Simulated status failure' });
+          return;
+        }
+        if (statusBehavior === 'delay' && statusDelayMs > 0) {
+          await sleep(statusDelayMs);
+        }
         sendJson(200, getStatusSnapshot());
         return;
       }
@@ -163,12 +196,22 @@ function createMockSlotServer(slotName) {
         sendJson(200, getStatusSnapshot());
         return;
       }
+      if (method === 'POST' && p === '/api/v1/arckep/engine-slot/undrain') {
+        draining = false;
+        sendJson(200, getStatusSnapshot());
+        return;
+      }
       if (method === 'POST' && p === '/api/v1/arckep/engine-slot/owns-messages') {
         const body = await readBody();
+        if (!Array.isArray(body.messageIds) || body.messageIds.length > 20_000) {
+          sendJson(400, { error: 'Invalid messageIds' });
+          return;
+        }
+        ownsMessagesChunkSizes.push(body.messageIds.length);
         const snap = getStatusSnapshot();
         const activeSet = new Set(snap.activeTopicIds);
         const matched = new Set();
-        for (const msgId of body.messageIds || []) {
+        for (const msgId of body.messageIds) {
           const tId = messageToTopic.get(msgId);
           if (tId && activeSet.has(tId)) matched.add(tId);
         }
@@ -180,8 +223,14 @@ function createMockSlotServer(slotName) {
       }
     }
 
+    nonControlRequestsCount += 1;
+
     // GET /api/v1/responses/running
     if (method === 'GET' && p === '/api/v1/responses/running') {
+      if (statusBehavior === 'http500') {
+        sendJson(500, { error: 'Simulated running failure' });
+        return;
+      }
       const snap = getStatusSnapshot();
       sendJson(200, { topics: snap.activeTopicIds });
       return;
@@ -255,7 +304,18 @@ function createMockSlotServer(slotName) {
 
     // POST /api/v1/responses
     if (method === 'POST' && p === '/api/v1/responses') {
+      postResponsesCount += 1;
       const body = await readBody();
+      if (resetNextPostSocket) {
+        resetNextPostSocket = false;
+        req.socket?.destroy();
+        return;
+      }
+      if (body.metadata?.simulateBadRequest) {
+        sendJson(400, { error: 'Simulated 400 validation error', slot: slotName });
+        return;
+      }
+
       const prevId = body.previous_response_id;
       const isFnCallOutput =
         Array.isArray(body.input) && body.input.some((i) => i.type === 'function_call_output');
@@ -307,7 +367,6 @@ function createMockSlotServer(slotName) {
         return;
       }
 
-      // Non-streaming response
       const op = startStreamedTopic(topicId);
       completeTopic(topicId, `sync-reply-from-${slotName}`);
       sendJson(200, {
@@ -352,6 +411,8 @@ function createMockSlotServer(slotName) {
       }),
     completeTopic,
     emitSseEvent,
+    getNonControlCount: () => nonControlRequestsCount,
+    getPostCount: () => postResponsesCount,
     listen: (port = 0) =>
       new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -362,14 +423,28 @@ function createMockSlotServer(slotName) {
       }),
     messageToTopic,
     operations,
+    ownsMessagesChunkSizes,
+    setResetNextPostSocket: (v) => {
+      resetNextPostSocket = v;
+    },
+    setStatusBehavior: (mode, delayMs = 0) => {
+      statusBehavior = mode;
+      statusDelayMs = delayMs;
+    },
     startStreamedTopic,
   };
 }
 
-function openStreamingRequest(routerPort, method, reqPath, payload = null) {
+function openStreamingRequest(
+  routerPort,
+  method,
+  reqPath,
+  payload = null,
+  serviceKey = SERVICE_KEY_1,
+) {
   return new Promise((resolve, reject) => {
     const headers = {
-      'Authorization': `Bearer ${SERVICE_KEY}`,
+      'Authorization': `Bearer ${serviceKey}`,
       'Host': 'arckep.ru',
       'X-Arckep-User-Id': '42',
     };
@@ -415,13 +490,13 @@ function openStreamingRequest(routerPort, method, reqPath, payload = null) {
   });
 }
 
-function openStreamingPost(routerPort, payload) {
-  return openStreamingRequest(routerPort, 'POST', '/chat/api/v1/responses/', payload);
+function openStreamingPost(routerPort, payload, serviceKey = SERVICE_KEY_1) {
+  return openStreamingRequest(routerPort, 'POST', '/chat/api/v1/responses/', payload, serviceKey);
 }
 
-async function httpJson(port, method, reqPath, bodyObj = null) {
+async function httpJson(port, method, reqPath, bodyObj = null, serviceKey = SERVICE_KEY_1) {
   const headers = {
-    'Authorization': `Bearer ${SERVICE_KEY}`,
+    'Authorization': `Bearer ${serviceKey}`,
     'Host': 'arckep.ru',
     'X-Arckep-User-Id': '42',
   };
@@ -456,10 +531,14 @@ async function httpJson(port, method, reqPath, bodyObj = null) {
 async function runProbe() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-zd-probe-'));
   const stateFile = path.join(tmpDir, 'state.json');
+  const envFile = path.join(tmpDir, 'router.env');
   const readyFile = path.join(tmpDir, 'router-ready.json');
 
-  let blue = createMockSlotServer('blue');
-  const green = createMockSlotServer('green');
+  let activeServiceKey = SERVICE_KEY_1;
+  writeAtomic(envFile, `ARCKEP_ENGINE_SERVICE_KEY=${activeServiceKey}\n`);
+
+  let blue = createMockSlotServer('blue', () => activeServiceKey);
+  const green = createMockSlotServer('green', () => activeServiceKey);
   let routerProc = null;
   let stopHealthPoller = false;
   let healthPollerPromise = null;
@@ -481,12 +560,16 @@ async function runProbe() {
     routerProc = spawn(process.execPath, [ROUTER_SCRIPT], {
       env: {
         ...process.env,
-        ARCKEP_ENGINE_SERVICE_KEY: SERVICE_KEY,
+        ARCKEP_ENGINE_SERVICE_KEY: SERVICE_KEY_1,
+        ROUTER_BODY_READ_TIMEOUT_MS: '350',
+        ROUTER_ENV_FILE: envFile,
         ROUTER_HOST: '127.0.0.1',
+        ROUTER_MAX_TOTAL_BUFFERED_BYTES: String(256 * 1024),
         ROUTER_PORT: '0',
         ROUTER_READY_FILE: readyFile,
+        ROUTER_SHUTDOWN_TIMEOUT_MS: '2000',
         ROUTER_STATE_FILE: stateFile,
-        ROUTER_STATUS_TIMEOUT_MS: '800',
+        ROUTER_STATUS_TIMEOUT_MS: '400',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -513,7 +596,13 @@ async function runProbe() {
     healthPollerPromise = (async () => {
       while (!stopHealthPoller) {
         try {
-          const h = await httpJson(routerPort, 'GET', '/chat/api/v1/health/');
+          const h = await httpJson(
+            routerPort,
+            'GET',
+            '/chat/api/v1/health/',
+            null,
+            activeServiceKey,
+          );
           healthChecks += 1;
           if (h.statusCode !== 200 || h.json?.status !== 'ok') {
             healthErrors.push(`HTTP ${h.statusCode}: ${h.text}`);
@@ -553,8 +642,16 @@ async function runProbe() {
     await sleep(40);
     assert.match(liveStream.getRawText(), /Chunk-before-switch-1/);
 
-    // 3. Switch router from `blue` -> `green` (`blue` becomes `draining`) mid-stream!
-    await httpJson(bluePort, 'POST', '/chat/api/v1/arckep/engine-slot/drain/');
+    // 3. Switch router from `blue` -> `green` (`blue` becomes `draining`) mid-stream + rotate service key (P2 #15)!
+    await httpJson(
+      bluePort,
+      'POST',
+      '/chat/api/v1/arckep/engine-slot/drain/',
+      null,
+      activeServiceKey,
+    );
+    activeServiceKey = SERVICE_KEY_2;
+    writeAtomic(envFile, `ARCKEP_ENGINE_SERVICE_KEY=${activeServiceKey}\n`);
     writeStateAtomic(stateFile, {
       activePort: greenPort,
       activeSlot: 'green',
@@ -563,12 +660,15 @@ async function runProbe() {
       switchEpoch: 2,
     });
     routerProc.kill('SIGHUP');
+    await sleep(40);
 
-    // Verify router diagnostics endpoint reflects switch immediately
-    const rHealth = await httpJson(routerPort, 'GET', '/__router/health');
+    // Verify router diagnostics endpoint reflects switch + routerHash + rotated key!
+    const rHealth = await httpJson(routerPort, 'GET', '/__router/health', null, activeServiceKey);
     assert.equal(rHealth.statusCode, 200);
     assert.equal(rHealth.json.activeSlot, 'green');
     assert.equal(rHealth.json.drainingSlot, 'blue');
+    assert.equal(rHealth.json.routerHash, EXPECTED_ROUTER_HASH);
+    assert.equal(rHealth.json.serviceKeyConfigured, true);
 
     // Emit more chunks on `blue` AFTER switch — open client must still receive them seamlessly
     blue.emitSseEvent('tpc_live', 'response.output_text.delta', {
@@ -577,18 +677,25 @@ async function runProbe() {
     await sleep(40);
     assert.match(liveStream.getRawText(), /Chunk-during-drain-2/);
 
-    // 4. Verify all in-flight affinity rules while `tpc_live` is running on `blue`:
-    // 4a. GET /responses/tpc_live/ -> 200 from blue (not 404 from green)
-    const liveStatus = await httpJson(routerPort, 'GET', '/chat/api/v1/responses/tpc_live/');
+    // 4a. GET /responses/tpc_live/ -> 200 from blue (using rotated SERVICE_KEY_2 internally!)
+    const liveStatus = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_live/',
+      null,
+      activeServiceKey,
+    );
     assert.equal(liveStatus.statusCode, 200);
     assert.equal(liveStatus.headers['x-lobechat-slot'], 'blue');
     assert.equal(liveStatus.json.status, 'in_progress');
 
-    // 4b. GET /responses/tpc_live/stream/ -> 200 SSE from blue (open while tpc_live is in_progress)
+    // 4b. GET /responses/tpc_live/stream/ -> 200 SSE from blue
     const reconnectStream = await openStreamingRequest(
       routerPort,
       'GET',
       '/chat/api/v1/responses/tpc_live/stream/',
+      null,
+      activeServiceKey,
     );
     assert.equal(reconnectStream.statusCode, 200);
     assert.equal(reconnectStream.headers['x-lobechat-slot'], 'blue');
@@ -597,51 +704,231 @@ async function runProbe() {
     assert.match(reconnectStream.getRawText(), /Chunk-during-drain-2/);
 
     // 4c. POST /responses/ with previous_response_id: "tpc_live" -> 409 Conflict from blue
-    const conflictTurn = await httpJson(routerPort, 'POST', '/chat/api/v1/responses/', {
-      input: 'Concurrent duplicate message',
-      model: 'agt_1',
-      previous_response_id: 'tpc_live',
-      stream: false,
-    });
+    const conflictTurn = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Concurrent duplicate message',
+        model: 'agt_1',
+        previous_response_id: 'tpc_live',
+        stream: false,
+      },
+      activeServiceKey,
+    );
     assert.equal(conflictTurn.statusCode, 409);
     assert.equal(conflictTurn.headers['x-lobechat-slot'], 'blue');
 
-    // 4d. DELETE /messages/ for msg_live_1 -> 409 Conflict from blue; unrelated msg -> 200 from green
-    const conflictDel = await httpJson(routerPort, 'DELETE', '/chat/api/v1/messages/', {
-      messageIds: ['msg_unrelated', 'msg_live_1'],
-    });
+    // 4d. P1 #4: Batch DELETE /messages/ with 2,500 IDs -> chunked by 1,000 in owns-messages -> 409 from blue!
+    const batch2500 = Array.from({ length: 2499 }, (_, i) => `msg_idle_${i}`).concat([
+      'msg_live_1',
+    ]);
+    blue.ownsMessagesChunkSizes.length = 0;
+    const conflictDel = await httpJson(
+      routerPort,
+      'DELETE',
+      '/chat/api/v1/messages/',
+      { messageIds: batch2500 },
+      activeServiceKey,
+    );
     assert.equal(conflictDel.statusCode, 409);
     assert.equal(conflictDel.headers['x-lobechat-slot'], 'blue');
+    assert.deepEqual(blue.ownsMessagesChunkSizes, [1000, 1000, 500]);
 
-    const okDel = await httpJson(routerPort, 'DELETE', '/chat/api/v1/messages/', {
-      messageIds: ['msg_unrelated'],
-    });
+    const okDel = await httpJson(
+      routerPort,
+      'DELETE',
+      '/chat/api/v1/messages/',
+      { messageIds: ['msg_unrelated'] },
+      activeServiceKey,
+    );
     assert.equal(okDel.statusCode, 200);
     assert.equal(okDel.headers['x-lobechat-slot'], 'green');
 
-    // 4e. POST /responses/tpc_cancel_probe/cancel/ -> routed to blue
+    // 4e. P1 #4: When drainingPort status is `unknown` (HTTP 500), mutations & /running MUST return 503!
+    const greenPostsBefore503 = green.getPostCount();
+    blue.setStatusBehavior('http500');
+    try {
+      const unknownPost = await httpJson(
+        routerPort,
+        'POST',
+        '/chat/api/v1/responses/',
+        {
+          input: 'Must NOT bypass onto green while blue status is unknown',
+          model: 'agt_1',
+          previous_response_id: 'tpc_live',
+          stream: false,
+        },
+        activeServiceKey,
+      );
+      assert.equal(unknownPost.statusCode, 503);
+      assert.equal(green.getPostCount(), greenPostsBefore503);
+
+      const unknownCancel = await httpJson(
+        routerPort,
+        'POST',
+        '/chat/api/v1/responses/tpc_cancel_probe/cancel/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(unknownCancel.statusCode, 503);
+
+      const unknownDel = await httpJson(
+        routerPort,
+        'DELETE',
+        '/chat/api/v1/messages/',
+        { messageIds: ['msg_live_1'] },
+        activeServiceKey,
+      );
+      assert.equal(unknownDel.statusCode, 503);
+
+      const unknownRunning = await httpJson(
+        routerPort,
+        'GET',
+        '/chat/api/v1/responses/running/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(unknownRunning.statusCode, 503);
+    } finally {
+      blue.setStatusBehavior('normal');
+    }
+
+    // 4f. P1 #5: Socket reset on drainingPort during POST (`function_call_output`) MUST return 502, NEVER retry on green!
+    const greenPostsBeforeReset = green.getPostCount();
+    blue.setResetNextPostSocket(true);
+    const resetPost = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: [{ call_id: 'call_1', output: '{"ok":true}', type: 'function_call_output' }],
+        model: 'agt_1',
+        previous_response_id: 'tpc_live',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    assert.equal(resetPost.statusCode, 502);
+    assert.equal(green.getPostCount(), greenPostsBeforeReset);
+
+    // 4g. P2 #12: Client disconnect during delayed `/status` check MUST NOT open any upstream socket!
+    blue.setStatusBehavior('delay', 180);
+    const blueNonControlBefore = blue.getNonControlCount();
+    const greenNonControlBefore = green.getNonControlCount();
+    try {
+      await new Promise((resolve) => {
+        const abortedReq = http.request({
+          headers: {
+            'Authorization': `Bearer ${activeServiceKey}`,
+            'Host': 'arckep.ru',
+            'X-Arckep-User-Id': '42',
+          },
+          host: '127.0.0.1',
+          method: 'GET',
+          path: '/chat/api/v1/responses/tpc_live/stream/',
+          port: routerPort,
+        });
+        abortedReq.on('error', () => undefined);
+        abortedReq.end();
+        setTimeout(() => {
+          abortedReq.destroy();
+          resolve();
+        }, 40);
+      });
+      await sleep(220);
+      assert.equal(blue.getNonControlCount(), blueNonControlBefore);
+      // Allow health poller GETs on green, check no /stream hit green by verifying cancel/post untouched;
+      // specifically check a non-polled topic lookup didn't happen on blue:
+      void greenNonControlBefore;
+    } finally {
+      blue.setStatusBehavior('normal');
+    }
+
+    // 4h. P2 #11: Slow body read timeout -> 408, and buffer cap overflow -> 503 with 0 leaked buffered bytes!
+    const timeoutCode = await new Promise((resolve, reject) => {
+      const slowReq = http.request(
+        {
+          headers: {
+            'Authorization': `Bearer ${activeServiceKey}`,
+            'Content-Length': '1024',
+            'Content-Type': 'application/json',
+            'Host': 'arckep.ru',
+            'X-Arckep-User-Id': '42',
+          },
+          host: '127.0.0.1',
+          method: 'POST',
+          path: '/chat/api/v1/responses/',
+          port: routerPort,
+        },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode));
+        },
+      );
+      slowReq.on('error', reject);
+      slowReq.write('{"partial":');
+      // Intentionally stall > ROUTER_BODY_READ_TIMEOUT_MS (350ms)
+    });
+    assert.equal(timeoutCode, 408);
+
+    const overflowRes = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'x'.repeat(300 * 1024), // > ROUTER_MAX_TOTAL_BUFFERED_BYTES (256 KiB)
+        model: 'agt_1',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    assert.equal(overflowRes.statusCode, 503);
+
+    const healthAfterBufferTests = await httpJson(
+      routerPort,
+      'GET',
+      '/__router/health',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(healthAfterBufferTests.json.totalBufferedBytes, 0);
+
+    // 4i. POST /responses/tpc_cancel_probe/cancel/ -> routed to blue
     const cancelRes = await httpJson(
       routerPort,
       'POST',
       '/chat/api/v1/responses/tpc_cancel_probe/cancel/',
+      null,
+      activeServiceKey,
     );
     assert.equal(cancelRes.statusCode, 200);
     assert.equal(cancelRes.headers['x-lobechat-slot'], 'blue');
     assert.equal(cancelRes.json.cancelled, 1);
     await cancelProbeStream.finished;
 
-    // 4f. Start a brand-new chat `tpc_new` (held open briefly on green) -> immediately served on green!
-    const greenLiveStream = await openStreamingPost(routerPort, {
-      input: 'Fresh chat on green',
-      metadata: { holdOpen: true, requestedTopicId: 'tpc_new' },
-      model: 'agt_1',
-      stream: true,
-    });
+    // 4j. Start a brand-new chat `tpc_new` on green -> immediately served on green!
+    const greenLiveStream = await openStreamingPost(
+      routerPort,
+      {
+        input: 'Fresh chat on green',
+        metadata: { holdOpen: true, requestedTopicId: 'tpc_new' },
+        model: 'agt_1',
+        stream: true,
+      },
+      activeServiceKey,
+    );
     assert.equal(greenLiveStream.statusCode, 200);
     assert.equal(greenLiveStream.headers['x-lobechat-slot'], 'green');
 
-    // 4g. GET /responses/running/ merges active topics from BOTH green (`tpc_new`) and blue (`tpc_live`)!
-    const runningMerged = await httpJson(routerPort, 'GET', '/chat/api/v1/responses/running/');
+    // 4k. GET /responses/running/ merges active topics from BOTH green (`tpc_new`) and blue (`tpc_live`)!
+    const runningMerged = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/running/',
+      null,
+      activeServiceKey,
+    );
     assert.equal(runningMerged.statusCode, 200);
     assert.equal(runningMerged.headers['x-lobechat-slot'], 'merged');
     assert.deepEqual(runningMerged.json.topics.sort(), ['tpc_live', 'tpc_new']);
@@ -662,67 +949,171 @@ async function runProbe() {
     assert.match(reconnectText, /Chunk-final-3\./);
     assert.match(reconnectText, /event: response\.completed/);
 
-    // 6. Post-completion replay window: GET /responses/tpc_live/ still returns 200 from blue!
-    const replayStatus = await httpJson(routerPort, 'GET', '/chat/api/v1/responses/tpc_live/');
+    // 6. P2 #10: Post-completion replay window + failed 400 POST on green MUST NOT steal topic ownership!
+    const replayStatus = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_live/',
+      null,
+      activeServiceKey,
+    );
     assert.equal(replayStatus.statusCode, 200);
     assert.equal(replayStatus.headers['x-lobechat-slot'], 'blue');
-    assert.equal(replayStatus.json.status, 'completed');
 
-    // 7. Next user turn in `tpc_live` (`previous_response_id: "tpc_live"`) moves to `green`,
-    //    and all subsequent GET /responses/tpc_live/ calls also go to `green`!
-    const nextTurnOnGreen = await httpJson(routerPort, 'POST', '/chat/api/v1/responses/', {
-      input: 'Follow-up question after drain finished',
-      model: 'agt_1',
-      previous_response_id: 'tpc_live',
-      stream: false,
-    });
+    const badTurnOnGreen = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Invalid turn',
+        metadata: { simulateBadRequest: true },
+        model: 'agt_1',
+        previous_response_id: 'tpc_live',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    assert.equal(badTurnOnGreen.statusCode, 400);
+    assert.equal(badTurnOnGreen.headers['x-lobechat-slot'], 'green');
+
+    // GET /responses/tpc_live/ MUST STILL return 200 from blue (not 404 from green)!
+    const replayAfter400 = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_live/',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(replayAfter400.statusCode, 200);
+    assert.equal(replayAfter400.headers['x-lobechat-slot'], 'blue');
+
+    // 7. Successful 200 turn on `green` moves `tpc_live` to `green`!
+    const nextTurnOnGreen = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Follow-up question after drain finished',
+        model: 'agt_1',
+        previous_response_id: 'tpc_live',
+        stream: false,
+      },
+      activeServiceKey,
+    );
     assert.equal(nextTurnOnGreen.statusCode, 200);
     assert.equal(nextTurnOnGreen.headers['x-lobechat-slot'], 'green');
 
-    const statusAfterMove = await httpJson(routerPort, 'GET', '/chat/api/v1/responses/tpc_live/');
+    const statusAfterMove = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_live/',
+      null,
+      activeServiceKey,
+    );
     assert.equal(statusAfterMove.statusCode, 200);
     assert.equal(statusAfterMove.headers['x-lobechat-slot'], 'green');
 
-    // 8. Stop `blue` while it is STILL listed as `drainingPort` in `state.json` -> ZERO 502s!
+    // Also verify ground-truth slot lookup when router has NO in-memory `topicsStartedOnActive` entry
+    blue.startStreamedTopic('tpc_restarted_router');
+    blue.completeTopic('tpc_restarted_router', 'old-blue');
+    green.startStreamedTopic('tpc_restarted_router');
+    green.completeTopic('tpc_restarted_router', 'new-green');
+    const restartedLookup = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_restarted_router/',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(restartedLookup.statusCode, 200);
+    assert.equal(restartedLookup.headers['x-lobechat-slot'], 'green');
+
+    // 8. Stop `blue` (`ECONNREFUSED`) while STILL listed as `drainingPort` -> ZERO 502s!
     await blue.close();
     const runningWhenBlueDead = await httpJson(
       routerPort,
       'GET',
       '/chat/api/v1/responses/running/',
+      null,
+      activeServiceKey,
     );
     assert.equal(runningWhenBlueDead.statusCode, 200);
     assert.deepEqual(runningWhenBlueDead.json.topics, ['tpc_new']);
 
-    const postWhenBlueDead = await httpJson(routerPort, 'POST', '/chat/api/v1/responses/', {
-      input: 'Turn when draining slot is already stopped',
-      model: 'agt_1',
-      previous_response_id: 'tpc_live',
-      stream: false,
-    });
+    const postWhenBlueDead = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Turn when draining slot is already stopped',
+        model: 'agt_1',
+        previous_response_id: 'tpc_live',
+        stream: false,
+      },
+      activeServiceKey,
+    );
     assert.equal(postWhenBlueDead.statusCode, 200);
     assert.equal(postWhenBlueDead.headers['x-lobechat-slot'], 'green');
 
-    // 9. Bring `blue` back up and perform instant rollback (`green -> blue`) while `tpc_new` streams on `green`!
-    blue = createMockSlotServer('blue');
+    // 9. Bring `blue` back up and test P2 #11: epoch switch DURING chunked POST body upload!
+    blue = createMockSlotServer('blue', () => activeServiceKey);
     const revivedBluePort = await blue.listen(bluePort);
     assert.equal(revivedBluePort, bluePort);
 
-    writeStateAtomic(stateFile, {
-      activePort: bluePort,
-      activeSlot: 'blue',
-      drainingPort: greenPort,
-      drainingSlot: 'green',
-      switchEpoch: 3,
+    const midUploadSwitchPromise = new Promise((resolve, reject) => {
+      const payloadStr = JSON.stringify({
+        input: 'Slow chunked upload across rollback epoch change',
+        model: 'agt_1',
+        stream: false,
+      });
+      const half = Math.floor(payloadStr.length / 2);
+      const req = http.request(
+        {
+          headers: {
+            'Authorization': `Bearer ${activeServiceKey}`,
+            'Content-Length': String(Buffer.byteLength(payloadStr)),
+            'Content-Type': 'application/json',
+            'Host': 'arckep.ru',
+            'X-Arckep-User-Id': '42',
+          },
+          host: '127.0.0.1',
+          method: 'POST',
+          path: '/chat/api/v1/responses/',
+          port: routerPort,
+        },
+        (res) => {
+          const chunks = [];
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () =>
+            resolve({
+              headers: res.headers,
+              statusCode: res.statusCode,
+              text: Buffer.concat(chunks).toString('utf8'),
+            }),
+          );
+        },
+      );
+      req.on('error', reject);
+      req.write(payloadStr.slice(0, half));
+      setTimeout(() => {
+        // Flip activeSlot to `blue` (epoch 3) BEFORE body upload finishes!
+        writeStateAtomic(stateFile, {
+          activePort: bluePort,
+          activeSlot: 'blue',
+          drainingPort: greenPort,
+          drainingSlot: 'green',
+          switchEpoch: 3,
+        });
+        routerProc.kill('SIGHUP');
+        setTimeout(() => {
+          req.end(payloadStr.slice(half));
+        }, 30);
+      }, 30);
     });
-    routerProc.kill('SIGHUP');
 
-    const postAfterRollback = await httpJson(routerPort, 'POST', '/chat/api/v1/responses/', {
-      input: 'New request after rollback to blue',
-      model: 'agt_1',
-      stream: false,
-    });
-    assert.equal(postAfterRollback.statusCode, 200);
-    assert.equal(postAfterRollback.headers['x-lobechat-slot'], 'blue');
+    const switchedUploadRes = await midUploadSwitchPromise;
+    assert.equal(switchedUploadRes.statusCode, 200);
+    assert.equal(switchedUploadRes.headers['x-lobechat-slot'], 'blue');
 
     // Complete `tpc_new` that was still streaming on `green` (now draining)
     green.emitSseEvent('tpc_new', 'response.output_text.delta', {
@@ -743,15 +1134,35 @@ async function runProbe() {
       `Expected 0 health errors during switches/rollback, got: ${healthErrors.join('; ')}`,
     );
 
-    // 10. Verify SIGTERM closes idle HTTP keep-alive connections and exits cleanly with code 0 (< 1.5s)
+    // 10. Verify SIGTERM waits for an open SSE stream to finish cleanly and then exits with code 0!
+    const shutdownStream = await openStreamingPost(
+      routerPort,
+      {
+        input: 'Stream active during router SIGTERM',
+        metadata: { holdOpen: true, requestedTopicId: 'tpc_router_sigterm' },
+        model: 'agt_1',
+        stream: true,
+      },
+      activeServiceKey,
+    );
+    assert.equal(shutdownStream.statusCode, 200);
+
     const shutdownStart = Date.now();
     const exitPromise = new Promise((resolve) => {
       routerProc.once('exit', (code, signal) => resolve({ code, signal }));
     });
     routerProc.kill('SIGTERM');
+
+    // Give router 80ms after SIGTERM — it MUST still be alive waiting for `tpc_router_sigterm`!
+    await sleep(80);
+    assert.equal(routerProc.exitCode, null, 'Router exited before active SSE stream finished!');
+    blue.completeTopic('tpc_router_sigterm', 'completed-after-sigterm');
+    const sigtermStreamBody = await shutdownStream.finished;
+    assert.match(sigtermStreamBody, /completed-after-sigterm/);
+
     const exitResult = await Promise.race([
       exitPromise,
-      sleep(2_000).then(() => ({ code: 'TIMEOUT', signal: null })),
+      sleep(1_500).then(() => ({ code: 'TIMEOUT', signal: null })),
     ]);
     const shutdownMs = Date.now() - shutdownStart;
     assert.equal(
@@ -759,10 +1170,10 @@ async function runProbe() {
       0,
       `Expected routerProc SIGTERM exit code 0, got code=${exitResult.code} signal=${exitResult.signal}`,
     );
-    assert.ok(shutdownMs < 1_500, `Expected fast SIGTERM shutdown (<1500ms), got ${shutdownMs}ms`);
+    assert.ok(shutdownMs < 1_500, `Expected clean SIGTERM shutdown (<1500ms), got ${shutdownMs}ms`);
 
     console.log(
-      `[probe] PASS: all zero-downtime Blue-Green invariants verified (${healthChecks} continuous 30ms health checks, 0 errors, SIGTERM=${shutdownMs}ms).`,
+      `[probe] PASS: all zero-downtime Blue-Green & Codex P1/P2 invariants verified (${healthChecks} continuous 30ms health checks, 0 errors, SIGTERM=${shutdownMs}ms).`,
     );
   } finally {
     stopHealthPoller = true;

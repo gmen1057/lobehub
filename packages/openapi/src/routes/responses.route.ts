@@ -4,9 +4,12 @@ import { z } from 'zod';
 
 import { ResponsesController } from '../controllers/responses.controller';
 import { requireAuth } from '../middleware/auth';
+import { engineSlotHttpActivityMiddleware } from '../services/engineSlotActivity';
 import { CreateResponseRequestSchema } from '../types/responses.type';
 
 const ResponsesRoutes = new Hono();
+
+ResponsesRoutes.use('*', engineSlotHttpActivityMiddleware);
 
 /**
  * POST /api/v1/responses

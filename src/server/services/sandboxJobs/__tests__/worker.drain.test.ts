@@ -159,5 +159,34 @@ describe('SandboxJobWorker.startDrain (zero-downtime)', () => {
 
     const [row2] = await serverDB.select().from(sandboxJobs).where(eq(sandboxJobs.id, job2.id));
     expect(row2?.state).toBe('queued');
+
+    // P1 #3: Fast --rollback calls resumeFromDrain() -> worker resumes claiming queued jobs!
+    const workerIdBeforeResume = worker.id;
+    fetchMock.mockImplementationOnce(async () => {
+      return new Response(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          result: {
+            content: [{ text: 'job-2-resumed-output' }],
+            session_id: 'sess_drain_2',
+          },
+        }),
+        { headers: { 'Content-Type': 'application/json' }, status: 200 },
+      );
+    });
+
+    await worker.resumeFromDrain();
+    expect(worker.isDraining()).toBe(false);
+    expect(worker.isRunning).toBe(true);
+    expect(worker.id).toBe(workerIdBeforeResume);
+
+    await waitFor(async () => {
+      const [resumedRow2] = await serverDB
+        .select()
+        .from(sandboxJobs)
+        .where(eq(sandboxJobs.id, job2.id));
+      expect(resumedRow2?.state).toBe('success');
+      expect((resumedRow2?.resultPayload as any)?.content).toBe('job-2-resumed-output');
+    });
   });
 });

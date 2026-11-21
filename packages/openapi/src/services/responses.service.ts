@@ -30,6 +30,11 @@ import type {
   ResponseUsage,
   Tool,
 } from '../types/responses.type';
+import {
+  beginResponseExecution,
+  getInFlightResponseTopicsForUser,
+  hasInFlightResponseTopic,
+} from './engineSlotActivity';
 import { type HubOperation, responsesStreamHub } from './responsesStreamHub';
 
 /**
@@ -153,7 +158,7 @@ export class ResponsesService extends BaseService {
     if (!previousTopicId) return;
     if (this.hasFunctionCallOutputs(params.input)) return;
     const op = responsesStreamHub.findByTopic(this.userId, previousTopicId);
-    if (op && !op.done) {
+    if ((op && !op.done) || hasInFlightResponseTopic(this.userId, previousTopicId)) {
       throw conflict('Response is already in progress for this topic');
     }
   }
@@ -464,19 +469,20 @@ export class ResponsesService extends BaseService {
   async createResponse(params: CreateResponseRequest): Promise<ResponseObject> {
     this.assertPreviousTopicIdle(params);
     const createdAt = Math.floor(Date.now() / 1000);
+    const previousTopicId = params.previous_response_id
+      ? this.extractTopicIdFromResponseId(params.previous_response_id)
+      : null;
+    const functionCallOutputs = this.extractFunctionCallOutputs(params.input);
+    const isResumeFlow = Boolean(functionCallOutputs.length > 0 && previousTopicId);
+    const execTracker = beginResponseExecution({
+      initialTopicId: previousTopicId,
+      isResumeFlow,
+      userId: this.userId,
+    });
 
     try {
       const model = params.model;
       const instructions = this.buildInstructions(params);
-
-      // Resolve topicId from previous_response_id for multi-turn
-      const previousTopicId = params.previous_response_id
-        ? this.extractTopicIdFromResponseId(params.previous_response_id)
-        : null;
-
-      // Check for function_call_output resume flow
-      const functionCallOutputs = this.extractFunctionCallOutputs(params.input);
-      const isResumeFlow = functionCallOutputs.length > 0 && previousTopicId;
 
       const prompt = isResumeFlow
         ? this.buildToolResultPrompt(functionCallOutputs)
@@ -515,6 +521,7 @@ export class ResponsesService extends BaseService {
 
       // Generate response ID encoding topicId for multi-turn support
       const responseId = this.generateResponseId(execResult.topicId);
+      execTracker.setOperation(execResult.operationId, execResult.topicId ?? responseId);
 
       // 2. Execute synchronously to completion
       const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
@@ -561,6 +568,8 @@ export class ResponsesService extends BaseService {
         params,
         status: 'failed',
       });
+    } finally {
+      execTracker.finish();
     }
   }
 
@@ -576,19 +585,21 @@ export class ResponsesService extends BaseService {
     this.assertPreviousTopicIdle(params);
     const createdAt = Math.floor(Date.now() / 1000);
     let sequenceNumber = 0;
+    const previousTopicId = params.previous_response_id
+      ? this.extractTopicIdFromResponseId(params.previous_response_id)
+      : null;
+    const functionCallOutputs = this.extractFunctionCallOutputs(params.input);
+    const isResumeFlow = Boolean(functionCallOutputs.length > 0 && previousTopicId);
+    const execTracker = beginResponseExecution({
+      initialTopicId: previousTopicId,
+      isResumeFlow,
+      userId: this.userId,
+    });
+    let backgroundExecutionStarted = false;
 
     try {
       const model = params.model;
       const instructions = this.buildInstructions(params);
-
-      // Resolve topicId from previous_response_id for multi-turn
-      const previousTopicId = params.previous_response_id
-        ? this.extractTopicIdFromResponseId(params.previous_response_id)
-        : null;
-
-      // Check for function_call_output resume flow
-      const functionCallOutputs = this.extractFunctionCallOutputs(params.input);
-      const isResumeFlow = functionCallOutputs.length > 0 && previousTopicId;
 
       const prompt = isResumeFlow
         ? this.buildToolResultPrompt(functionCallOutputs)
@@ -624,6 +635,18 @@ export class ResponsesService extends BaseService {
 
       // Generate response ID encoding topicId for multi-turn support
       const responseId = this.generateResponseId(execResult.topicId);
+      const resolvedTopicId = execResult.topicId ?? responseId;
+      execTracker.setOperation(operationId, resolvedTopicId);
+
+      // Register in hub BEFORE first yield so even if client aborts on chunk 1 or consumer
+      // pauses generator before reading chunk 2, the operation is already tracked in hub.
+      const op = responsesStreamHub.register({
+        operationId,
+        params,
+        responseId,
+        topicId: resolvedTopicId,
+        userId: this.userId,
+      });
 
       const response = this.buildResponseObject({
         createdAt,
@@ -634,6 +657,24 @@ export class ResponsesService extends BaseService {
         status: 'in_progress',
       });
 
+      const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
+        queueService: null,
+        streamEventManager: responsesStreamHub,
+      });
+      backgroundExecutionStarted = true;
+      void agentRuntimeService
+        .executeSync(operationId)
+        .then(
+          (state) => responsesStreamHub.markDone(operationId, state),
+          (err) => {
+            this.log('error', 'Streaming execution failed', { error: err, responseId });
+            responsesStreamHub.markDone(operationId, { status: 'error' } as AgentState);
+          },
+        )
+        .finally(() => {
+          execTracker.finish();
+        });
+
       // Emit response.created + response.in_progress
       yield { response, sequence_number: sequenceNumber++, type: 'response.created' as const };
       yield {
@@ -641,29 +682,6 @@ export class ResponsesService extends BaseService {
         sequence_number: sequenceNumber++,
         type: 'response.in_progress' as const,
       };
-
-      // 2. arckep (F8): ответ регистрируется в общем реестре и считается в фоне — он не зависит
-      // от этого соединения. Обрыв связи или переход в другую переписку ответ не останавливают;
-      // остановка — только явный cancel (кнопка «Стоп»). Клиент, вернувшийся в переписку,
-      // переподключается через resumeStreamingResponse и получает историю с начала.
-      const op = responsesStreamHub.register({
-        operationId,
-        params,
-        responseId,
-        topicId: execResult.topicId ?? responseId,
-        userId: this.userId,
-      });
-      const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
-        queueService: null,
-        streamEventManager: responsesStreamHub,
-      });
-      void agentRuntimeService.executeSync(operationId).then(
-        (state) => responsesStreamHub.markDone(operationId, state),
-        (err) => {
-          this.log('error', 'Streaming execution failed', { error: err, responseId });
-          responsesStreamHub.markDone(operationId, { status: 'error' } as AgentState);
-        },
-      );
 
       // 3. События ответа — из реестра, тем же путём, что и при переподключении
       yield* this.streamOperationEvents(op, response, sequenceNumber, signal);
@@ -689,6 +707,10 @@ export class ResponsesService extends BaseService {
         sequence_number: sequenceNumber,
         type: 'response.failed' as const,
       };
+    } finally {
+      if (!backgroundExecutionStarted) {
+        execTracker.finish();
+      }
     }
   }
 
@@ -798,7 +820,12 @@ export class ResponsesService extends BaseService {
 
   /** arckep (F8): темы этого человека, в которых ответ ещё идёт. */
   listRunningTopics(): string[] {
-    return responsesStreamHub.runningTopics(this.userId);
+    return [
+      ...new Set([
+        ...responsesStreamHub.runningTopics(this.userId),
+        ...getInFlightResponseTopicsForUser(this.userId),
+      ]),
+    ];
   }
 
   private findOperation(topicId: string): HubOperation | undefined {
