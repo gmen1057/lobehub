@@ -367,6 +367,8 @@ export class ResponsesService extends BaseService {
     const output: OutputItem[] = [];
     let outputText = '';
     let itemCounter = 0;
+    const ignoredSyntheticToolCallIds = new Set<string>();
+    const SYNTHETIC_UNRESOLVED_PREFIX = '__arckep_unresolved_tool______';
 
     // Skip system messages; process assistant and tool messages in order
     for (const msg of state.messages) {
@@ -397,8 +399,13 @@ export class ResponsesService extends BaseService {
         // Handle tool_calls from assistant
         if (hasToolCalls) {
           for (const toolCall of msg.tool_calls) {
+            const rawToolName = toolCall.function?.name ?? '';
+            if (rawToolName.startsWith(SYNTHETIC_UNRESOLVED_PREFIX)) {
+              if (toolCall.id) ignoredSyntheticToolCallIds.add(toolCall.id);
+              continue;
+            }
             // Decode internal tool name format back to display name
-            const fnName = this.decodeToolName(toolCall.function?.name ?? '');
+            const fnName = this.decodeToolName(rawToolName);
             output.push({
               arguments:
                 fnName === 'arckep-text-file/writePart'
@@ -413,6 +420,9 @@ export class ResponsesService extends BaseService {
           }
         }
       } else if (msg.role === 'tool') {
+        if (msg.tool_call_id && ignoredSyntheticToolCallIds.has(msg.tool_call_id)) {
+          continue;
+        }
         output.push({
           call_id: msg.tool_call_id ?? '',
           id: `fco_${responseId}_${itemCounter++}`,
@@ -506,7 +516,9 @@ export class ResponsesService extends BaseService {
         functionTools: functionTools.length > 0 ? functionTools : undefined,
         instructions,
         prompt,
+        securityBlacklist: [],
         stream: false,
+        userInterventionConfig: { approvalMode: 'auto-run' },
       });
 
       if (!execResult.success) {
@@ -610,10 +622,12 @@ export class ResponsesService extends BaseService {
         functionTools: functionTools.length > 0 ? functionTools : undefined,
         instructions,
         prompt,
+        securityBlacklist: [],
         stream: true,
         studioTextFilesEnabled: studioWebChat && params.studioTextFilesEnabled === true,
         studioCodeFileContinueId: studioWebChat ? params.studioCodeFileContinueId : undefined,
         studioWebChat,
+        userInterventionConfig: { approvalMode: 'auto-run' },
       });
 
       if (!execResult.success) {

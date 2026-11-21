@@ -247,6 +247,7 @@ export class AgentRuntimeService {
       userMemory,
       deviceSystemInfo,
       operationSkillSet,
+      securityBlacklist,
       signal,
       userTimezone,
       initialStepCount = 0,
@@ -323,6 +324,7 @@ export class AgentRuntimeService {
         modelRuntimeConfig,
         operationId,
         operationToolSet,
+        ...(securityBlacklist !== undefined && { securityBlacklist }),
         status: 'idle',
         stepCount: initialStepCount,
         // Backward-compat: resolved tool fields read by RuntimeExecutors
@@ -656,24 +658,30 @@ export class AgentRuntimeService {
         const identifier = toolCall?.identifier || 'unknown';
         const apiName = toolCall?.apiName || 'unknown';
         const output = toolPayload?.data;
-        toolsResult = [
-          {
-            apiName,
-            identifier,
-            isSuccess: toolPayload?.isSuccess !== false,
-            output:
-              typeof output === 'string'
-                ? output
-                : output != null
-                  ? JSON.stringify(output)
-                  : undefined,
-          },
-        ];
-        stepSummary = `[tool] ${identifier}/${apiName}`;
+        if (identifier === '__arckep_unresolved_tool__') {
+          stepSummary = `[tool] (unresolved-feedback) ${apiName}`;
+        } else {
+          toolsResult = [
+            {
+              apiName,
+              identifier,
+              isSuccess: toolPayload?.isSuccess !== false,
+              output:
+                typeof output === 'string'
+                  ? output
+                  : output != null
+                    ? JSON.stringify(output)
+                    : undefined,
+            },
+          ];
+          stepSummary = `[tool] ${identifier}/${apiName}`;
+        }
       } else if (phase === 'tools_batch_result') {
         const nextPayload = stepResult.nextContext?.payload as any;
-        const toolCount = nextPayload?.toolCount || 0;
-        const rawToolResults = nextPayload?.toolResults || [];
+        const rawToolResults = (nextPayload?.toolResults || []).filter(
+          (r: any) => r?.toolCall?.identifier !== '__arckep_unresolved_tool__',
+        );
+        const toolCount = rawToolResults.length;
         const mappedResults: Array<{
           apiName: string;
           identifier: string;
@@ -694,7 +702,7 @@ export class AgentRuntimeService {
                   : undefined,
           };
         });
-        toolsResult = mappedResults;
+        toolsResult = mappedResults.length > 0 ? mappedResults : undefined;
         const toolNames = mappedResults.map((r) => `${r.identifier}/${r.apiName}`);
         stepSummary = `[tools×${toolCount}] ${toolNames.join(', ')}`;
       } else {
@@ -711,9 +719,11 @@ export class AgentRuntimeService {
           reasoning = (llmEvent as any)?.result?.reasoning || undefined;
 
           // Use parsed ChatToolPayload from payload (has identifier + apiName)
-          const payloadToolsCalling = (stepResult.nextContext?.payload as any)?.toolsCalling as
-            Array<{ apiName: string; arguments: string; identifier: string }> | undefined;
-          const hasToolCalls = Array.isArray(payloadToolsCalling) && payloadToolsCalling.length > 0;
+          const payloadToolsCalling = (
+            ((stepResult.nextContext?.payload as any)?.toolsCalling as
+              Array<{ apiName: string; arguments: string; identifier: string }> | undefined) ?? []
+          ).filter((tc) => tc.identifier !== '__arckep_unresolved_tool__');
+          const hasToolCalls = payloadToolsCalling.length > 0;
 
           if (hasToolCalls) {
             toolsCalling = payloadToolsCalling.map((tc) => ({

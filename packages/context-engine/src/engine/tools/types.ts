@@ -1,4 +1,8 @@
-import type { ExtendedHumanInterventionConfig } from '@/types/index';
+import type {
+  ChatToolPayload,
+  ExtendedHumanInterventionConfig,
+  MessageToolCall,
+} from '@/types/index';
 
 export interface LobeChatPluginApi {
   description: string;
@@ -171,10 +175,32 @@ export type ActivationSource = 'active_tools' | 'mention' | 'device' | 'discover
  * Operation-level tool set: determined at createOperation time, immutable during execution.
  */
 export interface OperationToolSet {
+  disabledToolIds?: string[];
   enabledToolIds: string[];
   manifestMap: Record<string, LobeToolManifest>;
   sourceMap: Record<string, ToolSource>;
   tools: UniformTool[];
+}
+
+export type UnresolvedToolCallReason =
+  'disabled' | 'ambiguous_bare_name' | 'inactive_or_unknown' | 'invalid_format';
+
+export interface UnresolvedToolCall {
+  rawName: string;
+  reason: UnresolvedToolCallReason;
+  toolCall: MessageToolCall;
+}
+
+export interface ResolveToolCallsOptions {
+  disabledToolIds?: Iterable<string>;
+  enforceActiveManifests?: boolean;
+  passthroughIdentifiers?: Iterable<string>;
+}
+
+export interface ToolResolveDiagnostics {
+  repairedNames: Record<string, string>;
+  resolved: ChatToolPayload[];
+  unresolved: UnresolvedToolCall[];
 }
 
 /**

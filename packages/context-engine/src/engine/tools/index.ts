@@ -27,12 +27,16 @@ export type {
   OperationToolSet,
   PluginEnableChecker,
   ResolvedToolSet,
+  ResolveToolCallsOptions,
   StepToolDelta,
   ToolNameGenerator,
+  ToolResolveDiagnostics,
   ToolsEngineOptions,
   ToolsGenerationContext,
   ToolsGenerationResult,
   ToolSource,
+  UnresolvedToolCall,
+  UnresolvedToolCallReason,
 } from './types';
 
 // Utility functions

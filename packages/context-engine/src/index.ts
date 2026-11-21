@@ -17,23 +17,27 @@ export { ContextEngine } from './pipeline';
 export * from './providers';
 // Processors
 export type { ArckepToolResultTrimConfig, ArckepToolResultTrimMetadata } from './processors';
+export type { DisabledToolCallFilterConfig } from './processors';
 export type { PlaceholderValue, PlaceholderValueMap } from './processors';
 export type { ToolResultImage, ToolResultImagesConfig } from './processors';
 export {
   ArckepToolResultTrimProcessor,
   buildPlaceholderGenerators,
   DEFAULT_CACHE_TTL_MS,
+  DisabledToolCallFilter,
   extractToolResultImages,
   formatPlaceholderValues,
   GroupMessageFlattenProcessor,
   HistoryTruncateProcessor,
   hydrateGroupMessages,
   InputTemplateProcessor,
+  isEmptyOrPlaceholderAssistantMessage,
   MAX_OLD_TOOL_ARGUMENTS_CHARS,
   MAX_OLD_TOOL_CONTENT_CHARS,
   MessageCleanupProcessor,
   MessageContentProcessor,
   MIN_ARTIFACT_BODY_TO_COMPACT,
+  PlaceholderMessageFilter,
   PlaceholderVariablesProcessor,
   RECENT_UNCOMPACTED_USER_TURNS,
   renderPlaceholderTemplate,

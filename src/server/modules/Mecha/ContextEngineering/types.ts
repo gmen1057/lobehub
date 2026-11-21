@@ -45,6 +45,8 @@ export interface ServerKnowledgeConfig {
  * Tools configuration for server context engineering
  */
 export interface ServerToolsConfig {
+  /** Disabled tool identifiers (stripped from historical tool calls) */
+  disabledToolIdentifiers?: string[];
   /** Tool manifests with systemRole and API definitions */
   manifests?: LobeToolManifest[];
   /** Enabled tool IDs (kept for compatibility) */

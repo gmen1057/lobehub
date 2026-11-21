@@ -772,4 +772,313 @@ Document content here.
       expect(result.messages).toEqual([{ content: 'Question', role: 'user' }]);
     });
   });
+
+  describe('context guards (PlaceholderMessageFilter & DisabledToolCallFilter)', () => {
+    it('should drop empty and "..." assistant stubs before MessageCleanupProcessor keeping messageSourceIds 1:1 aligned', async () => {
+      const messages: UIChatMessage[] = [
+        {
+          content: 'Turn 1 question',
+          createdAt: 1,
+          id: 'u-1',
+          role: 'user',
+          updatedAt: 1,
+        } as UIChatMessage,
+        {
+          content: '...',
+          createdAt: 2,
+          error: { message: 'upstream failed', type: 'ProviderBizError' } as any,
+          id: 'broken-1',
+          role: 'assistant',
+          updatedAt: 2,
+        } as UIChatMessage,
+        {
+          content: '',
+          createdAt: 3,
+          id: 'broken-2',
+          role: 'assistant',
+          updatedAt: 3,
+        } as UIChatMessage,
+        {
+          content: 'Turn 1 valid reply',
+          createdAt: 4,
+          id: 'a-1',
+          role: 'assistant',
+          updatedAt: 4,
+        } as UIChatMessage,
+        {
+          content: 'Turn 2 question',
+          createdAt: 5,
+          id: 'u-2',
+          role: 'user',
+          updatedAt: 5,
+        } as UIChatMessage,
+      ];
+
+      const engine = new MessagesEngine(
+        createBasicParams({
+          messages,
+          systemRole: 'System prompt',
+        }),
+      );
+
+      const result = await engine.process();
+
+      expect(result.metadata.placeholderMessageFilter).toEqual({ filteredCount: 2 });
+      expect(result.messages).toEqual([
+        { content: 'System prompt', role: 'system' },
+        { content: 'Turn 1 question', role: 'user' },
+        { content: 'Turn 1 valid reply', role: 'assistant' },
+        { content: 'Turn 2 question', role: 'user' },
+      ]);
+      expect(result.metadata.messageSourceIds).toHaveLength(result.messages.length);
+      expect(result.metadata.messageSourceIds?.[0]).toMatch(/^system-/);
+      expect(result.metadata.messageSourceIds?.slice(1)).toEqual(['u-1', 'a-1', 'u-2']);
+    });
+
+    it('should preserve assistant messages with empty content when imageList, reasoning, or DB tools are present', async () => {
+      const messages: UIChatMessage[] = [
+        {
+          content: 'Generate image, think, and search',
+          createdAt: 1,
+          id: 'u-1',
+          role: 'user',
+          updatedAt: 1,
+        } as UIChatMessage,
+        {
+          content: '',
+          createdAt: 2,
+          id: 'a-gemini-img',
+          imageList: [{ alt: 'gen', id: 'img-1', url: 'https://example.com/cat.png' }],
+          role: 'assistant',
+          updatedAt: 2,
+        } as UIChatMessage,
+        {
+          content: '',
+          createdAt: 3,
+          id: 'a-reasoning',
+          reasoning: { content: 'Deliberating...' },
+          role: 'assistant',
+          updatedAt: 3,
+        } as UIChatMessage,
+        {
+          content: '',
+          createdAt: 4,
+          id: 'a-tool-call',
+          role: 'assistant',
+          tools: [
+            {
+              apiName: 'search',
+              arguments: '{"q":"cats"}',
+              id: 'call_search_1',
+              identifier: 'lobe-web-browsing',
+              type: 'builtin',
+            },
+          ],
+          updatedAt: 4,
+        } as UIChatMessage,
+        {
+          content: '{"results":[]}',
+          createdAt: 5,
+          id: 't-search-1',
+          plugin: {
+            apiName: 'search',
+            arguments: '{"q":"cats"}',
+            identifier: 'lobe-web-browsing',
+            type: 'builtin',
+          },
+          role: 'tool',
+          tool_call_id: 'call_search_1',
+          updatedAt: 5,
+        } as UIChatMessage,
+      ];
+
+      const engine = new MessagesEngine(
+        createBasicParams({
+          capabilities: {
+            isCanUseFC: () => true,
+            isCanUseVision: () => true,
+          },
+          messages,
+        }),
+      );
+
+      const result = await engine.process();
+
+      expect(result.metadata.placeholderMessageFilter).toEqual({ filteredCount: 0 });
+      expect(result.metadata.messageSourceIds).toEqual([
+        'u-1',
+        'a-gemini-img',
+        'a-reasoning',
+        'a-tool-call',
+        't-search-1',
+      ]);
+      expect(result.messages[1]).toEqual({
+        content: [
+          {
+            image_url: { detail: 'auto', url: 'https://example.com/cat.png' },
+            type: 'image_url',
+          },
+        ],
+        role: 'assistant',
+      });
+      expect(result.messages[2]).toMatchObject({
+        content: '',
+        reasoning: { content: 'Deliberating...' },
+        role: 'assistant',
+      });
+      expect(result.messages[3]).toMatchObject({
+        content: '',
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: {
+              arguments: '{"q":"cats"}',
+              name: 'lobe-web-browsing____search____builtin',
+            },
+            id: 'call_search_1',
+            type: 'function',
+          },
+        ],
+      });
+      expect(result.messages[4]).toMatchObject({
+        content: '{"results":[]}',
+        role: 'tool',
+        tool_call_id: 'call_search_1',
+      });
+    });
+
+    it('should filter disabled tool calls, drop emptied assistant turns, and let ToolMessageReorder prune orphaned tool results', async () => {
+      const messages: UIChatMessage[] = [
+        {
+          content: 'Old studio turn',
+          createdAt: 1,
+          id: 'u-1',
+          role: 'user',
+          updatedAt: 1,
+        } as UIChatMessage,
+        {
+          content: '',
+          createdAt: 2,
+          id: 'a-disabled-only',
+          role: 'assistant',
+          tools: [
+            {
+              apiName: 'createImage',
+              arguments: '{"prompt":"sunset"}',
+              id: 'call_disabled_1',
+              identifier: 'arckep-studio',
+              type: 'builtin',
+            },
+          ],
+          updatedAt: 2,
+        } as UIChatMessage,
+        {
+          content: '{"imageUrl":"https://example.com/old.png"}',
+          createdAt: 3,
+          id: 't-disabled-1',
+          plugin: {
+            apiName: 'createImage',
+            arguments: '{"prompt":"sunset"}',
+            identifier: 'arckep-studio',
+            type: 'builtin',
+          },
+          role: 'tool',
+          tool_call_id: 'call_disabled_1',
+          updatedAt: 3,
+        } as UIChatMessage,
+        {
+          content: 'Mixed turn with text and disabled tool',
+          createdAt: 4,
+          id: 'a-mixed',
+          role: 'assistant',
+          tools: [
+            {
+              apiName: 'createImage',
+              arguments: '{"prompt":"sunrise"}',
+              id: 'call_disabled_2',
+              identifier: 'arckep-studio',
+              type: 'builtin',
+            },
+            {
+              apiName: 'search',
+              arguments: '{"q":"sunrise"}',
+              id: 'call_enabled_2',
+              identifier: 'lobe-web-browsing',
+              type: 'builtin',
+            },
+          ],
+          updatedAt: 4,
+        } as UIChatMessage,
+        {
+          content: '{"imageUrl":"https://example.com/old2.png"}',
+          createdAt: 5,
+          id: 't-disabled-2',
+          role: 'tool',
+          tool_call_id: 'call_disabled_2',
+          updatedAt: 5,
+        } as UIChatMessage,
+        {
+          content: '{"results":["ok"]}',
+          createdAt: 6,
+          id: 't-enabled-2',
+          role: 'tool',
+          tool_call_id: 'call_enabled_2',
+          updatedAt: 6,
+        } as UIChatMessage,
+        {
+          content: 'Follow-up question',
+          createdAt: 7,
+          id: 'u-2',
+          role: 'user',
+          updatedAt: 7,
+        } as UIChatMessage,
+      ];
+
+      const engine = new MessagesEngine(
+        createBasicParams({
+          capabilities: {
+            isCanUseFC: () => true,
+            isCanUseVision: () => true,
+          },
+          messages,
+          toolsConfig: {
+            disabledToolIdentifiers: ['arckep-studio'],
+            tools: ['lobe-web-browsing'],
+          },
+        }),
+      );
+
+      const result = await engine.process();
+
+      expect(result.metadata.disabledToolCallFilter).toEqual({
+        filteredAssistantMessages: 2,
+        filteredToolCalls: 2,
+      });
+      expect(result.metadata.toolMessageReorder?.removedInvalidTools).toBe(2);
+      expect(result.metadata.messageSourceIds).toEqual(['u-1', 'a-mixed', 't-enabled-2', 'u-2']);
+      expect(result.messages).toEqual([
+        { content: 'Old studio turn', role: 'user' },
+        {
+          content: 'Mixed turn with text and disabled tool',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"q":"sunrise"}',
+                name: 'lobe-web-browsing____search____builtin',
+              },
+              id: 'call_enabled_2',
+              type: 'function',
+            },
+          ],
+        },
+        {
+          content: '{"results":["ok"]}',
+          role: 'tool',
+          tool_call_id: 'call_enabled_2',
+        },
+        { content: 'Follow-up question', role: 'user' },
+      ]);
+    });
+  });
 });

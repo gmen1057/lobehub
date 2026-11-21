@@ -45,6 +45,7 @@ import type {
   ExecSubAgentTaskParams,
   ExecSubAgentTaskResult,
   MessageAttachmentRef,
+  SecurityBlacklistConfig,
   UserInterventionConfig,
 } from '@lobechat/types';
 import { ThreadStatus, ThreadType } from '@lobechat/types';
@@ -353,6 +354,8 @@ interface InternalExecAgentParams extends ExecAgentParams {
   queueRetryDelay?: string;
   /** Whether to continue execution from an existing persisted message */
   resume?: boolean;
+  /** Optional security blacklist override (e.g. [] for headless REST runs) */
+  securityBlacklist?: SecurityBlacklistConfig;
   /** Abort startup before the agent runtime operation is created */
   signal?: AbortSignal;
   /**
@@ -695,6 +698,7 @@ export class AiAgentService {
       evalContext,
       maxSteps,
       initialStepCount,
+      securityBlacklist,
       signal,
       userInterventionConfig,
       queueRetries,
@@ -1023,6 +1027,7 @@ export class AiAgentService {
       tools: undefined,
       enabledManifests: undefined,
     };
+    let disabledToolIds: string[] = [];
     const toolManifestMap: Record<string, any> = {};
     const toolSourceMap: Record<string, ToolSource> = {};
     let onlineDevices: DeviceAttachment[] = [];
@@ -1558,6 +1563,7 @@ export class AiAgentService {
         ...excludedPluginIds,
         ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
       ];
+      disabledToolIds = [...new Set(hiddenToolIds)];
       // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
       // карте, чтобы `activateSkill` мог подключить инструменты вместе с навыком, у которого есть справочники
       // или скрипты; в <available_tools> они не перечисляются (buildToolDiscoveryConfig).
@@ -2124,11 +2130,13 @@ export class AiAgentService {
         },
         hooks,
         operationId,
+        securityBlacklist,
         signal,
         queueRetries,
         queueRetryDelay,
         stream,
         toolSet: {
+          disabledToolIds,
           enabledToolIds: toolsResult.enabledToolIds,
           manifestMap: toolManifestMap,
           sourceMap: toolSourceMap,
