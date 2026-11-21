@@ -213,6 +213,11 @@ export interface AgentInstructionResolveAbortedTools {
  */
 export interface AgentInstructionCompressContext {
   payload: {
+    /**
+     * Pre-allocated assistant placeholder ID for the current turn (created by execAgent).
+     * Must be preserved outside the compression group and reused by the next call_llm.
+     */
+    assistantMessageId?: string;
     /** Current token count before compression */
     currentTokenCount: number;
     /** Existing summary to incorporate (for incremental compression) */

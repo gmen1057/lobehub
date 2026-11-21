@@ -346,6 +346,32 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     });
   });
 
+  it('wires compressionModel to claude-haiku-5-5 (effort: low) by default and deepseek-flash under Data Guard', async () => {
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Normal turn' });
+    expect(mockCreateOperation.mock.calls.at(-1)![0].modelRuntimeConfig).toMatchObject({
+      compressionModel: {
+        effort: 'low',
+        model: 'claude-haiku-5-5',
+        provider: 'anthropic',
+      },
+    });
+
+    await service.execAgent({
+      agentId: 'agent-1',
+      chatConfigOverride: { deepseekDataGuardProtected: true },
+      prompt: 'Protected turn',
+    });
+    expect(mockCreateOperation.mock.calls.at(-1)![0].modelRuntimeConfig).toMatchObject({
+      compressionModel: {
+        model: 'deepseek-flash',
+        provider: 'deepseek',
+      },
+    });
+    expect(
+      mockCreateOperation.mock.calls.at(-1)![0].modelRuntimeConfig.compressionModel.effort,
+    ).toBeUndefined();
+  });
+
   it('chatConfigOverride и paramsOverride сливаются с настройками помощника', async () => {
     await service.execAgent({
       agentId: 'agent-1',

@@ -72,6 +72,7 @@ import {
   prefersArckepSearchOnSchedule,
   resolveArckepSearchPluginIds,
 } from '@/server/modules/AgentRuntime/arckepSearch';
+import { resolveCompressionModelConfig } from '@/server/modules/AgentRuntime/compressionThresholds';
 import { assertDeepSeekDocumentsGuardCompatible } from '@/server/modules/AgentRuntime/deepseekDocumentGuard';
 import {
   createServerAgentToolsEngine,
@@ -2016,7 +2017,11 @@ export class AiAgentService {
         initialMessages: allMessages,
         initialStepCount,
         maxSteps,
-        modelRuntimeConfig: { model, provider },
+        modelRuntimeConfig: {
+          compressionModel: resolveCompressionModelConfig({ agentConfig }),
+          model,
+          provider,
+        },
         hooks,
         operationId,
         signal,
