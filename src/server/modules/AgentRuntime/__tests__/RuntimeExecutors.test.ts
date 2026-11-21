@@ -3849,7 +3849,7 @@ describe('RuntimeExecutors', () => {
           ([, event]: [string, { type: string }]) => event.type === 'error',
         )?.[1];
         expect(errorEvent.data).toMatchObject({
-          code: 'INSUFFICIENT_BALANCE',
+          code: 'studio_insufficient_balance',
           error: 'Insufficient balance',
           phase: 'llm_execution',
           status: 402,
