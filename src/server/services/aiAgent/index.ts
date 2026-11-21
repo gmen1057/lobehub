@@ -1843,9 +1843,9 @@ export class AiAgentService {
 
     // Create user message object for processing (include imageList for vision models)
     const userMessage = {
-      ...(enableTextFile && userMessageRecord?.id ? { id: userMessageRecord.id } : {}),
       content: continuationData ? (prompt ?? '') + CONTINUATION_CONTEXT + continuationData : prompt,
       fileList,
+      id: userMessageRecord?.id,
       imageList,
       metadata:
         attachmentRefs.length > 0 || pdfLayouts.length > 0 || deepseekDocumentIds?.length

@@ -10,6 +10,8 @@ declare module '../types' {
       cleanedCount: number;
       totalMessages: number;
     };
+    /** Origin of each wire message before provider-incompatible fields are removed. */
+    messageSourceIds?: (string | undefined)[];
   }
 }
 
@@ -33,6 +35,7 @@ export class MessageCleanupProcessor extends BaseProcessor {
     const clonedContext = this.cloneContext(context);
 
     let cleanedCount = 0;
+    clonedContext.metadata.messageSourceIds = context.messages.map((message) => message.id);
 
     // Clean each message, keeping only necessary fields
     for (let i = 0; i < clonedContext.messages.length; i++) {

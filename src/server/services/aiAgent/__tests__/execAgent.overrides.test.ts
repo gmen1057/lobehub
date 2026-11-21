@@ -289,6 +289,18 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     }
   });
 
+  it('passes the persisted user ID to compression independently of enabled tools', async () => {
+    mockMessageCreate
+      .mockResolvedValueOnce({ id: 'new-user' })
+      .mockResolvedValueOnce({ id: 'placeholder' });
+    await service.execAgent({ agentId: 'agent-1', prompt: 'Check my changes' });
+    expect(mockCreateOperation.mock.calls[0][0].initialMessages.at(-1)).toMatchObject({
+      content: 'Check my changes',
+      id: 'new-user',
+      role: 'user',
+    });
+  });
+
   it('chatConfigOverride и paramsOverride сливаются с настройками помощника', async () => {
     await service.execAgent({
       agentId: 'agent-1',

@@ -67,6 +67,8 @@ export interface ServerUserMemoryConfig {
  * instead of fetching from stores
  */
 export interface ServerMessagesEngineParams {
+  /** Match the assembled prompt to its sources without including internal IDs in provider requests. */
+  onSourceIds?: (ids: (string | undefined)[]) => void;
   /** Additional variable values to merge with defaults (e.g. device paths) */
   additionalVariables?: Record<string, string>;
   /** Agent documents to inject into context based on load rules and positions */

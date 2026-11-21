@@ -69,6 +69,7 @@ import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
 import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
 import { persistFailedLLM } from './persistFailedLLM';
 import { persistInterruptedLLM } from './persistInterruptedLLM';
+import { fitRejectedPrompt } from './rejectedPrompt';
 import { resolveServerModelParams } from './serverModelParams';
 import { type IStreamEventManager } from './types';
 
@@ -419,6 +420,7 @@ export const createRuntimeExecutors = (
       // Rebuild params from agentConfig at execution time (capabilities built dynamically)
       const agentConfig = ctx.agentConfig;
       let processedMessages;
+      let wireSourceIds: (string | undefined)[] = [];
       if (agentConfig) {
         const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
@@ -553,7 +555,12 @@ export const createRuntimeExecutors = (
           ...(topicReferences && { topicReferences }),
         };
 
-        processedMessages = await serverMessagesEngine(contextEngineInput);
+        processedMessages = await serverMessagesEngine({
+          ...contextEngineInput,
+          onSourceIds: (ids) => {
+            wireSourceIds = ids;
+          },
+        });
 
         // Emit context engine event for tracing
         // Omit large/redundant fields to reduce snapshot size:
@@ -597,7 +604,7 @@ export const createRuntimeExecutors = (
       // браузерном чате; раньше серверный вызов их не передавал вовсе.
       const modelParams = await resolveServerModelParams(agentConfig, model, provider);
       log(`[${operationLogId}] model params: %o`, modelParams);
-      const chatPayload = {
+      let chatPayload = {
         ...(modelParams as unknown as Partial<ChatStreamPayload>),
         messages: processedMessages,
         model,
@@ -677,6 +684,7 @@ export const createRuntimeExecutors = (
       };
 
       const maxAttempts = LLM_MAX_RETRIES + 1;
+      let recoveredInput = false;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
         let content = '';
@@ -795,7 +803,7 @@ export const createRuntimeExecutors = (
             attempt,
             maxAttempts,
             model,
-            processedMessages.length,
+            chatPayload.messages.length,
             tools?.length ?? 0,
           );
 
@@ -1413,6 +1421,36 @@ export const createRuntimeExecutors = (
             );
           }
           const interrupted = await isOperationInterrupted(ctx);
+
+          // A permanent input refusal forbids replaying the request. Only send a different
+          // prompt once, when the proxy and this attempt both confirm no work/output/usage.
+          if (
+            classified.rejectedInput &&
+            !recoveredInput &&
+            !grounding &&
+            !hasReceivedResult &&
+            !interrupted &&
+            attempt < maxAttempts &&
+            attemptElapsedMs < LONG_LLM_ATTEMPT_NO_RETRY_MS
+          ) {
+            const messages = fitRejectedPrompt(
+              chatPayload,
+              llmPayload.messages,
+              wireSourceIds,
+              classified.rejectedInput,
+            );
+            if (messages) {
+              recoveredInput = true;
+              chatPayload = { ...chatPayload, messages };
+              log(
+                '[%s] Reduced rejected input for the same assistant (provider tokens: %d, limit: %d)',
+                operationLogId,
+                classified.rejectedInput.inputTokens,
+                classified.rejectedInput.maxTokens,
+              );
+              continue;
+            }
+          }
 
           if (
             !hasReceivedResult &&
