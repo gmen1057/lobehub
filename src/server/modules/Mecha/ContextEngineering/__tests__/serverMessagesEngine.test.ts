@@ -530,4 +530,33 @@ describe('serverMessagesEngine', () => {
       expect(Array.isArray(result)).toBe(true);
     });
   });
+
+  describe('toolResultTrim and onSourceIds forwarding', () => {
+    it('should forward toolResultTrim to MessagesEngine and emit messageSourceIds via onSourceIds', async () => {
+      let capturedParams: any;
+      const processSpy = vi
+        .spyOn(MessagesEngine.prototype, 'process')
+        .mockImplementation(async function (this: any) {
+          capturedParams = this.params;
+          return {
+            messages: [{ content: 'ok', role: 'user' }],
+            metadata: { messageSourceIds: [undefined, 'msg-1'] },
+            stats: {},
+          } as any;
+        });
+
+      const onSourceIds = vi.fn();
+      await serverMessagesEngine({
+        messages: createBasicMessages(),
+        model: 'gpt-4',
+        onSourceIds,
+        provider: 'openai',
+        toolResultTrim: { cacheTtlMs: 300_000, cacheWarm: true },
+      });
+
+      expect(capturedParams?.toolResultTrim).toEqual({ cacheTtlMs: 300_000, cacheWarm: true });
+      expect(onSourceIds).toHaveBeenCalledWith([undefined, 'msg-1']);
+      processSpy.mockRestore();
+    });
+  });
 });

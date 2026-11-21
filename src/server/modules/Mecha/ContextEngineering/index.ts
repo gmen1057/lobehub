@@ -64,6 +64,7 @@ export const serverMessagesEngine = async ({
   toolDiscoveryConfig,
   toolsConfig,
   toolResultImages,
+  toolResultTrim,
   capabilities,
   userMemory,
   agentBuilderContext,
@@ -123,6 +124,7 @@ export const serverMessagesEngine = async ({
 
     // arckep (19.10.2026): картинки результатов инструментов — моделям со зрением
     ...(toolResultImages && { toolResultImages }),
+    ...(toolResultTrim && { toolResultTrim }),
 
     // Tools configuration
     toolDiscoveryConfig,
@@ -170,6 +172,7 @@ export const serverMessagesEngine = async ({
 
 // Re-export types
 export type {
+  ArckepToolResultTrimConfig,
   BotPlatformContext,
   EvalContext,
   ServerKnowledgeConfig,

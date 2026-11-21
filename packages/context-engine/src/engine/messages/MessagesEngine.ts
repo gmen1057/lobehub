@@ -5,6 +5,7 @@ import type { OpenAIChatMessage } from '@/types/index';
 import { ContextEngine } from '../../pipeline';
 import {
   AgentCouncilFlattenProcessor,
+  ArckepToolResultTrimProcessor,
   CompressedGroupRoleTransformProcessor,
   GroupMessageFlattenProcessor,
   GroupOrchestrationFilterProcessor,
@@ -165,6 +166,7 @@ export class MessagesEngine {
       enableSystemDate,
       timezone,
       toolResultImages,
+      toolResultTrim,
     } = this.params;
 
     const isAgentBuilderEnabled = !!agentBuilderContext;
@@ -410,6 +412,12 @@ export class MessagesEngine {
         model,
         provider,
       }),
+      // Cache-safe stale tool result & superseded inline artifact trimming
+      // MUST run strictly AFTER GroupMessageFlatten/TasksFlatten/CompressedGroupRoleTransform/ToolCallProcessor
+      // and strictly BEFORE ToolMessageReorder and MessageCleanupProcessor
+      ...(toolResultTrim?.enabled !== false
+        ? [new ArckepToolResultTrimProcessor(toolResultTrim)]
+        : []),
 
       // =============================================
       // Phase 7: Cleanup

@@ -13,9 +13,10 @@
   ],
   "main": "src/index.ts",
   "scripts": {
-    "test": "vitest",
+    "test": "vitest --run",
     "test:coverage": "vitest --coverage --silent='passed-only'",
-    "test:update": "vitest -u"
+    "test:update": "vitest -u",
+    "type-check": "tsgo --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@lobechat/database": "workspace:*",
