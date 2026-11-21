@@ -1,10 +1,12 @@
+import { ModelRuntime } from '@lobechat/model-runtime';
 import { type AiProviderRuntimeState } from '@lobechat/types';
 import { type EnabledAiModel } from 'model-bank';
 import { describe, expect, it, vi } from 'vitest';
 
 import { type MemoryExtractionPrivateConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 
-import { MemoryExtractionExecutor } from '../extract';
+import { observeMemoryFetch } from '../arckepAttemptReceipt';
+import { MemoryExtractionExecutor, resolveRuntimeAgentConfig } from '../extract';
 
 const createRuntimeState = (models: EnabledAiModel[], keyVaults: Record<string, any>) =>
   ({
@@ -278,4 +280,33 @@ describe('MemoryExtractionExecutor.resolveRuntimeKeyVaults', () => {
 
     warnSpy.mockRestore();
   });
+});
+
+it('observes direct system memory runtime and preserves unrelated and user-vault transports', () => {
+  const initialize = vi
+    .spyOn(ModelRuntime, 'initializeWithProvider')
+    .mockImplementation(() => Object.create(ModelRuntime.prototype));
+  try {
+    const agent = {
+      apiKey: 'system-test',
+      baseURL: 'https://api.openai.com/v1',
+      model: 'gpt-6-luna',
+      provider: 'openai',
+    };
+    resolveRuntimeAgentConfig(agent, undefined, { observeDigestCalls: true });
+    expect(initialize.mock.lastCall?.[1]).toMatchObject({
+      apiKey: 'system-test',
+      fetch: observeMemoryFetch,
+    });
+    resolveRuntimeAgentConfig(
+      agent,
+      { openai: { apiKey: 'user-test' } },
+      { observeDigestCalls: true },
+    );
+    expect(initialize.mock.lastCall?.[1]).not.toHaveProperty('fetch');
+    resolveRuntimeAgentConfig(agent);
+    expect(initialize.mock.lastCall?.[1]).not.toHaveProperty('fetch');
+  } finally {
+    initialize.mockRestore();
+  }
 });

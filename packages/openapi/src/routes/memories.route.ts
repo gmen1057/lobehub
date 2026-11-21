@@ -34,11 +34,22 @@ export const MemorySettingsSchema = z
 // сколько переписок взять (до 100, дальше режет бюджет токенов), в почасовом режиме — до 10.
 export const MemoryExtractBodySchema = z
   .object({
+    billingOperationId: z
+      .string()
+      .regex(/^memauto-[0-9a-f]{24}$/)
+      .optional(),
+    studioUserId: z.number().int().positive().optional(),
     days: z.number().int().min(1).max(90).optional(),
     idleMinutes: z.number().int().min(0).max(1440).optional(),
     limit: z.number().int().min(1).max(100).optional(),
     mode: z.enum(['topics', 'digest']).optional(),
   })
+  .refine(
+    (body) =>
+      (body.billingOperationId === undefined) === (body.studioUserId === undefined) &&
+      (!body.billingOperationId || body.mode === 'digest'),
+    { message: 'invalid digest billing context' },
+  )
   .refine((body) => body.mode === 'digest' || (body.limit ?? 0) <= 10, {
     message: 'limit above 10 is only for mode=digest',
   });
