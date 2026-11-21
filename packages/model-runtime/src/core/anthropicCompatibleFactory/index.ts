@@ -26,6 +26,7 @@ import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { StreamingResponse } from '../../utils/response';
 import type { LobeRuntimeAI } from '../BaseAI';
 import {
+  buildAnthropicCacheControl,
   buildAnthropicMessages,
   buildAnthropicTools,
   buildSearchTool,
@@ -35,7 +36,11 @@ import { AnthropicStream } from '../streams';
 import { type ComputeChatCostOptions } from '../usageConverters/utils/computeChatCost';
 import { createAnthropicGenerateObject } from './generateObject';
 import { handleAnthropicError } from './handleAnthropicError';
-import { resolveCacheTTL } from './resolveCacheTTL';
+import {
+  type AnthropicCachePayload,
+  resolveCacheTTL,
+  selectAnthropicCacheTTL,
+} from './resolveCacheTTL';
 import { resolveMaxTokens } from './resolveMaxTokens';
 
 type ConstructorOptions<T extends Record<string, any> = any> = ClientOptions & T;
@@ -130,7 +135,7 @@ export interface AnthropicCompatibleParamsInput<T extends Record<string, any> = 
  * Build the default Anthropic Messages payload with LobeChat normalization.
  */
 export const buildDefaultAnthropicPayload = async (
-  payload: ChatStreamPayload,
+  payload: AnthropicCachePayload,
 ): Promise<Anthropic.MessageCreateParams> => {
   const {
     messages,
@@ -154,6 +159,13 @@ export const buildDefaultAnthropicPayload = async (
     thinking,
   });
 
+  // Compute a single uniform cache TTL across system, tools, and messages so
+  // Anthropic never rejects a request for placing a '1h' breakpoint after '5m'.
+  const cacheTTL = selectAnthropicCacheTTL({ ...payload, enabledContextCaching });
+  const cacheControl = cacheTTL ? buildAnthropicCacheControl(cacheTTL) : undefined;
+  const cacheOptions =
+    cacheTTL === '1h' ? { cacheTTL, enabledContextCaching } : { enabledContextCaching };
+
   // Filter out empty/whitespace-only system prompts — Anthropic API rejects them
   const systemMessage = messages.find((message) => message.role === 'system');
   const userMessages = messages.filter((message) => message.role !== 'system');
@@ -165,14 +177,14 @@ export const buildDefaultAnthropicPayload = async (
   const systemPrompts = systemPromptText
     ? ([
         {
-          cache_control: enabledContextCaching ? { type: 'ephemeral' } : undefined,
+          cache_control: cacheControl,
           text: systemPromptText,
           type: 'text',
         },
       ] as Anthropic.TextBlockParam[])
     : undefined;
 
-  const postMessages = await buildAnthropicMessages(userMessages, { enabledContextCaching });
+  const postMessages = await buildAnthropicMessages(userMessages, cacheOptions);
 
   // Claude 4.6+ and Claude 5.x models reject trailing assistant prefill with HTTP 400
   if (
@@ -186,8 +198,7 @@ export const buildDefaultAnthropicPayload = async (
     }
   }
 
-  let postTools = buildAnthropicTools(tools, { enabledContextCaching }) as
-    AnthropicTools[] | undefined;
+  let postTools = buildAnthropicTools(tools, cacheOptions) as AnthropicTools[] | undefined;
 
   if (enabledSearch) {
     const webSearchTool = buildSearchTool();
@@ -288,12 +299,13 @@ export const buildDefaultAnthropicPayload = async (
  * Resolve cache-aware pricing options for usage cost calculation.
  */
 export const resolveDefaultAnthropicPricingOptions = (
-  requestPayload: ChatStreamPayload,
+  requestPayload: AnthropicCachePayload,
   anthropicPayload: Anthropic.MessageCreateParams,
 ): ComputeChatCostOptions | undefined => {
   const cacheTTL = resolveCacheTTL(requestPayload, {
     messages: anthropicPayload.messages,
     system: anthropicPayload.system,
+    tools: anthropicPayload.tools,
   });
 
   if (!cacheTTL) return undefined;
