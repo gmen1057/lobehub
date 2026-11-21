@@ -38,7 +38,7 @@ export class BuiltinToolsExecutor implements IToolExecutor {
       identifier,
       apiName,
       source,
-      args,
+      identifier === 'arckep-text-file' ? '[private source]' : args,
     );
 
     // Route LobeHub Skills to MarketService

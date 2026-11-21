@@ -25,12 +25,15 @@ import { UserInteractionManifest } from '@lobechat/builtin-tool-user-interaction
 import { WebBrowsingManifest } from '@lobechat/builtin-tool-web-browsing';
 import { WebOnboardingManifest } from '@lobechat/builtin-tool-web-onboarding';
 
+import { TextFileManifest } from './textFile';
+
 export const builtinToolIdentifiers: string[] = [
   AgentBuilderManifest.identifier,
   AgentDocumentsManifest.identifier,
   AgentManagementManifest.identifier,
   CalculatorManifest.identifier,
   ArckepLayoutManifest.identifier,
+  TextFileManifest.identifier,
   ArckepSitesManifest.identifier,
   ArckepBotManifest.identifier,
   ArckepStudioManifest.identifier,

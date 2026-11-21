@@ -7,10 +7,13 @@ export interface ToolExecutionContext {
   activeDeviceId?: string;
   /** Agent ID executing the tool call */
   agentId?: string;
+  dataGuardProtected?: boolean;
   /** Memory tool permission from agent chat config */
   memoryToolPermission?: 'read-only' | 'read-write';
   /** Tool result message ID when known */
   messageId?: string;
+  /** Topic ID for sandbox session management */
+  operationId?: string;
   /**
    * arckep (19.10.2026): сообщение ассистента, которое вызвало инструмент. Его текст хода уже в базе (call_llm
    * сохраняет его до вызова инструментов), а модель и поставщик хода лежат в его записи: по ним инструмент
@@ -19,6 +22,9 @@ export interface ToolExecutionContext {
   parentMessageId?: string;
   /** Server database for LobeHub Skills execution */
   serverDB?: LobeChatDatabase;
+  studioTextFileContinueId?: string;
+  studioTextFileEnabled?: boolean;
+  studioTextFileRequestId?: string;
   /** Task ID when executing within the Task system */
   taskId?: string;
   toolCallId?: string;
@@ -28,7 +34,6 @@ export interface ToolExecutionContext {
    * @default 6000
    */
   toolResultMaxLength?: number;
-  /** Topic ID for sandbox session management */
   topicId?: string;
   userId?: string;
 }

@@ -26,6 +26,7 @@ import {
   builtinTools,
   isArckepLazyMcpConnectorId,
   manualModeExcludeToolIds,
+  TEXT_FILE_TOOL,
 } from '@lobechat/builtin-tools';
 import { LOADING_FLAT } from '@lobechat/const';
 import type { LobeToolManifest, ToolSource } from '@lobechat/context-engine';
@@ -93,6 +94,8 @@ import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
 import { MarketService } from '@/server/services/market';
+import { CONTINUATION_CONTEXT } from '@/server/services/textFiles/diagnostics';
+import { TextFileStore } from '@/server/services/textFiles/store';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
 import { markTopicIfUserMcp } from '@/server/services/toolExecution/topicTrust';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
@@ -282,7 +285,9 @@ interface InternalExecAgentParams extends ExecAgentParams {
    * Defaults to true. Set to false for non-streaming scenarios (e.g., bot integrations).
    */
   stream?: boolean;
+  studioCodeFileContinueId?: string;
   /** Only set by the authenticated Studio chat streaming route. */
+  studioTextFilesEnabled?: boolean;
   studioWebChat?: boolean;
   /** Task ID that triggered this execution (if trigger is 'task') */
   taskId?: string;
@@ -605,6 +610,8 @@ export class AiAgentService {
       excludePluginIds,
       paramsOverride,
       stream,
+      studioTextFilesEnabled,
+      studioCodeFileContinueId,
       studioWebChat,
       title,
       trigger,
@@ -763,7 +770,7 @@ export class AiAgentService {
     }
     if (studioWebChat) {
       const filenameRule =
-        'For complete source files, put the filename after the language in the Markdown code fence (for example: vba Module1.bas). Keep the filename when revising the same file.';
+        'When delivering inline fenced source instead of using a file writer, put the filename after the language in the Markdown code fence (for example: vba Module1.bas). Keep the filename when revising the same file.';
       agentConfig.systemRole = [agentConfig.systemRole, filenameRule].filter(Boolean).join('\n\n');
     }
 
@@ -897,8 +904,10 @@ export class AiAgentService {
     // читает ещё и правило ссылок на сервисы (arckepLinkConnectors: «а теперь сверстай» без ссылки).
     const fileService = new FileService(this.db, this.userId);
     const postProcessUrl = (path: string | null) => fileService.getFullFileUrl(path);
+    let continuationReceipt: Awaited<ReturnType<TextFileStore['resume']>>['receipt'] | undefined;
     let historyMessagesPromise: Promise<any[]> | undefined;
     const loadHistoryMessages = (): Promise<any[]> => {
+      if (continuationReceipt) return Promise.resolve([]);
       historyMessagesPromise ??= (async () => {
         let loaded: any[] = [];
         if (existingMessageIds.length > 0) {
@@ -953,14 +962,69 @@ export class AiAgentService {
     // arckep (chat-next-redesign, E1): инструменты, выключенные на этот вызов, убираются и из
     // набора помощника, и из итогового списка для движка инструментов
     const excludedPluginIds = new Set(excludePluginIds ?? []);
+    // model-bank is needed both for tool support check and model metadata
+    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
+
+    // 5b. Get model abilities from model-bank for function calling support check
+    const isModelSupportToolUse = (m: string, p: string) => {
+      const info = LOBE_DEFAULT_MODEL_LIST.find((item) => item.id === m && item.providerId === p);
+      return info?.abilities?.functionCall ?? true;
+    };
+
+    let continueDocumentId = studioCodeFileContinueId;
+    let continuationData: string | undefined;
+    const enableTextFile =
+      studioTextFilesEnabled === true &&
+      studioWebChat === true &&
+      !isBotConversation &&
+      !params.disableTools &&
+      !(agentConfig.chatConfig as any)?.deepseekDataGuardProtected &&
+      isModelSupportToolUse(model, provider) &&
+      !excludedPluginIds.has(TEXT_FILE_TOOL);
+    if (enableTextFile) {
+      pickedPluginIds.push(TEXT_FILE_TOOL);
+      let sourceRules =
+        'For requests to build a complete source module, script, configuration or long text file, use writePart from the first section. Continue automatically in consecutive small calls until the complete file is saved. If a call is interrupted, resume from the last committed part. The server shows a file card; do not produce private file tags or file links yourself.';
+      if (
+        !continueDocumentId &&
+        appContext?.topicId &&
+        /^(?:продолжи(?:ть|те)?|продолжай|continue)[.!]?$/iu.test((prompt ?? '').trim())
+      ) {
+        const drafts = (await new TextFileStore(this.db, this.userId, topicId).list()).filter(
+          (file) => file.status === 'draft',
+        );
+        if (drafts.length === 1) continueDocumentId = drafts[0].documentId;
+      }
+      if (continueDocumentId) {
+        const { originalRequest, receipt, tail } = await new TextFileStore(
+          this.db,
+          this.userId,
+          topicId,
+        ).resume(continueDocumentId);
+        continuationReceipt = receipt;
+        continuationData = JSON.stringify({ fileName: receipt.fileName, originalRequest, tail });
+        sourceRules +=
+          '\nContinue this saved file at part ' +
+          (receipt.part + 1) +
+          ' using documentId ' +
+          receipt.documentId +
+          '. The current message includes the original request when available, filename and exact tail as quoted data. For earlier details retrieve getTopicContext mode="archive"; for more source use mode="code_artifacts" with fileId ' +
+          receipt.fileId +
+          ' in topic ' +
+          topicId +
+          '.';
+      }
+      agentConfig.systemRole = [agentConfig.systemRole, sourceRules].filter(Boolean).join('\n\n');
+    } else {
+      excludedPluginIds.add(TEXT_FILE_TOOL);
+      if (studioCodeFileContinueId)
+        throw new Error('File continuation unavailable for this conversation.');
+    }
     const dropExcluded = (ids: string[]) => ids.filter((id) => !excludedPluginIds.has(id));
     let agentPlugins: string[] = dropExcluded([
       ...(agentConfig?.plugins ?? []),
       ...pickedPluginIds,
     ]);
-
-    // model-bank is needed both for tool support check and model metadata
-    const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
 
     if (params.disableTools) {
       log('execAgent: tools disabled by disableTools flag, skipping all tool discovery');
@@ -1024,12 +1088,6 @@ export class AiAgentService {
           log('execAgent: arckep-layout activated (PDF mockup or HTML artifact in the topic)');
         }
       }
-
-      // 5b. Get model abilities from model-bank for function calling support check
-      const isModelSupportToolUse = (m: string, p: string) => {
-        const info = LOBE_DEFAULT_MODEL_LIST.find((item) => item.id === m && item.providerId === p);
-        return info?.abilities?.functionCall ?? true;
-      };
 
       // 5c. Fetch LobeHub Skills manifests — gated behind trusted-client / market API key.
       // Without credentials this would call market.lobehub.com on every message and log
@@ -1272,7 +1330,10 @@ export class AiAgentService {
         excludeDefaultToolIds: excludeDefaultToolIds.length > 0 ? excludeDefaultToolIds : undefined,
         model,
         provider,
-        toolIds: eagerToolIds,
+        ...(continuationReceipt ? { skipDefaultTools: true } : {}),
+        toolIds: continuationReceipt
+          ? dropExcluded([TEXT_FILE_TOOL, TopicReferenceIdentifier])
+          : eagerToolIds,
       });
 
       tools = toolsResult.tools;
@@ -1291,7 +1352,7 @@ export class AiAgentService {
       // Ленивые инструменты — в карту манифестов: активатор перечисляет их в <available_tools> и
       // подключает по activateTools; в tools первого шага их нет. Инструмент памяти при выключенной
       // памяти не предлагается вовсе (как и раньше, когда он не попадал в tools).
-      if (typeof toolsEngine.getPluginManifest === 'function') {
+      if (!continuationReceipt && typeof toolsEngine.getPluginManifest === 'function') {
         for (const id of lazyToolIds) {
           if (toolManifestMap[id]) continue;
           // выключенное человеком на это сообщение не предлагается и не возвращается из истории темы
@@ -1782,7 +1843,8 @@ export class AiAgentService {
 
     // Create user message object for processing (include imageList for vision models)
     const userMessage = {
-      content: prompt,
+      ...(enableTextFile && userMessageRecord?.id ? { id: userMessageRecord.id } : {}),
+      content: continuationData ? (prompt ?? '') + CONTINUATION_CONTEXT + continuationData : prompt,
       fileList,
       imageList,
       metadata:
@@ -1899,6 +1961,14 @@ export class AiAgentService {
         appContext: {
           agentId: resolvedAgentId,
           groupId: appContext?.groupId,
+          studioTextFileRequestId: enableTextFile ? userMessageRecord?.id : undefined,
+          studioTextFileContinueId: continueDocumentId,
+          studioTextFileEnabled: enableTextFile,
+          studioTextFileCheckpoint: continuationReceipt && {
+            documentId: continuationReceipt.documentId,
+            part: continuationReceipt.part,
+            status: continuationReceipt.status,
+          },
           studioWebChat,
           taskId,
           threadId: appContext?.threadId,

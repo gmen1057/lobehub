@@ -446,6 +446,10 @@ export interface StreamGateFinalizeResult {
  */
 export class HtmlArtifactStreamGate {
   private segments: StreamSegment[] = [];
+  // From the first private reference onward the suffix must keep its original order on SSE.
+  private heldSuffixAt: number | undefined;
+  constructor(private readonly verifyPrivateFile?: (fileId: string) => Promise<boolean>) {}
+
   private mode: 'artifact_body' | 'opening_tag' | 'text' = 'text';
   private buffer = '';
   private currentOpenTag = '';
@@ -454,7 +458,7 @@ export class HtmlArtifactStreamGate {
   private appendTextSegment(text: string) {
     if (!text) return;
     const last = this.segments.at(-1);
-    if (last && last.kind === 'text') {
+    if (last && last.kind === 'text' && this.segments.length !== this.heldSuffixAt) {
       last.text += text;
     } else {
       this.segments.push({ kind: 'text', text });
@@ -465,6 +469,7 @@ export class HtmlArtifactStreamGate {
     if (!chunk) return '';
     this.buffer += chunk;
     let emitted = '';
+    let deliverUntil = this.heldSuffixAt === undefined ? Infinity : 0;
 
     while (this.buffer.length > 0) {
       if (this.mode === 'text') {
@@ -505,13 +510,21 @@ export class HtmlArtifactStreamGate {
 
         const openTag = this.buffer.slice(0, gtIdx + 1);
         const selfClosing = /\/\s*>$/.test(openTag);
-        const attrsRaw = openTag.slice('<lobeArtifact'.length, selfClosing ? openTag.lastIndexOf('/') : -1);
+        const attrsRaw = openTag.slice(
+          '<lobeArtifact'.length,
+          selfClosing ? openTag.lastIndexOf('/') : -1,
+        );
         const parsed = parseLooseAttrs(attrsRaw);
         const isHtmlType = parsed.type === 'text/html';
 
         this.buffer = this.buffer.slice(gtIdx + 1);
 
-        if (!isHtmlType) {
+        const privateSource = !isHtmlType && parsed.src?.trim().startsWith('/chat/code-artifact/');
+        if (privateSource && this.heldSuffixAt === undefined) {
+          this.heldSuffixAt = this.segments.length;
+          deliverUntil = emitted.length;
+        }
+        if (!isHtmlType && !privateSource) {
           emitted += openTag;
           this.appendTextSegment(openTag);
           this.mode = 'text';
@@ -564,7 +577,7 @@ export class HtmlArtifactStreamGate {
       }
     }
 
-    return emitted;
+    return emitted.slice(0, deliverUntil);
   }
 
   async finalize(options: StreamGateFinalizeOptions = {}): Promise<StreamGateFinalizeResult> {
@@ -576,7 +589,7 @@ export class HtmlArtifactStreamGate {
       this.buffer = '';
     } else if (this.mode === 'opening_tag' && this.buffer) {
       const parsed = parseLooseAttrs(this.buffer);
-      if (parsed.type === 'text/html' || /text\/html/i.test(this.buffer)) {
+      if (parsed.type === 'text/html' || /text\/html|\/chat\/code-artifact\//i.test(this.buffer)) {
         this.segments.push({
           attrsRaw: this.buffer,
           bodyRaw: '',
@@ -629,13 +642,50 @@ export class HtmlArtifactStreamGate {
     const publishedArtifacts: StreamGateFinalizeResult['publishedArtifacts'] = [];
     const finalParts: string[] = [];
 
-    for (const seg of this.segments) {
+    // Everything following a held private tag is delivered here, including plain trailing text.
+    if (this.heldSuffixAt !== undefined) postStreamDelta = '';
+    for (const [index, seg] of this.segments.entries()) {
       if (seg.kind === 'text') {
+        if (this.heldSuffixAt !== undefined && index >= this.heldSuffixAt)
+          postStreamDelta += seg.text;
         finalParts.push(seg.text);
         continue;
       }
 
       const parsed = parseLooseAttrs(seg.attrsRaw);
+      if (
+        parsed.type !== 'text/html' &&
+        (parsed.src?.trim().startsWith('/chat/code-artifact/') ||
+          (!seg.closed && seg.rawTag.includes('/chat/code-artifact/')))
+      ) {
+        const id = /^\/chat\/code-artifact\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/?$/.exec(
+          parsed.src?.trim() || '',
+        )?.[1];
+        let verified = false;
+        if (
+          seg.closed &&
+          id &&
+          parsed.type === 'application/lobe.artifacts.code' &&
+          this.verifyPrivateFile
+        ) {
+          try {
+            verified = await this.verifyPrivateFile(id);
+          } catch {
+            /* A lookup failure cannot establish ownership. */
+          }
+        }
+        const inline = seg.bodyRaw.trim() && parsed.type === 'application/lobe.artifacts.code';
+        const safe = verified
+          ? seg.rawTag
+          : inline
+            ? seg.openTag.replaceAll(/\s+src\s*=\s*(?:"[^"]*"|'[^']*')/gi, '') +
+              seg.bodyRaw +
+              '</lobeArtifact>'
+            : 'Файл не сохранён.';
+        finalParts.push(safe);
+        postStreamDelta += safe;
+        continue;
+      }
       const body = cleanArtifactBody(seg.bodyRaw);
       const srcFileId = body ? undefined : parseChatFileId(parsed.src);
 

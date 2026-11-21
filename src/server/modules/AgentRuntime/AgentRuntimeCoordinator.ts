@@ -1,6 +1,8 @@
 import { type AgentState } from '@lobechat/agent-runtime';
 import debug from 'debug';
 
+import { logTextFileStop } from '@/server/services/textFiles/diagnostics';
+
 import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
 import { createAgentStateManager, createStreamEventManager } from './factory';
 import { type IAgentStateManager, type IStreamEventManager } from './types';
@@ -91,6 +93,7 @@ export class AgentRuntimeCoordinator {
 
       // Send a terminal event once the operation first enters a terminal state.
       if (hasEnteredTerminalState(previousState?.status, state.status)) {
+        logTextFileStop(operationId, state);
         await this.streamEventManager.publishAgentRuntimeEnd(
           operationId,
           state.stepCount ?? previousState?.stepCount ?? 0,
@@ -118,6 +121,7 @@ export class AgentRuntimeCoordinator {
 
       // This ensures agent_runtime_end is sent after all step events.
       if (hasEnteredTerminalState(previousState?.status, stepResult.newState.status)) {
+        logTextFileStop(operationId, stepResult.newState);
         await this.streamEventManager.publishAgentRuntimeEnd(
           operationId,
           stepResult.newState.stepCount ?? stepResult.stepIndex ?? previousState?.stepCount ?? 0,
@@ -146,6 +150,7 @@ export class AgentRuntimeCoordinator {
   async interruptOperation(operationId: string): Promise<boolean> {
     const state = await this.stateManager.interruptAgentState(operationId);
     if (!state) return false;
+    logTextFileStop(operationId, state);
     await this.streamEventManager.publishAgentRuntimeEnd(
       operationId,
       state.stepCount,

@@ -18,6 +18,7 @@ import { type IStreamEventManager } from '@/server/modules/AgentRuntime/types';
 import { mcpService } from '@/server/services/mcp';
 import { QueueService } from '@/server/services/queue';
 import { LocalQueueServiceImpl } from '@/server/services/queue/impls';
+import { redactTextFileDiagnostics } from '@/server/services/textFiles/diagnostics';
 import { ToolExecutionService } from '@/server/services/toolExecution';
 import { BuiltinToolsExecutor } from '@/server/services/toolExecution/builtin';
 
@@ -716,7 +717,7 @@ export class AgentRuntimeService {
           if (hasToolCalls) {
             toolsCalling = payloadToolsCalling.map((tc) => ({
               apiName: tc.apiName,
-              arguments: tc.arguments,
+              arguments: tc.identifier === 'arckep-text-file' ? '{}' : tc.arguments,
               identifier: tc.identifier,
             }));
           }
@@ -906,34 +907,36 @@ export class AgentRuntimeService {
               ? afterActivated.slice(prevActivated.length)
               : undefined;
 
-          partial.steps.push({
-            activatedStepToolsDelta,
-            completedAt: Date.now(),
-            content: stepPresentationData.content,
-            context: {
-              payload: snapshotPayload,
-              phase: currentContext?.phase ?? 'unknown',
-              stepContext: currentContext?.stepContext,
-            },
-            events: snapshotEvents,
-            externalRetryCount,
-            executionTimeMs: stepPresentationData.executionTimeMs,
-            inputTokens: stepPresentationData.stepInputTokens,
-            isCompressionReset: isCompression || undefined,
-            messagesBaseline: isBaseline ? prevMessages : undefined,
-            messagesDelta,
-            outputTokens: stepPresentationData.stepOutputTokens,
-            reasoning: stepPresentationData.reasoning,
-            startedAt: startAt,
-            stepIndex,
-            stepType: stepPresentationData.stepType,
-            // Store operation-level toolset once at step 0
-            toolsetBaseline: stepIndex === 0 ? agentState?.operationToolSet : undefined,
-            toolsCalling: stepPresentationData.toolsCalling,
-            toolsResult: stepPresentationData.toolsResult,
-            totalCost: stepPresentationData.totalCost,
-            totalTokens: stepPresentationData.totalTokens,
-          });
+          partial.steps.push(
+            redactTextFileDiagnostics({
+              activatedStepToolsDelta,
+              completedAt: Date.now(),
+              content: stepPresentationData.content,
+              context: {
+                payload: snapshotPayload,
+                phase: currentContext?.phase ?? 'unknown',
+                stepContext: currentContext?.stepContext,
+              },
+              events: snapshotEvents,
+              externalRetryCount,
+              executionTimeMs: stepPresentationData.executionTimeMs,
+              inputTokens: stepPresentationData.stepInputTokens,
+              isCompressionReset: isCompression || undefined,
+              messagesBaseline: isBaseline ? prevMessages : undefined,
+              messagesDelta,
+              outputTokens: stepPresentationData.stepOutputTokens,
+              reasoning: stepPresentationData.reasoning,
+              startedAt: startAt,
+              stepIndex,
+              stepType: stepPresentationData.stepType,
+              // Store operation-level toolset once at step 0
+              toolsetBaseline: stepIndex === 0 ? agentState?.operationToolSet : undefined,
+              toolsCalling: stepPresentationData.toolsCalling,
+              toolsResult: stepPresentationData.toolsResult,
+              totalCost: stepPresentationData.totalCost,
+              totalTokens: stepPresentationData.totalTokens,
+            }),
+          );
 
           await this.snapshotStore.savePartial(operationId, partial);
         } catch (e) {

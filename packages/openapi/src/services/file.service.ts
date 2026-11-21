@@ -1,6 +1,6 @@
 import type { FileMetadata } from '@lobechat/types';
 import { AsyncTaskStatus, AsyncTaskType } from '@lobechat/types';
-import { and, count, desc, eq, gte, ilike, inArray, lte, sum } from 'drizzle-orm';
+import { and, count, desc, eq, gte, ilike, inArray, lte, sql, sum } from 'drizzle-orm';
 import { sha256 } from 'js-sha256';
 
 import type { PERMISSION_ACTIONS } from '@/const/rbac';
@@ -17,6 +17,7 @@ import {
   filesToSessions,
   knowledgeBaseFiles,
   knowledgeBases,
+  topics,
   users,
 } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -1278,6 +1279,22 @@ export class FileUploadService extends BaseService {
   /**
    * Build WHERE conditions for file queries
    */
+  private privateArtifactReadScope() {
+    // Chat source snapshots keep owner-only delivery, including for a global FILE_READ token.
+    const liveTopic = this.db
+      .select({ id: topics.id })
+      .from(topics)
+      .where(
+        and(
+          eq(topics.userId, this.userId),
+          sql`${topics.id} = ${files.metadata}->'textFile'->>'topicId'`,
+        ),
+      );
+    return sql`(${files.url} !~ '^files/[^/]+/code-artifacts/' OR
+      (${files.userId} = ${this.userId} AND starts_with(${files.url}, ${'files/' + this.userId + '/code-artifacts/'})
+       AND (${files.metadata}->'textFile' IS NULL OR EXISTS ${liveTopic})))`;
+  }
+
   private buildFileWhereConditions(
     request: FileListQuery,
     permissionResult: {
@@ -1287,7 +1304,7 @@ export class FileUploadService extends BaseService {
     },
   ) {
     const { keyword, fileType, updatedAtStart, updatedAtEnd } = request;
-    const conditions = [];
+    const conditions = [this.privateArtifactReadScope()];
 
     // Permission conditions
     if (permissionResult?.condition?.userId) {
@@ -1325,7 +1342,7 @@ export class FileUploadService extends BaseService {
     fileId: string,
     permissionResult: { condition?: { userId?: string } },
   ): Promise<FileItem> {
-    const whereConditions = [eq(files.id, fileId)];
+    const whereConditions = [eq(files.id, fileId), this.privateArtifactReadScope()];
     if (permissionResult.condition?.userId) {
       whereConditions.push(eq(files.userId, permissionResult.condition.userId));
     }
@@ -1335,7 +1352,7 @@ export class FileUploadService extends BaseService {
     });
 
     if (!file) {
-      throw this.createCommonError('File not found');
+      throw this.createNotFoundError('File not found');
     }
 
     return file;

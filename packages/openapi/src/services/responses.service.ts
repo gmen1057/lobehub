@@ -400,7 +400,10 @@ export class ResponsesService extends BaseService {
             // Decode internal tool name format back to display name
             const fnName = this.decodeToolName(toolCall.function?.name ?? '');
             output.push({
-              arguments: toolCall.function?.arguments ?? '{}',
+              arguments:
+                fnName === 'arckep-text-file/writePart'
+                  ? '{}'
+                  : (toolCall.function?.arguments ?? '{}'),
               call_id: toolCall.id ?? `call_${itemCounter}`,
               id: `fc_${responseId}_${itemCounter++}`,
               name: fnName,
@@ -608,6 +611,8 @@ export class ResponsesService extends BaseService {
         instructions,
         prompt,
         stream: true,
+        studioTextFilesEnabled: studioWebChat && params.studioTextFilesEnabled === true,
+        studioCodeFileContinueId: studioWebChat ? params.studioCodeFileContinueId : undefined,
         studioWebChat,
       });
 

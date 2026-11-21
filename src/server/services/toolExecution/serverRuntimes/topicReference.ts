@@ -10,7 +10,8 @@ export const topicReferenceRuntime: ServerRuntimeRegistration = {
     const { serverDB, userId } = context;
     if (!serverDB || !userId) throw new Error('Authenticated database context is required');
     return {
-      getTopicContext: (params: TopicContextParams) => getTopicContext(serverDB, userId, params),
+      getTopicContext: (params: TopicContextParams) =>
+        getTopicContext(serverDB, userId, params, context.dataGuardProtected !== true),
     };
   },
   identifier: TopicReferenceIdentifier,

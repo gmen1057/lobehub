@@ -36,9 +36,13 @@ import { WebOnboardingManifest } from '@lobechat/builtin-tool-web-onboarding';
 import { isDesktop, RECOMMENDED_SKILLS, RecommendedSkillType } from '@lobechat/const';
 import { type LobeBuiltinTool } from '@lobechat/types';
 
+import { TextFileManifest } from './textFile';
+
 // arckep: env flag to soft-disable lobe-documents (replaced by sandbox + arckep_tools helper).
 // Default: false on prod (kept opt-in). Code stays for one release for quick revert.
 const ARCKEP_LOBE_DOCUMENTS_ENABLED = process.env.ARCKEP_LOBE_DOCUMENTS_ENABLED === 'true';
+
+export { TEXT_FILE_TOOL } from './textFile';
 
 export const defaultToolIds = [
   LobeActivatorManifest.identifier,
@@ -328,6 +332,13 @@ export const builtinTools: LobeBuiltinTool[] = [
     hidden: true,
     identifier: ArckepLayoutManifest.identifier,
     manifest: ArckepLayoutManifest,
+    type: 'builtin',
+  },
+  {
+    discoverable: false,
+    hidden: true,
+    identifier: TextFileManifest.identifier,
+    manifest: TextFileManifest,
     type: 'builtin',
   },
   {

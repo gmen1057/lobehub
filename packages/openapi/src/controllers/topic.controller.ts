@@ -46,6 +46,19 @@ export class TopicController extends BaseController {
     }
   }
 
+  async handleGetCodeFiles(c: Context) {
+    try {
+      const { id } = this.getParams<{ id: string }>(c);
+      const { TextFileStore } = await import('@/server/services/textFiles/store');
+      const store = new TextFileStore(await this.getDatabase(), this.getUserId(c)!, id);
+      if (!(await store.ownsTopic())) return this.error(c, 'Topic not found', 404);
+      c.header('Cache-Control', 'private, no-store');
+      return c.json({ files: await store.list() });
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
   /**
    * Creates a new topic
    * POST /api/v1/topics
