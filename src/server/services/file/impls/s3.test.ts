@@ -31,6 +31,7 @@ vi.mock('@/server/modules/S3', () => ({
     deleteFiles: vi.fn().mockResolvedValue({}),
     createPreSignedUrl: vi.fn().mockResolvedValue('https://upload.example.com/test.jpg'),
     uploadContent: vi.fn().mockResolvedValue({}),
+    uploadBuffer: vi.fn().mockResolvedValue({}),
     uploadMedia: vi.fn().mockResolvedValue({}),
   })),
 }));
@@ -43,6 +44,20 @@ describe('S3StaticFileImpl', () => {
 
   beforeEach(() => {
     fileService = new S3StaticFileImpl(mockDb);
+  });
+
+  it('passes private buffer uploads through to S3', async () => {
+    const bytes = Buffer.from('code');
+    await expect(fileService.uploadBuffer('code.bas', bytes, 'text/plain', true)).resolves.toEqual({
+      key: 'code.bas',
+    });
+    expect(fileService['s3'].uploadBuffer).toHaveBeenCalledWith(
+      'code.bas',
+      bytes,
+      'text/plain',
+      undefined,
+      true,
+    );
   });
 
   describe('getFullFileUrl', () => {

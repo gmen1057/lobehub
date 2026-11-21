@@ -59,6 +59,25 @@ describe('GET /f/[id]', () => {
     mockCreatePreSignedUrlForPreview.mockResolvedValue('https://s3.example.test/signed-url');
   });
 
+  it('never signs or caches automatically saved code through the public file route', async () => {
+    const id = 'f2913db5-85b4-4a34-98d9-b69c44c987d2';
+    mockGetFileById.mockResolvedValue({
+      fileType: 'text/plain',
+      id,
+      name: 'Module1.bas',
+      url: 'files/user_lobe_1/code-artifacts/tpc_one/version/Module1.bas',
+      userId: 'user_lobe_1',
+    });
+
+    const response = await GET(new Request(`https://arckep.ru/chat/f/${id}`), {
+      params: Promise.resolve({ id }),
+    });
+
+    expect(response.status).toBe(404);
+    expect(mockCreatePreSignedUrlForPreview).not.toHaveBeenCalled();
+    expect(mockRedisSet).not.toHaveBeenCalled();
+  });
+
   it('serves new 21-char file_<21> documents publicly and caches in Redis', async () => {
     const id = 'file_AbCdEfGhIjKlMnOpQrStU';
     mockGetFileById.mockResolvedValue({

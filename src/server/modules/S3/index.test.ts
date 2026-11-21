@@ -435,6 +435,24 @@ describe('FileS3', () => {
   });
 
   describe('uploadBuffer', () => {
+    it('omits ACL and public caching for an explicitly private upload', async () => {
+      const s3 = new FileS3();
+      const buffer = Buffer.from('private source');
+      mockS3ClientSend.mockResolvedValue({});
+
+      await s3.uploadBuffer('code.bas', buffer, 'text/plain', 'public, max-age=3600', true);
+
+      expect(PutObjectCommand).toHaveBeenCalledWith({
+        ACL: undefined,
+        Body: buffer,
+        Bucket: 'test-bucket',
+        CacheControl: 'private, no-store',
+        ContentType: 'text/plain',
+        Key: 'code.bas',
+      });
+      expect(mockS3ClientSend).toHaveBeenCalled();
+    });
+
     it('should upload buffer with correct parameters', async () => {
       const s3 = new FileS3();
       mockS3ClientSend.mockResolvedValue({});

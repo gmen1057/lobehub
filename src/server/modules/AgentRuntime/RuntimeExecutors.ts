@@ -48,6 +48,7 @@ import { type EvalContext } from '@/server/modules/Mecha/ContextEngineering/type
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { throwIfAborted, waitForRetry } from '@/server/services/agentRuntime/abort';
+import { saveLongCodeArtifacts } from '@/server/services/aiAgent/codeArtifacts';
 import { compactHistoryMessages } from '@/server/services/aiAgent/compactHistoryMessages';
 import { HtmlArtifactStreamGate } from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
@@ -1098,6 +1099,48 @@ export const createRuntimeExecutors = (
             content = content.trim() ? `${content.trim()}\n\n${fallbackNotice}` : fallbackNotice;
           }
 
+          const artifactTopicId = state.metadata?.topicId ?? ctx.topicId;
+          let originalCodeArtifactContent: string | undefined;
+          if (
+            state.metadata?.studioWebChat === true &&
+            ctx.serverDB &&
+            ctx.userId &&
+            artifactTopicId &&
+            toolsCalling.length === 0 &&
+            !htmlArtifactSyntaxError
+          ) {
+            originalCodeArtifactContent = hasContentImages
+              ? serializePartsForStorage(contentParts)
+              : content;
+            const { serverDB, userId } = ctx;
+            let fileService: FileService | undefined;
+            const artifactOptions = {
+              fileService: () => (fileService ??= new FileService(serverDB, userId)),
+              messageId: assistantMessageItem.id,
+              signal: ctx.signal,
+              topicId: artifactTopicId,
+              userId,
+            };
+            if (hasContentImages) {
+              const textParts = contentParts.filter((part) => part.type === 'text');
+              const originalText = textParts.map((part) => part.text).join('');
+              for (const [index, part] of contentParts.entries()) {
+                if (part.type === 'text') {
+                  part.text = await saveLongCodeArtifacts(part.text, {
+                    ...artifactOptions,
+                    contentPartIndex: index,
+                  });
+                }
+              }
+              if (content === originalText) {
+                content = textParts.map((part) => part.text).join('');
+              }
+            } else {
+              content = await saveLongCodeArtifacts(content, artifactOptions);
+            }
+            throwIfAborted(ctx.signal);
+          }
+
           // Add a complete llm_stream event (including all streaming chunks)
           // Compute final content NOW (before emitting llm_result) so the
           // state machine downstream sees a non-empty content string when
@@ -1158,6 +1201,12 @@ export const createRuntimeExecutors = (
             }
             if (hasContentImages) {
               metadata.isMultimodal = true;
+            }
+            if (
+              originalCodeArtifactContent !== undefined &&
+              originalCodeArtifactContent !== finalContent
+            ) {
+              metadata.codeArtifactFallback = originalCodeArtifactContent;
             }
 
             await ctx.messageModel.update(assistantMessageItem.id, {

@@ -12,12 +12,14 @@ import { AiAgentService } from '../index';
 const {
   mockCreateOperation,
   mockGetAgentConfig,
+  mockHasCodeArtifacts,
   mockMessageCreate,
   mockIngestAttachment,
   mockParseFile,
 } = vi.hoisted(() => ({
   mockCreateOperation: vi.fn(),
   mockGetAgentConfig: vi.fn(),
+  mockHasCodeArtifacts: vi.fn(),
   mockIngestAttachment: vi.fn(),
   mockMessageCreate: vi.fn(),
   mockParseFile: vi.fn(),
@@ -58,7 +60,12 @@ vi.mock('@/database/models/plugin', () => ({
 vi.mock('@/database/models/topic', () => ({
   TopicModel: vi.fn().mockImplementation(() => ({
     create: vi.fn().mockResolvedValue({ id: 'topic-1' }),
+    findById: vi.fn().mockResolvedValue({ id: 'topic-1', userId: 'test-user-id' }),
   })),
+}));
+
+vi.mock('@/server/services/topicContext/codeArtifacts', () => ({
+  topicHasCodeArtifacts: mockHasCodeArtifacts,
 }));
 
 vi.mock('@/database/models/thread', () => ({
@@ -151,6 +158,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockHasCodeArtifacts.mockResolvedValue(false);
     mockMessageCreate.mockResolvedValue({ id: 'msg-1' });
     mockCreateOperation.mockResolvedValue({
       autoStarted: true,
@@ -161,6 +169,26 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     mockParseFile.mockResolvedValue({ content: 'Kod proverki: ARCKEP-7731', id: 'doc-1' });
     mockGetAgentConfig.mockResolvedValue(agentConfig());
     service = new AiAgentService({} as any, userId);
+  });
+
+  it('loads exact source lookup by default in a Studio topic with saved code', async () => {
+    mockHasCodeArtifacts.mockResolvedValue(true);
+    await service.execAgent({
+      agentId: 'agent-1',
+      appContext: { topicId: 'topic-1' },
+      prompt: 'Поправь модуль из предыдущего ответа',
+      studioWebChat: true,
+    });
+
+    expect(mockHasCodeArtifacts).toHaveBeenCalledWith(expect.anything(), userId, 'topic-1');
+    const { agentConfig: config } = mockCreateOperation.mock.calls[0][0];
+    expect(config.systemRole).toContain('mode="code_artifacts"');
+    expect(config.systemRole).toContain('fileId');
+    expect(config.systemRole).toContain('Keep the filename');
+    const engine = vi.mocked(createServerAgentToolsEngine).mock.results[0].value;
+    expect(engine.generateToolsDetailed).toHaveBeenCalledWith(
+      expect.objectContaining({ toolIds: expect.arrayContaining(['lobe-topic-reference']) }),
+    );
   });
 
   it('chatConfigOverride и paramsOverride сливаются с настройками помощника', async () => {

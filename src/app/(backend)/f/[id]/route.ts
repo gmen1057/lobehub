@@ -90,6 +90,11 @@ export const GET = async (req: Request, segmentData: { params: Params }) => {
       });
     }
 
+    // Automatically saved code is private and is opened through the Studio's authenticated API.
+    if (file.url.startsWith(`files/${file.userId}/code-artifacts/`)) {
+      return new Response('File not found', { status: 404 });
+    }
+
     const inlinePreview = isSafeInlineMedia(file.fileType || '');
 
     if (legacyShortId) {

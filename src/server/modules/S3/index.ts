@@ -178,12 +178,13 @@ export class S3 {
     buffer: Buffer,
     contentType?: string,
     cacheControl?: string,
+    privateFile = false,
   ) {
     const command = new PutObjectCommand({
-      ACL: this.setAcl ? 'public-read' : undefined,
+      ACL: !privateFile && this.setAcl ? 'public-read' : undefined,
       Body: buffer,
       Bucket: this.bucket,
-      CacheControl: cacheControl,
+      CacheControl: privateFile ? 'private, no-store' : cacheControl,
       ContentType: contentType,
       Key: path,
     });
