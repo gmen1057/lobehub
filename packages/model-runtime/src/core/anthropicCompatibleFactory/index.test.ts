@@ -8,6 +8,7 @@ import {
   createAnthropicCompatibleParams,
   createAnthropicCompatibleRuntime,
   createDefaultAnthropicClient,
+  resolveDefaultAnthropicPricingOptions,
 } from './index';
 
 vi.mock('@anthropic-ai/sdk', () => {
@@ -117,5 +118,290 @@ describe('Sonnet 5.5 and Fable 5.2 adaptive payloads', () => {
     expect(result.top_p).toBeUndefined();
     expect(result.messages).toHaveLength(1);
     expect(result.messages[0].role).toBe('user');
+  });
+});
+
+describe('Anthropic 1h prompt cache TTL', () => {
+  const sampleTools = [
+    {
+      function: {
+        description: 'Read a file chunk from the knowledge base',
+        name: 'readKnowledge',
+        parameters: {
+          properties: { fileId: { type: 'string' }, offset: { type: 'number' } },
+          required: ['fileId'],
+          type: 'object',
+        },
+      },
+      type: 'function' as const,
+    },
+    {
+      function: {
+        description: 'Search the knowledge base',
+        name: 'searchKnowledgeBase',
+        parameters: {
+          properties: { query: { type: 'string' } },
+          required: ['query'],
+          type: 'object',
+        },
+      },
+      type: 'function' as const,
+    },
+  ];
+
+  const collectAllCacheControls = (payload: Anthropic.MessageCreateParams) => {
+    const controls: Array<{
+      location: 'system' | 'tools' | 'messages';
+      value: Anthropic.Messages.CacheControlEphemeral;
+    }> = [];
+
+    if (Array.isArray(payload.system)) {
+      for (const block of payload.system) {
+        if (block.cache_control) {
+          controls.push({ location: 'system', value: block.cache_control });
+        }
+      }
+    }
+
+    if (Array.isArray(payload.tools)) {
+      for (const tool of payload.tools) {
+        if ('cache_control' in tool && tool.cache_control) {
+          controls.push({ location: 'tools', value: tool.cache_control });
+        }
+      }
+    }
+
+    for (const message of payload.messages) {
+      if (!Array.isArray(message.content)) continue;
+      for (const block of message.content) {
+        if ('cache_control' in block && block.cache_control) {
+          controls.push({ location: 'messages', value: block.cache_control });
+        }
+      }
+    }
+
+    return controls;
+  };
+
+  it('keeps default { type: "ephemeral" } (no ttl property) below 30K tokens', async () => {
+    const requestPayload = {
+      messages: [
+        { content: 'You are a concise assistant.', role: 'system' as const },
+        { content: 'Hello, summarize this short note.', role: 'user' as const },
+      ],
+      model: 'claude-sonnet-5-5',
+      tools: sampleTools,
+    };
+
+    const result = await buildDefaultAnthropicPayload(requestPayload);
+    const controls = collectAllCacheControls(result);
+
+    expect(controls).toEqual([
+      { location: 'system', value: { type: 'ephemeral' } },
+      { location: 'tools', value: { type: 'ephemeral' } },
+      { location: 'messages', value: { type: 'ephemeral' } },
+    ]);
+    for (const entry of controls) {
+      expect(Object.keys(entry.value)).toEqual(['type']);
+    }
+    expect(resolveDefaultAnthropicPricingOptions(requestPayload, result)).toEqual({
+      lookupParams: { ttl: '5m' },
+    });
+  });
+
+  it('switches system, tools, and messages uniformly to ttl: "1h" at >= 30K tokens (no 5m before 1h)', async () => {
+    const requestPayload = {
+      enabledSearch: true,
+      messages: [
+        { content: 'System prompt for a long session.', role: 'system' as const },
+        { content: 'a'.repeat(120_000), role: 'user' as const },
+      ],
+      model: 'claude-sonnet-5-5',
+      tools: sampleTools,
+    };
+
+    const result = await buildDefaultAnthropicPayload(requestPayload);
+    const controls = collectAllCacheControls(result);
+
+    expect(controls).toEqual([
+      { location: 'system', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'tools', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'messages', value: { ttl: '1h', type: 'ephemeral' } },
+    ]);
+    expect(resolveDefaultAnthropicPricingOptions(requestPayload, result)).toEqual({
+      lookupParams: { ttl: '1h' },
+    });
+  });
+
+  it('applies ttl: "1h" uniformly when the last message is a paired tool_result block', async () => {
+    const requestPayload = {
+      messages: [
+        { content: 'Long system prompt', role: 'system' as const },
+        { content: 'Read the document', role: 'user' as const },
+        {
+          content: '',
+          role: 'assistant' as const,
+          tool_calls: [
+            {
+              function: { arguments: '{"fileId":"f1"}', name: 'readKnowledge' },
+              id: 'toolu_read_1',
+              type: 'function' as const,
+            },
+          ],
+        },
+        {
+          content: 'б'.repeat(62_000),
+          role: 'tool' as const,
+          tool_call_id: 'toolu_read_1',
+        },
+      ],
+      model: 'claude-haiku-5-5',
+      tools: sampleTools,
+    };
+
+    const result = await buildDefaultAnthropicPayload(requestPayload);
+    const controls = collectAllCacheControls(result);
+
+    expect(controls).toEqual([
+      { location: 'system', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'tools', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'messages', value: { ttl: '1h', type: 'ephemeral' } },
+    ]);
+    expect(resolveDefaultAnthropicPricingOptions(requestPayload, result)).toEqual({
+      lookupParams: { ttl: '1h' },
+    });
+  });
+
+  it('does not upgrade to 1h on a short chat carrying a large 2MB base64 image', async () => {
+    const twoMbBase64 = 'A'.repeat(2_000_000);
+    const requestPayload = {
+      messages: [
+        { content: 'You are a vision assistant.', role: 'system' as const },
+        {
+          content: [
+            { text: 'What is shown on this image?', type: 'text' as const },
+            {
+              image_url: { url: `data:image/png;base64,${twoMbBase64}` },
+              type: 'image_url' as const,
+            },
+          ],
+          role: 'user' as const,
+        },
+      ],
+      model: 'claude-sonnet-5-5',
+      tools: sampleTools,
+    };
+
+    const result = await buildDefaultAnthropicPayload(requestPayload);
+    const controls = collectAllCacheControls(result);
+
+    expect(controls).toEqual([
+      { location: 'system', value: { type: 'ephemeral' } },
+      { location: 'tools', value: { type: 'ephemeral' } },
+      { location: 'messages', value: { type: 'ephemeral' } },
+    ]);
+    expect(resolveDefaultAnthropicPricingOptions(requestPayload, result)).toEqual({
+      lookupParams: { ttl: '5m' },
+    });
+  });
+
+  it('respects explicit cacheTTL overrides without breaking configured TTL', async () => {
+    const forcedFiveMin = await buildDefaultAnthropicPayload({
+      cacheTTL: '5m',
+      messages: [
+        { content: 'System prompt', role: 'system' },
+        { content: 'a'.repeat(160_000), role: 'user' },
+      ],
+      model: 'claude-sonnet-5-5',
+      tools: sampleTools,
+    });
+
+    expect(collectAllCacheControls(forcedFiveMin)).toEqual([
+      { location: 'system', value: { type: 'ephemeral' } },
+      { location: 'tools', value: { type: 'ephemeral' } },
+      { location: 'messages', value: { type: 'ephemeral' } },
+    ]);
+
+    const forcedOneHour = await buildDefaultAnthropicPayload({
+      cacheTTL: '1h',
+      messages: [
+        { content: 'System prompt', role: 'system' },
+        { content: 'Short message', role: 'user' },
+      ],
+      model: 'claude-sonnet-5-5',
+      tools: sampleTools,
+    });
+
+    expect(collectAllCacheControls(forcedOneHour)).toEqual([
+      { location: 'system', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'tools', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'messages', value: { ttl: '1h', type: 'ephemeral' } },
+    ]);
+  });
+
+  it('emits zero cache_control blocks when enabledContextCaching is false, even at 180K tokens', async () => {
+    const requestPayload = {
+      cacheTTL: '1h' as const,
+      enabledContextCaching: false,
+      messages: [
+        { content: 'Compress this conversation.', role: 'system' as const },
+        { content: 'a'.repeat(720_000), role: 'user' as const },
+      ],
+      model: 'claude-haiku-5-5',
+      tools: sampleTools,
+    };
+
+    const result = await buildDefaultAnthropicPayload(requestPayload);
+
+    expect(collectAllCacheControls(result)).toEqual([]);
+    expect(resolveDefaultAnthropicPricingOptions(requestPayload, result)).toBeUndefined();
+  });
+
+  it('keeps monotonic 1h TTL when Claude 5.x pops trailing assistant prefill or last block is thinking', async () => {
+    const prefillPayload = {
+      messages: [
+        { content: 'System prompt', role: 'system' as const },
+        { content: 'a'.repeat(120_000), role: 'user' as const },
+        { content: 'Draft prefill:', role: 'assistant' as const },
+      ],
+      model: 'claude-fable-5-2',
+      tools: sampleTools,
+    };
+
+    const prefillResult = await buildDefaultAnthropicPayload(prefillPayload);
+    const prefillControls = collectAllCacheControls(prefillResult);
+    expect(prefillControls).toEqual([
+      { location: 'system', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'tools', value: { ttl: '1h', type: 'ephemeral' } },
+    ]);
+    expect(resolveDefaultAnthropicPricingOptions(prefillPayload, prefillResult)).toEqual({
+      lookupParams: { ttl: '1h' },
+    });
+
+    const thinkingLastPayload = {
+      messages: [
+        { content: 'System prompt', role: 'system' as const },
+        { content: 'a'.repeat(120_000), role: 'user' as const },
+        {
+          content: [
+            { text: 'Answer text', type: 'text' as const },
+            { signature: 'sig_1', thinking: 'Internal reasoning', type: 'thinking' as const },
+          ],
+          role: 'assistant' as const,
+        },
+      ],
+      model: 'claude-3-7-sonnet-20250219',
+      tools: sampleTools,
+    };
+
+    const thinkingResult = await buildDefaultAnthropicPayload(thinkingLastPayload);
+    const thinkingControls = collectAllCacheControls(thinkingResult);
+    expect(thinkingControls).toEqual([
+      { location: 'system', value: { ttl: '1h', type: 'ephemeral' } },
+      { location: 'tools', value: { ttl: '1h', type: 'ephemeral' } },
+    ]);
+    expect(resolveDefaultAnthropicPricingOptions(thinkingLastPayload, thinkingResult)).toEqual({
+      lookupParams: { ttl: '1h' },
+    });
   });
 });

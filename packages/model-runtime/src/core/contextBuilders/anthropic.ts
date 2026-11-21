@@ -212,9 +212,21 @@ export const buildAnthropicMessage = async (
   }
 };
 
+export type AnthropicCacheTTL = NonNullable<Anthropic.Messages.CacheControlEphemeral['ttl']>;
+
+export interface AnthropicCacheControlOptions {
+  cacheTTL?: AnthropicCacheTTL;
+  enabledContextCaching?: boolean;
+}
+
+export const buildAnthropicCacheControl = (
+  cacheTTL?: AnthropicCacheTTL,
+): Anthropic.Messages.CacheControlEphemeral =>
+  cacheTTL === '1h' ? { ttl: '1h', type: 'ephemeral' } : { type: 'ephemeral' };
+
 export const buildAnthropicMessages = async (
   oaiMessages: OpenAIChatMessage[],
-  options: { enabledContextCaching?: boolean } = {},
+  options: AnthropicCacheControlOptions = {},
 ): Promise<Anthropic.Messages.MessageParam[]> => {
   const messages: Anthropic.Messages.MessageParam[] = [];
 
@@ -317,10 +329,11 @@ export const buildAnthropicMessages = async (
 
   const lastMessage = messages.at(-1);
   if (options.enabledContextCaching && !!lastMessage) {
+    const cacheControl = buildAnthropicCacheControl(options.cacheTTL);
     if (typeof lastMessage.content === 'string') {
       lastMessage.content = [
         {
-          cache_control: { type: 'ephemeral' },
+          cache_control: cacheControl,
           text: lastMessage.content as string,
           type: 'text',
         },
@@ -333,7 +346,7 @@ export const buildAnthropicMessages = async (
         lastContent.type !== 'thinking' &&
         lastContent.type !== 'redacted_thinking'
       ) {
-        lastContent.cache_control = { type: 'ephemeral' };
+        lastContent.cache_control = cacheControl;
       }
     }
   }
@@ -342,21 +355,20 @@ export const buildAnthropicMessages = async (
 
 export const buildAnthropicTools = (
   tools?: OpenAI.ChatCompletionTool[],
-  options: { enabledContextCaching?: boolean } = {},
+  options: AnthropicCacheControlOptions = {},
 ) => {
   if (!tools) return;
 
-  return tools.map(
-    (tool, index): Anthropic.Tool => ({
-      cache_control:
-        options.enabledContextCaching && index === tools.length - 1
-          ? { type: 'ephemeral' }
-          : undefined,
-      description: tool.function.description,
-      input_schema: tool.function.parameters as Anthropic.Tool.InputSchema,
-      name: tool.function.name,
-    }),
-  );
+  const cacheControl = options.enabledContextCaching
+    ? buildAnthropicCacheControl(options.cacheTTL)
+    : undefined;
+
+  return tools.map((tool, index): Anthropic.Tool => ({
+    cache_control: index === tools.length - 1 ? cacheControl : undefined,
+    description: tool.function.description,
+    input_schema: tool.function.parameters as Anthropic.Tool.InputSchema,
+    name: tool.function.name,
+  }));
 };
 
 export const buildSearchTool = (): Anthropic.WebSearchTool20250305 => {
