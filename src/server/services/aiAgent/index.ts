@@ -5,7 +5,10 @@ import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
-import { KnowledgeBaseIdentifier } from '@lobechat/builtin-tool-knowledge-base';
+import {
+  KnowledgeBaseApiName,
+  KnowledgeBaseIdentifier,
+} from '@lobechat/builtin-tool-knowledge-base';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { MessageToolIdentifier } from '@lobechat/builtin-tool-message';
 import { PageAgentIdentifier } from '@lobechat/builtin-tool-page-agent';
@@ -32,7 +35,7 @@ import { LOADING_FLAT } from '@lobechat/const';
 import type { LobeToolManifest, ToolSource } from '@lobechat/context-engine';
 import { SkillEngine } from '@lobechat/context-engine';
 import type { LobeChatDatabase } from '@lobechat/database';
-import type { LayoutInfo } from '@lobechat/prompts';
+import { FILE_PREVIEW_CHARS, type LayoutInfo } from '@lobechat/prompts';
 import type {
   ChatTopicBotContext,
   ExecAgentParams,
@@ -119,6 +122,78 @@ import { getDeferredToolIds } from './toolDeferral';
 import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
+
+interface FileAttachmentContentLike {
+  content?: string | null;
+}
+
+interface MessageAttachmentContainerLike {
+  compressedMessages?: ReadonlyArray<MessageAttachmentContainerLike> | null;
+  fileList?: ReadonlyArray<FileAttachmentContentLike> | null;
+}
+
+const hasTruncatedFile = (
+  fileList: ReadonlyArray<FileAttachmentContentLike> | null | undefined,
+): boolean =>
+  Boolean(
+    fileList?.some(
+      (file) => typeof file?.content === 'string' && file.content.length > FILE_PREVIEW_CHARS,
+    ),
+  );
+
+/**
+ * arckep (ENG-4): возвращает true, если среди вложений нового сообщения или истории темы
+ * (включая сжатые группы `compressedMessages`) есть текстовый файл длиннее `FILE_PREVIEW_CHARS`
+ * (8 000 знаков), превью которого будет обрезано с подсказкой вызвать `readKnowledge`.
+ * Картинки (`imageList`, `content == null`) и короткие файлы `<= 8K` дают `false`.
+ */
+export const hasTruncatedFileAttachments = (params: {
+  fileList?: ReadonlyArray<FileAttachmentContentLike> | null;
+  historyMessages?: ReadonlyArray<MessageAttachmentContainerLike> | null;
+}): boolean => {
+  if (hasTruncatedFile(params.fileList)) return true;
+
+  const stack: ReadonlyArray<MessageAttachmentContainerLike>[] = params.historyMessages
+    ? [params.historyMessages]
+    : [];
+  while (stack.length > 0) {
+    const batch = stack.pop()!;
+    for (const message of batch) {
+      if (hasTruncatedFile(message?.fileList)) return true;
+      if (Array.isArray(message?.compressedMessages) && message.compressedMessages.length > 0) {
+        stack.push(message.compressedMessages);
+      }
+    }
+  }
+  return false;
+};
+
+/**
+ * arckep (ENG-4): возвращает свежую копию манифеста `lobe-knowledge-base` только с `readKnowledge`
+ * (без `searchKnowledgeBase` в `api` и `systemRole`), когда у агента 0 включённых баз знаний,
+ * но в теме есть обрезанные вложения `> 8K`. Исходный синглтон `KnowledgeBaseManifest` не мутируется.
+ */
+export const buildReadOnlyKnowledgeBaseManifest = (
+  manifest: LobeToolManifest,
+): LobeToolManifest => {
+  const readOnlyApi = manifest.api.filter((api) => api.name === KnowledgeBaseApiName.readKnowledge);
+  if (readOnlyApi.length === 0 || readOnlyApi.length === manifest.api.length) {
+    return manifest;
+  }
+
+  const systemRole = manifest.systemRole
+    ? manifest.systemRole
+        .split('\n')
+        .filter((line) => !line.includes(KnowledgeBaseApiName.searchKnowledgeBase))
+        .join('\n')
+    : manifest.systemRole;
+
+  return {
+    ...manifest,
+    api: readOnlyApi,
+    systemRole,
+  };
+};
 
 /**
  * Подпись картинки для модели (идёт в <image name="…"> блока <files_info>). У кусков — что картинка резалась
@@ -1027,6 +1102,202 @@ export class AiAgentService {
       ...(enableTextFile ? [TEXT_FILE_TOOL] : []),
     ]);
 
+    // 11. Get existing messages if provided
+    // arckep (19.10.2026 / ENG-4): загрузка истории и разбор вложений текущего сообщения выполняются
+    // до сборки инструментов, чтобы знать, есть ли в теме обрезанные (> FILE_PREVIEW_CHARS) документы
+    // для автоподключения readKnowledge без лишнего шага activateTools.
+    const historyMessages: any[] = await loadHistoryMessages();
+    assertDeepSeekDocumentsGuardCompatible(
+      !!(agentConfig.chatConfig as any)?.deepseekDataGuardProtected,
+      historyMessages,
+      deepseekDocumentIds,
+    );
+
+    await throwIfExecutionAborted('message history loading');
+
+    // 12. Upload external files to S3 and collect file IDs
+    let fileIds: string[] | undefined;
+    let imageList: Array<{ alt: string; id: string; url: string }> | undefined;
+    // arckep (chat-next-redesign, E1): документы текущего сообщения с текстом — для MessageContent
+    // (история берёт их из базы через documents, а текущее сообщение собирается здесь в памяти)
+    let fileList:
+      | Array<{
+          content?: string;
+          fileType: string;
+          id: string;
+          name: string;
+          size: number;
+          url: string;
+        }>
+      | undefined;
+    // arckep (19.10.2026): оригиналы вложений с устойчивыми адресами — модель вставляет их в HTML-предпросмотр
+    // или качает в песочнице. Сохраняется в metadata user-сообщения (живёт в истории), в текст человека не попадает.
+    const attachmentRefs: MessageAttachmentRef[] = [];
+    // arckep (19.10.2026): описание макета PDF — только в сообщение для модели (в памяти), в базу не пишется
+    const pdfLayouts: LayoutInfo[] = [];
+
+    // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений;
+    // строка самого PDF получает пометку, если страницы ещё рисуются
+    const attachPdf = async (pdf: PdfJob, ref: MessageAttachmentRef) => {
+      const processed = await this.processPdf(pdf);
+      for (const page of processed.pages) {
+        fileIds!.push(page.id);
+        imageList!.push(page);
+      }
+      attachmentRefs.push(
+        processed.pending ? { ...ref, note: PDF_PAGES_PENDING_NOTE } : ref,
+        ...processed.images,
+      );
+      if (processed.layout) pdfLayouts.push(processed.layout);
+    };
+
+    if (files && files.length > 0) {
+      fileIds = [];
+      imageList = [];
+      fileList = [];
+
+      for (const file of files) {
+        await throwIfExecutionAborted('file upload');
+
+        const mimeType = file.mimeType || (file.name ? mime.getType(file.name) : null) || undefined;
+        try {
+          // arckep (chat-next-redesign, E1): файл пользователя из REST — без повторной загрузки
+          if (file.fileId) {
+            fileIds.push(file.fileId);
+            const name = file.name || (mimeType?.startsWith('image/') ? 'image' : 'file');
+            if (mimeType?.startsWith('image/') && mimeType !== 'image/svg+xml') {
+              if (file.url) {
+                imageList.push({ alt: file.name || 'image', id: file.fileId, url: file.url });
+                attachmentRefs.push({ mime: mimeType, name, url: fileAddress(file.fileId) });
+              }
+            } else {
+              fileList.push({
+                content: await this.parseDocumentQuietly(file.fileId, mimeType),
+                fileType: mimeType ?? 'application/octet-stream',
+                id: file.fileId,
+                name: file.name || 'file',
+                size: file.size ?? 0,
+                url: file.url ?? '',
+              });
+              const ref = { mime: mimeType, name, url: fileAddress(file.fileId) };
+              if (mimeType === 'application/pdf') {
+                await attachPdf(
+                  {
+                    fileId: file.fileId,
+                    fileService,
+                    model,
+                    name: file.name || 'file.pdf',
+                    provider,
+                  },
+                  ref,
+                );
+              } else {
+                attachmentRefs.push(ref);
+              }
+            }
+            continue;
+          }
+
+          const result = await ingestAttachment(file, fileService, this.userId);
+
+          if (result.isImage) {
+            // Длинная картинка пришла кусками (imageSlicing.ts): все куски сообщению, по порядку сверху вниз
+            const parts = result.images?.length
+              ? result.images
+              : [
+                  {
+                    fileId: result.fileId,
+                    height: 0,
+                    index: 1,
+                    mimeType: mimeType ?? 'image/png',
+                    name: file.name || 'image',
+                    resolvedUrl: result.resolvedUrl,
+                    total: 1,
+                    width: 0,
+                  },
+                ];
+            for (const image of parts) {
+              fileIds.push(image.fileId);
+              imageList.push({
+                alt: imagePartAlt(file.name || 'image', image),
+                id: image.fileId,
+                url: image.resolvedUrl,
+              });
+            }
+
+            // В списке — ОРИГИНАЛ: файл человека по присланному адресу; нет такого, а сохранённая копия — те же байты,
+            // тогда она сама; иначе (внешняя картинка, ужатая или разрезанная) — сохранённые куски с пометкой «копия»
+            const own = await this.findOwnFileByUrl(fileService, file.url);
+            if (own) {
+              attachmentRefs.push({
+                height: result.source?.height,
+                mime: own.fileType ?? mimeType,
+                name: own.name || file.name || 'image',
+                url: fileAddress(own.id),
+                width: result.source?.width,
+              });
+            } else if (result.unchanged) {
+              attachmentRefs.push({
+                height: result.source?.height,
+                mime: mimeType,
+                name: file.name || 'image',
+                url: fileAddress(result.fileId),
+                width: result.source?.width,
+              });
+            } else {
+              for (const image of parts) {
+                attachmentRefs.push({
+                  height: image.height || undefined,
+                  mime: image.mimeType,
+                  name: image.name,
+                  note: 'копия, оригинал не сохранён',
+                  url: fileAddress(image.fileId),
+                  width: image.width || undefined,
+                });
+              }
+            }
+          } else {
+            fileIds.push(result.fileId);
+            fileList.push({
+              content: await this.parseDocumentQuietly(result.fileId, mimeType),
+              fileType: mimeType ?? 'application/octet-stream',
+              id: result.fileId,
+              name: file.name || 'file',
+              size: file.size ?? 0,
+              url: result.resolvedUrl || file.url || '',
+            });
+            const ref = {
+              mime: mimeType,
+              name: file.name || 'file',
+              url: fileAddress(result.fileId),
+            };
+            if (mimeType === 'application/pdf') {
+              await attachPdf(
+                {
+                  fileId: result.fileId,
+                  fileService,
+                  model,
+                  name: file.name || 'file.pdf',
+                  provider,
+                },
+                ref,
+              );
+            } else {
+              attachmentRefs.push(ref);
+            }
+          }
+        } catch (error) {
+          log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
+        }
+      }
+
+      if (fileIds.length > 0) {
+        log('execAgent: uploaded %d files to S3', fileIds.length);
+      }
+      if (imageList.length === 0) imageList = undefined;
+      if (fileList.length === 0) fileList = undefined;
+    }
+
     if (params.disableTools) {
       log('execAgent: tools disabled by disableTools flag, skipping all tool discovery');
     } else {
@@ -1257,9 +1528,15 @@ export class AiAgentService {
       const lazyMcpConnectorIds = defersLightweight
         ? (agentConfig.plugins || []).filter(isArckepLazyMcpConnectorId)
         : [];
+      const hasTruncatedAttachments = hasTruncatedFileAttachments({
+        fileList: resume ? undefined : fileList,
+        historyMessages,
+      });
       const lazyOnDemandToolIds = defersLightweight
         ? [
-            ...(hasEnabledKnowledgeBases ? [] : [KnowledgeBaseIdentifier]),
+            ...(hasEnabledKnowledgeBases || hasTruncatedAttachments
+              ? []
+              : [KnowledgeBaseIdentifier]),
             ...(hasTopicReference ? [] : [TopicReferenceIdentifier]),
           ]
         : [];
@@ -1329,6 +1606,24 @@ export class AiAgentService {
         ...lazyToolIds,
         ...hiddenToolIds,
       ];
+
+      const useReadOnlyKnowledgeBase =
+        defersLightweight &&
+        !continuationReceipt &&
+        !hasEnabledKnowledgeBases &&
+        hasTruncatedAttachments &&
+        !pickedToolIds.has(KnowledgeBaseIdentifier) &&
+        !excludedPluginIds.has(KnowledgeBaseIdentifier);
+      if (
+        useReadOnlyKnowledgeBase &&
+        typeof toolsEngine.getPluginManifest === 'function' &&
+        typeof toolsEngine.addPluginManifest === 'function'
+      ) {
+        const kbManifest = toolsEngine.getPluginManifest(KnowledgeBaseIdentifier);
+        if (kbManifest) {
+          toolsEngine.addPluginManifest(buildReadOnlyKnowledgeBaseManifest(kbManifest));
+        }
+      }
 
       toolsResult = toolsEngine.generateToolsDetailed({
         excludeDefaultToolIds: excludeDefaultToolIds.length > 0 ? excludeDefaultToolIds : undefined,
@@ -1596,206 +1891,11 @@ export class AiAgentService {
       }
     }
 
-    // 11. Get existing messages if provided
-    // arckep (19.10.2026): загрузка истории вынесена выше (loadHistoryMessages) — её читает и правило ссылок
-    // (arckepLinkConnectors), и сборка сообщений; запрос выполняется один раз.
-    const historyMessages: any[] = await loadHistoryMessages();
-    assertDeepSeekDocumentsGuardCompatible(
-      !!(agentConfig.chatConfig as any)?.deepseekDataGuardProtected,
-      historyMessages,
-      deepseekDocumentIds,
-    );
-
-    await throwIfExecutionAborted('message history loading');
-
     // arckep (19.10.2026): страницы и картинки PDF, подготовленные уже после отправки старого сообщения
     try {
       await this.enrichHistoryWithPdf(historyMessages, model, provider, fileService);
     } catch (error) {
       log('execAgent: history pdf enrichment failed: %O', error);
-    }
-
-    // 12. Upload external files to S3 and collect file IDs
-    let fileIds: string[] | undefined;
-    let imageList: Array<{ alt: string; id: string; url: string }> | undefined;
-    // arckep (chat-next-redesign, E1): документы текущего сообщения с текстом — для MessageContent
-    // (история берёт их из базы через documents, а текущее сообщение собирается здесь в памяти)
-    let fileList:
-      | Array<{
-          content?: string;
-          fileType: string;
-          id: string;
-          name: string;
-          size: number;
-          url: string;
-        }>
-      | undefined;
-    // arckep (19.10.2026): оригиналы вложений с устойчивыми адресами — модель вставляет их в HTML-предпросмотр
-    // или качает в песочнице. Сохраняется в metadata user-сообщения (живёт в истории), в текст человека не попадает.
-    const attachmentRefs: MessageAttachmentRef[] = [];
-    // arckep (19.10.2026): описание макета PDF — только в сообщение для модели (в памяти), в базу не пишется
-    const pdfLayouts: LayoutInfo[] = [];
-
-    // PDF: страницы картинками (для модели со зрением) идут сообщению, вшитые картинки — только в список вложений;
-    // строка самого PDF получает пометку, если страницы ещё рисуются
-    const attachPdf = async (pdf: PdfJob, ref: MessageAttachmentRef) => {
-      const processed = await this.processPdf(pdf);
-      for (const page of processed.pages) {
-        fileIds!.push(page.id);
-        imageList!.push(page);
-      }
-      attachmentRefs.push(
-        processed.pending ? { ...ref, note: PDF_PAGES_PENDING_NOTE } : ref,
-        ...processed.images,
-      );
-      if (processed.layout) pdfLayouts.push(processed.layout);
-    };
-
-    if (files && files.length > 0) {
-      fileIds = [];
-      imageList = [];
-      fileList = [];
-
-      for (const file of files) {
-        await throwIfExecutionAborted('file upload');
-
-        const mimeType = file.mimeType || (file.name ? mime.getType(file.name) : null) || undefined;
-        try {
-          // arckep (chat-next-redesign, E1): файл пользователя из REST — без повторной загрузки
-          if (file.fileId) {
-            fileIds.push(file.fileId);
-            const name = file.name || (mimeType?.startsWith('image/') ? 'image' : 'file');
-            if (mimeType?.startsWith('image/') && mimeType !== 'image/svg+xml') {
-              if (file.url) {
-                imageList.push({ alt: file.name || 'image', id: file.fileId, url: file.url });
-                attachmentRefs.push({ mime: mimeType, name, url: fileAddress(file.fileId) });
-              }
-            } else {
-              fileList.push({
-                content: await this.parseDocumentQuietly(file.fileId, mimeType),
-                fileType: mimeType ?? 'application/octet-stream',
-                id: file.fileId,
-                name: file.name || 'file',
-                size: file.size ?? 0,
-                url: file.url ?? '',
-              });
-              const ref = { mime: mimeType, name, url: fileAddress(file.fileId) };
-              if (mimeType === 'application/pdf') {
-                await attachPdf(
-                  {
-                    fileId: file.fileId,
-                    fileService,
-                    model,
-                    name: file.name || 'file.pdf',
-                    provider,
-                  },
-                  ref,
-                );
-              } else {
-                attachmentRefs.push(ref);
-              }
-            }
-            continue;
-          }
-
-          const result = await ingestAttachment(file, fileService, this.userId);
-
-          if (result.isImage) {
-            // Длинная картинка пришла кусками (imageSlicing.ts): все куски сообщению, по порядку сверху вниз
-            const parts = result.images?.length
-              ? result.images
-              : [
-                  {
-                    fileId: result.fileId,
-                    height: 0,
-                    index: 1,
-                    mimeType: mimeType ?? 'image/png',
-                    name: file.name || 'image',
-                    resolvedUrl: result.resolvedUrl,
-                    total: 1,
-                    width: 0,
-                  },
-                ];
-            for (const image of parts) {
-              fileIds.push(image.fileId);
-              imageList.push({
-                alt: imagePartAlt(file.name || 'image', image),
-                id: image.fileId,
-                url: image.resolvedUrl,
-              });
-            }
-
-            // В списке — ОРИГИНАЛ: файл человека по присланному адресу; нет такого, а сохранённая копия — те же байты,
-            // тогда она сама; иначе (внешняя картинка, ужатая или разрезанная) — сохранённые куски с пометкой «копия»
-            const own = await this.findOwnFileByUrl(fileService, file.url);
-            if (own) {
-              attachmentRefs.push({
-                height: result.source?.height,
-                mime: own.fileType ?? mimeType,
-                name: own.name || file.name || 'image',
-                url: fileAddress(own.id),
-                width: result.source?.width,
-              });
-            } else if (result.unchanged) {
-              attachmentRefs.push({
-                height: result.source?.height,
-                mime: mimeType,
-                name: file.name || 'image',
-                url: fileAddress(result.fileId),
-                width: result.source?.width,
-              });
-            } else {
-              for (const image of parts) {
-                attachmentRefs.push({
-                  height: image.height || undefined,
-                  mime: image.mimeType,
-                  name: image.name,
-                  note: 'копия, оригинал не сохранён',
-                  url: fileAddress(image.fileId),
-                  width: image.width || undefined,
-                });
-              }
-            }
-          } else {
-            fileIds.push(result.fileId);
-            fileList.push({
-              content: await this.parseDocumentQuietly(result.fileId, mimeType),
-              fileType: mimeType ?? 'application/octet-stream',
-              id: result.fileId,
-              name: file.name || 'file',
-              size: file.size ?? 0,
-              url: result.resolvedUrl || file.url || '',
-            });
-            const ref = {
-              mime: mimeType,
-              name: file.name || 'file',
-              url: fileAddress(result.fileId),
-            };
-            if (mimeType === 'application/pdf') {
-              await attachPdf(
-                {
-                  fileId: result.fileId,
-                  fileService,
-                  model,
-                  name: file.name || 'file.pdf',
-                  provider,
-                },
-                ref,
-              );
-            } else {
-              attachmentRefs.push(ref);
-            }
-          }
-        } catch (error) {
-          log('execAgent: failed to ingest file %s: %O', file.name || file.url, error);
-        }
-      }
-
-      if (fileIds.length > 0) {
-        log('execAgent: uploaded %d files to S3', fileIds.length);
-      }
-      if (imageList.length === 0) imageList = undefined;
-      if (fileList.length === 0) fileList = undefined;
     }
 
     await throwIfExecutionAborted('message creation');
