@@ -66,17 +66,15 @@ export const resolveCompressionModelConfig = (params?: {
 
 /**
  * Explicit provider route input token ceilings where the upstream gateway enforces
- * a tighter limit than the model card's nominal contextWindowTokens.
+ * a tighter total-context limit than the model card's nominal contextWindowTokens.
+ *
+ * NOTE: Do NOT pin `deepseek/deepseek-flash` to 32,768 here. `api.deepseek.com` accepts the full
+ * 1M total context window; DeepSeek's 32,768-token error (`user input too long, N tokens exceeds
+ * max 32768 tokens`) is a per-user-turn limit, not a total context window ceiling. Pinning
+ * `maxWindowToken: 32_768` caused premature compression at ~22K–26K tokens and mid-turn loops
+ * (incident 2026-11-22, tpc_58kV1gVvDwa1).
  */
-export const ROUTE_INPUT_LIMIT_OVERRIDES: Readonly<Record<string, CompressionWindowPolicy>> = {
-  // DeepSeek V4.1 Flash gateway rejects prompts > 32,768 tokens with HTTP 413 despite 1M card window.
-  // 0.68 (~22,282 tokens) leaves headroom for system prompt + tool schemas; 0.80 (~26,214) prevents loops.
-  'deepseek/deepseek-flash': {
-    maxWindowToken: 32_768,
-    recompressionThresholdRatio: 0.8,
-    thresholdRatio: 0.68,
-  },
-};
+export const ROUTE_INPUT_LIMIT_OVERRIDES: Readonly<Record<string, CompressionWindowPolicy>> = {};
 
 export const resolveCompressionThresholds = (
   model?: string,
@@ -91,11 +89,7 @@ export const resolveCompressionThresholds = (
   }
 
   const routeKey = provider ? `${provider}/${model}` : model;
-  const routeOverride =
-    ROUTE_INPUT_LIMIT_OVERRIDES[routeKey] ??
-    (model === 'deepseek-flash'
-      ? ROUTE_INPUT_LIMIT_OVERRIDES['deepseek/deepseek-flash']
-      : undefined);
+  const routeOverride = ROUTE_INPUT_LIMIT_OVERRIDES[routeKey] ?? ROUTE_INPUT_LIMIT_OVERRIDES[model];
 
   if (routeOverride) {
     return { ...routeOverride };
