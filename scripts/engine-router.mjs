@@ -56,7 +56,7 @@ const routerRuntime = {
   slotServiceKeys: new Map(),
   socketActivated: USE_SOCKET_ACTIVATION,
   state: {
-    activePort: 3411,
+    activePort: 3404,
     activeSlot: 'blue',
     drainingPort: null,
     drainingSlot: null,
