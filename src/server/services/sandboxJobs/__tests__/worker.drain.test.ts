@@ -256,7 +256,7 @@ describe('SandboxJobWorker.startDrain (zero-downtime)', () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-sbx-slot-state-'));
     const stateFile = path.join(tmpDir, 'state.json');
     try {
-      fs.writeFileSync(stateFile, JSON.stringify({ activePort: 3411, activeSlot: 'blue' }), 'utf8');
+      fs.writeFileSync(stateFile, JSON.stringify({ activePort: 3404, activeSlot: 'blue' }), 'utf8');
       process.env.SLOT_NAME = 'green';
       process.env.ENGINE_STATE_FILE = stateFile;
       resetEngineSlotStateForTests();

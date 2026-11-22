@@ -203,7 +203,7 @@ function getPrimaryServiceKeyForSlot(runtime, slotName) {
 function normalizeLoadedState(raw) {
   const activeSlot =
     typeof raw?.activeSlot === 'string' && raw.activeSlot ? raw.activeSlot : 'blue';
-  const activePort = Number(raw?.activePort) || (activeSlot === 'green' ? 3412 : 3411);
+  const activePort = Number(raw?.activePort) || (activeSlot === 'green' ? 3405 : 3404);
   const rawDrainingPort = raw?.drainingPort ? Number(raw.drainingPort) : null;
   const rawDrainingSlot =
     typeof raw?.drainingSlot === 'string' && raw.drainingSlot ? raw.drainingSlot : null;

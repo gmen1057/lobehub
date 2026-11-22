@@ -3,7 +3,7 @@
 #
 # Архитектура:
 #   * 127.0.0.1:3403 — постоянный умный роутер image-studio-lobechat-router.service (/opt/lobechat-next-router/engine-router.mjs);
-#   * слоты: blue (/opt/lobechat-next-blue, :3411) и green (/opt/lobechat-next-green, :3412) под image-studio-lobechat@{blue,green};
+#   * слоты: blue (/opt/lobechat-next-blue, :3404) и green (/opt/lobechat-next-green, :3405) под image-studio-lobechat@{blue,green};
 #   * /opt/lobechat-next — атомарный симлинк на активный слот (совместимость с nginx alias, .deployed-commit, env-check, auditd);
 #   * /var/lib/lobechat-engine/state.json — состояние слотов + previousConfirmedSlot/Commit + сторож .switch-pending;
 #   * старый слот уходит в drain (POST /arckep/engine-slot/drain): все идущие ответы, _chat_wait, боты, cron и задачи E2B
@@ -14,7 +14,7 @@
 #   bash deploy-engine.sh --install        # форсирует pnpm install --frozen-lockfile перед сборкой
 #   bash deploy-engine.sh --init [--force] # однократный переход со старой image-studio-lobechat-next на blue + router
 #   bash deploy-engine.sh --rollback       # мгновенный откат (< 2 с) на подтверждённый слот с undrain + drain текущего
-#   bash deploy-engine.sh --status         # статус роутера :3403 и обоих слотов blue (3411) / green (3412)
+#   bash deploy-engine.sh --status         # статус роутера :3403 и обоих слотов blue (3404) / green (3405)
 #   bash deploy-engine.sh --stage-only [D] # собрать и проверить standalone-слот в каталоге D без касания прода
 #   bash deploy-engine.sh --help | -h      # показать справку
 set -euo pipefail
@@ -30,7 +30,7 @@ Usage:
   bash deploy-engine.sh --install           # Принудительный pnpm install --frozen-lockfile перед сборкой
   bash deploy-engine.sh --init [--force]    # Однократный переход со старой службы на blue + router
   bash deploy-engine.sh --rollback          # Мгновенный откат (< 2 с) на предыдущий подтверждённый слот
-  bash deploy-engine.sh --status            # Статус роутера :3403 и слотов blue (3411) / green (3412)
+  bash deploy-engine.sh --status            # Статус роутера :3403 и слотов blue (3404) / green (3405)
   bash deploy-engine.sh --stage-only [DIR]  # Собрать и проверить standalone-слот в DIR без касания прода
   bash deploy-engine.sh --help | -h         # Показать эту справку
 EOF
@@ -134,8 +134,8 @@ SRC="${ENGINE_SRC:-$SCRIPT_DIR}"
 PROD="${ENGINE_PROD:-/opt/lobechat-next}"
 SLOT_BLUE_DIR="${ENGINE_SLOT_BLUE_DIR:-/opt/lobechat-next-blue}"
 SLOT_GREEN_DIR="${ENGINE_SLOT_GREEN_DIR:-/opt/lobechat-next-green}"
-BLUE_PORT="${ENGINE_BLUE_PORT:-3411}"
-GREEN_PORT="${ENGINE_GREEN_PORT:-3412}"
+BLUE_PORT="${ENGINE_BLUE_PORT:-3404}"
+GREEN_PORT="${ENGINE_GREEN_PORT:-3405}"
 ROUTER_DIR="${ENGINE_ROUTER_DIR:-/opt/lobechat-next-router}"
 PORT="${ENGINE_PORT:-${LOBECHAT_PORT:-3403}}"
 
