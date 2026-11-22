@@ -9,6 +9,10 @@ import {
   ORPHAN_PLACEHOLDER_ERROR,
 } from '@/server/services/agentRuntime/orphanPlaceholders';
 import { FileService as CoreFileService } from '@/server/services/file';
+import {
+  hasInFlightTopicCompaction,
+  hasInFlightTopicCompactionsForUser,
+} from '@/server/services/topic/compactionRegistry';
 
 import { BaseService } from '../common/base.service';
 import { processPaginationConditions } from '../helpers/pagination';
@@ -668,7 +672,8 @@ export class MessageService extends BaseService {
     if (!messageIds.length || !this.userId) return;
     if (
       responsesStreamHub.runningTopics(this.userId).length === 0 &&
-      getInFlightResponseTopicsForUser(this.userId).length === 0
+      getInFlightResponseTopicsForUser(this.userId).length === 0 &&
+      !hasInFlightTopicCompactionsForUser(this.userId)
     ) {
       return;
     }
@@ -688,6 +693,9 @@ export class MessageService extends BaseService {
         const op = responsesStreamHub.findByTopic(this.userId, row.topicId);
         if ((op && !op.done) || hasInFlightResponseTopic(this.userId, row.topicId)) {
           throw this.createConflictError('Response is already in progress for this topic');
+        }
+        if (hasInFlightTopicCompaction(this.userId, row.topicId)) {
+          throw this.createConflictError('Compaction is already in progress for this topic');
         }
       }
     }

@@ -8,6 +8,7 @@ import { ArckepStudioExecutionRuntime } from '@lobechat/builtin-tool-arckep-stud
 import { users } from '@lobechat/database/schemas';
 import { eq } from 'drizzle-orm';
 
+import { userOwnsTopic } from '../topicOwnership';
 import { type ServerRuntimeRegistration } from './types';
 
 const IMAGE_STUDIO_BASE = 'http://127.0.0.1:8202';
@@ -102,12 +103,37 @@ export const createSpeechBody = (params: CreateSpeechParams) => {
   return { style: clip(params.style, 300), text: body, voice_id: clip(params.voice_id, 120) };
 };
 
-const callBackend = async (path: string, body: Record<string, unknown>, timeoutMs = 30_000) => {
+const TOPIC_ID_MAX_LEN = 128;
+const LEGACY_BODY_TOPIC_ID_MAX_LEN = 64;
+
+export const sanitizeTopicId = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const cleaned = value
+    .replaceAll(/[\r\n\0]/g, '')
+    .trim()
+    .slice(0, TOPIC_ID_MAX_LEN);
+  return cleaned || undefined;
+};
+
+const callBackend = async (
+  path: string,
+  body: Record<string, unknown>,
+  timeoutMs = 30_000,
+  topicId?: string,
+) => {
   const token = getInternalToken();
   if (!token) throw new Error('Internal token not configured');
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Arckep-Token': token,
+  };
+  const cleanTopic = sanitizeTopicId(topicId);
+  if (cleanTopic) {
+    headers['X-Arckep-Topic-Id'] = cleanTopic;
+  }
   const res = await fetch(`${getBackendUrl()}${path}`, {
     body: JSON.stringify(body),
-    headers: { 'Content-Type': 'application/json', 'X-Arckep-Token': token },
+    headers,
     method: 'POST',
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -122,49 +148,92 @@ export const arckepStudioRuntime: ServerRuntimeRegistration = {
     if (!context.userId || !context.serverDB) {
       throw new Error('userId and serverDB are required for ArcKep Studio execution');
     }
-    const { serverDB, userId, topicId } = context;
+    const { serverDB, userId } = context;
+    const rawTopicId = sanitizeTopicId(context.topicId);
+    let ownedTopicPromise: Promise<string | undefined> | undefined;
+    const resolveOwnedTopicId = (): Promise<string | undefined> => {
+      if (!rawTopicId) return Promise.resolve(undefined);
+      if (!ownedTopicPromise) {
+        ownedTopicPromise = userOwnsTopic(serverDB, userId, rawTopicId).then((owns) =>
+          owns ? rawTopicId : undefined,
+        );
+      }
+      return ownedTopicPromise;
+    };
 
     return new ArckepStudioExecutionRuntime({
       createImage: async (params: CreateImageParams) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
+        const topicId = await resolveOwnedTopicId();
+        const bodyTopicId =
+          topicId && topicId.length <= LEGACY_BODY_TOPIC_ID_MAX_LEN ? topicId : undefined;
         return callBackend(
           '/api/chat/studio-tool/create-image',
-          { ...createImageBody(params), topic_id: topicId, user_id: arckepId },
+          { ...createImageBody(params), topic_id: bodyTopicId, user_id: arckepId },
           IMAGE_TIMEOUT_MS,
+          topicId,
         );
       },
       createSpeech: async (params: CreateSpeechParams) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
+        const topicId = await resolveOwnedTopicId();
+        const bodyTopicId =
+          topicId && topicId.length <= LEGACY_BODY_TOPIC_ID_MAX_LEN ? topicId : undefined;
         return callBackend(
           '/api/chat/studio-tool/create-speech',
-          { ...createSpeechBody(params), topic_id: topicId, user_id: arckepId },
+          { ...createSpeechBody(params), topic_id: bodyTopicId, user_id: arckepId },
           SPEECH_TIMEOUT_MS,
+          topicId,
         );
       },
       estimateImage: async (params: EstimateImageParams) => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
-        return callBackend('/api/chat/studio-tool/estimate-image', {
-          ...imageOptionsBody(params),
-          user_id: arckepId,
-        });
+        const topicId = await resolveOwnedTopicId();
+        return callBackend(
+          '/api/chat/studio-tool/estimate-image',
+          {
+            ...imageOptionsBody(params),
+            user_id: arckepId,
+          },
+          30_000,
+          topicId,
+        );
       },
       getBalance: async () => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
-        return callBackend('/api/chat/studio-tool/get-balance', { user_id: arckepId });
+        const topicId = await resolveOwnedTopicId();
+        return callBackend(
+          '/api/chat/studio-tool/get-balance',
+          { user_id: arckepId },
+          30_000,
+          topicId,
+        );
       },
       getImage: async (generationId: number) => {
         if (!Number.isInteger(generationId) || generationId < 1) {
           throw new Error('getImage: generation_id должен быть положительным целым числом');
         }
         const arckepId = await resolveArckepUserId(serverDB, userId);
-        return callBackend('/api/chat/studio-tool/get-image', {
-          generation_id: generationId,
-          user_id: arckepId,
-        });
+        const topicId = await resolveOwnedTopicId();
+        return callBackend(
+          '/api/chat/studio-tool/get-image',
+          {
+            generation_id: generationId,
+            user_id: arckepId,
+          },
+          30_000,
+          topicId,
+        );
       },
       listImageModels: async () => {
         const arckepId = await resolveArckepUserId(serverDB, userId);
-        return callBackend('/api/chat/studio-tool/list-models', { user_id: arckepId });
+        const topicId = await resolveOwnedTopicId();
+        return callBackend(
+          '/api/chat/studio-tool/list-models',
+          { user_id: arckepId },
+          30_000,
+          topicId,
+        );
       },
     });
   },

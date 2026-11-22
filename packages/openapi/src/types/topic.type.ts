@@ -96,6 +96,22 @@ export type TopicListResponse = PaginationQueryResponse<{
   topics: TopicResponse[];
 }>;
 
+export interface TopicCompactRequest {
+  beforeMessageId?: string | null;
+  dataGuardProtected?: boolean;
+}
+
+export const TopicCompactRequestSchema = z.object({
+  beforeMessageId: z.string().min(1).nullish(),
+  dataGuardProtected: z.boolean().optional(),
+});
+
+export interface TopicCompactResponse {
+  compacted: boolean;
+  compressedCount: number;
+  messageGroupId: string | null;
+}
+
 // ==================== Common Schemas ====================
 
 export const TopicGetParamSchema = z.object({
@@ -107,5 +123,9 @@ export const TopicDeleteParamSchema = z.object({
 });
 
 export const TopicUpdateParamSchema = z.object({
+  id: z.string().min(1, '话题ID不能为空'),
+});
+
+export const TopicCompactParamSchema = z.object({
   id: z.string().min(1, '话题ID不能为空'),
 });

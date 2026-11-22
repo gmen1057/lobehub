@@ -33,7 +33,7 @@ import type {
   UpdateIdentityMemoryResult,
 } from '@lobechat/types';
 import { LayersEnum, RequestTrigger } from '@lobechat/types';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { z } from 'zod';
 
 import {
@@ -41,7 +41,7 @@ import {
   type IdentityEntryPayload,
   UserMemoryModel,
 } from '@/database/models/userMemory';
-import { userSettings } from '@/database/schemas';
+import { userMemories, userSettings } from '@/database/schemas';
 import { getServerDefaultFilesConfig } from '@/server/globalConfig';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { normalizeSearchMemoryParams } from '@/server/services/memory/userMemory/searchParams';
@@ -161,10 +161,51 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
     };
 
     const effortConstrainedLimits = applySearchLimitsByEffort(effectiveEffort, requestedLimits);
-    return this.memoryModel.searchMemory(
+    const result = (await this.memoryModel.searchMemory(
       { ...normalizedParams, queries: normalizedQueries, topK: effortConstrainedLimits },
       queryEmbeddings,
-    ) as Promise<SearchMemoryResult>;
+    )) as SearchMemoryResult;
+
+    try {
+      const parentMemoryIds = new Set<string>();
+      for (const item of result.activities ?? []) {
+        if (item?.userMemoryId) parentMemoryIds.add(item.userMemoryId);
+      }
+      for (const item of result.experiences ?? []) {
+        if (item?.userMemoryId) parentMemoryIds.add(item.userMemoryId);
+      }
+      for (const item of result.identities ?? []) {
+        if (item?.userMemoryId) parentMemoryIds.add(item.userMemoryId);
+      }
+      for (const item of result.preferences ?? []) {
+        if (item?.userMemoryId) parentMemoryIds.add(item.userMemoryId);
+      }
+      for (const item of result.contexts ?? []) {
+        for (const id of item?.userMemoryIds ?? []) {
+          if (typeof id === 'string' && id) parentMemoryIds.add(id);
+        }
+      }
+
+      if (parentMemoryIds.size > 0) {
+        await this.serverDB
+          .update(userMemories)
+          .set({
+            accessedAt: sql`now()`,
+            accessedCount: sql`COALESCE(${userMemories.accessedCount}, 0) + 1`,
+            lastAccessedAt: sql`now()`,
+          })
+          .where(
+            and(
+              eq(userMemories.userId, this.userId),
+              inArray(userMemories.id, [...parentMemoryIds]),
+            ),
+          );
+      }
+    } catch (error) {
+      console.error('[memory-runtime] failed to increment accessed_count:', error);
+    }
+
+    return result;
   };
 
   queryTaxonomyOptions = async (
@@ -435,12 +476,26 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
         originContext: input.withPreference.originContext,
       } satisfies Record<string, unknown>;
 
+      const safeMemoryType =
+        String(input.memoryType ?? '')
+          .trim()
+          .toLowerCase() === 'rule'
+          ? ('preference' as typeof input.memoryType)
+          : input.memoryType;
+      const requestedWithPrefType = (input.withPreference?.type ?? '').trim();
+      const safePreferenceType =
+        String(input.memoryType ?? '')
+          .trim()
+          .toLowerCase() === 'rule' || requestedWithPrefType.toLowerCase() === 'rule'
+          ? 'preference'
+          : safeMemoryType;
+
       const { memory, preference } = await this.memoryModel.createPreferenceMemory({
         details: input.details || '',
         detailsEmbedding,
         memoryCategory: input.memoryCategory,
         memoryLayer: LayersEnum.Preference,
-        memoryType: input.memoryType,
+        memoryType: safeMemoryType,
         preference: {
           conclusionDirectives: input.withPreference.conclusionDirectives || '',
           conclusionDirectivesVector: conclusionVector ?? null,
@@ -448,7 +503,7 @@ class MemoryServerRuntimeService implements MemoryRuntimeService {
           scorePriority: input.withPreference.scorePriority ?? null,
           suggestions: suggestionsText,
           tags: input.tags,
-          type: input.memoryType,
+          type: safePreferenceType,
         },
         summary: input.summary,
         summaryEmbedding,

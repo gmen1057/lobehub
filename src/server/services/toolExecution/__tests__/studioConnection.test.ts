@@ -9,6 +9,11 @@ import { ToolExecutionService } from '../index';
 
 const mockFindById = vi.hoisted(() => vi.fn());
 const mockResolveArckepUserId = vi.hoisted(() => vi.fn());
+const mockFindTopic = vi.hoisted(() => vi.fn());
+
+vi.mock('@/database/models/topic', () => ({
+  TopicModel: vi.fn(() => ({ findById: mockFindTopic })),
+}));
 
 vi.mock('@/database/models/plugin', () => ({
   PluginModel: vi.fn(() => ({ findById: mockFindById })),
@@ -30,7 +35,10 @@ describe('withUserConnectionParams — подключения студии (F6)'
     delete process.env.ARCKEP_INTERNAL_TOKEN;
     delete process.env.LOBECHAT_BACKEND_KEY;
     mockResolveArckepUserId.mockResolvedValue(15);
-    mockFindById.mockResolvedValue({ settings: { 'X-MCP-Host': 'db.local', 'X-Arckep-User': '999' } });
+    mockFindById.mockResolvedValue({
+      settings: { 'X-MCP-Host': 'db.local', 'X-Arckep-User': '999' },
+    });
+    mockFindTopic.mockResolvedValue({ id: 'tpc_1' });
     service = new ToolExecutionService({ builtinToolsExecutor: {} as any, mcpService: {} as any });
   });
 
@@ -43,8 +51,16 @@ describe('withUserConnectionParams — подключения студии (F6)'
 
   it('служебный токен + номер человека; адрес и заголовки — только серверные, настройки человека не читаются', async () => {
     process.env.ARCKEP_INTERNAL_TOKEN = 'internal-secret';
-    const evil = { headers: { 'Authorization': 'Bearer stolen', 'X-Arckep-User': '1' }, type: 'http', url: 'https://evil.example/mcp' };
-    const result = await (service as any).withUserConnectionParams('mcp-arckep-studio-images', evil, context);
+    const evil = {
+      headers: { 'Authorization': 'Bearer stolen', 'X-Arckep-User': '1' },
+      type: 'http',
+      url: 'https://evil.example/mcp',
+    };
+    const result = await (service as any).withUserConnectionParams(
+      'mcp-arckep-studio-images',
+      evil,
+      context,
+    );
     expect(result).toEqual({
       headers: { 'Authorization': 'Bearer internal-secret', 'X-Arckep-User': '15' },
       type: 'http',
@@ -69,7 +85,44 @@ describe('withUserConnectionParams — подключения студии (F6)'
   it('обычные подключения как раньше: настройки человека в заголовки, без Authorization', async () => {
     process.env.ARCKEP_INTERNAL_TOKEN = 'internal-secret';
     const result = await params('mcp-arckep-postgres');
-    expect(result.headers).toEqual({ 'X-Arckep-User': '15', 'X-MCP-Host': 'db.local', 'X-Static': '1' });
+    expect(result.headers).toEqual({
+      'X-Arckep-User': '15',
+      'X-MCP-Host': 'db.local',
+      'X-Static': '1',
+    });
     expect(result.headers.Authorization).toBeUndefined();
+  });
+
+  it('подключения студии пробрасывают X-Arckep-Topic-Id только для своей темы и отбрасывают поддельные заголовки темы', async () => {
+    process.env.ARCKEP_INTERNAL_TOKEN = 'internal-secret';
+    const evil = {
+      headers: { 'X-Arckep-Topic-Id': 'tpc_evil', 'X-Arckep-User': '1' },
+      type: 'http',
+      url: 'https://evil.example/mcp',
+    };
+    const ownedCtx = { ...context, topicId: '  tpc_1\r\n ' };
+    const owned = await (service as any).withUserConnectionParams(
+      'mcp-arckep-studio-images',
+      evil,
+      ownedCtx,
+    );
+    expect(owned.headers).toEqual({
+      'Authorization': 'Bearer internal-secret',
+      'X-Arckep-Topic-Id': 'tpc_1',
+      'X-Arckep-User': '15',
+    });
+    expect(mockFindTopic).toHaveBeenCalledWith('tpc_1');
+
+    // чужая тема — заголовок темы не добавляется, но сам вызов студии не блокируется
+    mockFindTopic.mockResolvedValueOnce(undefined);
+    const foreign = await (service as any).withUserConnectionParams(
+      'mcp-arckep-studio-video',
+      evil,
+      { ...context, topicId: 'tpc_foreign' },
+    );
+    expect(foreign.headers).toEqual({
+      'Authorization': 'Bearer internal-secret',
+      'X-Arckep-User': '15',
+    });
   });
 });

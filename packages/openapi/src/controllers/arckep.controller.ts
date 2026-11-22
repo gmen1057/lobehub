@@ -14,6 +14,12 @@ import {
   UserMemoryModel,
   UserMemoryPreferenceModel,
 } from '@/database/models/userMemory';
+import {
+  estimateMemoryRuleTokens,
+  MAX_MEMORY_RULES,
+  MAX_MEMORY_RULES_TOKENS,
+  normalizeMemoryRuleText,
+} from '@/database/models/userMemory/preference';
 import { AiInfraRepos } from '@/database/repositories/aiInfra';
 import { agents, knowledgeBases } from '@/database/schemas';
 import { getServerGlobalConfig } from '@/server/globalConfig';
@@ -284,8 +290,25 @@ export class ArckepController extends BaseController {
     }
   }
 
+  private handleRuleError(c: Context, error: unknown): Response {
+    const code = (error as { code?: unknown } | undefined)?.code;
+    if (code === 'RULE_NOT_FOUND') {
+      return this.error(c, code, 404);
+    }
+    if (
+      code === 'RULE_LENGTH_INVALID' ||
+      code === 'RULE_DUPLICATE' ||
+      code === 'RULE_COUNT_LIMIT' ||
+      code === 'RULE_TOKEN_LIMIT'
+    ) {
+      return this.error(c, code, 400);
+    }
+    return this.handleError(c, error);
+  }
+
   /**
    * GET /api/v1/memories — память пользователя (все слои или один), постранично.
+   * При выборке слоя preference исключаем закреплённые правила (type = 'rule').
    */
   async getMemories(c: Context): Promise<Response> {
     try {
@@ -298,6 +321,17 @@ export class ArckepController extends BaseController {
         q?: string;
       }>(c);
 
+      if ((query.layer ?? LayersEnum.Context) === LayersEnum.Preference) {
+        const preferenceModel = new UserMemoryPreferenceModel(db, userId);
+        const result = await preferenceModel.queryPreferencesExcludingRules({
+          order: 'desc',
+          page: query.page ?? 1,
+          pageSize: query.pageSize ?? 50,
+          q: query.q,
+        });
+        return this.success(c, result, 'memories');
+      }
+
       const memoryModel = new UserMemoryModel(db, userId);
       const result = await memoryModel.queryMemories({
         layer: query.layer,
@@ -308,6 +342,94 @@ export class ArckepController extends BaseController {
       });
 
       return this.success(c, result, 'memories');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * GET /api/v1/memories/rules — закреплённые правила («Мои правила»).
+   */
+  async getMemoryRules(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const rows = await new UserMemoryPreferenceModel(db, userId).queryRules();
+      let usedTokens = 0;
+      const items = rows.map((row) => {
+        const text = normalizeMemoryRuleText(row.conclusionDirectives ?? '');
+        const tokens = estimateMemoryRuleTokens(text);
+        usedTokens += tokens;
+        return {
+          createdAt:
+            row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
+          id: row.id,
+          text,
+          tokens,
+          updatedAt:
+            row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+        };
+      });
+
+      return this.success(
+        c,
+        {
+          items,
+          maxRules: MAX_MEMORY_RULES,
+          maxTokens: MAX_MEMORY_RULES_TOKENS,
+          total: items.length,
+          usedTokens,
+        },
+        'memory rules',
+      );
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * POST /api/v1/memories/rules — добавить закреплённое правило.
+   */
+  async createMemoryRule(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const { text } = await this.getBody<{ text: string }>(c);
+      const data = await new UserMemoryPreferenceModel(db, userId).createRule(text);
+      return this.success(c, data, 'memory rule created');
+    } catch (error) {
+      return this.handleRuleError(c, error);
+    }
+  }
+
+  /**
+   * PATCH /api/v1/memories/rules/:id — обновить текст закреплённого правила.
+   */
+  async updateMemoryRule(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const id = c.req.param('id');
+      if (!id) return this.error(c, 'Rule id is required', 400);
+      const { text } = await this.getBody<{ text: string }>(c);
+      const data = await new UserMemoryPreferenceModel(db, userId).updateRule(id, text);
+      return this.success(c, data, 'memory rule updated');
+    } catch (error) {
+      return this.handleRuleError(c, error);
+    }
+  }
+
+  /**
+   * DELETE /api/v1/memories/rules/:id — удалить закреплённое правило.
+   */
+  async deleteMemoryRule(c: Context): Promise<Response> {
+    try {
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const id = c.req.param('id');
+      if (!id) return this.error(c, 'Rule id is required', 400);
+      await new UserMemoryPreferenceModel(db, userId).deleteRule(id);
+      return this.success(c, { id }, 'memory rule deleted');
     } catch (error) {
       return this.handleError(c, error);
     }
@@ -368,11 +490,12 @@ export class ArckepController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
       const body = await this.getBody<{
+        billingOperationId?: string;
         days?: number;
+        excludeTopicIds?: string[];
         idleMinutes?: number;
         limit?: number;
         mode?: 'digest' | 'topics';
-        billingOperationId?: string;
         studioUserId?: number;
       }>(c);
       if (body.billingOperationId && body.studioUserId !== this.getAuthData(c)?.studioUserId) {
@@ -389,6 +512,7 @@ export class ArckepController extends BaseController {
           runDailyDigest(db, userId, {
             contextLimit: Number(process.env.MEMORY_USER_MEMORY_DIGEST_CONTEXT_LIMIT) || 60_000,
             days: body.days ?? 30,
+            ...(body.excludeTopicIds !== undefined && { excludeTopicIds: body.excludeTopicIds }),
             idleMinutes: body.idleMinutes ?? 60,
             maxMemories: Number(process.env.MEMORY_USER_MEMORY_DIGEST_MAX_MEMORIES) || 300,
             maxTopics: body.limit ?? 50,
@@ -405,6 +529,7 @@ export class ArckepController extends BaseController {
 
       const result = await runAutoExtract(db, userId, {
         days: body.days ?? 30,
+        ...(body.excludeTopicIds !== undefined && { excludeTopicIds: body.excludeTopicIds }),
         idleMinutes: body.idleMinutes ?? 30,
         limit: body.limit ?? 3,
       });

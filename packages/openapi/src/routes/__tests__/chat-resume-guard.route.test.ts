@@ -1,5 +1,10 @@
 import { Hono } from 'hono';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  getActiveTopicCompactions,
+  resetInFlightTopicCompactionsForTests,
+} from '@/server/services/topic/compactionRegistry';
 
 import { responsesStreamHub } from '../../services/responsesStreamHub';
 import MessageRoutes from '../messages.route';
@@ -126,6 +131,7 @@ const parseSseEvents = (raw: string): Array<{ data: any; event: string }> =>
 describe('chat-resume-guard HTTP routes (В1 + Г1)', () => {
   beforeEach(() => {
     responsesStreamHub.clear();
+    resetInFlightTopicCompactionsForTests();
     vi.clearAllMocks();
     mockAssertTopicAccess.mockResolvedValue(undefined);
     mockExecAgent.mockResolvedValue({
@@ -137,6 +143,10 @@ describe('chat-resume-guard HTTP routes (В1 + Г1)', () => {
       messages: [{ content: 'ok', role: 'assistant' }],
       status: 'done',
     });
+  });
+
+  afterEach(() => {
+    resetInFlightTopicCompactionsForTests();
   });
 
   it('GET /responses/:id/stream?mode=wait отдаёт SSE и ждёт завершения даже при truncated=true, тогда как обычный /stream даёт 404', async () => {
@@ -277,6 +287,79 @@ describe('chat-resume-guard HTTP routes (В1 + Г1)', () => {
       method: 'DELETE',
     });
     expect(okRes.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /responses и DELETE /messages возвращают 409 Conflict во время активного /compact темы и пропускают после его завершения', async () => {
+    getActiveTopicCompactions().add('user_1:tpc_1');
+
+    // POST /responses (stream=false и stream=true) блокируются 409 до вызова execAgent
+    for (const stream of [false, true]) {
+      const respConflict = await app.request('/api/v1/responses', {
+        body: JSON.stringify({
+          input: 'сообщение во время сжатия',
+          model: 'agent-1',
+          previous_response_id: 'tpc_1',
+          stream,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+      });
+      expect(respConflict.status).toBe(409);
+      expect(await respConflict.json()).toMatchObject({
+        error: 'Compaction is already in progress for this topic',
+        success: false,
+      });
+    }
+    expect(mockExecAgent).not.toHaveBeenCalled();
+
+    // DELETE /messages/:id и DELETE /messages (batch) для темы в сжатии → 409 без удаления из БД
+    mockFindManyMessages.mockResolvedValue([{ topicId: 'tpc_1' }]);
+    mockFindFirstMessage.mockResolvedValue({ userId: 'user_1' });
+
+    const singleDeleteConflict = await app.request('/api/v1/messages/msg_1', {
+      method: 'DELETE',
+    });
+    expect(singleDeleteConflict.status).toBe(409);
+    expect(await singleDeleteConflict.json()).toMatchObject({
+      error: 'Compaction is already in progress for this topic',
+      success: false,
+    });
+
+    mockFindManyMessages.mockResolvedValue([{ topicId: 'tpc_other' }, { topicId: 'tpc_1' }]);
+    const batchDeleteConflict = await app.request('/api/v1/messages', {
+      body: JSON.stringify({ messageIds: ['msg_other', 'msg_1'] }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'DELETE',
+    });
+    expect(batchDeleteConflict.status).toBe(409);
+    expect(await batchDeleteConflict.json()).toMatchObject({
+      error: 'Compaction is already in progress for this topic',
+      success: false,
+    });
+    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+
+    // После завершения сжатия запросы снова проходят штатно
+    getActiveTopicCompactions().delete('user_1:tpc_1');
+
+    const okResp = await app.request('/api/v1/responses', {
+      body: JSON.stringify({
+        input: 'сообщение после сжатия',
+        model: 'agent-1',
+        previous_response_id: 'tpc_1',
+        stream: false,
+      }),
+      headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+    });
+    expect(okResp.status).toBe(200);
+    expect(mockExecAgent).toHaveBeenCalledTimes(1);
+
+    const okDelete = await app.request('/api/v1/messages/msg_1', {
+      method: 'DELETE',
+    });
+    expect(okDelete.status).toBe(200);
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 });
