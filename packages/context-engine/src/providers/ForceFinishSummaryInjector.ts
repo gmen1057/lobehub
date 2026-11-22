@@ -11,6 +11,9 @@ declare module '../types' {
 
 const log = debug('context-engine:provider:ForceFinishSummaryInjector');
 
+export const DEFAULT_FORCE_FINISH_PROMPT =
+  'You have reached the maximum step limit for this turn. Respond in the language of the current conversation: clearly summarize what has already been completed, preserve all obtained results, and briefly state what remains so the user can continue in the next message. Do not frame this pause as an error. Do not attempt to use any tools.';
+
 export interface ForceFinishSummaryInjectorConfig {
   enabled: boolean;
   /** Optional custom force-finish system prompt (defaults to max-steps summary prompt) */
@@ -44,13 +47,22 @@ export class ForceFinishSummaryInjector extends BaseProvider {
     log('Injecting force-finish summary prompt');
 
     const clonedContext = this.cloneContext(context);
+    const prompt = this.config.prompt || DEFAULT_FORCE_FINISH_PROMPT;
+    const systemMsgIndex = clonedContext.messages.findIndex((m) => m.role === 'system');
 
-    clonedContext.messages.push({
-      content:
-        this.config.prompt ||
-        'You have reached the maximum step limit. Please summarize your progress and provide a final response. Do not attempt to use any tools.',
-      role: 'system' as const,
-    });
+    if (systemMsgIndex >= 0) {
+      const existing = clonedContext.messages[systemMsgIndex];
+      const existingContent = typeof existing.content === 'string' ? existing.content : '';
+      clonedContext.messages[systemMsgIndex] = {
+        ...existing,
+        content: [existingContent, prompt].filter(Boolean).join('\n\n'),
+      };
+    } else {
+      clonedContext.messages.push({
+        content: prompt,
+        role: 'system' as const,
+      });
+    }
 
     clonedContext.metadata.forceFinishInjected = true;
 

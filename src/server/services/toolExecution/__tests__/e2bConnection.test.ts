@@ -58,9 +58,10 @@ describe('withUserConnectionParams — песочница E2B и номер те
   const params = (identifier: string, ctx = context(), mcp: any = http) =>
     (service as any).withUserConnectionParams(identifier, mcp, ctx) as Promise<any>;
 
-  it('E2B: X-Arckep-Topic = номер темы, X-Arckep-User = номер человека в студии', async () => {
+  it('E2B: X-Arckep-Topic = номер темы, X-Arckep-User = номер человека в студии, X-Arckep-Allow-Internet = 0 по умолчанию', async () => {
     const result = await params(E2B);
     expect(result.headers).toEqual({
+      'X-Arckep-Allow-Internet': '0',
       'X-Arckep-Topic': 'tpc_1',
       'X-Arckep-User': '15',
       'X-Static': '1',
@@ -68,37 +69,73 @@ describe('withUserConnectionParams — песочница E2B и номер те
     expect(result.url).toBe(http.url);
   });
 
+  it('E2B: sandboxAllowInternet=true выставляет X-Arckep-Allow-Internet: 1', async () => {
+    const result = await params(E2B, context({ sandboxAllowInternet: true }));
+    expect(result.headers).toEqual({
+      'X-Arckep-Allow-Internet': '1',
+      'X-Arckep-Topic': 'tpc_1',
+      'X-Arckep-User': '15',
+      'X-Static': '1',
+    });
+  });
+
   it('нет номера темы — вызов отклоняется, а не уходит на session_id модели', async () => {
     await expect(params(E2B, context({ topicId: undefined }))).rejects.toThrow('в своём чате');
   });
 
-  it('другие подключения номер темы не получают', async () => {
+  it('другие подключения номер темы и X-Arckep-Allow-Internet не получают', async () => {
     for (const id of ['mcp-arckep-wordstat', 'mcp-arckep-postgres', 'mcp-custom-thing']) {
-      const result = await params(id);
+      const result = await params(id, context({ sandboxAllowInternet: true }));
       expect(result.headers, id).not.toHaveProperty('X-Arckep-Topic');
+      expect(result.headers, id).not.toHaveProperty('X-Arckep-Allow-Internet');
     }
   });
 
-  it('заголовки темы из настроек человека и манифеста отбрасываются; у E2B остаётся серверный', async () => {
+  it('заголовки темы и интернета из настроек человека и манифеста отбрасываются в любом регистре; у E2B остаётся серверный', async () => {
     mockFindById.mockResolvedValue({
       settings: {
+        'X-ARCKEP-ALLOW-INTERNET': '1',
         'X-Arckep-Topic': 'tpc_victim',
+        'x-arckep-allow-internet': '1',
         'x-mcp-topic-id': 'tpc_victim',
         'X-MCP-Host': 'db.local',
       },
     });
-    const evilManifest = { ...http, headers: { 'X-Static': '1', 'x-arckep-topic': 'tpc_victim2' } };
+    const evilManifest = {
+      ...http,
+      headers: {
+        'X-Arckep-Allow-Internet': '1',
+        'X-Static': '1',
+        'x-arckep-allow-internet': '1',
+        'x-arckep-topic': 'tpc_victim2',
+      },
+    };
 
     const e2b = await params(E2B, context(), evilManifest);
     expect(e2b.headers).toEqual({
+      'X-Arckep-Allow-Internet': '0',
       'X-Arckep-Topic': 'tpc_1',
       'X-Arckep-User': '15',
       'X-MCP-Host': 'db.local',
       'X-Static': '1',
     });
 
-    const other = await params('mcp-arckep-postgres', context(), evilManifest);
+    const e2bAllowed = await params(E2B, context({ sandboxAllowInternet: true }), {
+      ...http,
+      headers: { 'X-Static': '1', 'x-arckep-allow-internet': '0' },
+    });
+    expect(e2bAllowed.headers['X-Arckep-Allow-Internet']).toBe('1');
+    expect(
+      Object.keys(e2bAllowed.headers).filter((k) => k.toLowerCase() === 'x-arckep-allow-internet'),
+    ).toEqual(['X-Arckep-Allow-Internet']);
+
+    const other = await params(
+      'mcp-arckep-postgres',
+      context({ sandboxAllowInternet: true }),
+      evilManifest,
+    );
     expect(JSON.stringify(other.headers).toLowerCase()).not.toContain('topic');
+    expect(JSON.stringify(other.headers).toLowerCase()).not.toContain('allow-internet');
     expect(other.headers['X-MCP-Host']).toBe('db.local');
   });
 
