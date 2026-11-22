@@ -1869,31 +1869,100 @@ export class AiAgentService {
 
     await throwIfExecutionAborted('tool preparation');
 
-    // 10. Fetch user persona for memory injection (reuses globalMemoryEnabled from step 8)
+    // 10. Fetch user persona and pinned rules for memory injection (reuses globalMemoryEnabled from step 8)
     let userMemory: ServerUserMemoryConfig | undefined;
 
-    if (globalMemoryEnabled) {
+    if (
+      Boolean(
+        (chatConfigOverride as { deepseekDataGuardProtected?: boolean } | undefined)
+          ?.deepseekDataGuardProtected ||
+        (agentConfig.chatConfig as { deepseekDataGuardProtected?: boolean } | undefined)
+          ?.deepseekDataGuardProtected,
+      ) &&
+      topicId
+    ) {
       try {
-        const personaModel = new UserPersonaModel(this.db, this.userId);
-        const persona = await personaModel.getLatestPersonaDocument();
+        const [{ and, eq, sql }, { topics }] = await Promise.all([
+          import('drizzle-orm'),
+          import('@/database/schemas'),
+        ]);
+        await this.db
+          .update(topics)
+          .set({
+            metadata: sql`jsonb_set(CASE WHEN jsonb_typeof(${topics.metadata}) = 'object' THEN ${topics.metadata} ELSE '{}'::jsonb END, '{dataGuardProtected}', 'true'::jsonb, true)`,
+          })
+          .where(and(eq(topics.id, topicId), eq(topics.userId, this.userId)));
+      } catch (error) {
+        log('execAgent: failed to mark topic %s as dataGuardProtected: %O', topicId, error);
+      }
+    }
 
-        if (persona?.persona) {
+    const shouldInjectMemory =
+      globalMemoryEnabled &&
+      agentConfig.chatConfig?.memory?.enabled !== false &&
+      !excludedPluginIds?.has?.('lobe-user-memory');
+
+    if (shouldInjectMemory) {
+      try {
+        const {
+          MAX_MEMORY_RULES,
+          MAX_MEMORY_RULES_TOKENS,
+          UserMemoryPreferenceModel,
+          estimateMemoryRuleTokens,
+          normalizeMemoryRuleText,
+        } = await import('@/database/models/userMemory/preference');
+        const personaModel = new UserPersonaModel(this.db, this.userId);
+        const preferenceModel = new UserMemoryPreferenceModel(this.db, this.userId);
+        const [persona, rules] = await Promise.all([
+          personaModel.getLatestPersonaDocument(),
+          preferenceModel.queryRules(),
+        ]);
+
+        const pinnedPreferences: Array<{ conclusionDirectives: string; id: string }> = [];
+        let usedRuleTokens = 0;
+        for (const r of rules) {
+          const directive = normalizeMemoryRuleText(r.conclusionDirectives ?? '');
+          if (!directive) continue;
+          const ruleTokens = estimateMemoryRuleTokens(directive);
+          if (
+            pinnedPreferences.length >= MAX_MEMORY_RULES ||
+            usedRuleTokens + ruleTokens > MAX_MEMORY_RULES_TOKENS
+          ) {
+            break;
+          }
+          usedRuleTokens += ruleTokens;
+          pinnedPreferences.push({
+            conclusionDirectives: directive,
+            id: r.id,
+          });
+        }
+
+        const hasPersona = Boolean(persona?.persona?.trim());
+        if (hasPersona || pinnedPreferences.length > 0) {
           userMemory = {
             fetchedAt: Date.now(),
             memories: {
               contexts: [],
               experiences: [],
-              persona: {
-                narrative: persona.persona,
-                tagline: persona.tagline,
-              },
-              preferences: [],
+              ...(hasPersona && persona
+                ? {
+                    persona: {
+                      narrative: persona.persona,
+                      tagline: persona.tagline,
+                    },
+                  }
+                : {}),
+              preferences: pinnedPreferences,
             },
           };
-          log('execAgent: fetched user persona (version: %d)', persona.version);
+          log(
+            'execAgent: prepared userMemory (persona: %s, rules: %d)',
+            hasPersona,
+            pinnedPreferences.length,
+          );
         }
       } catch (error) {
-        log('execAgent: failed to fetch user persona: %O', error);
+        log('execAgent: failed to fetch user memory: %O', error);
       }
     }
 

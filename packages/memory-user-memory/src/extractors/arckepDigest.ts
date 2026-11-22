@@ -1,7 +1,7 @@
 import { renderPlaceholderTemplate } from '@lobechat/context-engine';
 import type { GenerateObjectSchema } from '@lobechat/model-runtime';
 import { LayersEnum } from '@lobechat/types';
-import type { z } from 'zod';
+import { z } from 'zod';
 
 import {
   activityPrompt,
@@ -10,19 +10,146 @@ import {
   identityPrompt,
   preferencePrompt,
 } from '../prompts';
-import type {
-  ContextMemorySchema,
-  ExperienceMemorySchema,
-  IdentityActionsSchema,
-  PreferenceMemorySchema,
+import type { IdentityActionsSchema } from '../schemas';
+import {
+  ContextMemoryItemSchema,
+  ExperienceMemoryItemSchema,
+  PreferenceMemoryItemSchema,
 } from '../schemas';
 import type { ExtractorOptions, ExtractorTemplateProps } from '../types';
+import { buildGenerateObjectSchema } from '../utils/zod';
 import { ActivityExtractor } from './activity';
 import { BaseMemoryExtractor, type BaseMemoryExtractorConfig } from './base';
-import { ContextExtractor } from './context';
-import { ExperienceExtractor } from './experience';
 import { IdentityExtractor } from './identity';
-import { PreferenceExtractor } from './preference';
+
+const SUPERSEDE_IDS_DESCRIPTION =
+  'Exact id attributes from <existing_memories> of the same layer that this new or merged memory replaces or supersedes; use [] or null when nothing is replaced';
+
+const DigestSupersedeIdsZodField = z
+  .array(z.string())
+  .nullable()
+  .optional()
+  .describe(SUPERSEDE_IDS_DESCRIPTION);
+
+const DigestSupersedeIdsStrictField = z
+  .array(z.string())
+  .nullable()
+  .describe(SUPERSEDE_IDS_DESCRIPTION);
+
+export const DigestPreferenceMemorySchema = z.object({
+  memories: z
+    .array(
+      PreferenceMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsZodField,
+      }),
+    )
+    .describe(
+      'Array of extracted preference memory items, could be empty if decided no relevant preference to extract',
+    ),
+});
+
+export const DigestContextMemorySchema = z.object({
+  memories: z
+    .array(
+      ContextMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsZodField,
+      }),
+    )
+    .describe(
+      'Array of extracted context memory items, could be empty if decided no relevant context to extract',
+    ),
+});
+
+export const DigestExperienceMemorySchema = z.object({
+  memories: z
+    .array(
+      ExperienceMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsZodField,
+      }),
+    )
+    .describe(
+      'Array of extracted experience memory items, could be empty if decided no relevant experience to extract',
+    ),
+});
+
+const StrictDigestPreferenceJsonSchema = z.object({
+  memories: z
+    .array(
+      PreferenceMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsStrictField,
+      }),
+    )
+    .describe(
+      'Array of extracted preference memory items, could be empty if decided no relevant preference to extract',
+    ),
+});
+
+const StrictDigestContextJsonSchema = z.object({
+  memories: z
+    .array(
+      ContextMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsStrictField,
+      }),
+    )
+    .describe(
+      'Array of extracted context memory items, could be empty if decided no relevant context to extract',
+    ),
+});
+
+const StrictDigestExperienceJsonSchema = z.object({
+  memories: z
+    .array(
+      ExperienceMemoryItemSchema.extend({
+        supersedeIds: DigestSupersedeIdsStrictField,
+      }),
+    )
+    .describe(
+      'Array of extracted experience memory items, could be empty if decided no relevant experience to extract',
+    ),
+});
+
+const enforceStrictJsonSchema = (node: unknown): unknown => {
+  if (!node || typeof node !== 'object') return node;
+  if (Array.isArray(node)) return node.map(enforceStrictJsonSchema);
+
+  const obj = { ...(node as Record<string, unknown>) };
+  if (obj.properties && typeof obj.properties === 'object' && !Array.isArray(obj.properties)) {
+    const props = Object.fromEntries(
+      Object.entries(obj.properties as Record<string, unknown>).map(([k, v]) => [
+        k,
+        enforceStrictJsonSchema(v),
+      ]),
+    );
+    obj.properties = props;
+    obj.required = Object.keys(props);
+    obj.additionalProperties = false;
+  }
+  if (obj.items) {
+    obj.items = enforceStrictJsonSchema(obj.items);
+  }
+  for (const branchKey of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(obj[branchKey])) {
+      obj[branchKey] = (obj[branchKey] as unknown[]).map(enforceStrictJsonSchema);
+    }
+  }
+  if (obj.$defs && typeof obj.$defs === 'object' && !Array.isArray(obj.$defs)) {
+    obj.$defs = Object.fromEntries(
+      Object.entries(obj.$defs as Record<string, unknown>).map(([k, v]) => [
+        k,
+        enforceStrictJsonSchema(v),
+      ]),
+    );
+  }
+  if (obj.definitions && typeof obj.definitions === 'object' && !Array.isArray(obj.definitions)) {
+    obj.definitions = Object.fromEntries(
+      Object.entries(obj.definitions as Record<string, unknown>).map(([k, v]) => [
+        k,
+        enforceStrictJsonSchema(v),
+      ]),
+    );
+  }
+  return obj;
+};
 
 /**
  * arckep (20.10.2026): суточный разбор человека ОДНИМ вызовом модели вместо шести (привратник + пять слоёв).
@@ -48,10 +175,10 @@ export const DIGEST_LAYERS = [
 
 export interface DigestOutput {
   activity?: { memories?: unknown[] } | null;
-  context?: z.infer<typeof ContextMemorySchema> | null;
-  experience?: z.infer<typeof ExperienceMemorySchema> | null;
+  context?: z.infer<typeof DigestContextMemorySchema> | null;
+  experience?: z.infer<typeof DigestExperienceMemorySchema> | null;
   identity?: z.infer<typeof IdentityActionsSchema> | null;
-  preference?: z.infer<typeof PreferenceMemorySchema> | null;
+  preference?: z.infer<typeof DigestPreferenceMemorySchema> | null;
 }
 
 export interface DigestExtractorOptions extends ExtractorOptions {
@@ -81,6 +208,8 @@ const HEADER = [
   '',
   'Rules for all layers:',
   '- Compare with the existing memories first. Output only what is NEW or MATERIALLY UPDATED; never repeat what is already stored, even in other words.',
+  '- When a new or updated preference, context, or experience memory merges, replaces, or supersedes outdated or duplicate entries of the same layer from <existing_memories>, list their exact id attributes in supersedeIds (use [] or null when nothing is superseded).',
+  '- Entries marked with pinned="true" in <existing_memories> are manual permanent user rules: never repeat them as new preferences and never include their id in supersedeIds.',
   '- Several conversations about the same project or situation are ONE context memory, not one per conversation.',
   '- Extract only durable facts that will matter in future conversations. Skip one-off task requirements, small talk, connectivity checks ("are you there?"), test messages and tool or system chatter.',
   '- Preferences only from explicit cross-session directives ("always", "never", "from now on", "I prefer").',
@@ -114,34 +243,35 @@ export const buildDigestPrompt = (): string => {
 
 export const buildDigestSchema = (): GenerateObjectSchema => {
   if (cachedSchema) return cachedSchema;
-  // Схемы слоёв берём у их экстракторов как есть (рантайм для getSchema не нужен).
+  // Схемы слоёв берём у их экстракторов, а для preference/context/experience добавляем supersedeIds.
   const stub = { modelRuntime: {} as never, model: 'schema-only' };
   const layerSchemas: Record<string, GenerateObjectSchema | undefined> = {
     [LayersEnum.Activity]: new ActivityExtractor({ ...stub, agent: 'layer-activity' }).getSchema(),
-    [LayersEnum.Context]: new ContextExtractor({ ...stub, agent: 'layer-context' }).getSchema(),
-    [LayersEnum.Experience]: new ExperienceExtractor({
-      ...stub,
-      agent: 'layer-experience',
-    }).getSchema(),
+    [LayersEnum.Context]: buildGenerateObjectSchema(StrictDigestContextJsonSchema, {
+      name: 'context_extraction',
+    }),
+    [LayersEnum.Experience]: buildGenerateObjectSchema(StrictDigestExperienceJsonSchema, {
+      name: 'experience_extraction',
+    }),
     [LayersEnum.Identity]: new IdentityExtractor({ ...stub, agent: 'layer-identity' }).getSchema(),
-    [LayersEnum.Preference]: new PreferenceExtractor({
-      ...stub,
-      agent: 'layer-preference',
-    }).getSchema(),
+    [LayersEnum.Preference]: buildGenerateObjectSchema(StrictDigestPreferenceJsonSchema, {
+      name: 'preference_extraction',
+    }),
   };
-  cachedSchema = {
+  const built: GenerateObjectSchema = {
     name: 'memory_digest',
-    schema: {
+    schema: enforceStrictJsonSchema({
       additionalProperties: false,
       properties: Object.fromEntries(
         DIGEST_LAYERS.map((layer) => [layer, layerSchemas[layer]!.schema]),
       ),
       required: [...DIGEST_LAYERS],
       type: 'object' as const,
-    },
+    }) as GenerateObjectSchema['schema'],
     strict: true,
   };
-  return cachedSchema;
+  cachedSchema = built;
+  return built;
 };
 
 export class DigestMemoryExtractor extends BaseMemoryExtractor<
@@ -149,6 +279,10 @@ export class DigestMemoryExtractor extends BaseMemoryExtractor<
   ExtractorTemplateProps,
   DigestExtractorOptions
 > {
+  static readonly PreferenceMemorySchema = DigestPreferenceMemorySchema;
+  static readonly ContextMemorySchema = DigestContextMemorySchema;
+  static readonly ExperienceMemorySchema = DigestExperienceMemorySchema;
+
   constructor(config: Omit<BaseMemoryExtractorConfig, 'agent'>) {
     super({ ...config, agent: 'arckep-digest' });
   }
