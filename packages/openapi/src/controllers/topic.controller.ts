@@ -1,8 +1,14 @@
 import type { Context } from 'hono';
+import { HTTPException } from 'hono/http-exception';
+
+import { compactTopic, TopicCompactHttpError } from '@/server/services/topic/compactTopic';
 
 import { BaseController } from '../common/base.controller';
+import { hasInFlightResponseTopic } from '../services/engineSlotActivity';
+import { responsesStreamHub } from '../services/responsesStreamHub';
 import { TopicService } from '../services/topic.service';
 import type { TopicCreateRequest, TopicListQuery, TopicUpdateRequest } from '../types/topic.type';
+import { TopicCompactRequestSchema } from '../types/topic.type';
 
 export class TopicController extends BaseController {
   /**
@@ -96,6 +102,55 @@ export class TopicController extends BaseController {
 
       return this.success(c, updatedTopic, '更新话题成功');
     } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * Manually compacts topic conversation history into a rolling compression group
+   * POST /api/v1/topics/:id/compact
+   * Params: { id: string }
+   * Body (optional): { beforeMessageId?: string | null, dataGuardProtected?: boolean }
+   */
+  async handleCompactTopic(c: Context) {
+    try {
+      const userId = this.getUserId(c)!;
+      const { id } = this.getParams<{ id: string }>(c);
+
+      const rawBody = await c.req.text();
+      let parsedJson: unknown = {};
+      if (rawBody.trim().length > 0) {
+        try {
+          parsedJson = JSON.parse(rawBody);
+        } catch {
+          return this.error(c, 'Invalid JSON body', 400);
+        }
+      }
+
+      const parsedBody = TopicCompactRequestSchema.safeParse(parsedJson);
+      if (!parsedBody.success) {
+        return this.error(c, parsedBody.error.issues[0]?.message || 'Invalid request body', 400);
+      }
+
+      const db = await this.getDatabase();
+      const result = await compactTopic({
+        beforeMessageId: parsedBody.data.beforeMessageId,
+        dataGuardProtected: parsedBody.data.dataGuardProtected,
+        db,
+        isTopicBusy: () => {
+          const op = responsesStreamHub.findByTopic(userId, id);
+          if (op && !op.done) return true;
+          return hasInFlightResponseTopic(userId, id);
+        },
+        topicId: id,
+        userId,
+      });
+
+      return this.success(c, result, 'Topic compacted successfully');
+    } catch (error) {
+      if (error instanceof TopicCompactHttpError) {
+        return this.handleError(c, new HTTPException(error.status, { message: error.message }));
+      }
       return this.handleError(c, error);
     }
   }
