@@ -67,6 +67,7 @@ export type FinishReason =
   | 'timeout' // Execution timeout
   | 'agent_decision' // Agent decided to finish
   | 'queued_message_interrupt' // Soft interrupt: user queued a message during execution
+  | 'tool_error_limit' // Completed after consecutive tool-error circuit breaker tripped
   | 'error_recovery' // Finished due to unrecoverable error
   | 'system_shutdown'; // System is shutting down
 

@@ -197,6 +197,13 @@ export interface OpenAICompatibleFactoryOptions<T extends Record<string, any> = 
       };
   provider: string;
   responses?: {
+    /**
+     * Default value for `strict` on Responses API function tools when `tool.function.strict` is omitted.
+     * Left undefined by default so non-OpenAI providers (e.g. xAI) are unaffected; OpenAI sets `false`
+     * because OpenAI's Responses API otherwise defaults `strict` to `true` and rejects arbitrary
+     * MCP/JSON schemas with optional properties.
+     */
+    defaultToolStrict?: boolean;
     handlePayload?: (
       payload: ChatStreamPayload,
       options: ConstructorOptions<T>,
@@ -1238,7 +1245,13 @@ export const createOpenAICompatibleRuntime = <T extends Record<string, any> = an
         return tool;
       }
 
-      return { type: tool.type, ...tool.function } as any;
+      const strict = tool.function.strict ?? responses?.defaultToolStrict;
+
+      return {
+        type: tool.type,
+        ...tool.function,
+        ...(strict !== undefined ? { strict } : {}),
+      } as OpenAI.Responses.Tool;
     };
 
     private async generateObjectWithTools(

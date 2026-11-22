@@ -17,6 +17,11 @@ import type {
   ToolsCalling,
   Usage,
 } from '../types';
+import {
+  isToolErrorCircuitBreakerTripped,
+  type ToolResultLike,
+  updateToolErrorCircuitBreaker,
+} from '../utils/toolErrorCircuitBreaker';
 
 /**
  * Simplified Agent Runtime - The "Engine" that executes instructions from an "Agent" (Brain).
@@ -189,6 +194,34 @@ export class AgentRuntime {
 
         // Update state
         currentState = result.newState;
+
+        // Track consecutive tool errors and trip forceFinish on runaway failure loops
+        if (
+          (instruction.type === 'call_tool' || instruction.type === 'call_tools_batch') &&
+          currentState.status !== 'interrupted' &&
+          result.nextContext
+        ) {
+          const toolResults: ToolResultLike[] =
+            result.nextContext.phase === 'tool_result'
+              ? [result.nextContext.payload as ToolResultLike]
+              : result.nextContext.phase === 'tools_batch_result'
+                ? (((result.nextContext.payload as { toolResults?: ToolResultLike[] })
+                    ?.toolResults ?? []) as ToolResultLike[])
+                : [];
+
+          if (toolResults.length > 0) {
+            const nextBreaker = updateToolErrorCircuitBreaker(
+              currentState.toolErrorCircuitBreaker,
+              toolResults,
+            );
+            if (nextBreaker) {
+              currentState.toolErrorCircuitBreaker = nextBreaker;
+              if (isToolErrorCircuitBreakerTripped(nextBreaker)) {
+                currentState.forceFinish = true;
+              }
+            }
+          }
+        }
 
         // Keep the last nextContext
         if (result.nextContext) {

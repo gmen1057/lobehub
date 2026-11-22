@@ -55,6 +55,7 @@ export const serverMessagesEngine = async ({
   inputTemplate,
   enableHistoryCount,
   forceFinish,
+  forceFinishPrompt,
   historyCount,
   historySummary,
   formatHistorySummary,
@@ -92,8 +93,9 @@ export const serverMessagesEngine = async ({
     // File context configuration (server always includes file URLs)
     fileContext: { enabled: true, includeFileUrl: true },
 
-    // Force finish mode (inject summary prompt when maxSteps exceeded)
+    // Force finish mode (inject summary prompt when maxSteps exceeded or circuit breaker tripped)
     forceFinish,
+    forceFinishPrompt,
 
     formatHistorySummary,
 

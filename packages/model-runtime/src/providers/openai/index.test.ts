@@ -541,7 +541,79 @@ describe('LobeOpenAI', () => {
 
       const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
       expect(createCall.tools).toEqual([
-        { description: 'test', name: 'test', type: 'function' },
+        { description: 'test', name: 'test', strict: false, type: 'function' },
+        { type: 'web_search' },
+      ]);
+    });
+
+    it('should default strict to false for omitted function tool strict and preserve explicit true/false on LobeOpenAI Responses API', async () => {
+      await instance.chat({
+        enabledSearch: true,
+        messages: [{ content: 'Create 3D', role: 'user' as const }],
+        model: 'gpt-6.2-sol',
+        tools: [
+          {
+            function: {
+              description: 'Omitted strict',
+              name: 'create_3d',
+              parameters: { properties: { prompt: { type: 'string' } }, type: 'object' },
+            },
+            type: 'function' as const,
+          },
+          {
+            function: {
+              description: 'Explicit strict true',
+              name: 'strict_tool',
+              parameters: {
+                additionalProperties: false,
+                properties: { id: { type: 'string' } },
+                required: ['id'],
+                type: 'object',
+              },
+              strict: true,
+            },
+            type: 'function' as const,
+          },
+          {
+            function: {
+              description: 'Explicit strict false',
+              name: 'non_strict_tool',
+              parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+              strict: false,
+            },
+            type: 'function' as const,
+          },
+        ],
+      });
+
+      const createCall = (instance['client'].responses.create as Mock).mock.calls[0][0];
+      expect(createCall.tools).toEqual([
+        {
+          description: 'Omitted strict',
+          name: 'create_3d',
+          parameters: { properties: { prompt: { type: 'string' } }, type: 'object' },
+          strict: false,
+          type: 'function',
+        },
+        {
+          description: 'Explicit strict true',
+          name: 'strict_tool',
+          parameters: {
+            additionalProperties: false,
+            properties: { id: { type: 'string' } },
+            required: ['id'],
+            type: 'object',
+          },
+          strict: true,
+          type: 'function',
+        },
+        {
+          description: 'Explicit strict false',
+          name: 'non_strict_tool',
+          parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+          strict: false,
+          type: 'function',
+        },
         { type: 'web_search' },
       ]);
     });

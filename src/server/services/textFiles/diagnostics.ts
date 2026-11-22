@@ -54,6 +54,7 @@ export function logTextFileStop(operationId: string, state: AgentState) {
     'queued_message_interrupt',
     'system_shutdown',
     'tool_call_repeat_limit',
+    'tool_error_limit',
     'rate_limit_exceeded',
     'insufficient_balance',
     'context_length_exceeded',

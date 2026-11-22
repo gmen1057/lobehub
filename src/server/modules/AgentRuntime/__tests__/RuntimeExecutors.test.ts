@@ -1,4 +1,8 @@
-import { type AgentState, TOOL_CALL_REPEAT_STOP_MESSAGE } from '@lobechat/agent-runtime';
+import {
+  type AgentState,
+  TOOL_CALL_REPEAT_STOP_MESSAGE,
+  TOOL_ERROR_CIRCUIT_BREAKER_FALLBACK_MESSAGE,
+} from '@lobechat/agent-runtime';
 import { consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1198,6 +1202,174 @@ describe('RuntimeExecutors', () => {
             m.content.includes('Do not attempt to use any tools'),
         );
         expect(hasForceFinishMessage).toBe(true);
+      });
+
+      it('should inject tool-error circuit breaker prompt and strip tools when breaker tripped', async () => {
+        const ctxWithConfig: RuntimeExecutorContext = {
+          ...ctx,
+          agentConfig: { plugins: [], systemRole: 'test' },
+        };
+        const executors = createRuntimeExecutors(ctxWithConfig);
+        const state = createMockState({
+          forceFinish: true,
+          toolErrorCircuitBreaker: {
+            consecutiveErrors: 4,
+            toolKey: 'mcp-arckep-studio-3d::create_3d',
+            tripped: true,
+          },
+          tools: [
+            {
+              function: { description: 'Create 3D', name: 'mcp-arckep-studio-3d____create_3d' },
+              type: 'function' as const,
+            },
+          ] as any,
+        });
+
+        const instruction = {
+          payload: {
+            messages: [{ content: 'Hello', role: 'user' }],
+            model: 'gpt-6.2-sol',
+            provider: 'openai',
+          },
+          type: 'call_llm' as const,
+        };
+
+        const result = await executors.call_llm!(instruction, state);
+
+        expect(engineSpy).toHaveBeenCalledWith(
+          expect.objectContaining({
+            forceFinish: true,
+            forceFinishPrompt: expect.stringContaining('mcp-arckep-studio-3d::create_3d'),
+          }),
+        );
+        expect(mockChat).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tools: undefined,
+          }),
+          expect.anything(),
+        );
+        expect(mockChat.mock.calls[0][0].enabledSearch).toBeUndefined();
+
+        const chatMessages = mockChat.mock.calls[0][0].messages;
+        const hasBreakerPrompt = chatMessages.some(
+          (m: any) =>
+            m.role === 'system' &&
+            m.content.includes('mcp-arckep-studio-3d::create_3d') &&
+            m.content.includes('4 times in a row') &&
+            m.content.includes('Do not attempt to call any tools'),
+        );
+        expect(hasBreakerPrompt).toBe(true);
+        expect(
+          chatMessages.some(
+            (m: any) => m.role === 'system' && m.content.includes('maximum step limit'),
+          ),
+        ).toBe(false);
+
+        // Empty model output on a tripped turn falls back to a clear Russian message (no empty bubble)
+        expect(result.nextContext?.payload).toMatchObject({
+          hasToolsCalling: false,
+          result: { content: TOOL_ERROR_CIRCUIT_BREAKER_FALLBACK_MESSAGE, tool_calls: [] },
+          toolsCalling: [],
+        });
+        expect(result.events).toContainEqual(
+          expect.objectContaining({
+            result: expect.objectContaining({ finishReason: 'tool_error_limit' }),
+            type: 'llm_result',
+          }),
+        );
+      });
+
+      it('should drop hallucinated tool calls and preserve normal assistant explanation on tripped breaker turn', async () => {
+        mockChat.mockImplementationOnce(async (_payload: any, options: any) => {
+          await options?.callback?.onText?.('Сервис 3D отклонил параметры запроса (HTTP 422).');
+          await options?.callback?.onToolsCalling?.({
+            toolsCalling: [
+              {
+                function: { arguments: '{}', name: 'mcp-arckep-studio-3d____create_3d____mcp' },
+                id: 'hallucinated-5',
+                type: 'function',
+              },
+            ],
+          });
+          return new Response('done');
+        });
+
+        const executors = createRuntimeExecutors(ctx);
+        const state = createMockState({
+          forceFinish: true,
+          toolErrorCircuitBreaker: {
+            consecutiveErrors: 4,
+            toolKey: 'mcp-arckep-studio-3d::create_3d',
+            tripped: true,
+          },
+        });
+
+        const result = await executors.call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Hello', role: 'user' }],
+              model: 'gpt-6.2-sol',
+              provider: 'openai',
+            },
+            type: 'call_llm',
+          },
+          state,
+        );
+
+        expect(result.nextContext?.payload).toMatchObject({
+          hasToolsCalling: false,
+          result: {
+            content: 'Сервис 3D отклонил параметры запроса (HTTP 422).',
+            tool_calls: [],
+          },
+          toolsCalling: [],
+        });
+        expect(ctx.streamManager.publishStreamChunk).not.toHaveBeenCalledWith(
+          expect.anything(),
+          expect.anything(),
+          expect.objectContaining({ chunkType: 'tools_calling' }),
+        );
+        expect(mockMessageModel.update).toHaveBeenCalledWith(
+          'msg-123',
+          expect.objectContaining({
+            content: 'Сервис 3D отклонил параметры запроса (HTTP 422).',
+            tools: undefined,
+          }),
+        );
+      });
+
+      it('should disable DeepSeek read_url when state.forceFinish is true', async () => {
+        const ctxWithDeepSeek: RuntimeExecutorContext = {
+          ...ctx,
+          agentConfig: {
+            chatConfig: { deepseekReadUrl: true, deepseekSafetyCheck: true },
+            plugins: [],
+            systemRole: 'test',
+          },
+        };
+        const executors = createRuntimeExecutors(ctxWithDeepSeek);
+        const state = createMockState({ forceFinish: true });
+
+        await executors.call_llm!(
+          {
+            payload: {
+              messages: [{ content: 'Hello', role: 'user' }],
+              model: 'deepseek-flash',
+              provider: 'deepseek',
+            },
+            type: 'call_llm',
+          },
+          state,
+        );
+
+        expect(mockChat).toHaveBeenCalledWith(
+          expect.objectContaining({
+            read_url: false,
+            safety_check: true,
+            tools: undefined,
+          }),
+          expect.anything(),
+        );
       });
 
       describe('картинки из результатов инструментов (arckep, 19.10.2026)', () => {

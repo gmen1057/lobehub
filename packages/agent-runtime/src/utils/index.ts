@@ -5,3 +5,4 @@ export * from './resolveAssistantParentId';
 export * from './stepContextComputer';
 export * from './tokenCounter';
 export * from './toolCallRepeatGuard';
+export * from './toolErrorCircuitBreaker';

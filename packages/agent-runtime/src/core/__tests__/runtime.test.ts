@@ -1,6 +1,7 @@
 import type { ChatToolPayload } from '@lobechat/types';
 import { describe, expect, it, vi } from 'vitest';
 
+import { GeneralChatAgent } from '../../agents/GeneralChatAgent';
 import type {
   Agent,
   AgentEventError,
@@ -2146,6 +2147,347 @@ describe('AgentRuntime', () => {
       expect(analyticsTool!.calls).toBe(1);
       expect(loggingTool).toBeDefined();
       expect(loggingTool!.calls).toBe(1);
+    });
+  });
+
+  describe('Consecutive Tool-Error Circuit Breaker', () => {
+    const createRunLoop = (options: {
+      llmTurns: Array<{
+        content?: string;
+        toolsCalling?: ChatToolPayload[];
+      }>;
+      toolHandler: (
+        toolCalling: ChatToolPayload,
+        callNumber: number,
+      ) => {
+        data: any;
+        isSuccess: boolean;
+      };
+    }) => {
+      let llmTurnIndex = 0;
+      let toolCallCount = 0;
+      const observedLlmPayloads: Array<{ forceFinish?: boolean; tools: any[] }> = [];
+
+      const agent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 999 },
+        compressionConfig: { enabled: false },
+        modelRuntimeConfig: { model: 'gpt-6.2-sol', provider: 'openai' },
+        operationId: 'op-circuit-breaker',
+      });
+
+      const runtime = new AgentRuntime(agent, {
+        executors: {
+          call_llm: async (instruction, state) => {
+            const payload = (instruction as any).payload;
+            observedLlmPayloads.push({
+              forceFinish: state.forceFinish,
+              tools: payload.tools ?? [],
+            });
+            const turn = options.llmTurns[llmTurnIndex++] ?? {
+              content: 'Final explanation after tool failure.',
+              toolsCalling: [],
+            };
+            const toolsCalling = turn.toolsCalling ?? [];
+            const nextState = structuredClone(state);
+            nextState.status = 'running';
+            nextState.messages.push({
+              content: turn.content ?? '',
+              role: 'assistant',
+            });
+
+            return {
+              events: [
+                {
+                  result: { content: turn.content ?? '', tool_calls: [] },
+                  type: 'llm_result' as const,
+                },
+              ],
+              newState: nextState,
+              nextContext: {
+                operationId: 'op-circuit-breaker',
+                payload: {
+                  hasToolsCalling: toolsCalling.length > 0,
+                  parentMessageId: `asst-${llmTurnIndex}`,
+                  result: { content: turn.content ?? '', tool_calls: [] },
+                  toolsCalling,
+                },
+                phase: 'llm_result' as const,
+                session: {
+                  messageCount: nextState.messages.length,
+                  sessionId: 'op-circuit-breaker',
+                  status: 'running' as const,
+                  stepCount: nextState.stepCount,
+                },
+              },
+            };
+          },
+          call_tool: async (instruction, state) => {
+            toolCallCount += 1;
+            const { toolCalling } = (instruction as any).payload;
+            const outcome = options.toolHandler(toolCalling, toolCallCount);
+            const nextState = structuredClone(state);
+            nextState.status = 'running';
+            nextState.messages.push({
+              content: outcome.data?.content ?? '',
+              role: 'tool',
+              tool_call_id: toolCalling.id,
+            });
+
+            return {
+              events: [{ id: toolCalling.id, result: outcome.data, type: 'tool_result' as const }],
+              newState: nextState,
+              nextContext: {
+                operationId: 'op-circuit-breaker',
+                payload: {
+                  data: outcome.data,
+                  executionTime: 10,
+                  isSuccess: outcome.isSuccess,
+                  parentMessageId: `tool-${toolCallCount}`,
+                  toolCall: toolCalling,
+                  toolCallId: toolCalling.id,
+                },
+                phase: 'tool_result' as const,
+                session: {
+                  messageCount: nextState.messages.length,
+                  sessionId: 'op-circuit-breaker',
+                  status: 'running' as const,
+                  stepCount: nextState.stepCount,
+                },
+              },
+            };
+          },
+        },
+      });
+
+      const runToCompletion = async () => {
+        let state = AgentRuntime.createInitialState({
+          maxSteps: 999,
+          messages: [{ content: 'Create a 3D chair', role: 'user' }],
+          operationId: 'op-circuit-breaker',
+          tools: [{ function: { name: 'create_3d' }, type: 'function' }],
+          userInterventionConfig: { approvalMode: 'headless' },
+        });
+        let context: AgentRuntimeContext | undefined = {
+          operationId: 'op-circuit-breaker',
+          payload: { messages: state.messages },
+          phase: 'user_input',
+          session: {
+            messageCount: state.messages.length,
+            sessionId: 'op-circuit-breaker',
+            status: 'idle',
+            stepCount: 0,
+          },
+        };
+        const allEvents: any[] = [];
+
+        for (let guard = 0; guard < 30 && context && state.status !== 'done'; guard++) {
+          // Simulate Redis/DB JSON persistence across every step
+          const persistedJson = JSON.stringify(state);
+          state = JSON.parse(persistedJson);
+          const stepResult = await runtime.step(state, context);
+          allEvents.push(...stepResult.events);
+          state = stepResult.newState;
+          context = stepResult.nextContext;
+        }
+
+        return {
+          allEvents,
+          finalState: state,
+          observedLlmPayloads,
+          toolCallCount,
+        };
+      };
+
+      return { runToCompletion };
+    };
+
+    const make3dCall = (attempt: number): ChatToolPayload => ({
+      apiName: 'create_3d',
+      arguments: JSON.stringify({ prompt: `chair variant ${attempt}` }),
+      id: `call-3d-${attempt}`,
+      identifier: 'mcp-arckep-studio-3d',
+      type: 'mcp',
+    });
+
+    it('trips forceFinish on the 4th consecutive MCP isError failure (isSuccess: true) and finishes cleanly with a final tool-free LLM response', async () => {
+      const { runToCompletion } = createRunLoop({
+        llmTurns: [
+          { toolsCalling: [make3dCall(1)] },
+          { toolsCalling: [make3dCall(2)] },
+          { toolsCalling: [make3dCall(3)] },
+          { toolsCalling: [make3dCall(4)] },
+          { content: 'Не удалось создать 3D-модель: сервис вернул HTTP 422.', toolsCalling: [] },
+        ],
+        toolHandler: () => ({
+          data: {
+            content: 'Error executing tool create_3d: Public API HTTP 422: invalid input',
+            state: {
+              content: [
+                {
+                  text: 'Error executing tool create_3d: Public API HTTP 422: invalid input',
+                  type: 'text',
+                },
+              ],
+              isError: true,
+            },
+            success: true,
+          },
+          isSuccess: true,
+        }),
+      });
+
+      const { allEvents, finalState, observedLlmPayloads, toolCallCount } = await runToCompletion();
+
+      expect(toolCallCount).toBe(4);
+      expect(finalState.status).toBe('done');
+      expect(finalState.forceFinish).toBe(true);
+      expect(finalState.toolErrorCircuitBreaker).toEqual({
+        consecutiveErrors: 4,
+        toolKey: 'mcp-arckep-studio-3d::create_3d',
+        tripped: true,
+      });
+
+      // Attempts 1-4 had tools available; final turn 5 ran with forceFinish=true and tools=[]
+      expect(observedLlmPayloads).toHaveLength(5);
+      expect(observedLlmPayloads[0].forceFinish).toBeUndefined();
+      expect(observedLlmPayloads[3].forceFinish).toBeUndefined();
+      expect(observedLlmPayloads[4]).toEqual({ forceFinish: true, tools: [] });
+
+      expect(finalState.messages.at(-1)).toEqual({
+        content: 'Не удалось создать 3D-модель: сервис вернул HTTP 422.',
+        role: 'assistant',
+      });
+      expect(allEvents).toContainEqual(
+        expect.objectContaining({
+          reason: 'tool_error_limit',
+          type: 'done',
+        }),
+      );
+    });
+
+    it('trips on 4th consecutive isSuccess: false failure and refuses to call a 5th tool even if the LLM hallucinates one', async () => {
+      const { runToCompletion } = createRunLoop({
+        llmTurns: [
+          { toolsCalling: [make3dCall(1)] },
+          { toolsCalling: [make3dCall(2)] },
+          { toolsCalling: [make3dCall(3)] },
+          { toolsCalling: [make3dCall(4)] },
+          // Even if the final turn somehow emits a 5th tool call, GeneralChatAgent refuses to execute it
+          { content: 'Stopping after repeated errors.', toolsCalling: [make3dCall(5)] },
+        ],
+        toolHandler: () => ({
+          data: {
+            content: 'Validation error 422',
+            error: { code: 'BAD_REQUEST', message: 'Validation error 422' },
+            success: false,
+          },
+          isSuccess: false,
+        }),
+      });
+
+      const { allEvents, finalState, toolCallCount } = await runToCompletion();
+
+      expect(toolCallCount).toBe(4);
+      expect(finalState.status).toBe('done');
+      expect(allEvents).toContainEqual(
+        expect.objectContaining({
+          reason: 'tool_error_limit',
+          type: 'done',
+        }),
+      );
+    });
+
+    it('allows 3 failures followed by a success and resets the circuit breaker counter', async () => {
+      const { runToCompletion } = createRunLoop({
+        llmTurns: [
+          { toolsCalling: [make3dCall(1)] },
+          { toolsCalling: [make3dCall(2)] },
+          { toolsCalling: [make3dCall(3)] },
+          { toolsCalling: [make3dCall(4)] },
+          { content: '3D model created successfully!', toolsCalling: [] },
+        ],
+        toolHandler: (_toolCalling, callNumber) => {
+          if (callNumber <= 3) {
+            return {
+              data: {
+                content: 'Error executing tool create_3d: Public API HTTP 422',
+                state: { isError: true },
+                success: true,
+              },
+              isSuccess: true,
+            };
+          }
+          return {
+            data: {
+              content: '{"job_id":"job_ok"}',
+              state: { isError: false },
+              success: true,
+            },
+            isSuccess: true,
+          };
+        },
+      });
+
+      const { allEvents, finalState, observedLlmPayloads, toolCallCount } = await runToCompletion();
+
+      expect(toolCallCount).toBe(4);
+      expect(finalState.status).toBe('done');
+      expect(finalState.forceFinish).toBeUndefined();
+      expect(finalState.toolErrorCircuitBreaker).toEqual({ consecutiveErrors: 0 });
+      expect(observedLlmPayloads[4].forceFinish).toBeUndefined();
+      expect(allEvents).toContainEqual(
+        expect.objectContaining({
+          reason: 'completed',
+          type: 'done',
+        }),
+      );
+    });
+
+    it('resets streak when switching to a different tool after 3 failures', async () => {
+      const otherToolCall: ChatToolPayload = {
+        apiName: 'list_models',
+        arguments: '{}',
+        id: 'call-list-1',
+        identifier: 'mcp-arckep-studio-3d',
+        type: 'mcp',
+      };
+
+      const { runToCompletion } = createRunLoop({
+        llmTurns: [
+          { toolsCalling: [make3dCall(1)] },
+          { toolsCalling: [make3dCall(2)] },
+          { toolsCalling: [make3dCall(3)] },
+          { toolsCalling: [otherToolCall] },
+          { toolsCalling: [make3dCall(4)] },
+          { content: 'Recovered after checking another tool.', toolsCalling: [] },
+        ],
+        toolHandler: (_toolCalling, callNumber) => {
+          // All first 4 calls fail (3 on create_3d, 1 on list_models), 5th succeeds
+          if (callNumber <= 4) {
+            return {
+              data: { content: 'error', success: false },
+              isSuccess: false,
+            };
+          }
+          return {
+            data: { content: '{"ok":true}', success: true },
+            isSuccess: true,
+          };
+        },
+      });
+
+      const { allEvents, finalState, toolCallCount } = await runToCompletion();
+
+      expect(toolCallCount).toBe(5);
+      expect(finalState.status).toBe('done');
+      expect(finalState.forceFinish).toBeUndefined();
+      expect(finalState.toolErrorCircuitBreaker).toEqual({ consecutiveErrors: 0 });
+      expect(allEvents).toContainEqual(
+        expect.objectContaining({
+          reason: 'completed',
+          type: 'done',
+        }),
+      );
     });
   });
 });

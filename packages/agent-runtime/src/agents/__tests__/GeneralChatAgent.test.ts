@@ -3449,4 +3449,81 @@ describe('GeneralChatAgent', () => {
       ]);
     });
   });
+
+  describe('tool-error circuit breaker', () => {
+    it('strips tools from the call_llm instruction when forceFinish is active after tool_result', async () => {
+      const agent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 999 },
+        compressionConfig: { enabled: false },
+        modelRuntimeConfig: mockModelRuntimeConfig,
+        operationId: 'op-breaker',
+      });
+
+      const state = createMockState({
+        forceFinish: true,
+        toolErrorCircuitBreaker: {
+          consecutiveErrors: 4,
+          toolKey: 'mcp-arckep-studio-3d::create_3d',
+          tripped: true,
+        },
+        tools: [{ function: { name: 'create_3d' }, type: 'function' }],
+      });
+
+      const instruction = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 'tool-4' }),
+        state,
+      );
+
+      expect(instruction).toMatchObject({
+        payload: {
+          parentMessageId: 'tool-4',
+          tools: [],
+        },
+        type: 'call_llm',
+      });
+    });
+
+    it('blocks further tool execution and finishes with tool_error_limit when breaker is tripped', async () => {
+      const agent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 999 },
+        compressionConfig: { enabled: false },
+        modelRuntimeConfig: mockModelRuntimeConfig,
+        operationId: 'op-breaker',
+      });
+
+      const state = createMockState({
+        forceFinish: true,
+        toolErrorCircuitBreaker: {
+          consecutiveErrors: 4,
+          toolKey: 'mcp-arckep-studio-3d::create_3d',
+          tripped: true,
+        },
+        userInterventionConfig: { approvalMode: 'headless' },
+      });
+
+      const instruction = await agent.runner(
+        createMockContext('llm_result', {
+          hasToolsCalling: true,
+          parentMessageId: 'asst-final',
+          toolsCalling: [
+            {
+              apiName: 'create_3d',
+              arguments: '{}',
+              id: 'call-5',
+              identifier: 'mcp-arckep-studio-3d',
+              type: 'mcp',
+            },
+          ],
+        }),
+        state,
+      );
+
+      expect(instruction).toEqual({
+        reason: 'tool_error_limit',
+        reasonDetail:
+          'Force finish: tool "mcp-arckep-studio-3d::create_3d" failed 4 consecutive times',
+        type: 'finish',
+      });
+    });
+  });
 });
