@@ -385,3 +385,54 @@ export const buildEditorPictures = async (
 
 /** JPEG → адрес `data:` для сообщения модели. */
 export const toDataUri = (jpeg: Buffer) => `data:image/jpeg;base64,${jpeg.toString('base64')}`;
+
+/** Пределы превью-снимка для vision-моделей: безопасно для Anthropic/OpenAI/Gemini/DeepSeek/Qwen и < 5 МБ. */
+export const PREVIEW_MAX_WIDTH = 1568;
+export const PREVIEW_MAX_HEIGHT = 2000;
+export const PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+
+export interface PreparedPreview {
+  buffer: Buffer;
+  height: number;
+  scaled: boolean;
+  width: number;
+}
+
+/**
+ * Сжать полный снимок страницы для vision-модели: ограничить стороны до 1568×2000 px и вес до 2 МБ,
+ * чтобы не раздувать контекст и не нарываться на 400 от провайдеров (Anthropic max 2000/8000 px, 5 МБ).
+ */
+export const preparePreviewScreenshot = async (input: Buffer): Promise<PreparedPreview> => {
+  if (!input || input.byteLength === 0) {
+    throw new Error('empty screenshot buffer');
+  }
+  const meta = await sharp(input, { failOn: 'none', limitInputPixels: MAX_PIXELS }).metadata();
+  const origWidth = meta.width ?? 0;
+  const origHeight = meta.height ?? 0;
+  if (origWidth < 1 || origHeight < 1) {
+    throw new Error('invalid screenshot dimensions');
+  }
+
+  const encode = async (maxWidth: number, maxHeight: number, quality: number) =>
+    sharp(input, { failOn: 'none', limitInputPixels: MAX_PIXELS })
+      .flatten({ background: '#ffffff' })
+      .resize({
+        fit: 'inside',
+        height: maxHeight,
+        width: maxWidth,
+        withoutEnlargement: true,
+      })
+      .jpeg({ quality })
+      .toBuffer({ resolveWithObject: true });
+
+  let encoded = await encode(PREVIEW_MAX_WIDTH, PREVIEW_MAX_HEIGHT, 78);
+  if (encoded.data.byteLength > PREVIEW_MAX_BYTES) {
+    encoded = await encode(1200, 1500, 60);
+  }
+  return {
+    buffer: encoded.data,
+    height: encoded.info.height,
+    scaled: encoded.info.width < origWidth || encoded.info.height < origHeight,
+    width: encoded.info.width,
+  };
+};

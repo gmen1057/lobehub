@@ -7,6 +7,8 @@ import {
   type CheckSnapshot,
   type EditArtifactParams,
   type EditArtifactResult,
+  type RenderArtifactParams,
+  type RenderArtifactResult,
   type TechniqueSummary,
   type WriteArtifactParams,
   type WriteArtifactResult,
@@ -15,6 +17,7 @@ import {
 interface ArckepLayoutRuntimeDeps {
   checkLayout: (params: CheckLayoutParams) => Promise<CheckLayoutResult>;
   editArtifact: (params: EditArtifactParams) => Promise<EditArtifactResult>;
+  renderArtifact: (params: RenderArtifactParams) => Promise<RenderArtifactResult>;
   writeArtifact: (params: WriteArtifactParams) => Promise<WriteArtifactResult>;
 }
 
@@ -210,6 +213,164 @@ export class ArckepLayoutExecutionRuntime {
     } catch (error) {
       return {
         content: `HTML-артефакт не прошёл проверку и не сохранён: ${(error as Error).message}`,
+        success: false,
+      };
+    }
+  }
+
+  async renderArtifact(args: RenderArtifactParams): Promise<BuiltinServerRuntimeOutput> {
+    if (!args?.identifier || typeof args.identifier !== 'string' || !args.identifier.trim()) {
+      return { content: 'renderArtifact: нужен identifier HTML-артефакта.', success: false };
+    }
+    try {
+      const result = await this.deps.renderArtifact(args);
+
+      if (result.status === 'limit_reached') {
+        const limit = result.limit ?? 3;
+        const shownAttempt = Math.min(result.attempt ?? limit, limit);
+        return {
+          content:
+            `Лимит визуальных проверок renderArtifact в этом ответе исчерпан (${shownAttempt} из ${limit}). ` +
+            `Больше не вызывай renderArtifact в этом ответе — покажи пользователю текущую версию HTML-артефакта «${result.title}» (${result.identifier}) и никогда не скрывай уже созданный артефакт.`,
+          state: result,
+          success: true,
+        };
+      }
+
+      if (result.status === 'unavailable') {
+        return {
+          content:
+            `Визуальный рендер артефакта «${result.title}» (${result.identifier}) сейчас недоступен: ${result.unavailableReason ?? 'причина неизвестна'}. ` +
+            'HTML-артефакт сохранён и не изменялся — покажи пользователю уже созданный артефакт и честно сообщи, что визуальная проверка не выполнена; повторно renderArtifact в этом ответе не вызывай.',
+          state: result,
+          success: true,
+        };
+      }
+
+      const overflow = result.horizontalOverflowPx ?? 0;
+      const metaParts = [
+        result.attempt && result.limit ? `проверка ${result.attempt} из ${result.limit}` : '',
+        result.elapsedMs !== undefined ? `${result.elapsedMs} мс` : '',
+      ].filter(Boolean);
+      const metaSuffix = metaParts.length > 0 ? ` (${metaParts.join(', ')})` : '';
+      const lines: string[] = [
+        `Визуальный рендер «${result.title}» (${result.identifier}) выполнен${metaSuffix}.`,
+        `Геометрия: окно ${result.width} px, высота документа ${result.height} px, ширина документа (scrollWidth) ${result.scrollWidth} px` +
+          (overflow > 0
+            ? ` — ГОРИЗОНТАЛЬНОЕ ПЕРЕПОЛНЕНИЕ +${overflow} px!`
+            : ' — горизонтального переполнения нет.'),
+      ];
+      if (result.clampedFromWidth !== undefined) {
+        lines.push(
+          `Запрошенная ширина ${result.clampedFromWidth} px была ограничена допустимым диапазоном 320–1600 px.`,
+        );
+      }
+
+      const imagesTotal = result.imagesTotal ?? result.images.length;
+      const imagesLoaded = result.imagesLoaded ?? result.images.filter((img) => img.loaded).length;
+      lines.push(`Картинки: загрузилось ${imagesLoaded} из ${imagesTotal}.`);
+
+      const brokenImages = result.images.filter((img) => !img.loaded);
+      if (brokenImages.length > 0) {
+        lines.push(`Не загрузились <img> (${brokenImages.length}):`);
+        for (const img of brokenImages.slice(0, 10)) {
+          const reason = img.error ? `, причина: ${img.error}` : '';
+          lines.push(
+            `- src=${img.src ?? '(пусто)'} (x=${img.x}, y=${img.y}, ${img.w}×${img.h}${reason})`,
+          );
+        }
+        if (brokenImages.length > 10) {
+          lines.push(`… и ещё ${brokenImages.length - 10} незагрузившихся <img>`);
+        }
+      }
+
+      if (result.failedImages.length > 0) {
+        lines.push(`Не удалось подставить сетевые картинки (${result.failedImages.length}):`);
+        for (const failed of result.failedImages.slice(0, 10)) {
+          lines.push(`- ${failed.url} (${failed.origin}: ${failed.reason})`);
+        }
+        if (result.failedImages.length > 10) {
+          lines.push(`… и ещё ${result.failedImages.length - 10} картинок`);
+        }
+      }
+
+      const linesTotal = result.linesTotal ?? result.lines.length;
+      const linesFound = result.linesFound ?? result.lines.filter((item) => item.found).length;
+      if (linesTotal > 0) {
+        lines.push(`Проверенные строки: найдено ${linesFound} из ${linesTotal}.`);
+        const missing = result.lines.filter((item) => !item.found);
+        if (missing.length > 0) {
+          lines.push(
+            `Не найдены (или скрыты display:none): ${missing
+              .slice(0, 10)
+              .map((item) => `«${item.text}»`)
+              .join(', ')}.`,
+          );
+        }
+        const foundItems = result.lines.filter((item) => item.found).slice(0, 20);
+        for (const item of foundItems) {
+          lines.push(
+            `- «${item.text}»: x=${item.x}, y=${item.y}, h=${item.h}, font=${item.fontSize}px/${item.fontWeight}`,
+          );
+        }
+        if (linesFound > foundItems.length) {
+          lines.push(`… и ещё ${linesFound - foundItems.length} найденных строк`);
+        }
+      }
+
+      const metrics = {
+        failed_images_count: result.failedImages.length,
+        height: result.height,
+        horizontal_overflow_px: overflow,
+        images_loaded: imagesLoaded,
+        images_total: imagesTotal,
+        ...(linesTotal > 0 ? { lines_found: linesFound, lines_total: linesTotal } : {}),
+        ...(result.renderPath ? { render_path: result.renderPath } : {}),
+        ...(result.renderer ? { renderer: result.renderer } : {}),
+        scroll_width: result.scrollWidth,
+        width: result.width,
+      };
+      lines.push(`Метрики JSON: ${JSON.stringify(metrics)}`);
+
+      if (result.screenshotAttached && result.screenshot) {
+        lines.push(
+          `Снимок рендера (${result.screenshot.width}×${result.screenshot.height} px` +
+            `${result.screenshot.scaled ? ', уменьшен со всей страницы' : ''}) приложен следующим сообщением для визуального осмотра. ` +
+            'Это внутренний превью-снимок для проверки, а не замена HTML-артефакту.',
+        );
+      } else {
+        lines.push(
+          'Снимок экрана не приложен (модель без поддержки зрения или превью недоступно) — опирайся на точные замеры геометрии, переполнения, картинок и строк выше.',
+        );
+      }
+
+      lines.push(
+        `Если есть реальные дефекты (переполнение, битые картинки, наложение или пропавший текст) — исправь через editArtifact и при необходимости перепроверь не более 1–2 раз. ` +
+          `Если всё в порядке — не делай лишних правок и покажи пользователю уже сохранённый HTML-артефакт «${result.title}» (${result.identifier}) (никогда не скрывай созданный артефакт).`,
+      );
+
+      // Для vision-моделей: блок `{type: 'image', data: <адрес>, fileId, mimeType}` подхватывает
+      // ToolResultImagesProcessor (и дополнительно проверяет isCanUseVision). Сырой base64 в state не попадает никогда.
+      const state = {
+        ...result,
+        ...(result.screenshotAttached && result.screenshot
+          ? {
+              content: [
+                {
+                  data: result.screenshot.address,
+                  fileId: result.screenshot.fileId,
+                  mimeType: 'image/jpeg',
+                  type: 'image' as const,
+                },
+              ],
+            }
+          : {}),
+      };
+
+      return { content: lines.join('\n'), state, success: true };
+    } catch (error) {
+      return {
+        content: `Визуальный рендер не выполнен: ${(error as Error).message}`,
         success: false,
       };
     }

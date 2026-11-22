@@ -1,10 +1,10 @@
-import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
+import { ArckepLayoutApiName, ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import type { LobeChatDatabase } from '@lobechat/database';
 import { files, messagePlugins, messages, messagesFiles } from '@lobechat/database/schemas';
 import { type ChatStreamPayload, consumeStreamUntilDone } from '@lobechat/model-runtime';
 import { nanoid } from '@lobechat/utils';
 import debug from 'debug';
-import { and, desc, eq, like } from 'drizzle-orm';
+import { and, desc, eq, gte, like } from 'drizzle-orm';
 
 import { FileModel } from '@/database/models/file';
 import {
@@ -138,6 +138,14 @@ export const createLayoutDeps = (
         .map(({ content, id }) => ({ content, id }));
     },
 
+    modelHasStrictVision: async (model, provider) => {
+      const { LOBE_DEFAULT_MODEL_LIST } = await import('model-bank');
+      const info = LOBE_DEFAULT_MODEL_LIST.find(
+        (item) => item.id === model && item.providerId === provider,
+      );
+      return info?.abilities?.vision === true;
+    },
+
     modelHasVision,
 
     prepRecord: async (fileId) => {
@@ -156,12 +164,53 @@ export const createLayoutDeps = (
 
     readStorage: (key) => fileService().getFileByteArray(key),
 
+    recentRenderCount: async (topicId) => {
+      const [lastUser] = await db
+        .select({ at: messages.createdAt })
+        .from(messages)
+        .where(
+          and(
+            eq(messages.userId, userId),
+            eq(messages.topicId, topicId),
+            eq(messages.role, 'user'),
+          ),
+        )
+        .orderBy(desc(messages.createdAt))
+        .limit(1);
+      const conditions = [
+        eq(messages.userId, userId),
+        eq(messages.topicId, topicId),
+        eq(messages.role, 'tool'),
+        eq(messagePlugins.identifier, ArckepLayoutIdentifier),
+        eq(messagePlugins.apiName, ArckepLayoutApiName.renderArtifact),
+      ];
+      if (lastUser?.at) conditions.push(gte(messages.createdAt, lastUser.at));
+      const rows = await db
+        .select({ state: messagePlugins.state })
+        .from(messages)
+        .innerJoin(messagePlugins, eq(messagePlugins.id, messages.id))
+        .where(and(...conditions));
+      return rows.filter((row) => {
+        const status = (row.state as { status?: unknown } | null | undefined)?.status;
+        return status === 'rendered' || status === 'unavailable';
+      }).length;
+    },
+
     render: (params) => renderLayout(params),
 
     saveHtml: async (html, name) => {
       const saved = await fileService().uploadFromBuffer(
         Buffer.from(html, 'utf8'),
         'text/plain; charset=utf-8',
+        `files/${userId}/${nanoid()}/${name}`,
+      );
+      return { address: fileAddress(saved.fileId), fileId: saved.fileId };
+    },
+
+    savePreviewImage: async (buffer, name) => {
+      const saved = await fileService().uploadFromBuffer(
+        buffer,
+        'image/jpeg',
         `files/${userId}/${nanoid()}/${name}`,
       );
       return { address: fileAddress(saved.fileId), fileId: saved.fileId };

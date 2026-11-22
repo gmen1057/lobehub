@@ -125,6 +125,7 @@ describe('writeArtifact и editArtifact с проверкой синтаксис
     const runtime = new ArckepLayoutExecutionRuntime({
       checkLayout: (params) => service.checkLayout(params),
       editArtifact: (params) => service.editArtifact(params),
+      renderArtifact: (params) => service.renderArtifact(params),
       writeArtifact: (params) => service.writeArtifact(params),
     });
 
@@ -146,6 +147,7 @@ describe('writeArtifact и editArtifact с проверкой синтаксис
     const runtime = new ArckepLayoutExecutionRuntime({
       checkLayout: (params) => service.checkLayout(params),
       editArtifact: (params) => service.editArtifact(params),
+      renderArtifact: (params) => service.renderArtifact(params),
       writeArtifact: (params) => service.writeArtifact(params),
     });
 
@@ -207,11 +209,12 @@ describe('activateSkill("Artifacts") подключает arckep-layout на п�
       expect(result.success).toBe(true);
       expect(result.state.activatedTools).toEqual([
         expect.objectContaining({
-          apiCount: 3,
+          apiCount: 4,
           identifier: ArckepLayoutIdentifier,
         }),
       ]);
       expect(result.content).toContain('writeArtifact');
+      expect(result.content).toContain('renderArtifact');
     } finally {
       vi.unstubAllEnvs();
     }

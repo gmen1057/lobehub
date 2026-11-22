@@ -236,6 +236,67 @@ describe('файлы', () => {
     expect(saved.address).toMatch(/\/f\/file_NEW\/$/);
   });
 
+  it('сохранение превью-снимка: image/jpeg, адрес /chat/f/<id>/', async () => {
+    mocks.fileService.uploadFromBuffer.mockResolvedValueOnce({
+      fileId: 'file_PREVIEW',
+      key: 'k',
+      url: 'u',
+    });
+    const saved = await make().savePreviewImage!(
+      Buffer.from('ffd8ff', 'hex'),
+      'deck-preview-1.jpg',
+    );
+
+    const [buffer, mime, pathname] = mocks.fileService.uploadFromBuffer.mock.calls[0];
+    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(mime).toBe('image/jpeg');
+    expect(pathname).toMatch(/^files\/lobe-user-1\/[\w-]+\/deck-preview-1\.jpg$/);
+    expect(saved.fileId).toBe('file_PREVIEW');
+    expect(saved.address).toMatch(/\/f\/file_PREVIEW\/$/);
+  });
+
+  it('modelHasStrictVision: true только у vision-моделей, false у текстовых и legacy/неизвестных', async () => {
+    const deps = make();
+    // Vision-модели разных семейств
+    expect(await deps.modelHasStrictVision!('claude-opus-5-5', 'anthropic')).toBe(true);
+    expect(await deps.modelHasStrictVision!('gemini-4-neon', 'google')).toBe(true);
+    expect(await deps.modelHasStrictVision!('gpt-6.2-sol', 'openai')).toBe(true);
+    expect(await deps.modelHasStrictVision!('deepseek-flash', 'deepseek')).toBe(true);
+    expect(await deps.modelHasStrictVision!('qwen4-max', 'qwen')).toBe(true);
+    // Text-only и legacy-модели (не должны получать image_url → защита от HTTP 400)
+    expect(await deps.modelHasStrictVision!('deepseek-v4-pro', 'deepseek')).toBe(false);
+    expect(await deps.modelHasStrictVision!('deepseek-chat', 'deepseek')).toBe(false);
+    expect(await deps.modelHasStrictVision!('deepseek-reasoner', 'deepseek')).toBe(false);
+    expect(await deps.modelHasStrictVision!('z-ai/glm-5.3', 'openrouter')).toBe(false);
+    expect(await deps.modelHasStrictVision!('grok-build-0.1', 'xai')).toBe(false);
+    expect(await deps.modelHasStrictVision!('unknown-future-model', 'unknown')).toBe(false);
+  });
+
+  it('recentRenderCount считает только rendered/unavailable вызовы текущего хода (игнорирует limit_reached и ошибки без state)', async () => {
+    let call = 0;
+    const chain = (rows: unknown[]): any =>
+      new Proxy(
+        {},
+        { get: (_, key) => (key === 'then' ? (resolve: any) => resolve(rows) : () => chain(rows)) },
+      );
+    const db = {
+      select: vi.fn(() =>
+        chain(
+          ++call === 1
+            ? [{ at: new Date('2026-11-22T12:00:00Z') }]
+            : [
+                { state: { status: 'rendered' } },
+                { state: { status: 'unavailable' } },
+                { state: { status: 'limit_reached' } },
+                { state: null },
+              ],
+        ),
+      ),
+    } as any;
+    const deps = createLayoutDeps(db, 'lobe-user-1', async () => 15);
+    expect(await deps.recentRenderCount!('tpc_1')).toBe(2);
+  });
+
   it('запись подготовки PDF: готовая с описанием — сразу; ещё готовится — ждём', async () => {
     const ready = { layout: { pages: [{}] }, status: 'done' };
     mocks.prep.peek.mockResolvedValueOnce(new Map([['pdf1', ready]]));
