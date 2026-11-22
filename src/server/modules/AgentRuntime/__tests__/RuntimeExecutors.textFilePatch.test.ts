@@ -236,4 +236,277 @@ describe('RuntimeExecutors arckep-text-file/patchFile & co-activation', () => {
       TopicReferenceIdentifier,
     ]);
   });
+
+  it('preserves deterministic toolsToExecute order in call_tools_batch even when earlier tools finish later', async () => {
+    const slowPageContent =
+      JSON.stringify({ endLine: 250, nextStartLine: 251, startLine: 1, totalLines: 500 }) +
+      '\n' +
+      'A'.repeat(5000);
+    const fastPageContent =
+      JSON.stringify({ endLine: 500, nextStartLine: null, startLine: 251, totalLines: 500 }) +
+      '\n' +
+      'B'.repeat(5000);
+
+    const callSlow = {
+      apiName: 'getTopicContext',
+      arguments: JSON.stringify({ fileId: 'f1', mode: 'code_artifacts', startLine: 1 }),
+      id: 'tc_page_1',
+      identifier: TopicReferenceIdentifier,
+      type: 'builtin' as const,
+    };
+    const callFast = {
+      apiName: 'getTopicContext',
+      arguments: JSON.stringify({ fileId: 'f1', mode: 'code_artifacts', startLine: 251 }),
+      id: 'tc_page_2',
+      identifier: TopicReferenceIdentifier,
+      type: 'builtin' as const,
+    };
+
+    const executeTool = vi.fn(async (payload: any) => {
+      if (payload.id === 'tc_page_1') {
+        await new Promise((resolve) => setTimeout(resolve, 35));
+        return { content: slowPageContent, executionTime: 35, state: undefined, success: true };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      return { content: fastPageContent, executionTime: 1, state: undefined, success: true };
+    });
+
+    let msgSeq = 0;
+    const { ctx } = makeRuntimeCtx(executeTool);
+    ctx.messageModel.create = vi.fn(async (input: any) => ({
+      id: `msg_${input.tool_call_id}_${++msgSeq}`,
+    })) as any;
+
+    const state = AgentRuntime.createInitialState({
+      messages: [
+        { content: 'Read and continue', id: 'user_req_order', role: 'user' },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: callSlow.arguments,
+                name: 'lobe-topic-reference____getTopicContext____builtin',
+              },
+              id: callSlow.id,
+              type: 'function',
+            },
+            {
+              function: {
+                arguments: callFast.arguments,
+                name: 'lobe-topic-reference____getTopicContext____builtin',
+              },
+              id: callFast.id,
+              type: 'function',
+            },
+          ],
+        },
+      ] as any,
+      metadata: {
+        agentId: 'agent_1',
+        studioTextFileCheckpoint: {
+          documentId: '11111111-1111-5111-a111-111111111111',
+          part: 1,
+          status: 'ready',
+        },
+        studioTextFileEnabled: true,
+        studioTextFileRequestId: 'user_req_order',
+        topicId: 'topic_1',
+      },
+      operationId: 'op_patch_order',
+    });
+    state.operationToolSet = {
+      enabledToolIds: [TopicReferenceIdentifier],
+      manifestMap: {
+        [TopicReferenceIdentifier]: manifest(TopicReferenceIdentifier, 'getTopicContext'),
+      },
+      sourceMap: {},
+      tools: [],
+    };
+
+    const executors = createRuntimeExecutors(ctx);
+    const { newState, nextContext } = await executors.call_tools_batch!(
+      {
+        payload: { parentMessageId: 'asst_1', toolsCalling: [callSlow, callFast] },
+        type: 'call_tools_batch',
+      } as any,
+      state,
+    );
+
+    const batchToolResults = (nextContext?.payload as any)?.toolResults ?? [];
+    expect(batchToolResults.map((r: any) => r.toolCallId)).toEqual(['tc_page_1', 'tc_page_2']);
+    // lastToolMessageId follows toolsToExecute order (tc_page_2), not settlement order
+    expect((nextContext?.payload as any)?.parentMessageId).toMatch(/^msg_tc_page_2_/);
+    // In compactWriterContext, tc_page_2 is the last page so tc_page_1 is compacted and tc_page_2 is retained in full
+    const toolMessages = newState.messages.filter((m: any) => m.role === 'tool');
+    expect(toolMessages.map((m: any) => m.tool_call_id)).toEqual(['tc_page_1', 'tc_page_2']);
+    expect(toolMessages[0].content).toContain('Original source page retained.');
+    expect(toolMessages[1].content).toBe(fastPageContent);
+  });
+
+  it('restores in-memory patchFile edits[] arguments after DB reload in call_tools_batch when patchFile fails before any checkpoint', async () => {
+    const patchArgs = JSON.stringify({
+      edits: [
+        { newText: '    x = 10', oldText: '    x = 1' },
+        { newText: '    y = 20', oldText: '    MISSING_LINE' },
+      ],
+      sourceFileId: 'f_src_1',
+    });
+    const readCall = {
+      apiName: 'getTopicContext',
+      arguments: JSON.stringify({ fileId: 'f_src_1', mode: 'code_artifacts', startLine: 1 }),
+      id: 'tc_read_1',
+      identifier: TopicReferenceIdentifier,
+      type: 'builtin' as const,
+    };
+    const failedPatchCall = {
+      apiName: 'patchFile',
+      arguments: patchArgs,
+      id: 'tc_patch_fail_1',
+      identifier: TEXT_FILE_TOOL,
+      type: 'builtin' as const,
+    };
+
+    const patchErrorContent =
+      'ARCKEP_TEXT_FILE_ERROR_V1\n' +
+      JSON.stringify({
+        diagnostics: [
+          { index: 0, level: 'exact', message: 'Matched L2..2 (exact).', ok: true },
+          { code: 'not_found', index: 1, message: 'oldText was not found in the file.', ok: false },
+        ],
+        message: 'Atomic patch rejected (1/2 failed, 0 changes saved)',
+        reason: 'patch_failed',
+      });
+
+    const executeTool = vi.fn(async (payload: any) => {
+      if (payload.id === 'tc_read_1') {
+        return { content: 'page body', executionTime: 4, state: undefined, success: true };
+      }
+      return {
+        content: patchErrorContent,
+        error: { code: 'INVALID_ARGUMENT', message: 'patch_failed' },
+        executionTime: 6,
+        state: undefined,
+        success: false,
+      };
+    });
+
+    const { create, ctx } = makeRuntimeCtx(executeTool);
+    // Simulate Postgres rows where call_llm & call_tools_batch persisted '{}' for arckep-text-file
+    ctx.messageModel.query = vi.fn(async () => [
+      {
+        content: 'Fix file',
+        createdAt: 1000,
+        id: 'user_req_fail',
+        role: 'user',
+        updatedAt: 1000,
+      },
+      {
+        content: '',
+        createdAt: 1001,
+        id: 'asst_fail_1',
+        parentId: 'user_req_fail',
+        role: 'assistant',
+        tools: [{ ...readCall }, { ...failedPatchCall, arguments: '{}' }],
+        updatedAt: 1001,
+      },
+      {
+        content: 'page body',
+        createdAt: 1002,
+        id: 'tool_msg_read',
+        parentId: 'asst_fail_1',
+        plugin: { ...readCall },
+        role: 'tool',
+        tool_call_id: readCall.id,
+        updatedAt: 1002,
+      },
+      {
+        content: patchErrorContent,
+        createdAt: 1003,
+        id: 'tool_msg_patch',
+        parentId: 'asst_fail_1',
+        plugin: { ...failedPatchCall, arguments: '{}' },
+        role: 'tool',
+        tool_call_id: failedPatchCall.id,
+        updatedAt: 1003,
+      },
+    ]) as any;
+
+    const state = AgentRuntime.createInitialState({
+      messages: [
+        { content: 'Fix file', id: 'user_req_fail', role: 'user' },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: readCall.arguments,
+                name: 'lobe-topic-reference____getTopicContext____builtin',
+              },
+              id: readCall.id,
+              type: 'function',
+            },
+            {
+              function: {
+                arguments: patchArgs,
+                name: 'arckep-text-file____patchFile____builtin',
+              },
+              id: failedPatchCall.id,
+              type: 'function',
+            },
+          ],
+        },
+      ] as any,
+      metadata: {
+        agentId: 'agent_1',
+        studioTextFileEnabled: true,
+        studioTextFileRequestId: 'user_req_fail',
+        topicId: 'topic_1',
+      },
+      operationId: 'op_patch_fail',
+    });
+    state.operationToolSet = {
+      enabledToolIds: [TEXT_FILE_TOOL, TopicReferenceIdentifier],
+      manifestMap: {
+        [TEXT_FILE_TOOL]: manifest(TEXT_FILE_TOOL, 'patchFile'),
+        [TopicReferenceIdentifier]: manifest(TopicReferenceIdentifier, 'getTopicContext'),
+      },
+      sourceMap: {},
+      tools: [],
+    };
+
+    const executors = createRuntimeExecutors(ctx);
+    const { newState } = await executors.call_tools_batch!(
+      {
+        payload: { parentMessageId: 'asst_fail_1', toolsCalling: [readCall, failedPatchCall] },
+        type: 'call_tools_batch',
+      } as any,
+      state,
+    );
+
+    // Postgres still received masked '{}' arguments
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plugin: expect.objectContaining({ arguments: '{}', id: failedPatchCall.id }),
+        tool_call_id: failedPatchCall.id,
+      }),
+    );
+
+    // But in-memory newState.messages restored the original edits[] for the next LLM retry step!
+    const allToolsInState: any[] = [];
+    for (const msg of newState.messages as any[]) {
+      if (Array.isArray(msg.tools)) allToolsInState.push(...msg.tools);
+      if (Array.isArray(msg.children)) {
+        for (const child of msg.children) {
+          if (Array.isArray(child?.tools)) allToolsInState.push(...child.tools);
+        }
+      }
+    }
+    const restoredPatchTool = allToolsInState.find((t) => t.id === failedPatchCall.id);
+    expect(restoredPatchTool).toBeDefined();
+    expect(restoredPatchTool.arguments).toBe(patchArgs);
+    expect(JSON.parse(restoredPatchTool.arguments).edits).toHaveLength(2);
+  });
 });

@@ -364,4 +364,99 @@ describe('applyAtomicPatch', () => {
     expect(res.diffSummary.length).toBeLessThanOrEqual(MAX_DIFF_SUMMARY_CHARS);
     expect(elapsedMs).toBeLessThan(2000);
   });
+
+  it('rejects whitespace-only oldText on Level 2 (line_trim_end) instead of matching blank lines', () => {
+    const source = 'line1\n\nline3\n\nline5\n';
+    const singleBlank = applyAtomicPatch(source, [{ newText: 'INSERTED', oldText: '    ' }]);
+    expect(singleBlank.ok).toBe(false);
+    if (!singleBlank.ok) {
+      expect(singleBlank.diagnostics[0].code).toBe('not_found');
+    }
+
+    const multiBlank = applyAtomicPatch(source, [{ newText: 'INSERTED', oldText: '  \t \n   ' }]);
+    expect(multiBlank.ok).toBe(false);
+    if (!multiBlank.ok) {
+      expect(multiBlank.diagnostics[0].code).toBe('not_found');
+    }
+
+    // Exact match at Level 1 still works when the literal spaces actually exist in the file
+    const exactSpaces = applyAtomicPatch('a\n    \nb\n', [
+      { newText: 'REPLACED', oldText: '    ' },
+    ]);
+    expect(exactSpaces.ok).toBe(true);
+    if (exactSpaces.ok) {
+      expect(exactSpaces.diagnostics[0].level).toBe('exact');
+      expect(exactSpaces.content).toBe('a\nREPLACED\nb\n');
+    }
+  });
+
+  it('computes accurate O(N) diff hunks and +added/-deleted counts for insertions, deletions, line joins, and context trimming', () => {
+    const source = [
+      'Sub Demo()',
+      '    Dim a As Long',
+      '    a = 1',
+      '    Dim b As Long',
+      '    b = 2',
+      '    Dim c As Long',
+      'End Sub',
+      '',
+    ].join('\n');
+
+    // Context lines in oldText/newText should be trimmed so only the changed line is counted (-1 / +1)
+    const trimmed = applyAtomicPatch(source, [
+      {
+        newText: '    Dim a As Long\n    a = 99\n    Dim b As Long',
+        oldText: '    Dim a As Long\n    a = 1\n    Dim b As Long',
+      },
+    ]);
+    expect(trimmed.ok).toBe(true);
+    if (!trimmed.ok) return;
+    expect(trimmed.diffSummary).toContain('lines 7 -> 7 (+1 / -1)');
+    expect(trimmed.diffSummary).toContain('-    a = 1\n+    a = 99');
+
+    // Full-line deletion + line join (deleting '\n' between lines)
+    const delAndJoin = applyAtomicPatch('L1\nL2\nL3\nL4\nL5\n', [
+      { newText: '', oldText: 'L2\n' },
+      { newText: 'L4_JOIN_', oldText: 'L4\n' },
+    ]);
+    expect(delAndJoin.ok).toBe(true);
+    if (!delAndJoin.ok) return;
+    expect(delAndJoin.content).toBe('L1\nL3\nL4_JOIN_L5\n');
+    expect(delAndJoin.linesBefore).toBe(5);
+    expect(delAndJoin.linesAfter).toBe(3);
+    expect(delAndJoin.diffSummary).toContain('lines 5 -> 3 (+1 / -3)');
+    expect(delAndJoin.diffSummary).toContain('-L2');
+    expect(delAndJoin.diffSummary).toContain('-L4\n-L5\n+L4_JOIN_L5');
+  });
+
+  it('applies replaceAll on ~1.8 MB (45,000 lines) in strictly O(N) time (< 200 ms) without event-loop DoS', () => {
+    const lineCount = 45_000;
+    const source =
+      Array.from(
+        { length: lineCount },
+        (_, i) => `    Dim v_${String(i).padStart(5, '0')} As Long ' counter row`,
+      ).join('\n') + '\n';
+    expect(Buffer.byteLength(source, 'utf8')).toBeGreaterThan(1_700_000);
+    expect(Buffer.byteLength(source, 'utf8')).toBeLessThan(2 * 1024 * 1024);
+
+    const t0 = performance.now();
+    const res = applyAtomicPatch(
+      source,
+      [{ newText: 'As Double', oldText: 'As Long', replaceAll: true }],
+      { fileName: 'HugeModule.bas' },
+    );
+    const elapsedMs = performance.now() - t0;
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.appliedOccurrences).toBe(lineCount);
+    expect(res.linesBefore).toBe(lineCount);
+    expect(res.linesAfter).toBe(lineCount);
+    expect(res.diffSummary).toContain(`(${lineCount} replacements)`);
+    expect(res.diffSummary).toContain(`(+${lineCount} / -${lineCount})`);
+    expect(res.diffSummary.length).toBeLessThanOrEqual(MAX_DIFF_SUMMARY_CHARS);
+    expect(res.diffSummary.endsWith('...(truncated)')).toBe(true);
+    expect(res.content).not.toContain('As Long');
+    expect(elapsedMs).toBeLessThan(200);
+  });
 });

@@ -1,7 +1,42 @@
 const RECEIPT = 'ARCKEP_TEXT_FILE_V1\n';
 const MAX_TAIL = 4096;
+const MAX_HEADER_LINE_CHARS = 24_000;
+const COVERAGE_BLOCK_RE = /<coverage>([\s\S]*?)<\/coverage>/;
 const WRITER_CALL_RE = /^arckep-text-file____(?:writePart|patchFile)(?:____|$)/;
 const PATCH_CALL_RE = /^arckep-text-file____patchFile(?:____|$)/;
+
+const parsePageCursorMeta = (content: string): Record<string, unknown> | null => {
+  const nl = content.indexOf('\n');
+  const firstLineLen = nl >= 0 ? nl : content.length;
+  if (firstLineLen <= MAX_HEADER_LINE_CHARS) {
+    const firstLine = content.slice(0, firstLineLen);
+    const jsonStart = firstLine.indexOf('{');
+    if (jsonStart >= 0) {
+      try {
+        const parsed = JSON.parse(firstLine.slice(jsonStart));
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          return parsed as Record<string, unknown>;
+        }
+      } catch {
+        /* Fall through to <coverage> block extraction. */
+      }
+    }
+  }
+
+  const coverageMatch = COVERAGE_BLOCK_RE.exec(content.slice(0, MAX_HEADER_LINE_CHARS + 2048));
+  if (coverageMatch?.[1]) {
+    try {
+      const parsed = JSON.parse(coverageMatch[1].trim());
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      /* Some readers return a formatted page rather than a JSON header. */
+    }
+  }
+
+  return null;
+};
 
 // Only compact a call for which the engine has already returned a successful durable receipt.
 // Keep the most recent pair for each file. Preserve all unrelated tool calls, their results and
@@ -35,33 +70,27 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
     ) {
       // The preceding call already contains the exact document/file IDs and requested offset.
       // Keep cursor and snapshot from the result, never copy arbitrary source into the pointer.
-      const firstLine = message.content.slice(0, 2500).split('\n')[0];
       const cursor: Record<string, unknown> = {};
-      const jsonStart = firstLine.indexOf('{');
-      if (jsonStart >= 0) {
-        try {
-          const meta = JSON.parse(firstLine.slice(jsonStart));
-          for (const key of [
-            'startOffset',
-            'endOffset',
-            'nextOffset',
-            'totalCharCount',
-            'startLine',
-            'endLine',
-            'nextStartLine',
-            'totalLines',
-            'snapshot',
-            'snapshotAt',
-          ])
-            if (
-              typeof meta[key] === 'number' ||
-              meta[key] === null ||
-              (typeof meta[key] === 'string' && meta[key].length < 120)
-            )
-              cursor[key] = meta[key];
-        } catch {
-          /* Some readers return a formatted page rather than a JSON header. */
-        }
+      const meta = parsePageCursorMeta(message.content);
+      if (meta) {
+        for (const key of [
+          'startOffset',
+          'endOffset',
+          'nextOffset',
+          'totalCharCount',
+          'startLine',
+          'endLine',
+          'nextStartLine',
+          'totalLines',
+          'snapshot',
+          'snapshotAt',
+        ])
+          if (
+            typeof meta[key] === 'number' ||
+            meta[key] === null ||
+            (typeof meta[key] === 'string' && meta[key].length < 120)
+          )
+            cursor[key] = meta[key];
       }
       oldPages.set(
         message.tool_call_id,

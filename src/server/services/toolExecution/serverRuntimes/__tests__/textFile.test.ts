@@ -140,6 +140,34 @@ describe('textFileRuntime.patchFile', () => {
       reason: 'patch_failed',
     });
   });
+
+  it('returns detailsMessage on size_limit so the model does not retry patchFile on >2 MiB files', async () => {
+    const sizeMsg =
+      'File size (3145728 bytes) exceeds the 2 MiB (2097152 bytes) ceiling for patchFile. Do not retry patchFile or split edits on this file — run a script in the E2B sandbox.';
+    vi.spyOn(TextFileStore.prototype, 'patch').mockRejectedValue(
+      new TextFileError('size_limit', sizeMsg),
+    );
+
+    const runtime = textFileRuntime.factory({
+      parentMessageId: 'p1',
+      serverDB: {} as any,
+      studioTextFileEnabled: true,
+      toolManifestMap: {},
+      topicId: 't1',
+      userId: 'u1',
+    });
+    const res = await runtime.patchFile({
+      edits: [{ newText: 'b', oldText: 'a' }],
+      sourceFileId: 'f_big',
+    });
+    expect(res.success).toBe(false);
+    expect(res.error).toEqual({ code: 'INVALID_ARGUMENT', message: 'size_limit' });
+    const parsed = JSON.parse(res.content.slice('ARCKEP_TEXT_FILE_ERROR_V1\n'.length));
+    expect(parsed).toEqual({
+      message: sizeMsg,
+      reason: 'size_limit',
+    });
+  });
 });
 
 describe('activatorRuntime co-activation for arckep-text-file', () => {

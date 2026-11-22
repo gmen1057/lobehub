@@ -1,5 +1,4 @@
 import { detectLineEnding, type SourceLineEnding } from '@lobechat/file-loaders';
-import { structuredPatch } from 'diff';
 
 export const MAX_PATCH_EDITS = 50;
 export const MAX_PATCH_BATCH_BYTES = 512 * 1024;
@@ -7,6 +6,7 @@ export const MAX_PATCH_OUTPUT_BYTES = 2 * 1024 * 1024;
 export const MAX_DIFF_SUMMARY_CHARS = 2500;
 export const LINE_WINDOW_MARGIN = 5;
 const MAX_REPORTED_MATCH_LINES = 10;
+const DIFF_CONTEXT_LINES = 2;
 
 export interface PatchEdit {
   endLine?: number;
@@ -72,8 +72,20 @@ interface LineIndex {
   /** Number of logical lines (excluding the empty slot after a trailing '\n'). */
   logicalLineCount: number;
   normalized: string;
-  trimmedLines: string[];
+  trimmedLines?: string[];
 }
+
+const getTrimmedLines = (index: LineIndex): string[] => {
+  if (!index.trimmedLines) {
+    const { lines } = index;
+    const trimmed: string[] = Array.from({ length: lines.length });
+    for (let i = 0; i < lines.length; i++) {
+      trimmed[i] = trimEndTabsSpaces(lines[i]);
+    }
+    index.trimmedLines = trimmed;
+  }
+  return index.trimmedLines;
+};
 
 interface RawMatch {
   end: number;
@@ -111,21 +123,19 @@ const buildLineIndex = (normalized: string): LineIndex => {
   const lines = normalized.split('\n');
   const lineStarts = new Int32Array(lines.length);
   const lineEnds = new Int32Array(lines.length);
-  const trimmedLines: string[] = Array.from({ length: lines.length });
 
   let offset = 0;
   for (let i = 0; i < lines.length; i++) {
     lineStarts[i] = offset;
     const len = lines[i].length;
     lineEnds[i] = offset + len;
-    trimmedLines[i] = trimEndTabsSpaces(lines[i]);
     offset += len + 1; // +1 for '\n'
   }
 
   const logicalLineCount =
     normalized.length === 0 ? 0 : normalized.endsWith('\n') ? lines.length - 1 : lines.length;
 
-  return { lineEnds, lineStarts, lines, logicalLineCount, normalized, trimmedLines };
+  return { lineEnds, lineStarts, lines, logicalLineCount, normalized };
 };
 
 const offsetToLine = (lineStarts: Int32Array, offset: number): number => {
@@ -251,7 +261,7 @@ const runMatchCascade = (
   winEndLine: number,
   replaceAll: boolean,
 ): CascadeResult => {
-  const { lineEnds, lineStarts, lines, logicalLineCount, normalized, trimmedLines } = index;
+  const { lineEnds, lineStarts, lines, logicalLineCount, normalized } = index;
 
   if (logicalLineCount === 0 || winStartLine > winEndLine || winStartLine > logicalLineCount) {
     return { matches: [] };
@@ -296,6 +306,10 @@ const runMatchCascade = (
   }
 
   // Level 2: Line-by-line match with trailing horizontal whitespace ignored ONLY (never leading!)
+  if (oldTrimmed.every((l) => l.length === 0)) {
+    return { matches: [] };
+  }
+  const trimmedLines = getTrimmedLines(index);
   {
     const trimEndMatches: RawMatch[] = [];
     let idx = winStartIdx;
@@ -399,57 +413,323 @@ const runMatchCascade = (
   return { indentMismatch: sawIndentMismatch, matches: [] };
 };
 
+const doesBlockHaveUnclosedPrefix = (
+  sourceNormalized: string,
+  blockCharStart: number,
+  allSpans: ResolvedSpan[],
+  spansStart: number,
+  spansEnd: number,
+): boolean => {
+  for (let k = spansEnd - 1; k >= spansStart; k--) {
+    const repl = allSpans[k].replacement;
+    if (repl.length > 0) {
+      return !repl.endsWith('\n');
+    }
+    const gapStart = k > spansStart ? allSpans[k - 1].end : blockCharStart;
+    const gapEnd = allSpans[k].start;
+    if (gapEnd > gapStart) {
+      return sourceNormalized.charCodeAt(gapEnd - 1) !== 10;
+    }
+  }
+  return false;
+};
+
+interface OpenDiffHunk {
+  delta: number;
+  lastOpEndIdx: number;
+  lines: string[];
+  newStartIdx: number;
+  oldStartIdx: number;
+}
+
 const formatDiffSummary = ({
+  allSpans,
   appliedEdits,
   appliedOccurrences,
-  fileName,
+  index,
   lineEnding,
-  linesAfter,
-  linesBefore,
   patchedNormalized,
   sourceEncoding,
-  sourceNormalized,
 }: {
+  allSpans: ResolvedSpan[];
   appliedEdits: number;
   appliedOccurrences: number;
-  fileName: string;
+  index: LineIndex;
   lineEnding: SourceLineEnding;
-  linesAfter: number;
-  linesBefore: number;
   patchedNormalized: string;
   sourceEncoding: string;
-  sourceNormalized: string;
-}): string => {
-  const patch = structuredPatch(fileName, fileName, sourceNormalized, patchedNormalized, '', '', {
-    context: 2,
-  });
+}): { diffSummary: string; linesAfter: number; linesBefore: number } => {
+  const { lineEnds, lineStarts, lines, logicalLineCount: totalOldLines, normalized } = index;
+  const sourceHasTrailingNl = normalized.endsWith('\n');
 
-  let added = 0;
-  let deleted = 0;
+  let totalAdded = 0;
+  let totalDeleted = 0;
+  let cumulativeDelta = 0;
+
+  const previewBudget = MAX_DIFF_SUMMARY_CHARS + 128;
   const hunkBlocks: string[] = [];
+  let previewChars = 0;
+  let previewTruncated = false;
+  let openHunk: OpenDiffHunk | null = null;
 
-  for (const hunk of patch.hunks) {
-    for (const line of hunk.lines) {
-      if (line.startsWith('+') && !line.startsWith('+++')) added++;
-      else if (line.startsWith('-') && !line.startsWith('---')) deleted++;
+  const pushPreviewLine = (hunk: OpenDiffHunk, line: string) => {
+    if (previewTruncated) return;
+    hunk.lines.push(line);
+    previewChars += line.length + 1;
+    if (previewChars > previewBudget) {
+      previewTruncated = true;
     }
-    const header = `@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`;
-    hunkBlocks.push([header, ...hunk.lines].join('\n'));
+  };
+
+  const finalizeOpenHunk = () => {
+    if (!openHunk) return;
+    const hunkOldEndIdx = Math.min(totalOldLines, openHunk.lastOpEndIdx + DIFF_CONTEXT_LINES);
+    if (!previewTruncated) {
+      for (let k = openHunk.lastOpEndIdx; k < hunkOldEndIdx; k++) {
+        pushPreviewLine(openHunk, ` ${lines[k]}`);
+        if (previewTruncated) break;
+      }
+    }
+    const oldCount = hunkOldEndIdx - openHunk.oldStartIdx;
+    const newCount = oldCount + openHunk.delta;
+    const oldStart1 = oldCount === 0 ? openHunk.oldStartIdx : openHunk.oldStartIdx + 1;
+    const newStart1 = newCount === 0 ? openHunk.newStartIdx : openHunk.newStartIdx + 1;
+    const header = `@@ -${oldStart1},${oldCount} +${newStart1},${newCount} @@`;
+    hunkBlocks.push([header, ...openHunk.lines].join('\n'));
+    previewChars += header.length + 1;
+    if (previewChars > previewBudget) {
+      previewTruncated = true;
+    }
+    openHunk = null;
+  };
+
+  const recordOpInHunk = (
+    opOldStart: number,
+    opOldEnd: number,
+    opNewLines: string[] | null,
+    opDelta: number,
+  ) => {
+    if (openHunk && opOldStart - openHunk.lastOpEndIdx <= DIFF_CONTEXT_LINES * 2) {
+      if (!previewTruncated) {
+        for (let k = openHunk.lastOpEndIdx; k < opOldStart; k++) {
+          pushPreviewLine(openHunk, ` ${lines[k]}`);
+          if (previewTruncated) break;
+        }
+        if (!previewTruncated) {
+          for (let k = opOldStart; k < opOldEnd; k++) {
+            pushPreviewLine(openHunk, `-${lines[k]}`);
+            if (previewTruncated) break;
+          }
+        }
+        if (!previewTruncated && opNewLines) {
+          for (const newLine of opNewLines) {
+            pushPreviewLine(openHunk, `+${newLine}`);
+            if (previewTruncated) break;
+          }
+        }
+      }
+      openHunk.lastOpEndIdx = opOldEnd;
+      openHunk.delta += opDelta;
+    } else {
+      finalizeOpenHunk();
+      if (!previewTruncated) {
+        const hunkOldStartIdx = Math.max(0, opOldStart - DIFF_CONTEXT_LINES);
+        const hunkNewStartIdx = hunkOldStartIdx + cumulativeDelta;
+        openHunk = {
+          delta: opDelta,
+          lastOpEndIdx: opOldEnd,
+          lines: [],
+          newStartIdx: hunkNewStartIdx,
+          oldStartIdx: hunkOldStartIdx,
+        };
+        for (let k = hunkOldStartIdx; k < opOldStart; k++) {
+          pushPreviewLine(openHunk, ` ${lines[k]}`);
+          if (previewTruncated) break;
+        }
+        if (!previewTruncated) {
+          for (let k = opOldStart; k < opOldEnd; k++) {
+            pushPreviewLine(openHunk, `-${lines[k]}`);
+            if (previewTruncated) break;
+          }
+        }
+        if (!previewTruncated && opNewLines) {
+          for (const newLine of opNewLines) {
+            pushPreviewLine(openHunk, `+${newLine}`);
+            if (previewTruncated) break;
+          }
+        }
+      }
+    }
+    cumulativeDelta += opDelta;
+  };
+
+  let lineCursor = 0;
+  let spanIdx = 0;
+
+  while (spanIdx < allSpans.length && totalOldLines > 0) {
+    const firstSpan = allSpans[spanIdx];
+    while (lineCursor + 1 < totalOldLines && lineStarts[lineCursor + 1] <= firstSpan.start) {
+      lineCursor++;
+    }
+    const blockStartLine = lineCursor;
+    let blockEndLine = blockStartLine + 1;
+    const spansStart = spanIdx;
+    let spansEnd = spanIdx;
+
+    while (true) {
+      while (spansEnd < allSpans.length) {
+        const s = allSpans[spansEnd];
+        const nextLineStart =
+          blockEndLine < totalOldLines ? lineStarts[blockEndLine] : normalized.length;
+        if (s.start >= nextLineStart) break;
+
+        while (lineCursor + 1 < totalOldLines && lineStarts[lineCursor + 1] <= s.end - 1) {
+          lineCursor++;
+        }
+        if (lineCursor + 1 > blockEndLine) {
+          blockEndLine = lineCursor + 1;
+        }
+        spansEnd++;
+      }
+
+      if (blockEndLine < totalOldLines) {
+        const lastSpan = allSpans[spansEnd - 1];
+        const blockCharEnd = lineEnds[blockEndLine - 1] + 1;
+        if (
+          lastSpan.end === blockCharEnd &&
+          !lastSpan.replacement.endsWith('\n') &&
+          (lastSpan.replacement.length > 0 ||
+            doesBlockHaveUnclosedPrefix(
+              normalized,
+              lineStarts[blockStartLine],
+              allSpans,
+              spansStart,
+              spansEnd,
+            ))
+        ) {
+          blockEndLine++;
+          continue;
+        }
+      }
+      break;
+    }
+
+    spanIdx = spansEnd;
+
+    // Fast path once preview budget is full: single inline non-empty single-line replacement
+    if (
+      previewTruncated &&
+      spansEnd - spansStart === 1 &&
+      blockEndLine - blockStartLine === 1 &&
+      firstSpan.end <= lineEnds[blockStartLine] &&
+      firstSpan.replacement.length > 0 &&
+      !firstSpan.replacement.includes('\n')
+    ) {
+      const same =
+        firstSpan.replacement.length === firstSpan.end - firstSpan.start &&
+        normalized.startsWith(firstSpan.replacement, firstSpan.start);
+      if (!same) {
+        totalDeleted += 1;
+        totalAdded += 1;
+        if (openHunk) {
+          recordOpInHunk(blockStartLine, blockEndLine, null, 0);
+        }
+      }
+      continue;
+    }
+
+    const blockHasTrailingNl = blockEndLine < totalOldLines || sourceHasTrailingNl;
+    const blockCharStart = lineStarts[blockStartLine];
+    const blockCharEnd = blockHasTrailingNl ? lineEnds[blockEndLine - 1] + 1 : normalized.length;
+
+    const parts: string[] = [];
+    let pos = blockCharStart;
+    for (let k = spansStart; k < spansEnd; k++) {
+      const s = allSpans[k];
+      if (s.start > pos) parts.push(normalized.slice(pos, s.start));
+      parts.push(s.replacement);
+      pos = s.end;
+    }
+    if (pos < blockCharEnd) parts.push(normalized.slice(pos, blockCharEnd));
+    const patchedBlockText = parts.join('');
+
+    let newBlockLines: string[];
+    if (patchedBlockText.length === 0) {
+      newBlockLines = [];
+    } else if (patchedBlockText.endsWith('\n')) {
+      newBlockLines = patchedBlockText.slice(0, -1).split('\n');
+    } else {
+      newBlockLines = patchedBlockText.split('\n');
+    }
+
+    const oldLen = blockEndLine - blockStartLine;
+    const newLen = newBlockLines.length;
+    const minLen = Math.min(oldLen, newLen);
+
+    let prefixLen = 0;
+    while (prefixLen < minLen && lines[blockStartLine + prefixLen] === newBlockLines[prefixLen]) {
+      prefixLen++;
+    }
+
+    let suffixLen = 0;
+    while (
+      suffixLen < minLen - prefixLen &&
+      lines[blockEndLine - 1 - suffixLen] === newBlockLines[newLen - 1 - suffixLen]
+    ) {
+      suffixLen++;
+    }
+
+    const opOldStart = blockStartLine + prefixLen;
+    const opOldEnd = blockEndLine - suffixLen;
+    const delCount = opOldEnd - opOldStart;
+    const addCount = newLen - prefixLen - suffixLen;
+
+    if (delCount === 0 && addCount === 0) continue;
+
+    totalDeleted += delCount;
+    totalAdded += addCount;
+    const opDelta = addCount - delCount;
+
+    if (!previewTruncated || openHunk) {
+      const opNewLines = previewTruncated
+        ? null
+        : newBlockLines.slice(prefixLen, newLen - suffixLen);
+      recordOpInHunk(opOldStart, opOldEnd, opNewLines, opDelta);
+    } else {
+      cumulativeDelta += opDelta;
+    }
   }
 
+  finalizeOpenHunk();
+
+  const linesBefore = totalOldLines;
+  const linesAfter = linesBefore + totalAdded - totalDeleted;
   const occurrenceSuffix =
     appliedOccurrences !== appliedEdits ? ` (${appliedOccurrences} replacements)` : '';
-  const statsLine = `Patch applied: ${appliedEdits} edit${appliedEdits === 1 ? '' : 's'}${occurrenceSuffix}, lines ${linesBefore} -> ${linesAfter} (+${added} / -${deleted}), encoding ${sourceEncoding} -> utf-8, lineEnding ${lineEnding}.`;
+  const statsLine = `Patch applied: ${appliedEdits} edit${appliedEdits === 1 ? '' : 's'}${occurrenceSuffix}, lines ${linesBefore} -> ${linesAfter} (+${totalAdded} / -${totalDeleted}), encoding ${sourceEncoding} -> utf-8, lineEnding ${lineEnding}.`;
 
   if (hunkBlocks.length === 0) {
-    return `${statsLine}\n(no textual changes)`;
+    return {
+      diffSummary:
+        patchedNormalized === normalized
+          ? `${statsLine}\n(no textual changes)`
+          : `${statsLine}\n(trailing newline updated)`,
+      linesAfter,
+      linesBefore,
+    };
   }
 
   const full = `${statsLine}\n${hunkBlocks.join('\n')}`;
-  if (full.length <= MAX_DIFF_SUMMARY_CHARS) return full;
+  if (!previewTruncated && full.length <= MAX_DIFF_SUMMARY_CHARS) {
+    return { diffSummary: full, linesAfter, linesBefore };
+  }
 
   const suffix = '\n...(truncated)';
-  return full.slice(0, MAX_DIFF_SUMMARY_CHARS - suffix.length) + suffix;
+  const diffSummary =
+    full.length <= MAX_DIFF_SUMMARY_CHARS - suffix.length
+      ? full + suffix
+      : full.slice(0, MAX_DIFF_SUMMARY_CHARS - suffix.length) + suffix;
+  return { diffSummary, linesAfter, linesBefore };
 };
 
 const formatFailureSummary = (diagnostics: PatchEditDiagnostic[]): string => {
@@ -733,47 +1013,61 @@ export function applyAtomicPatch(
   }
 
   // Single-pass O(N) assembly.
-  const chunks: string[] = [];
-  let cursor = 0;
-  for (const span of allSpans) {
-    if (span.start > cursor) {
-      chunks.push(sourceNormalized.slice(cursor, span.start));
+  let patchedNormalized: string;
+  const singleEdit = edits.length === 1 ? edits[0] : undefined;
+  const singleNewNorm = singleEdit ? normalizeNewlines(singleEdit.newText) : '';
+  if (
+    singleEdit &&
+    singleEdit.replaceAll === true &&
+    singleEdit.startLine === undefined &&
+    singleEdit.endLine === undefined &&
+    allSpans.length > 0 &&
+    allSpans[0].level === 'exact' &&
+    !singleNewNorm.includes('$')
+  ) {
+    patchedNormalized = sourceNormalized.replaceAll(
+      normalizeNewlines(singleEdit.oldText),
+      singleNewNorm,
+    );
+  } else {
+    const chunks: string[] = [];
+    let cursor = 0;
+    for (const span of allSpans) {
+      if (span.start > cursor) {
+        chunks.push(sourceNormalized.slice(cursor, span.start));
+      }
+      chunks.push(span.replacement);
+      cursor = span.end;
     }
-    chunks.push(span.replacement);
-    cursor = span.end;
+    if (cursor < sourceNormalized.length) {
+      chunks.push(sourceNormalized.slice(cursor));
+    }
+    patchedNormalized = chunks.join('');
   }
-  if (cursor < sourceNormalized.length) {
-    chunks.push(sourceNormalized.slice(cursor));
-  }
-
-  const patchedNormalized = chunks.join('');
   const withLineEndings =
     lineEnding === 'CRLF' ? patchedNormalized.replaceAll('\n', '\r\n') : patchedNormalized;
   const finalContent = hasBom ? '\uFEFF' + withLineEndings : withLineEndings;
 
-  if (Buffer.byteLength(finalContent, 'utf8') > maxOutputBytes) {
+  const finalBytes = Buffer.byteLength(finalContent, 'utf8');
+  if (finalBytes > maxOutputBytes) {
     return {
       code: 'size_limit',
       diagnostics,
-      error: `Patched file exceeds ${maxOutputBytes} bytes limit.`,
+      error: `Patched file size (${finalBytes} bytes) exceeds the ${Math.round(maxOutputBytes / (1024 * 1024)) || 2} MiB (${maxOutputBytes} bytes) ceiling for patchFile. Do not retry patchFile with the same expansion — reduce output size, split into smaller files, or process via a script/E2B sandbox.`,
       ok: false,
     };
   }
 
-  const linesBefore = countLogicalLines(sourceNormalized);
-  const linesAfter = countLogicalLines(patchedNormalized);
   // eslint-disable-next-line unicorn/text-encoding-identifier-case
   const sourceEncoding = options.sourceEncoding ?? (hasBom ? 'utf-8-bom' : 'utf-8');
-  const diffSummary = formatDiffSummary({
+  const { diffSummary, linesAfter, linesBefore } = formatDiffSummary({
+    allSpans,
     appliedEdits: edits.length,
     appliedOccurrences: allSpans.length,
-    fileName: options.fileName ?? 'file',
+    index,
     lineEnding,
-    linesAfter,
-    linesBefore,
     patchedNormalized,
     sourceEncoding,
-    sourceNormalized,
   });
 
   return {

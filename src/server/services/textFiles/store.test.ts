@@ -606,7 +606,10 @@ describe('TextFileStore.patch & resolveReadableSourceFile', () => {
         edits: [{ newText: 'b', oldText: 'a' }],
         sourceFileId: 'f_huge',
       }),
-    ).rejects.toThrow('size_limit');
+    ).rejects.toMatchObject({
+      code: 'size_limit',
+      detailsMessage: expect.stringMatching(/2 MiB[\s\S]*Do not retry patchFile/i),
+    });
     expect(storage.getFileByteArray).not.toHaveBeenCalled();
 
     // Binary MIME (PDF) — S3 getFileByteArray must NOT be called!
@@ -649,5 +652,168 @@ describe('TextFileStore.patch & resolveReadableSourceFile', () => {
         sourceFileId: 'f_nul',
       }),
     ).rejects.toThrow('binary_file');
+  });
+
+  it('prevents duplicate cards and edit loss across repeated sourceFileId, snapshot continuation, stale snapshot, and fileId-as-documentId', async () => {
+    const srcId = 'file_lineage_src';
+    const srcKey = `files/${owner}/uploads/${srcId}/Lineage.bas`;
+    const srcContent = 'Sub Run()\n    x = 1\n    y = 2\n    z = 3\nEnd Sub\n';
+    blobs.set(srcKey, Buffer.from(srcContent, 'utf8'));
+    await db.insert(files).values({
+      fileType: 'text/plain',
+      id: srcId,
+      name: 'Lineage.bas',
+      size: Buffer.byteLength(srcContent),
+      url: srcKey,
+      userId: owner,
+    });
+    const msgId = 'msg_lineage_src';
+    await db.insert(messages).values({
+      content: 'Edit Lineage.bas',
+      id: msgId,
+      role: 'user',
+      topicId: topic,
+      userId: owner,
+    });
+    await db.insert(messagesFiles).values({
+      fileId: srcId,
+      messageId: msgId,
+      userId: owner,
+    });
+
+    // Turn 1: initial patch from sourceFileId -> part 1
+    const p1 = await store().patch(
+      'op-lin-1',
+      {
+        edits: [{ newText: '    x = 10', oldText: '    x = 1' }],
+        sourceFileId: srcId,
+      },
+      { requestMessageId: msgId, toolCallId: 'tc_lin_1' },
+    );
+    expect(p1.receipt).toMatchObject({ fileName: 'Lineage.bas', part: 1, status: 'ready' });
+
+    // Scenario 1: Passing sourceFileId of the LATEST snapshot with matching fileName continues SAME documentId (part 2)!
+    const p2 = await store().patch(
+      'op-lin-2',
+      {
+        edits: [{ newText: '    y = 20', oldText: '    y = 2' }],
+        sourceFileId: p1.receipt.fileId,
+      },
+      { toolCallId: 'tc_lin_2' },
+    );
+    expect(p2.receipt).toMatchObject({
+      documentId: p1.receipt.documentId,
+      fileName: 'Lineage.bas',
+      part: 2,
+      status: 'ready',
+    });
+    const p2Text = blobs
+      .get(`files/${owner}/code-artifacts/${topic}/${p2.receipt.fileId}/source.txt`)!
+      .toString('utf8');
+    expect(p2Text).toContain('    x = 10');
+    expect(p2Text).toContain('    y = 20');
+    expect((await store().list()).filter((r) => r.fileName === 'Lineage.bas')).toEqual([
+      p2.receipt,
+    ]);
+
+    // Scenario 1b: Passing an OUTDATED snapshot fileId (p1 when p2 exists) rejects with part_conflict + hint
+    await expect(
+      store().patch(
+        'op-lin-stale',
+        {
+          edits: [{ newText: '    z = 30', oldText: '    z = 3' }],
+          sourceFileId: p1.receipt.fileId,
+        },
+        { toolCallId: 'tc_lin_stale' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'part_conflict',
+      detailsMessage: expect.stringContaining(`documentId="${p1.receipt.documentId}"`),
+    });
+    await expect(
+      store().patch(
+        'op-lin-stale',
+        {
+          edits: [{ newText: '    z = 30', oldText: '    z = 3' }],
+          sourceFileId: p1.receipt.fileId,
+        },
+        { toolCallId: 'tc_lin_stale_2' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'part_conflict',
+      detailsMessage: expect.stringContaining(`latest fileId="${p2.receipt.fileId}"`),
+    });
+
+    // Scenario 2: Re-patching the original attachment sourceFileId on a new step/turn with a new toolCallId
+    // rejects with part_conflict pointing to existing documentId + latest fileId (never loses edits or duplicates cards!)
+    await expect(
+      store().patch(
+        'op-lin-3',
+        {
+          edits: [{ newText: '    z = 30', oldText: '    z = 3' }],
+          sourceFileId: srcId,
+        },
+        { toolCallId: 'tc_lin_dup_source' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'part_conflict',
+      detailsMessage: expect.stringMatching(
+        new RegExp(
+          `documentId="${p1.receipt.documentId}"[\\s\\S]*latest fileId="${p2.receipt.fileId}"`,
+        ),
+      ),
+    });
+
+    // Scenario 3: Confusing snapshot fileId with documentId returns not_found with exact documentId hint
+    await expect(
+      store().patch(
+        'op-lin-4',
+        {
+          documentId: p2.receipt.fileId,
+          edits: [{ newText: '    z = 30', oldText: '    z = 3' }],
+        },
+        { toolCallId: 'tc_lin_wrong_doc_id' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'not_found',
+      detailsMessage: expect.stringContaining(`documentId="${p1.receipt.documentId}"`),
+    });
+
+    // Scenario 2b: Two parallel patchFile calls with different toolCallIds for the same fresh sourceFileId in one op
+    // share the same deterministic documentId (no toolCallId in scopedId) -> 1 wins, 1 rejects with part_conflict!
+    const raceSrcId = 'file_lineage_race';
+    const raceKey = `files/${owner}/uploads/${raceSrcId}/Race.bas`;
+    blobs.set(raceKey, Buffer.from('a = 1\nb = 2\n', 'utf8'));
+    await db.insert(files).values({
+      fileType: 'text/plain',
+      id: raceSrcId,
+      name: 'Race.bas',
+      size: 12,
+      url: raceKey,
+      userId: owner,
+    });
+    await db.insert(messagesFiles).values({
+      fileId: raceSrcId,
+      messageId: msgId,
+      userId: owner,
+    });
+
+    const [r1, r2] = await Promise.allSettled([
+      store().patch(
+        'op-race-1',
+        { edits: [{ newText: 'a = 10', oldText: 'a = 1' }], sourceFileId: raceSrcId },
+        { toolCallId: 'tc_race_a' },
+      ),
+      store().patch(
+        'op-race-1',
+        { edits: [{ newText: 'b = 20', oldText: 'b = 2' }], sourceFileId: raceSrcId },
+        { toolCallId: 'tc_race_b' },
+      ),
+    ]);
+    expect([r1, r2].filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    const rejected = [r1, r2].find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected).toBeDefined();
+    expect(rejected.reason).toMatchObject({ code: 'part_conflict' });
+    expect((await store().list()).filter((r) => r.fileName === 'Race.bas')).toHaveLength(1);
   });
 });

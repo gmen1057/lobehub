@@ -104,10 +104,15 @@ export const textFileRuntime: ServerRuntimeRegistration = {
           success: true,
         };
       } catch (error) {
-        const reason = error instanceof TextFileError ? error.code : 'storage_error';
+        const isTextFileError = error instanceof TextFileError;
+        const reason = isTextFileError ? error.code : 'storage_error';
+        const errorPayload: Record<string, unknown> = { reason };
+        if (isTextFileError && error.detailsMessage) {
+          errorPayload.message = error.detailsMessage;
+        }
         console.warn('[text-file]', { ...fields, stage: 'write_failed', reason });
         return {
-          content: 'ARCKEP_TEXT_FILE_ERROR_V1\n' + JSON.stringify({ reason }),
+          content: 'ARCKEP_TEXT_FILE_ERROR_V1\n' + JSON.stringify(errorPayload),
           success: false,
         };
       }

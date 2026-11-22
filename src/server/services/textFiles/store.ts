@@ -113,6 +113,17 @@ const sanitizeFallbackFileName = (rawName: string): string => {
   return result && isValidFileName(result) ? result : 'patched.txt';
 };
 
+const sizeLimitMessage = (actualBytes: number, context: 'source' | 'output' | 'write'): string => {
+  const limitMiB = Math.round(MAX_SOURCE_BYTES / (1024 * 1024));
+  if (context === 'source') {
+    return `File size (${actualBytes} bytes) exceeds the ${limitMiB} MiB (${MAX_SOURCE_BYTES} bytes) ceiling for patchFile. Do not retry patchFile or split edits on this file — for files over ${limitMiB} MiB, run a transformation script in the E2B sandbox, provide a runnable patch script, or split the file into smaller files first.`;
+  }
+  if (context === 'output') {
+    return `Patched file size (${actualBytes} bytes) exceeds the ${limitMiB} MiB (${MAX_SOURCE_BYTES} bytes) ceiling for patchFile. Do not retry patchFile with the same expansion — reduce output size, split into smaller files, or process via a script/E2B sandbox.`;
+  }
+  return `Total file size (${actualBytes} bytes) exceeds the ${limitMiB} MiB (${MAX_SOURCE_BYTES} bytes) ceiling. Do not retry appending to this file — split the output into smaller files or generate it via a script/E2B sandbox.`;
+};
+
 export interface TextFileReceipt {
   documentId: string;
   fileId: string;
@@ -132,6 +143,7 @@ interface Checkpoint extends TextFileReceipt {
     sourceEncoding: string;
   };
   requestMessageId?: string;
+  rootSourceFileId?: string;
   toolCallId?: string;
   topicId: string;
 }
@@ -324,6 +336,48 @@ export class TextFileStore {
     return row;
   }
 
+  private async findByFileId(fileId: string) {
+    const [row] = await this.db
+      .select({ checkpoint: this.checkpoint, url: files.url })
+      .from(files)
+      .where(and(this.scope, eq(files.id, fileId)))
+      .limit(1);
+    return row;
+  }
+
+  private async findLatestByRootSource(rootSourceFileId: string, fileName: string) {
+    const rows = await this.db
+      .selectDistinctOn([this.docId], { checkpoint: this.checkpoint, url: files.url })
+      .from(files)
+      .where(
+        and(
+          this.scope,
+          sql`${files.metadata}->'textFile'->>'rootSourceFileId' = ${rootSourceFileId}`,
+        ),
+      )
+      .orderBy(this.docId, desc(this.partNumber));
+    return rows.find(({ checkpoint }) => checkpoint.fileName === fileName);
+  }
+
+  private async loadSnapshotDecoded(url: string): Promise<DecodedSourceText> {
+    const prevBytes = await this.storage.getFileByteArray(url);
+    if (!prevBytes) throw new TextFileError('not_found');
+    if (prevBytes.byteLength > MAX_SOURCE_BYTES) {
+      throw new TextFileError('size_limit', sizeLimitMessage(prevBytes.byteLength, 'source'));
+    }
+    try {
+      return decodeSourceText(prevBytes);
+    } catch (error) {
+      if (error instanceof TextEncodingError) {
+        throw new TextFileError(
+          error.code === 'binary_content' ? 'binary_file' : 'invalid_encoding',
+          error.message,
+        );
+      }
+      throw error;
+    }
+  }
+
   /**
    * Resolves a readable source file strictly scoped to this owner, topic, and (optionally) agent.
    * Checks size <= MAX_SOURCE_BYTES and binary MIME BEFORE fetching bytes from S3.
@@ -416,7 +470,9 @@ export class TextFileStore {
       .limit(1);
 
     if (!row) throw new TextFileError('not_found');
-    if (row.size > MAX_SOURCE_BYTES) throw new TextFileError('size_limit');
+    if (row.size > MAX_SOURCE_BYTES) {
+      throw new TextFileError('size_limit', sizeLimitMessage(row.size, 'source'));
+    }
     if (isDisallowedBinaryMime(row.fileType)) {
       throw new TextFileError(
         'binary_file',
@@ -426,7 +482,9 @@ export class TextFileStore {
 
     const bytes = await this.storage.getFileByteArray(row.url);
     if (!bytes) throw new TextFileError('not_found');
-    if (bytes.byteLength > MAX_SOURCE_BYTES) throw new TextFileError('size_limit');
+    if (bytes.byteLength > MAX_SOURCE_BYTES) {
+      throw new TextFileError('size_limit', sizeLimitMessage(bytes.byteLength, 'source'));
+    }
 
     let decoded: DecodedSourceText;
     try {
@@ -512,7 +570,9 @@ export class TextFileStore {
       requestMessageId = previous.checkpoint.requestMessageId;
       bytes = Buffer.concat([await this.storage.getFileByteArray(previous.url), bytes]);
     }
-    if (bytes.length > MAX_SOURCE_BYTES) throw new TextFileError('size_limit');
+    if (bytes.length > MAX_SOURCE_BYTES) {
+      throw new TextFileError('size_limit', sizeLimitMessage(bytes.length, 'write'));
+    }
     // An ambiguous DB response can be retried against exactly the same immutable object.
     const fileId = scopedId('snapshot', this.userId, this.topicId, documentId, part, status, hash);
     // Storage paths never contain the user-controlled display name.
@@ -623,10 +683,21 @@ export class TextFileStore {
     let part: number;
     let fileName: string;
     let decoded: DecodedSourceText;
+    let rootSourceFileId: string | undefined;
 
     if (requestedDocumentId) {
       const previous = await this.latest(requestedDocumentId);
-      if (!previous) throw new TextFileError('not_found');
+      if (!previous) {
+        const byFileId = await this.findByFileId(requestedDocumentId);
+        if (byFileId) {
+          const latestDoc = (await this.latest(byFileId.checkpoint.documentId)) ?? byFileId;
+          throw new TextFileError(
+            'not_found',
+            `"${requestedDocumentId}" is a snapshot fileId, not a documentId. Pass documentId="${latestDoc.checkpoint.documentId}" (latest fileId="${latestDoc.checkpoint.fileId}", part ${latestDoc.checkpoint.part}) without sourceFileId.`,
+          );
+        }
+        throw new TextFileError('not_found');
+      }
       if (toolCallId && previous.checkpoint.toolCallId === toolCallId) {
         return buildReplayResult(previous.checkpoint);
       }
@@ -636,38 +707,69 @@ export class TextFileStore {
       documentId = requestedDocumentId;
       fileName = requestedFileName ?? previous.checkpoint.fileName;
       requestMessageId = previous.checkpoint.requestMessageId ?? requestMessageId;
-
-      const prevBytes = await this.storage.getFileByteArray(previous.url);
-      if (!prevBytes) throw new TextFileError('not_found');
-      if (prevBytes.byteLength > MAX_SOURCE_BYTES) throw new TextFileError('size_limit');
-      try {
-        decoded = decodeSourceText(prevBytes);
-      } catch (error) {
-        if (error instanceof TextEncodingError) {
+      rootSourceFileId = previous.checkpoint.rootSourceFileId;
+      decoded = await this.loadSnapshotDecoded(previous.url);
+    } else {
+      const existingSnapshot = await this.findByFileId(sourceFileId!);
+      if (
+        existingSnapshot &&
+        (!requestedFileName || requestedFileName === existingSnapshot.checkpoint.fileName)
+      ) {
+        const latestDoc =
+          (await this.latest(existingSnapshot.checkpoint.documentId)) ?? existingSnapshot;
+        if (sourceFileId !== latestDoc.checkpoint.fileId) {
           throw new TextFileError(
-            error.code === 'binary_content' ? 'binary_file' : 'invalid_encoding',
-            error.message,
+            'part_conflict',
+            `Snapshot fileId="${sourceFileId}" is outdated (part ${existingSnapshot.checkpoint.part}); latest version of "${latestDoc.checkpoint.fileName}" is documentId="${latestDoc.checkpoint.documentId}" (latest fileId="${latestDoc.checkpoint.fileId}", part ${latestDoc.checkpoint.part}). Pass documentId="${latestDoc.checkpoint.documentId}" without sourceFileId to preserve later edits.`,
           );
         }
-        throw error;
-      }
-    } else {
-      const sourceFile = await this.resolveReadableSourceFile(sourceFileId!, agentId);
-      fileName = requestedFileName ?? sanitizeFallbackFileName(sourceFile.fileName);
-      part = 1;
-      documentId = scopedId(
-        'document',
-        this.userId,
-        this.topicId,
-        parent,
-        toolCallId ?? sourceFileId!,
-        fileName,
-      );
-      decoded = sourceFile.decoded;
+        if (toolCallId && latestDoc.checkpoint.toolCallId === toolCallId) {
+          return buildReplayResult(latestDoc.checkpoint);
+        }
+        part = latestDoc.checkpoint.part + 1;
+        if (part > MAX_PARTS) throw new TextFileError('part_conflict');
+        documentId = latestDoc.checkpoint.documentId;
+        fileName = latestDoc.checkpoint.fileName;
+        requestMessageId = latestDoc.checkpoint.requestMessageId ?? requestMessageId;
+        rootSourceFileId = latestDoc.checkpoint.rootSourceFileId;
+        decoded = await this.loadSnapshotDecoded(latestDoc.url);
+      } else {
+        const sourceFile = await this.resolveReadableSourceFile(sourceFileId!, agentId);
+        fileName = requestedFileName ?? sanitizeFallbackFileName(sourceFile.fileName);
 
-      const prior = await this.latest(documentId, 1);
-      if (prior && toolCallId && prior.checkpoint.toolCallId === toolCallId) {
-        return buildReplayResult(prior.checkpoint);
+        const existingByRoot = await this.findLatestByRootSource(sourceFileId!, fileName);
+        if (existingByRoot) {
+          if (toolCallId && existingByRoot.checkpoint.toolCallId === toolCallId) {
+            return buildReplayResult(existingByRoot.checkpoint);
+          }
+          throw new TextFileError(
+            'part_conflict',
+            `Source file "${fileName}" was already patched in this conversation as documentId="${existingByRoot.checkpoint.documentId}" (latest fileId="${existingByRoot.checkpoint.fileId}", part ${existingByRoot.checkpoint.part}). Pass documentId="${existingByRoot.checkpoint.documentId}" without sourceFileId to preserve earlier edits.`,
+          );
+        }
+
+        part = 1;
+        rootSourceFileId = sourceFileId!;
+        documentId = scopedId(
+          'document',
+          this.userId,
+          this.topicId,
+          parent,
+          sourceFileId!,
+          fileName,
+        );
+        decoded = sourceFile.decoded;
+
+        const prior = await this.latest(documentId, 1);
+        if (prior) {
+          if (toolCallId && prior.checkpoint.toolCallId === toolCallId) {
+            return buildReplayResult(prior.checkpoint);
+          }
+          throw new TextFileError(
+            'part_conflict',
+            `Source file "${fileName}" was already patched in this conversation as documentId="${prior.checkpoint.documentId}" (latest fileId="${prior.checkpoint.fileId}", part ${prior.checkpoint.part}). Pass documentId="${prior.checkpoint.documentId}" without sourceFileId to preserve earlier edits.`,
+          );
+        }
       }
     }
 
@@ -682,7 +784,9 @@ export class TextFileStore {
     }
 
     const bytes = Buffer.from(patched.content, 'utf8');
-    if (bytes.length > MAX_SOURCE_BYTES) throw new TextFileError('size_limit');
+    if (bytes.length > MAX_SOURCE_BYTES) {
+      throw new TextFileError('size_limit', sizeLimitMessage(bytes.length, 'output'));
+    }
 
     const hash = digest(patched.content);
     const status: 'draft' | 'ready' = final ? 'ready' : 'draft';
@@ -705,6 +809,7 @@ export class TextFileStore {
         sourceEncoding: decoded.encoding,
       },
       ...(requestMessageId ? { requestMessageId } : {}),
+      ...(rootSourceFileId ? { rootSourceFileId } : {}),
       status,
       ...(toolCallId ? { toolCallId } : {}),
       topicId: this.topicId,
@@ -768,6 +873,9 @@ export class TextFileStore {
       };
     }
 
-    throw new TextFileError('part_conflict');
+    throw new TextFileError(
+      'part_conflict',
+      `Document "${winner.checkpoint.fileName}" already has part ${winner.checkpoint.part} at documentId="${winner.checkpoint.documentId}" (latest fileId="${winner.checkpoint.fileId}"). Pass documentId="${winner.checkpoint.documentId}" without sourceFileId to apply further edits.`,
+    );
   }
 }
