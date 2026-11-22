@@ -282,7 +282,11 @@ describe('POST /cron-jobs', () => {
   it('чужой помощник — 400, задача не создаётся', async () => {
     mocks.agentRows = [];
 
-    const { body, status } = await call('POST', '/cron-jobs', createBody({ agentId: 'agt_foreign' }));
+    const { body, status } = await call(
+      'POST',
+      '/cron-jobs',
+      createBody({ agentId: 'agt_foreign' }),
+    );
 
     expect(status).toBe(400);
     expect(body.error).toBe('Agent not found');
@@ -347,7 +351,9 @@ describe('PATCH /cron-jobs/:id', () => {
   });
 
   it('новый шаблон чаще 30 минут — 400', async () => {
-    const { body, status } = await call('PATCH', '/cron-jobs/cron_1', { cronPattern: '*/10 * * * *' });
+    const { body, status } = await call('PATCH', '/cron-jobs/cron_1', {
+      cronPattern: '*/10 * * * *',
+    });
 
     expect(status).toBe(400);
     expect(body.error).toMatch(/Minimum interval/);
@@ -514,6 +520,20 @@ describe('POST /cron-jobs/:id/run', () => {
     const { status } = await call('POST', '/cron-jobs/cron_1/run', {});
     expect(status).toBe(400);
     expect(mocks.runCronJob).not.toHaveBeenCalled();
+  });
+
+  it('#17: если другой слот всё ещё в starting по истечении ожидания — отдаёт HTTP 503 вместо ложного 200 с topicId:null', async () => {
+    mocks.runCronJob.mockResolvedValue({
+      error: 'Cron run is still starting on another engine slot; retry shortly',
+      httpStatus: 503,
+      operationId: null,
+      success: false,
+      topicId: null,
+    });
+
+    const { body, status } = await call('POST', '/cron-jobs/cron_1/run', { runId: 'r-starting' });
+    expect(status).toBe(503);
+    expect(body.error).toMatch(/still starting/i);
   });
 });
 

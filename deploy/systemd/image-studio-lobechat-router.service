@@ -1,0 +1,40 @@
+[Unit]
+Description=Image Studio LobeChat HTTP/SSE router (port 3403, Blue-Green zero-downtime)
+Requires=image-studio-lobechat-router.socket
+After=network.target image-studio-lobechat-router.socket
+
+[Service]
+Type=simple
+User=lobechat
+Group=lobechat
+WorkingDirectory=/opt/lobechat-next-router
+EnvironmentFile=/opt/lobechat-next/.env
+Environment=ROUTER_HOST=127.0.0.1
+Environment=ROUTER_PORT=3403
+Environment=ROUTER_STATE_FILE=/var/lib/lobechat-engine/state.json
+Environment=ROUTER_ENV_FILE=/opt/lobechat-next-router/.service-key.env
+Environment=ROUTER_SHUTDOWN_TIMEOUT_MS=1770000
+ExecStart=/usr/bin/node /opt/lobechat-next-router/engine-router.mjs
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=1
+TimeoutStopSec=1800
+StandardOutput=append:/var/log/image-studio-lobechat-next.log
+StandardError=append:/var/log/image-studio-lobechat-next.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/image-studio-lobechat-next.log
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
+Also=image-studio-lobechat-router.socket

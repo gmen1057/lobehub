@@ -102,7 +102,7 @@ export class BotCallbackService {
       // Clear the active thread tracker so the thread can accept new messages.
       // In queue mode, the bridge handler's finally block skips this cleanup
       // to keep the thread marked active while the agent runs on the job queue.
-      AgentBridgeService.clearActiveThread(platformThreadId);
+      AgentBridgeService.clearActiveThread(platformThreadId, { applicationId, platform });
       this.summarizeTopicTitle(body, messenger);
     }
   }

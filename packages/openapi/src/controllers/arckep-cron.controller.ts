@@ -131,7 +131,8 @@ export class ArckepCronController extends BaseController {
 
       const patch: UpdateAgentCronJobData = {};
       try {
-        if (body.cronPattern !== undefined) patch.cronPattern = normalizeCronPattern(body.cronPattern);
+        if (body.cronPattern !== undefined)
+          patch.cronPattern = normalizeCronPattern(body.cronPattern);
         if (body.timezone !== undefined) patch.timezone = normalizeTimezone(body.timezone);
       } catch (error) {
         if (error instanceof CronScheduleError) return this.error(c, error.message, 400);
@@ -198,6 +199,13 @@ export class ArckepCronController extends BaseController {
         runId,
         model && provider ? { model, provider } : undefined,
       );
+      if (!result.success && (result.httpStatus === 503 || result.httpStatus === 409)) {
+        return this.error(
+          c,
+          result.error || 'Cron run is still starting on another engine slot; retry shortly',
+          result.httpStatus,
+        );
+      }
       return this.success(c, result, result.success ? 'cron job started' : 'cron job not started');
     } catch (error) {
       return this.handleError(c, error);

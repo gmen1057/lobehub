@@ -1,14 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type * as FinishedModule from '../finished';
-import { buildRunTitle, clearCronRunCache, formatRunTime, runCronJob } from '../run';
+import {
+  buildRunTitle,
+  clearCronRunCache,
+  formatRunTime,
+  getActiveCronSnapshot,
+  refreshActiveCronRuns,
+  runCronJob,
+  setCronStartingPollConfigForTests,
+} from '../run';
 
 // arckep (19.10.2026, задачи помощника по расписанию): запуск задачи по просьбе студии.
 
-const { mockExecAgent, mockNotify, mockUpdateStats } = vi.hoisted(() => ({
+const { mockExecAgent, mockGetRedisClient, mockNotify, mockUpdateStats } = vi.hoisted(() => ({
   mockExecAgent: vi.fn(),
+  mockGetRedisClient: vi.fn<() => any>(() => null),
   mockNotify: vi.fn(),
   mockUpdateStats: vi.fn(),
+}));
+
+vi.mock('@/server/modules/AgentRuntime/redis', () => ({
+  getAgentRuntimeRedisClient: mockGetRedisClient,
 }));
 
 vi.mock('@/server/services/aiAgent', () => ({
@@ -65,7 +78,9 @@ describe('buildRunTitle', () => {
     expect(buildRunTitle({ name: 'Дайджест', timezone: 'Europe/Moscow' }, at)).toBe(
       'Дайджест · 19.10 12:05',
     );
-    expect(buildRunTitle({ name: '  ', timezone: 'Europe/Moscow' }, at)).toBe('Задача · 19.10 12:05');
+    expect(buildRunTitle({ name: '  ', timezone: 'Europe/Moscow' }, at)).toBe(
+      'Задача · 19.10 12:05',
+    );
     expect(buildRunTitle({ name: null, timezone: null }, at)).toBe('Задача · 19.10 12:05');
   });
 });
@@ -74,6 +89,7 @@ describe('runCronJob', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearCronRunCache();
+    mockGetRedisClient.mockReturnValue(null);
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-10-19T09:05:00Z'));
     mockExecAgent.mockResolvedValue({
@@ -86,6 +102,7 @@ describe('runCronJob', () => {
   });
 
   afterEach(() => {
+    setCronStartingPollConfigForTests();
     vi.useRealTimers();
   });
 
@@ -301,6 +318,276 @@ describe('runCronJob', () => {
       await runCronJob(db, 'user-1', job(), 'run-1');
 
       expect(mockExecAgent).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('getActiveCronSnapshot (zero-downtime drain)', () => {
+    it('учитывает запуск от старта execAgent до onComplete-хука и очищает при ошибке или по TTL 45 мин', async () => {
+      let resolveExec!: (value: any) => void;
+      mockExecAgent.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveExec = resolve;
+          }),
+      );
+
+      const runPromise = runCronJob(db, 'user-1', job(), 'run-drain-1');
+      // Во время ожидания самого execAgent слот уже видит 1 активный запуск
+      expect(getActiveCronSnapshot().activeCount).toBe(1);
+
+      resolveExec({
+        operationId: 'op_cron_live',
+        success: true,
+        topicId: 'tpc_cron_live',
+      });
+      await runPromise;
+
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 1,
+        activeTopicIds: ['tpc_cron_live'],
+      });
+
+      const onCompleteHook = mockExecAgent.mock.calls[0][0].hooks[0];
+      await onCompleteHook.handler({
+        operationId: 'op_cron_live',
+        reason: 'done',
+        status: 'done',
+        topicId: 'tpc_cron_live',
+      });
+
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 0,
+        activeTopicIds: [],
+      });
+
+      // Ошибка старта не оставляет висящих записей
+      mockExecAgent.mockResolvedValueOnce({
+        error: 'failed to start',
+        operationId: 'op_fail',
+        success: false,
+        topicId: 'tpc_fail',
+      });
+      await runCronJob(db, 'user-1', job(), 'run-drain-fail');
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
+
+      // Страховочный TTL 45 минут сбрасывает зависшую запись
+      mockExecAgent.mockResolvedValueOnce({
+        operationId: 'op_stuck',
+        success: true,
+        topicId: 'tpc_stuck',
+      });
+      await runCronJob(db, 'user-1', job(), 'run-drain-stuck');
+      expect(getActiveCronSnapshot().activeTopicIds).toEqual(['tpc_stuck']);
+
+      vi.setSystemTime(new Date('2026-10-19T09:51:00Z')); // +46 минут
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
+    });
+
+    it('P2 #16: удерживает activeCount=1 на всём протяжении notifyCronFinished и не удаляет живую операцию по возрасту 45м', async () => {
+      let resolveNotify!: (ok: boolean) => void;
+      mockNotify.mockImplementationOnce(
+        () =>
+          new Promise<boolean>((resolve) => {
+            resolveNotify = resolve;
+          }),
+      );
+
+      await runCronJob(db, 'user-1', job(), 'run-notify-hold');
+      const hook = mockExecAgent.mock.calls[0][0].hooks[0];
+
+      const hookPromise = hook.handler({
+        operationId: 'op_1',
+        reason: 'done',
+        status: 'done',
+        topicId: 'tpc_1',
+      });
+
+      // Пока notifyCronFinished ретраится (до 34 с), операция обязана числиться активной!
+      await Promise.resolve();
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 1,
+        activeTopicIds: ['tpc_1'],
+      });
+
+      // Даже если прошло >45 минут во время доставки уведомления, запись не удаляется
+      vi.setSystemTime(new Date('2026-10-19T10:00:00Z'));
+      await refreshActiveCronRuns();
+      expect(getActiveCronSnapshot().activeCount).toBe(1);
+
+      resolveNotify(true);
+      await hookPromise;
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
+
+      // Долгая живая операция в AgentStateManager НЕ удаляется на 46-й минуте, пока не завершится
+      const { inMemoryAgentStateManager } =
+        await import('@/server/modules/AgentRuntime/InMemoryAgentStateManager');
+      inMemoryAgentStateManager.clear();
+      await inMemoryAgentStateManager.createOperationMetadata('op_long_live', { userId: 'user-1' });
+      await inMemoryAgentStateManager.saveAgentState('op_long_live', {
+        status: 'running',
+        stepCount: 3,
+      } as any);
+
+      mockExecAgent.mockResolvedValueOnce({
+        operationId: 'op_long_live',
+        success: true,
+        topicId: 'tpc_long_live',
+      });
+      await runCronJob(db, 'user-1', job(), 'run-long-live');
+      vi.setSystemTime(new Date('2026-10-19T11:00:00Z')); // +60 минут
+      await refreshActiveCronRuns();
+      expect(getActiveCronSnapshot()).toEqual({
+        activeCount: 1,
+        activeTopicIds: ['tpc_long_live'],
+      });
+
+      // Как только статус в AgentStateManager стал терминальным — очистка по возрасту срабатывает
+      await inMemoryAgentStateManager.saveAgentState('op_long_live', {
+        status: 'done',
+        stepCount: 4,
+      } as any);
+      await refreshActiveCronRuns();
+      expect(getActiveCronSnapshot()).toEqual({ activeCount: 0, activeTopicIds: [] });
+      inMemoryAgentStateManager.clear();
+    });
+
+    it('P2 #16: дедуплицирует runId между двумя слотами через Redis SET NX EX 900 и очищает ключ при ошибке старта', async () => {
+      const store = new Map<string, string>();
+      const fakeRedis = {
+        del: vi.fn(async (key: string) => {
+          store.delete(key);
+          return 1;
+        }),
+        get: vi.fn(async (key: string) => store.get(key) ?? null),
+        set: vi.fn(async (key: string, val: string, _ex?: string, _ttl?: number, nx?: string) => {
+          if (nx === 'NX' && store.has(key)) return null;
+          store.set(key, val);
+          return 'OK';
+        }),
+      };
+      mockGetRedisClient.mockReturnValue(fakeRedis);
+
+      // Слот 1 запускает run-redis-1
+      const slot1Res = await runCronJob(db, 'user-1', job(), 'run-redis-1');
+      expect(slot1Res).toEqual({ operationId: 'op_1', success: true, topicId: 'tpc_1' });
+      expect(fakeRedis.set).toHaveBeenCalledWith(
+        'arckep:cron:run:run-redis-1',
+        expect.any(String),
+        'EX',
+        900,
+        'NX',
+      );
+
+      // Имитируем слот 2 (пустой локальный runCache, общий Redis!)
+      clearCronRunCache();
+      mockGetRedisClient.mockReturnValue(fakeRedis);
+
+      const slot2Res = await runCronJob(db, 'user-1', job(), 'run-redis-1');
+      expect(slot2Res).toEqual({ operationId: 'op_1', success: true, topicId: 'tpc_1' });
+      expect(mockExecAgent).toHaveBeenCalledTimes(1); // НЕ запустил второй раз!
+
+      // Неудачный старт удаляет ключ в Redis, чтобы повтор мог запуститься
+      mockExecAgent.mockResolvedValueOnce({
+        error: 'temp error',
+        operationId: null,
+        success: false,
+        topicId: null,
+      });
+      const failRes = await runCronJob(db, 'user-1', job(), 'run-redis-fail');
+      expect(failRes.success).toBe(false);
+      expect(store.has('arckep:cron:run:run-redis-fail')).toBe(false);
+    });
+
+    it('#17: ждёт завершения starting (>500 мс) на другом слоте, перехватывает при падении первого слота, и возвращает httpStatus=503 при зависании >timeout (никогда не возвращает success:true с topicId:null!)', async () => {
+      const store = new Map<string, string>();
+      const fakeRedis = {
+        del: vi.fn(async (key: string) => {
+          store.delete(key);
+          return 1;
+        }),
+        get: vi.fn(async (key: string) => store.get(key) ?? null),
+        set: vi.fn(async (key: string, val: string, _ex?: string, _ttl?: number, nx?: string) => {
+          if (nx === 'NX' && store.has(key)) return null;
+          store.set(key, val);
+          return 'OK';
+        }),
+      };
+      mockGetRedisClient.mockReturnValue(fakeRedis);
+
+      // 1. Первый слот держит status='starting' 650 мс (> старых 500 мс!), затем пишет started с настоящим topicId
+      setCronStartingPollConfigForTests({ stepMs: 40, timeoutMs: 3_000 });
+      store.set(
+        'arckep:cron:run:run-slow-start',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+      setTimeout(() => {
+        store.set(
+          'arckep:cron:run:run-slow-start',
+          JSON.stringify({
+            jobId: 'cron_1',
+            operationId: 'op_slot1_ready',
+            status: 'started',
+            topicId: 'tpc_slot1_ready',
+            userId: 'user-1',
+          }),
+        );
+      }, 650);
+
+      const joined = await runCronJob(db, 'user-1', job(), 'run-slow-start');
+      expect(joined).toEqual({
+        operationId: 'op_slot1_ready',
+        success: true,
+        topicId: 'tpc_slot1_ready',
+      });
+      expect(mockExecAgent).not.toHaveBeenCalled();
+
+      // 2. Если первый слот упал во время 'starting' и очистил ключ — второй слот штатно запускает задачу!
+      store.set(
+        'arckep:cron:run:run-slot1-crashed',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+      setTimeout(() => {
+        store.delete('arckep:cron:run:run-slot1-crashed');
+      }, 80);
+
+      const reclaimed = await runCronJob(db, 'user-1', job(), 'run-slot1-crashed');
+      expect(reclaimed).toEqual({
+        operationId: 'op_1',
+        success: true,
+        topicId: 'tpc_1',
+      });
+      expect(mockExecAgent).toHaveBeenCalledTimes(1);
+
+      // 3. Если ключ завис в 'starting' дольше таймаута — возвращает success:false + httpStatus:503 (НИКОГДА success:true, topicId:null!)
+      setCronStartingPollConfigForTests({ stepMs: 25, timeoutMs: 120 });
+      store.set(
+        'arckep:cron:run:run-stuck-starting',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+
+      const timedOut = await runCronJob(db, 'user-1', job(), 'run-stuck-starting');
+      expect(timedOut.success).toBe(false);
+      expect(timedOut.httpStatus).toBe(503);
+      expect(timedOut.topicId).toBeNull();
+      expect(mockExecAgent).toHaveBeenCalledTimes(1);
     });
   });
 });

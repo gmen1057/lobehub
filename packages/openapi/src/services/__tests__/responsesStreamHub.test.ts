@@ -207,4 +207,62 @@ describe('ResponsesStreamHub (arckep F8)', () => {
     await finished;
     expect(got).toEqual(['a', 'b']);
   });
+
+  it('getDrainSnapshot и hasTopic корректно разделяют активные, удерживаемые в TTL и вычищенные темы', () => {
+    const now = { t: 50_000 };
+    const hub = makeHub(now, 1000);
+
+    const opActive1 = register(hub, 'op_active_1', 'tpc_active', 'u1');
+    now.t += 10;
+    const opActive2 = register(hub, 'op_active_2', 'tpc_active', 'u1'); // вторая операция в той же теме
+    now.t += 15;
+    const opDoneRecent = register(hub, 'op_done_recent', 'tpc_recent', 'u2');
+    hub.markDone('op_done_recent');
+
+    expect(opActive1.startedAtMs).toBe(50_000);
+    expect(opActive2.startedAtMs).toBe(50_010);
+    expect(opDoneRecent.startedAtMs).toBe(50_025);
+
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 2,
+      activeTopicIds: ['tpc_active'],
+      retainedTopicIds: ['tpc_active', 'tpc_recent'],
+      topicSeqs: {
+        tpc_active: 50_010,
+        tpc_recent: 50_025,
+      },
+    });
+
+    expect(hub.hasTopic('tpc_active')).toBe(true);
+    expect(hub.hasTopic('tpc_active', { activeOnly: true })).toBe(true);
+    expect(hub.hasTopic('tpc_recent')).toBe(true);
+    expect(hub.hasTopic('tpc_recent', { activeOnly: true })).toBe(false);
+    expect(hub.hasTopic('tpc_unknown')).toBe(false);
+    expect(hub.hasTopic('')).toBe(false);
+
+    // Истечение FINISHED_TTL_MS убирает завершённую тему при чтении снимка и hasTopic
+    now.t += 1001;
+    expect(hub.hasTopic('tpc_recent')).toBe(false);
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 2,
+      activeTopicIds: ['tpc_active'],
+      retainedTopicIds: ['tpc_active'],
+      topicSeqs: {
+        tpc_active: 50_010,
+      },
+    });
+
+    hub.markDone('op_active_1');
+    hub.markDone('op_active_2');
+    expect(hub.getDrainSnapshot()).toEqual({
+      activeCount: 0,
+      activeTopicIds: [],
+      retainedTopicIds: ['tpc_active'],
+      topicSeqs: {
+        tpc_active: 50_010,
+      },
+    });
+    expect(hub.hasTopic('tpc_active', { activeOnly: true })).toBe(false);
+    expect(hub.hasTopic('tpc_active')).toBe(true);
+  });
 });

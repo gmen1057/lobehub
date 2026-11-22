@@ -8,6 +8,7 @@ import { prettyJSON } from 'hono/pretty-json';
 import { userAuthMiddleware } from './middleware/auth';
 // Import routes
 import routes from './routes';
+import { engineSlotHttpActivityMiddleware } from './services/engineSlotActivity';
 
 // Create Hono app instance
 const app = new Hono().basePath('/api/v1');
@@ -16,6 +17,7 @@ const app = new Hono().basePath('/api/v1');
 app.use('*', cors());
 app.use('*', logger());
 app.use('*', prettyJSON());
+app.use('*', engineSlotHttpActivityMiddleware);
 app.use('*', userAuthMiddleware); // User authentication middleware
 
 // Error handling middleware

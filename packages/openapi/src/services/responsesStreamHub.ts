@@ -38,6 +38,8 @@ export interface HubOperation {
   responseId: string;
   /** Порядок регистрации — чтобы среди ответов одной темы выбрать самый свежий. */
   seq: number;
+  /** Миллисекунды — момент регистрации операции (для межслотового сравнения свежести темы). */
+  startedAtMs: number;
   subscribers: Set<HubSubscriber>;
   topicId: string;
   /** История переполнилась (очень длинный ответ): переподключение невозможно, живой поток идёт дальше. */
@@ -50,6 +52,13 @@ export interface HubAttachment {
   history: StreamEvent[];
   truncated: boolean;
   unsubscribe: () => void;
+}
+
+export interface HubDrainSnapshot {
+  activeCount: number;
+  activeTopicIds: string[];
+  retainedTopicIds: string[];
+  topicSeqs: Record<string, number>;
 }
 
 /** Сколько завершённый ответ остаётся доступным для переподключения. */
@@ -102,13 +111,15 @@ export class ResponsesStreamHub implements IStreamEventManager {
   }): HubOperation {
     this.prune();
     this.counter += 1;
+    const nowMs = this.now();
     const op: HubOperation = {
       ...input,
       bytes: 0,
-      createdAt: Math.floor(this.now() / 1000),
+      createdAt: Math.floor(nowMs / 1000),
       done: false,
       events: [],
       seq: this.counter,
+      startedAtMs: nowMs,
       subscribers: new Set(),
       truncated: false,
     };
@@ -164,6 +175,60 @@ export class ResponsesStreamHub implements IStreamEventManager {
       if (op.userId === userId && !op.done) out.add(op.topicId);
     }
     return [...out];
+  }
+
+  /** Чистый неразрушающий снимок состояния хаба для Blue-Green дренирования слота. */
+  getDrainSnapshot(): HubDrainSnapshot {
+    this.prune();
+    let activeCount = 0;
+    const activeTopics = new Set<string>();
+    const retainedTopics = new Set<string>();
+    const topicSeqs: Record<string, number> = {};
+
+    for (const op of this.operations.values()) {
+      if (op.topicId) {
+        retainedTopics.add(op.topicId);
+        const prev = topicSeqs[op.topicId];
+        if (prev === undefined || op.startedAtMs >= prev) {
+          topicSeqs[op.topicId] = op.startedAtMs;
+        }
+      }
+      if (!op.done) {
+        activeCount += 1;
+        if (op.topicId) activeTopics.add(op.topicId);
+      }
+    }
+
+    return {
+      activeCount,
+      activeTopicIds: [...activeTopics],
+      retainedTopicIds: [...retainedTopics],
+      topicSeqs,
+    };
+  }
+
+  /** Идентификаторы активных (!done) операций в хабе (для дедупликации с in-flight трекером). */
+  getActiveOperationIds(): Set<string> {
+    const out = new Set<string>();
+    for (const op of this.operations.values()) {
+      if (!op.done) out.add(op.operationId);
+    }
+    return out;
+  }
+
+  /** Есть ли тема в реестре слота (активная или ещё хранимая в пределах FINISHED_TTL_MS). */
+  hasTopic(topicId: string, opts?: { activeOnly?: boolean }): boolean {
+    if (!topicId) return false;
+    this.prune();
+    const activeOnly = Boolean(opts?.activeOnly);
+
+    for (const op of this.operations.values()) {
+      if (op.topicId !== topicId) continue;
+      if (activeOnly && op.done) continue;
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -344,5 +409,13 @@ export class ResponsesStreamHub implements IStreamEventManager {
   }
 }
 
+interface ResponsesStreamHubGlobal {
+  __arckepResponsesStreamHub?: ResponsesStreamHub;
+}
+
+const globalForHub = globalThis as unknown as ResponsesStreamHubGlobal;
+
 /** Один реестр на процесс: к нему ходят и отправка, и переподключение, и состояние ответа. */
-export const responsesStreamHub = new ResponsesStreamHub();
+export const responsesStreamHub =
+  globalForHub.__arckepResponsesStreamHub ??
+  (globalForHub.__arckepResponsesStreamHub = new ResponsesStreamHub());

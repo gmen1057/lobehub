@@ -1,0 +1,33 @@
+[Unit]
+Description=Image Studio LobeChat engine slot (%i, netcup) — headless Blue-Green instance
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=lobechat
+Group=lobechat
+WorkingDirectory=/opt/lobechat-next-%i
+EnvironmentFile=/opt/lobechat-next-%i/.env
+EnvironmentFile=/opt/lobechat-next-%i/.slot.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+StandardOutput=append:/var/log/image-studio-lobechat-next.log
+StandardError=append:/var/log/image-studio-lobechat-next.log
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/lobechat-next-%i/.next/cache /var/log/image-studio-lobechat-next.log
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

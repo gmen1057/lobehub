@@ -26,7 +26,7 @@ const log = debug('lobe-hono:arckep-service-auth');
 
 export const ARCKEP_USER_HEADER = 'x-arckep-user-id';
 export const ARCKEP_OWNER_ROLE_ID = 'arckep_owner';
-const MIN_KEY_LENGTH = 32;
+export const MIN_ARCKEP_SERVICE_KEY_LENGTH = 32;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 const constantTimeEqual = (a: string, b: string): boolean => {
@@ -36,11 +36,17 @@ const constantTimeEqual = (a: string, b: string): boolean => {
   return timingSafeEqual(ab, bb);
 };
 
-export const getArckepServiceKey = (): string => process.env.ARCKEP_ENGINE_SERVICE_KEY || '';
+export const getArckepServiceKey = (): string =>
+  (process.env.ARCKEP_ENGINE_SERVICE_KEY || '').trim();
+
+export const isArckepServiceKeyConfigured = (): boolean => {
+  const key = getArckepServiceKey();
+  return key.length >= MIN_ARCKEP_SERVICE_KEY_LENGTH;
+};
 
 export const isArckepServiceBearer = (bearer?: string | null): boolean => {
   const key = getArckepServiceKey();
-  if (!key || key.length < MIN_KEY_LENGTH || !bearer) return false;
+  if (!key || key.length < MIN_ARCKEP_SERVICE_KEY_LENGTH || !bearer) return false;
   return constantTimeEqual(bearer, key);
 };
 

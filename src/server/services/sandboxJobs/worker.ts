@@ -9,6 +9,7 @@ import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { writeChildToolMessage } from './continuation';
+import { isEngineSlotDraining } from './slotState';
 
 const log = debug('lobe-server:service:sandbox-jobs');
 
@@ -138,6 +139,7 @@ export class SandboxJobWorker {
   private readonly db: LobeChatDatabase;
   private readonly inFlightExecutions = new Set<Promise<void>>();
 
+  private draining = false;
   private running = false;
   private stopController = new AbortController();
   private stopping = false;
@@ -154,16 +156,39 @@ export class SandboxJobWorker {
     concurrencyCap: number = DEFAULT_CONCURRENCY_CAP,
   ): Promise<SandboxJobWorker> {
     const existing = globalForSandboxJobWorker.sandboxJobWorker;
-    if (existing?.isRunning) {
-      log('SandboxJobWorker already running');
+    if (existing?.isRunning || existing?.isDraining()) {
+      log('SandboxJobWorker already running or draining');
       return existing;
     }
 
     const worker = existing ?? new SandboxJobWorker(db, concurrencyCap);
     globalForSandboxJobWorker.sandboxJobWorker = worker;
+
+    if (isEngineSlotDraining()) {
+      worker.startPausedInDrain();
+      return worker;
+    }
+
     await worker.start();
 
     return worker;
+  }
+
+  /**
+   * Initialize worker in paused drain mode (used when a Blue-Green candidate or
+   * restarted draining slot boots while `state.json` names the other slot active).
+   */
+  startPausedInDrain(): void {
+    if (this.running) {
+      return;
+    }
+    if (!this.workerId) {
+      this.workerId = generateWorkerId();
+    }
+    this.draining = true;
+    this.stopping = false;
+    this.running = false;
+    log('SandboxJobWorker initialized in paused drain mode workerId=%s', this.workerId);
   }
 
   get isRunning(): boolean {
@@ -174,14 +199,23 @@ export class SandboxJobWorker {
     return this.workerId;
   }
 
+  isDraining(): boolean {
+    return this.draining;
+  }
+
+  getActiveJobsCount(): number {
+    return Math.max(this.inFlightExecutions.size, this.activeControllers.size);
+  }
+
   async start(): Promise<void> {
-    if (this.running) {
-      log('SandboxJobWorker already running, skipping');
+    if (this.running || this.draining) {
+      log('SandboxJobWorker already running or draining, skipping');
       return;
     }
 
     this.workerId = generateWorkerId();
     this.stopping = false;
+    this.draining = false;
     this.stopController = new AbortController();
     this.running = true;
 
@@ -194,8 +228,78 @@ export class SandboxJobWorker {
     log('SandboxJobWorker started workerId=%s', this.workerId);
   }
 
+  /**
+   * Enter safe drain mode for zero-downtime slot handoff:
+   * - Stops tickLoop from claiming new jobs or recovering stale jobs across users;
+   * - Does NOT abort `activeControllers`, allowing already-claimed E2B jobs to keep
+   *   heartbeating, receive the gateway response, and persist their result to Postgres.
+   */
+  async startDrain(): Promise<void> {
+    if (this.draining) {
+      await this.tickLoopPromise;
+      return;
+    }
+
+    log(
+      'SandboxJobWorker entering drain mode workerId=%s inFlight=%d',
+      this.workerId,
+      this.getActiveJobsCount(),
+    );
+
+    this.draining = true;
+    this.stopping = true;
+    this.stopController.abort();
+
+    await this.tickLoopPromise;
+    this.running = false;
+    this.tickLoopPromise = undefined;
+
+    log('SandboxJobWorker tick loop drained (inFlight=%d)', this.getActiveJobsCount());
+  }
+
+  /**
+   * Resume job claiming after a fast Blue-Green `--rollback` to a previously draining slot.
+   * Preserves `workerId` so any still-running E2B heartbeats keep matching DB claim ownership.
+   */
+  async resumeFromDrain(): Promise<void> {
+    if (this.running && !this.draining && !this.stopping && this.tickLoopPromise) {
+      return;
+    }
+
+    if (this.tickLoopPromise) {
+      await this.tickLoopPromise;
+      this.tickLoopPromise = undefined;
+    }
+
+    if (!this.workerId) {
+      this.workerId = generateWorkerId();
+    }
+
+    this.draining = false;
+    this.stopping = false;
+    this.stopController = new AbortController();
+    this.running = true;
+
+    log(
+      'SandboxJobWorker resuming from drain workerId=%s inFlight=%d',
+      this.workerId,
+      this.getActiveJobsCount(),
+    );
+
+    this.tickLoopPromise = this.tickLoop().catch((error) => {
+      console.error('[SandboxJobWorker] tick loop failed:', error);
+    });
+  }
+
   async stop(): Promise<void> {
-    if (!this.running && !this.tickLoopPromise) return;
+    if (
+      !this.running &&
+      !this.draining &&
+      !this.tickLoopPromise &&
+      this.inFlightExecutions.size === 0
+    ) {
+      return;
+    }
 
     log(
       'SandboxJobWorker stopping workerId=%s inFlight=%d',
@@ -216,6 +320,7 @@ export class SandboxJobWorker {
 
     this.running = false;
     this.stopping = false;
+    this.draining = false;
     this.tickLoopPromise = undefined;
     this.workerId = undefined;
     this.abortReasons.clear();
@@ -227,14 +332,18 @@ export class SandboxJobWorker {
   async tickLoop(): Promise<void> {
     let idleBackoffMs = DEFAULT_TICK_INTERVAL_MS;
 
-    while (!this.stopping) {
+    while (!this.stopping && !this.draining) {
       let didWork = false;
 
       try {
         const recoveredCount = await this.recoverStaleJobsAcrossUsers();
         didWork ||= recoveredCount > 0;
 
-        while (this.inFlightExecutions.size < this.concurrencyCap) {
+        while (
+          !this.stopping &&
+          !this.draining &&
+          this.inFlightExecutions.size < this.concurrencyCap
+        ) {
           const scheduled = await this.scheduleNextJob();
           if (!scheduled) break;
           didWork = true;
@@ -242,6 +351,8 @@ export class SandboxJobWorker {
       } catch (error) {
         console.error('[SandboxJobWorker] tick failed:', error);
       }
+
+      if (this.stopping || this.draining) break;
 
       idleBackoffMs = didWork
         ? DEFAULT_TICK_INTERVAL_MS

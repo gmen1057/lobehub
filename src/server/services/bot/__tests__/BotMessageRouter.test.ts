@@ -273,4 +273,207 @@ describe('BotMessageRouter', () => {
       expect(mockOnNewMessage).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('Blue-Green slot activity, waitUntil & scoped cross-slot /stop (#14, #16)', () => {
+    it('#14: holds activeCount=1 via waitUntil after HTTP 200 returns until background SDK promise settles', async () => {
+      const { Chat } = await import('chat');
+      const { getActiveBotSlotSnapshot, resetBotSlotActivityForTests } =
+        await import('../botSlotActivity');
+
+      resetBotSlotActivityForTests();
+
+      let resolveBackgroundWork!: () => void;
+      const backgroundPromise = new Promise<void>((resolve) => {
+        resolveBackgroundWork = resolve;
+      });
+      let receivedWaitUntil = false;
+
+      vi.mocked(Chat).mockImplementationOnce(
+        () =>
+          ({
+            initialize: mockInitialize,
+            onAction: mockOnAction,
+            onNewMention: mockOnNewMention,
+            onNewMessage: mockOnNewMessage,
+            onSlashCommand: mockOnSlashCommand,
+            onSubscribedMessage: mockOnSubscribedMessage,
+            webhooks: {
+              telegram: vi.fn(
+                async (_req: Request, opts?: { waitUntil?: (p: Promise<unknown>) => void }) => {
+                  if (opts?.waitUntil) {
+                    receivedWaitUntil = true;
+                    opts.waitUntil(backgroundPromise);
+                  }
+                  return new Response('OK', { status: 200 });
+                },
+              ),
+            },
+          }) as any,
+      );
+
+      mockFindEnabledByPlatform.mockResolvedValue([makeProvider({ applicationId: 'tg-wait-bot' })]);
+      const router = new BotMessageRouter();
+      const handler = router.getWebhookHandler('telegram', 'tg-wait-bot');
+      const resp = await handler(
+        new Request('https://example.com/webhook', { body: '{}', method: 'POST' }),
+      );
+
+      expect(resp.status).toBe(200);
+      expect(receivedWaitUntil).toBe(true);
+      // Even AFTER HTTP 200 returned, activeCount MUST stay 1 while debounced/background task runs!
+      expect(getActiveBotSlotSnapshot().activeCount).toBe(1);
+
+      resolveBackgroundWork();
+      await backgroundPromise;
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(getActiveBotSlotSnapshot().activeCount).toBe(0);
+      resetBotSlotActivityForTests();
+    });
+
+    it('#16: scopes Redis keys by platform+applicationId and verifies userId before cross-slot /stop', async () => {
+      const { beginBotThreadExecution, getActiveBotSlotSnapshot, resetBotSlotActivityForTests } =
+        await import('../botSlotActivity');
+      const { getAgentRuntimeRedisClient } = await import('@/server/modules/AgentRuntime/redis');
+      const { AiAgentService } = await import('@/server/services/aiAgent');
+
+      resetBotSlotActivityForTests();
+
+      const redisMap = new Map<string, string>();
+      vi.mocked(getAgentRuntimeRedisClient).mockReturnValue({
+        del: vi.fn(async (k: string) => {
+          redisMap.delete(k);
+          return 1;
+        }),
+        get: vi.fn(async (k: string) => redisMap.get(k) ?? null),
+        on: vi.fn(),
+        set: vi.fn(async (k: string, v: string) => {
+          redisMap.set(k, v);
+          return 'OK';
+        }),
+      } as any);
+
+      // Slot blue starts a Telegram bot turn on thread 'telegram:123:chat_99' for bot 'tg-stop-bot' (user-1)
+      const tracker = await beginBotThreadExecution({
+        agentId: 'agent-1',
+        applicationId: 'tg-stop-bot',
+        initialTopicId: 'tpc_tg_99',
+        platform: 'telegram',
+        threadId: 'telegram:123:chat_99',
+        userId: 'user-1',
+      });
+      await tracker.setOperation('op_tg_blue_1', 'tpc_tg_99');
+
+      expect(
+        redisMap.has('arckep:bot:active_thread:telegram:tg-stop-bot:telegram:123:chat_99'),
+      ).toBe(true);
+      expect(getActiveBotSlotSnapshot()).toEqual({
+        activeCount: 1,
+        activeTopicIds: ['tpc_tg_99'],
+      });
+
+      // Simulate slot green (empty local memory, shared Redis)
+      resetBotSlotActivityForTests();
+      expect(getActiveBotSlotSnapshot().activeCount).toBe(0);
+
+      const interruptTaskSpy = vi.fn().mockResolvedValue({ success: true });
+      vi.mocked(AiAgentService).mockImplementation(
+        () => ({ interruptTask: interruptTaskSpy }) as any,
+      );
+
+      // 1) A DIFFERENT bot ('tg-other-bot', owned by 'user-2') in the SAME Telegram group chat MUST NOT stop 'tg-stop-bot'!
+      mockFindEnabledByPlatform.mockResolvedValueOnce([
+        makeProvider({ agentId: 'agent-2', applicationId: 'tg-other-bot', userId: 'user-2' }),
+      ]);
+      const router = new BotMessageRouter();
+      await router.getWebhookHandler(
+        'telegram',
+        'tg-other-bot',
+      )(new Request('https://example.com/webhook', { body: '{}', method: 'POST' }));
+      const otherBotStop = mockOnSlashCommand.mock.calls.find((c) => c[0] === '/stop');
+      const otherReply = vi.fn().mockResolvedValue(undefined);
+      await otherBotStop![1]({
+        channel: {
+          id: 'telegram:123:chat_99',
+          post: otherReply,
+          setState: vi.fn(),
+          state: Promise.resolve({}),
+        },
+        text: '',
+      });
+      expect(interruptTaskSpy).not.toHaveBeenCalled();
+      expect(otherReply).toHaveBeenCalledWith('No active execution to stop.');
+
+      // 2) Even if a corrupted/mismatched Redis record under 'tg-mismatch-bot' has userId='victim-user',
+      //    a caller bot owned by 'attacker-user' MUST refuse to interrupt 'victim-user's operation!
+      redisMap.set(
+        'arckep:bot:active_thread:telegram:tg-mismatch-bot:telegram:123:chat_99',
+        JSON.stringify({
+          agentId: 'agent-victim',
+          applicationId: 'tg-mismatch-bot',
+          operationId: 'op_victim_1',
+          platform: 'telegram',
+          startedAt: Date.now(),
+          threadId: 'telegram:123:chat_99',
+          token: 'tok_victim',
+          topicId: 'tpc_victim',
+          userId: 'victim-user',
+        }),
+      );
+      mockOnSlashCommand.mockClear();
+      mockFindEnabledByPlatform.mockResolvedValueOnce([
+        makeProvider({
+          agentId: 'agent-attacker',
+          applicationId: 'tg-mismatch-bot',
+          userId: 'attacker-user',
+        }),
+      ]);
+      await router.getWebhookHandler(
+        'telegram',
+        'tg-mismatch-bot',
+      )(new Request('https://example.com/webhook', { body: '{}', method: 'POST' }));
+      const mismatchStop = mockOnSlashCommand.mock.calls.find((c) => c[0] === '/stop');
+      const mismatchReply = vi.fn().mockResolvedValue(undefined);
+      await mismatchStop![1]({
+        channel: {
+          id: 'telegram:123:chat_99',
+          post: mismatchReply,
+          setState: vi.fn(),
+          state: Promise.resolve({}),
+        },
+        text: '',
+      });
+      expect(interruptTaskSpy).not.toHaveBeenCalled();
+      expect(mismatchReply).toHaveBeenCalledWith('No active execution to stop.');
+
+      // 3) Legitimate same-bot & same-owner ('tg-stop-bot', 'user-1') interrupts 'op_tg_blue_1' cleanly!
+      mockOnSlashCommand.mockClear();
+      mockFindEnabledByPlatform.mockResolvedValueOnce([
+        makeProvider({ applicationId: 'tg-stop-bot', userId: 'user-1' }),
+      ]);
+      await router.getWebhookHandler(
+        'telegram',
+        'tg-stop-bot',
+      )(new Request('https://example.com/webhook', { body: '{}', method: 'POST' }));
+      const stopCall = mockOnSlashCommand.mock.calls.find((c) => c[0] === '/stop');
+      expect(stopCall).toBeDefined();
+      const postReply = vi.fn().mockResolvedValue(undefined);
+      await stopCall![1]({
+        channel: {
+          id: 'telegram:123:chat_99',
+          post: postReply,
+          setState: vi.fn(),
+          state: Promise.resolve({ topicId: 'tpc_tg_99' }),
+        },
+        text: '',
+      });
+
+      expect(interruptTaskSpy).toHaveBeenCalledTimes(1);
+      expect(interruptTaskSpy).toHaveBeenCalledWith({ operationId: 'op_tg_blue_1' });
+      expect(postReply).toHaveBeenCalledWith('Stop requested.');
+
+      vi.mocked(getAgentRuntimeRedisClient).mockReturnValue(null);
+      resetBotSlotActivityForTests();
+    });
+  });
 });

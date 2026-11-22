@@ -15,6 +15,7 @@ import { AgentBridgeService } from './AgentBridgeService';
 import { parseRedeemCode, redeemCode } from './botAccessCodeService';
 import { checkBotAccess, type DmPolicy } from './botAccessGate';
 import { checkRateLimit } from './botRateLimit';
+import { runWithBotWebhookTracking, stopCrossSlotBotExecution } from './botSlotActivity';
 import {
   type BotPlatformRuntimeContext,
   type BotProviderConfig,
@@ -43,6 +44,7 @@ interface RegisteredBot {
 interface CommandContext {
   /** Text after the command name (e.g. "/new foo" → "foo"). */
   args: string;
+  getState?: () => Promise<Record<string, any> | undefined>;
   post: (text: string) => Promise<any>;
   setState: (state: Record<string, any>, opts?: { replace?: boolean }) => Promise<any>;
   threadId: string;
@@ -114,18 +116,20 @@ export class BotMessageRouter {
   // ------------------------------------------------------------------
 
   private async handleWebhook(req: Request, platform: string, appId: string): Promise<Response> {
-    log('handleWebhook: platform=%s, appId=%s', platform, appId);
+    return runWithBotWebhookTracking(async ({ waitUntil }) => {
+      log('handleWebhook: platform=%s, appId=%s', platform, appId);
 
-    const bot = await this.getOrCreateBot(platform, appId);
-    if (!bot) {
+      const bot = await this.getOrCreateBot(platform, appId);
+      if (!bot) {
+        return new Response(`No bot configured for ${platform}`, { status: 404 });
+      }
+
+      if (bot.chatBot.webhooks && platform in bot.chatBot.webhooks) {
+        return (bot.chatBot.webhooks as any)[platform](req, { waitUntil });
+      }
+
       return new Response(`No bot configured for ${platform}`, { status: 404 });
-    }
-
-    if (bot.chatBot.webhooks && platform in bot.chatBot.webhooks) {
-      return (bot.chatBot.webhooks as any)[platform](req);
-    }
-
-    return new Response(`No bot configured for ${platform}`, { status: 404 });
+    });
   }
 
   // ------------------------------------------------------------------
@@ -231,6 +235,7 @@ export class BotMessageRouter {
 
     const commands = this.buildCommands(serverDB, {
       agentId,
+      applicationId,
       platform,
       settings: provider.settings as Record<string, unknown> | undefined,
       userId,
@@ -499,6 +504,7 @@ export class BotMessageRouter {
         id: string;
         post: (t: string) => Promise<any>;
         setState: (s: Record<string, any>, o?: { replace?: boolean }) => Promise<any>;
+        state?: Promise<Record<string, any> | undefined>;
       },
       text: string | undefined,
     ): Promise<boolean> => {
@@ -506,6 +512,7 @@ export class BotMessageRouter {
       if (!result) return false;
       await result.command.handler({
         args: result.args,
+        getState: () => Promise.resolve(thread.state),
         post: (t) => thread.post(t),
         setState: (s, o) => thread.setState(s, o),
         threadId: thread.id,
@@ -584,6 +591,7 @@ export class BotMessageRouter {
       bot.onAction(`bot_cmd:${cmd.name}`, async (event) => {
         await cmd.handler({
           args: '',
+          getState: () => Promise.resolve((event.thread as any)?.state),
           post: (text) => event.thread?.post(text) ?? Promise.resolve(),
           setState: (state, opts) =>
             (event.thread as any)?.setState?.(state, opts) ?? Promise.resolve(),
@@ -644,9 +652,16 @@ export class BotMessageRouter {
    */
   private buildCommands(
     serverDB: LobeChatDatabase,
-    info: { agentId: string; platform: string; settings?: Record<string, unknown>; userId: string },
+    info: {
+      agentId: string;
+      applicationId: string;
+      platform: string;
+      settings?: Record<string, unknown>;
+      userId: string;
+    },
   ): BotCommand[] {
-    const { agentId, platform, userId, settings } = info;
+    const { agentId, applicationId, platform, userId, settings } = info;
+    const scopeOpts = { applicationId, platform };
 
     // Built-in commands — always present, never shadowed.
     const builtins: BotCommand[] = [
@@ -663,12 +678,41 @@ export class BotMessageRouter {
         description: 'Stop the current execution',
         handler: async (ctx) => {
           log('command /stop: agent=%s, platform=%s', agentId, platform);
-          const isActive = AgentBridgeService.isThreadActive(ctx.threadId);
+          const isActive =
+            typeof AgentBridgeService.isThreadActive === 'function' &&
+            AgentBridgeService.isThreadActive(ctx.threadId, scopeOpts);
           if (!isActive) {
+            let fallbackTopicId: string | undefined;
+            try {
+              const st = await ctx.getState?.();
+              fallbackTopicId = typeof st?.topicId === 'string' ? st.topicId : undefined;
+            } catch {
+              fallbackTopicId = undefined;
+            }
+
+            const crossSlotResult = await stopCrossSlotBotExecution({
+              applicationId,
+              defaultUserId: userId,
+              fallbackTopicId,
+              platform,
+              serverDB,
+              threadId: ctx.threadId,
+            });
+
+            if (crossSlotResult === 'interrupted' || crossSlotResult === 'queued') {
+              log('command /stop: cross-slot stop %s for thread=%s', crossSlotResult, ctx.threadId);
+              await ctx.post('Stop requested.');
+              return;
+            }
+            if (crossSlotResult === 'failed') {
+              await ctx.post('Unable to stop the current execution.');
+              return;
+            }
+
             await ctx.post('No active execution to stop.');
             return;
           }
-          const operationId = AgentBridgeService.getActiveOperationId(ctx.threadId);
+          const operationId = AgentBridgeService.getActiveOperationId(ctx.threadId, scopeOpts);
           if (operationId) {
             try {
               const aiAgentService = new AiAgentService(serverDB, userId);
@@ -678,7 +722,7 @@ export class BotMessageRouter {
                 await ctx.post('Unable to stop the current execution.');
                 return;
               }
-              AgentBridgeService.clearActiveThread(ctx.threadId);
+              AgentBridgeService.clearActiveThread(ctx.threadId, scopeOpts);
               log('command /stop: interrupted operationId=%s', operationId);
             } catch (error) {
               log('command /stop: interruptTask failed: %O', error);
@@ -686,7 +730,7 @@ export class BotMessageRouter {
               return;
             }
           } else {
-            AgentBridgeService.requestStop(ctx.threadId);
+            AgentBridgeService.requestStop(ctx.threadId, scopeOpts);
             log('command /stop: queued deferred stop for thread=%s', ctx.threadId);
           }
           await ctx.post('Stop requested.');
@@ -699,8 +743,7 @@ export class BotMessageRouter {
     // Custom commands have no handler — they reply with the canned response text.
     const builtinNames = new Set(builtins.map((c) => c.name));
     const customCommands = settings?.customCommands as
-      | Array<{ description?: string; name?: string; response?: string }>
-      | undefined;
+      Array<{ description?: string; name?: string; response?: string }> | undefined;
 
     const customs: BotCommand[] = [];
     if (Array.isArray(customCommands)) {
@@ -753,6 +796,7 @@ export class BotMessageRouter {
       bot.onSlashCommand(`/${cmd.name}`, async (event) => {
         await cmd.handler({
           args: event.text,
+          getState: () => Promise.resolve((event.channel as any)?.state),
           post: (text) => event.channel.post(text),
           setState: (state, opts) => event.channel.setState(state, opts),
           threadId: event.channel.id,
@@ -772,6 +816,7 @@ export class BotMessageRouter {
       if (!result) return;
       await result.command.handler({
         args: result.args,
+        getState: () => Promise.resolve((thread as any)?.state),
         post: (text) => thread.post(text),
         setState: (state, opts) => thread.setState(state, opts),
         threadId: thread.id,

@@ -16,6 +16,7 @@ import {
   CronJobTopicsQuerySchema,
   CronJobUpdateSchema,
 } from '../types/arckep-cron.type';
+import ArckepEngineSlotRoutes from './arckep-engine-slot.route';
 
 /**
  * arckep (19.10.2026, задачи помощника по расписанию): `/api/v1/arckep/*`.
@@ -24,6 +25,9 @@ import {
  * через общий userAuthMiddleware.
  */
 const ArckepRoutes = new Hono();
+
+// Служебные ручки управления Blue-Green слотом (авторизация по ARCKEP_ENGINE_SERVICE_KEY без X-Arckep-User-Id)
+ArckepRoutes.route('/engine-slot', ArckepEngineSlotRoutes);
 
 // GET /api/v1/arckep/cron-jobs[?agentId=]
 ArckepRoutes.get(
@@ -34,11 +38,8 @@ ArckepRoutes.get(
 );
 
 // POST /api/v1/arckep/cron-jobs
-ArckepRoutes.post(
-  '/cron-jobs',
-  requireAuth,
-  zValidator('json', CronJobCreateSchema),
-  async (c) => new ArckepCronController().create(c),
+ArckepRoutes.post('/cron-jobs', requireAuth, zValidator('json', CronJobCreateSchema), async (c) =>
+  new ArckepCronController().create(c),
 );
 
 // PATCH /api/v1/arckep/cron-jobs/:id
