@@ -30,6 +30,10 @@ export const MemorySettingsSchema = z
     message: 'enabled or autoExtract is required',
   });
 
+export const MemoryRuleBodySchema = z.object({
+  text: z.string(),
+});
+
 // arckep (20.10.2026): mode=digest — суточный разбор (все новые переписки + вся память одним заходом); limit там —
 // сколько переписок взять (до 100, дальше режет бюджет токенов), в почасовом режиме — до 10.
 export const MemoryExtractBodySchema = z
@@ -38,6 +42,7 @@ export const MemoryExtractBodySchema = z
       .string()
       .regex(/^memauto-[0-9a-f]{24}$/)
       .optional(),
+    excludeTopicIds: z.array(z.string().min(1).max(128)).max(5000).optional(),
     studioUserId: z.number().int().positive().optional(),
     days: z.number().int().min(1).max(90).optional(),
     idleMinutes: z.number().int().min(0).max(1440).optional(),
@@ -61,7 +66,7 @@ MemoriesRoutes.get('/settings', requireAuth, async (c) => {
   return await controller.getMemorySettings(c);
 });
 
-// POST /api/v1/memories/extract  { days?, idleMinutes?, limit? } — автосбор, только служебный вход студии
+// POST /api/v1/memories/extract  { days?, idleMinutes?, limit?, excludeTopicIds? } — автосбор, только служебный вход студии
 MemoriesRoutes.post(
   '/extract',
   requireAuth,
@@ -82,6 +87,35 @@ MemoriesRoutes.patch(
     return await controller.updateMemorySettings(c);
   },
 );
+
+// GET /api/v1/memories/rules — закреплённые правила («Мои правила»), объявлено до '/:id'
+MemoriesRoutes.get('/rules', requireAuth, async (c) => {
+  const controller = new ArckepController();
+  return await controller.getMemoryRules(c);
+});
+
+// POST /api/v1/memories/rules  { text: string }
+MemoriesRoutes.post('/rules', requireAuth, zValidator('json', MemoryRuleBodySchema), async (c) => {
+  const controller = new ArckepController();
+  return await controller.createMemoryRule(c);
+});
+
+// PATCH /api/v1/memories/rules/:id  { text: string }
+MemoriesRoutes.patch(
+  '/rules/:id',
+  requireAuth,
+  zValidator('json', MemoryRuleBodySchema),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.updateMemoryRule(c);
+  },
+);
+
+// DELETE /api/v1/memories/rules/:id
+MemoriesRoutes.delete('/rules/:id', requireAuth, async (c) => {
+  const controller = new ArckepController();
+  return await controller.deleteMemoryRule(c);
+});
 
 // GET /api/v1/memories?layer=&page=&pageSize=&q=
 MemoriesRoutes.get('/', requireAuth, zValidator('query', MemoriesListQuerySchema), async (c) => {

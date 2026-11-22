@@ -1,10 +1,14 @@
 import { MemorySourceType, type ModelUsage } from '@lobechat/types';
 import { and, eq, sql } from 'drizzle-orm';
 
+import { UserModel } from '@/database/models/user';
+import { UserPersonaModel } from '@/database/models/userMemory/persona';
 import { topics } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import { parseMemoryExtractionConfig } from '@/server/globalConfig/parseMemoryExtractionConfig';
 
 import { MemoryExtractionExecutor } from './extract';
+import { buildUserPersonaJobInput, UserPersonaService } from './persona/service';
 
 /**
  * arckep (20.10.2026): автосбор памяти без Upstash. Штатный запуск движка — только Upstash Workflow и сразу у всех
@@ -18,19 +22,29 @@ import { MemoryExtractionExecutor } from './extract';
 
 export interface AutoExtractOptions {
   days: number;
+  excludeTopicIds?: string[];
   idleMinutes: number;
   limit: number;
 }
 
+export interface AutoExtractCallBreakdown {
+  inputCachedTokens: number;
+  inputTokens: number;
+  outputReasoningTokens: number;
+  outputTokens: number;
+  serviceTier?: string;
+}
+
 export interface AutoExtractUsage {
   calls: number;
+  callsBreakdown?: AutoExtractCallBreakdown[];
   inputCachedTokens: number;
   inputTokens: number;
   outputReasoningTokens: number;
   outputTokens: number;
   /**
-   * Режим, в котором прошёл суточный разбор одним вызовом: `flex` (цена Batch, −50 %) или `default`. Нет поля —
-   * обычная цена. Студия списывает с человека по нему.
+   * Режим, в котором прошёл суточный разбор: `flex` (цена Batch, −50 %) ТОЛЬКО если все вызовы прошли во `flex`,
+   * иначе `default`. Нет поля — обычная цена. Студия списывает с человека по `callsBreakdown` / `serviceTier`.
    */
   serviceTier?: string;
 }
@@ -45,19 +59,43 @@ export interface AutoExtractResult {
 
 export const AUTO_EXTRACT_FAILED_KEY = 'arckepMemoryAutoFailedAt';
 
+const PERSONA_MIN_MEMORIES = 5;
+const PERSONA_REFRESH_MS = 7 * 24 * 60 * 60 * 1000;
+
+const buildExcludeTopicIdsClause = (excludeTopicIds?: string[]) => {
+  const validIds = (excludeTopicIds ?? []).filter(
+    (id): id is string => typeof id === 'string' && id.length > 0,
+  );
+  if (validIds.length === 0) return sql``;
+  return sql`AND t.id NOT IN (${sql.join(
+    validIds.map((id) => sql`${id}`),
+    sql`, `,
+  )})`;
+};
+
 export const listAutoExtractTopics = async (
   db: LobeChatDatabase,
   userId: string,
-  { days, idleMinutes, limit }: AutoExtractOptions,
+  { days, excludeTopicIds, idleMinutes, limit }: AutoExtractOptions,
 ): Promise<string[]> => {
+  const excludeClause = buildExcludeTopicIdsClause(excludeTopicIds);
   // lastMessageAt пишется из JS с точностью до миллисекунд, а created_at в базе — до микросекунд: без запаса
   // в секунду каждая разобранная тема выглядела бы продолженной и разбиралась бы каждый час.
   const result = await db.execute(sql`
     SELECT t.id
     FROM topics t
+    LEFT JOIN agents a
+      ON a.id = t.agent_id AND a.user_id = t.user_id
     JOIN messages m
       ON m.topic_id = t.id AND m.user_id = t.user_id AND m.role IN ('user', 'assistant')
     WHERE t.user_id = ${userId}
+      AND LOWER(COALESCE(a.chat_config -> 'memory' ->> 'enabled', 'true')) <> 'false'
+      AND COALESCE(jsonb_typeof(t.metadata -> 'dataGuardProtected'), '') <> 'object'
+      AND LOWER(COALESCE(t.metadata ->> 'dataGuardProtected', 'false')) <> 'true'
+      AND COALESCE(jsonb_typeof(t.metadata -> 'arckepUntrusted'), '') <> 'object'
+      AND LOWER(COALESCE(t.metadata ->> 'arckepUntrusted', 'false')) <> 'true'
+      AND COALESCE(t.trigger, '') <> 'cron'
+      ${excludeClause}
       AND COALESCE((t.metadata ->> ${AUTO_EXTRACT_FAILED_KEY})::timestamptz, 'epoch'::timestamptz)
           < now() - interval '24 hours'
     GROUP BY t.id, t.metadata
@@ -152,6 +190,7 @@ export const runAutoExtract = async (
 export interface DigestOptions {
   contextLimit: number;
   days: number;
+  excludeTopicIds?: string[];
   idleMinutes: number;
   maxMemories: number;
   maxTopics: number;
@@ -163,17 +202,32 @@ const DIGEST_FAILED_RETRY_HOURS = 20;
 export const listDigestTopics = async (
   db: LobeChatDatabase,
   userId: string,
-  { days, idleMinutes, maxTopics }: Pick<DigestOptions, 'days' | 'idleMinutes' | 'maxTopics'>,
+  {
+    days,
+    excludeTopicIds,
+    idleMinutes,
+    maxTopics,
+  }: Pick<DigestOptions, 'days' | 'excludeTopicIds' | 'idleMinutes' | 'maxTopics'>,
 ): Promise<{ after?: Date; topicId: string }[]> => {
+  const excludeClause = buildExcludeTopicIdsClause(excludeTopicIds);
   // Тот же отбор, что у ежечасного разбора, плюс «курсор»: до какого сообщения тема уже разобрана.
   const result = await db.execute(sql`
     SELECT t.id,
       CASE WHEN t.metadata ->> 'userMemoryExtractStatus' = 'completed'
         THEN t.metadata -> 'userMemoryExtractRunState' ->> 'lastMessageAt' END AS after
     FROM topics t
+    LEFT JOIN agents a
+      ON a.id = t.agent_id AND a.user_id = t.user_id
     JOIN messages m
       ON m.topic_id = t.id AND m.user_id = t.user_id AND m.role IN ('user', 'assistant')
     WHERE t.user_id = ${userId}
+      AND LOWER(COALESCE(a.chat_config -> 'memory' ->> 'enabled', 'true')) <> 'false'
+      AND COALESCE(jsonb_typeof(t.metadata -> 'dataGuardProtected'), '') <> 'object'
+      AND LOWER(COALESCE(t.metadata ->> 'dataGuardProtected', 'false')) <> 'true'
+      AND COALESCE(jsonb_typeof(t.metadata -> 'arckepUntrusted'), '') <> 'object'
+      AND LOWER(COALESCE(t.metadata ->> 'arckepUntrusted', 'false')) <> 'true'
+      AND COALESCE(t.trigger, '') <> 'cron'
+      ${excludeClause}
       AND COALESCE((t.metadata ->> ${AUTO_EXTRACT_FAILED_KEY})::timestamptz, 'epoch'::timestamptz)
           < now() - make_interval(hours => ${DIGEST_FAILED_RETRY_HOURS})
     GROUP BY t.id, t.metadata
@@ -211,26 +265,117 @@ export const runDailyDigest = async (
   };
   const result: AutoExtractResult = { extracted: 0, failed: 0, memories: 0, topics: 0, usage };
 
-  const topics = await listDigestTopics(db, userId, options);
-  if (!topics.length) return result;
+  const topicsList = await listDigestTopics(db, userId, options);
+  if (!topicsList.length) return result;
 
+  const callsBreakdown: AutoExtractCallBreakdown[] = [];
   const executor = await MemoryExtractionExecutor.create();
-  executor.setUsageListener((item) => addUsage(usage, item));
+  executor.setUsageListener((item) => {
+    addUsage(usage, item);
+    callsBreakdown.push({
+      inputCachedTokens: item.inputCachedTokens ?? 0,
+      inputTokens: item.totalInputTokens ?? 0,
+      outputReasoningTokens: item.outputReasoningTokens ?? 0,
+      outputTokens: item.totalOutputTokens ?? 0,
+    });
+  });
+
   const digest = await executor.extractUserDigest({
     contextLimit: options.contextLimit,
     maxMemories: options.maxMemories,
-    topics,
+    topics: topicsList,
     userId,
   });
+
+  const digestTier = digest.serviceTier ?? 'default';
+  for (const call of callsBreakdown) {
+    call.serviceTier ??= digestTier;
+  }
 
   result.topics = digest.topicIds.length;
   if (digest.error) {
     result.failed = digest.topicIds.length;
+    if (callsBreakdown.length > 0) {
+      usage.callsBreakdown = callsBreakdown;
+      usage.serviceTier = callsBreakdown.every((c) => c.serviceTier === 'flex')
+        ? 'flex'
+        : 'default';
+    }
     for (const topicId of digest.topicIds) await markAutoExtractFailed(db, userId, topicId);
     return result;
   }
+
   result.extracted = digest.extracted ? digest.topicIds.length : 0;
   result.memories = digest.memoryIds.length;
-  if (digest.serviceTier) usage.serviceTier = digest.serviceTier;
+
+  if (digest.extracted || digest.memoryIds.length > 0) {
+    try {
+      const countRes = await db.execute(
+        sql`SELECT COUNT(*)::int AS total FROM user_memories WHERE user_id = ${userId}`,
+      );
+      const totalMemories = Number(
+        (countRes.rows as { total?: number }[] | undefined)?.[0]?.total ?? 0,
+      );
+      if (totalMemories >= PERSONA_MIN_MEMORIES) {
+        const personaModel = new UserPersonaModel(db, userId);
+        const latestPersona = await personaModel.getLatestPersonaDocument();
+        const updatedAtMs = latestPersona?.updatedAt
+          ? new Date(latestPersona.updatedAt).getTime()
+          : Number.NaN;
+        const shouldRefreshPersona =
+          !latestPersona?.persona?.trim() ||
+          !Number.isFinite(updatedAtMs) ||
+          Date.now() - updatedAtMs >= PERSONA_REFRESH_MS;
+
+        if (shouldRefreshPersona) {
+          const extractionConfig = parseMemoryExtractionConfig();
+          const jobInput = await buildUserPersonaJobInput(db, userId);
+          let responseLanguage: string | undefined;
+          try {
+            const settings = await new UserModel(db, userId).getUserSettings();
+            responseLanguage = (settings?.general as { responseLanguage?: string } | undefined)
+              ?.responseLanguage;
+          } catch {
+            // non-critical
+          }
+          await new UserPersonaService(db).composeWriting(
+            {
+              ...jobInput,
+              language: extractionConfig.language || responseLanguage,
+              sourceIds: digest.topicIds,
+              userId,
+            },
+            {
+              observeDigestCalls: true,
+              onUsage: (item, meta) => {
+                addUsage(usage, item);
+                callsBreakdown.push({
+                  inputCachedTokens: item.inputCachedTokens ?? 0,
+                  inputTokens: item.totalInputTokens ?? 0,
+                  outputReasoningTokens: item.outputReasoningTokens ?? 0,
+                  outputTokens: item.totalOutputTokens ?? 0,
+                  serviceTier: meta?.serviceTier ?? 'default',
+                });
+              },
+              reasoningEffort: extractionConfig.reasoningEffort,
+              serviceTier: extractionConfig.serviceTier,
+            },
+          );
+        }
+      }
+    } catch (error) {
+      console.error('[memory-daily-digest] persona update failed', userId, error);
+    }
+  }
+
+  if (callsBreakdown.length > 0) {
+    usage.callsBreakdown = callsBreakdown;
+    usage.serviceTier = callsBreakdown.every((call) => call.serviceTier === 'flex')
+      ? 'flex'
+      : 'default';
+  } else if (digest.serviceTier) {
+    usage.serviceTier = digest.serviceTier;
+  }
+
   return result;
 };

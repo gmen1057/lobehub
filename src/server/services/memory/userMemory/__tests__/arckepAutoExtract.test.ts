@@ -6,14 +6,45 @@ import { AUTO_EXTRACT_FAILED_KEY, runAutoExtract, runDailyDigest } from '../arck
 // токены всех вызовов складываются в отчёт. Исполнитель движка и база подменены.
 
 const mocks = vi.hoisted(() => ({
+  buildUserPersonaJobInput: vi.fn(),
+  composeWriting: vi.fn(),
   create: vi.fn(),
   extractTopic: vi.fn(),
   extractUserDigest: vi.fn(),
+  getLatestPersonaDocument: vi.fn(),
+  getUserSettings: vi.fn(),
   listener: undefined as undefined | ((usage: any) => void),
 }));
 
 vi.mock('../extract', () => ({
   MemoryExtractionExecutor: { create: mocks.create },
+}));
+
+vi.mock('../persona/service', () => ({
+  UserPersonaService: vi.fn().mockImplementation(() => ({
+    composeWriting: mocks.composeWriting,
+  })),
+  buildUserPersonaJobInput: mocks.buildUserPersonaJobInput,
+}));
+
+vi.mock('@/database/models/userMemory/persona', () => ({
+  UserPersonaModel: vi.fn().mockImplementation(() => ({
+    getLatestPersonaDocument: mocks.getLatestPersonaDocument,
+  })),
+}));
+
+vi.mock('@/database/models/user', () => ({
+  UserModel: vi.fn().mockImplementation(() => ({
+    getUserSettings: mocks.getUserSettings,
+  })),
+}));
+
+vi.mock('@/server/globalConfig/parseMemoryExtractionConfig', () => ({
+  parseMemoryExtractionConfig: () => ({
+    language: 'Russian',
+    reasoningEffort: 'low',
+    serviceTier: 'flex',
+  }),
 }));
 
 const makeDb = (topicIds: string[]) => {
@@ -189,5 +220,137 @@ describe('runDailyDigest (суточный разбор)', () => {
       (chunk: unknown) => typeof chunk === 'string',
     );
     expect(params.some((param: string) => param.includes(AUTO_EXTRACT_FAILED_KEY))).toBe(true);
+  });
+
+  it('обновляет persona при >=5 воспоминаний (если персоны нет или >=7 суток), включает observeDigestCalls:true и считает callsBreakdown', async () => {
+    let callIdx = 0;
+    const db = {
+      execute: vi.fn(async () => {
+        callIdx += 1;
+        if (callIdx === 1) return { rows: [{ after: null, id: 'tpc_1' }] };
+        return { rows: [{ total: 6 }] };
+      }),
+      update: vi.fn(),
+    } as any;
+
+    mocks.getLatestPersonaDocument.mockResolvedValue({
+      persona: 'Old persona',
+      updatedAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000),
+    });
+    mocks.buildUserPersonaJobInput.mockResolvedValue({
+      existingPersona: 'Old persona',
+      memoryIds: ['m1', 'm2', 'm3', 'm4', 'm5', 'm6'],
+      retrievedMemories: '<memories />',
+    });
+    mocks.extractUserDigest.mockImplementation(async () => {
+      mocks.listener?.({
+        inputCachedTokens: 8000,
+        outputReasoningTokens: 50,
+        totalInputTokens: 10_000,
+        totalOutputTokens: 300,
+      });
+      return {
+        extracted: true,
+        memoryIds: ['m6'],
+        serviceTier: 'flex',
+        topicIds: ['tpc_1'],
+      };
+    });
+    mocks.composeWriting.mockImplementation(async (_payload: any, opts: any) => {
+      opts.onUsage?.(
+        {
+          inputCachedTokens: 1000,
+          outputReasoningTokens: 20,
+          totalInputTokens: 2500,
+          totalOutputTokens: 200,
+        },
+        { serviceTier: 'default' }, // Simulate persona fallback from flex -> default on 429
+      );
+      return { document: { persona: 'New persona' } };
+    });
+
+    const result = await runDailyDigest(db, 'user-1', DIGEST);
+
+    expect(mocks.composeWriting).toHaveBeenCalledTimes(1);
+    expect(mocks.composeWriting).toHaveBeenCalledWith(
+      expect.objectContaining({
+        existingPersona: 'Old persona',
+        language: 'Russian',
+        sourceIds: ['tpc_1'],
+        userId: 'user-1',
+      }),
+      expect.objectContaining({
+        observeDigestCalls: true,
+        reasoningEffort: 'low',
+        serviceTier: 'flex',
+      }),
+    );
+
+    // Mixed flex + default -> top-level serviceTier MUST be 'default', while callsBreakdown keeps per-call tiers!
+    expect(result.usage).toEqual({
+      calls: 2,
+      callsBreakdown: [
+        {
+          inputCachedTokens: 8000,
+          inputTokens: 10_000,
+          outputReasoningTokens: 50,
+          outputTokens: 300,
+          serviceTier: 'flex',
+        },
+        {
+          inputCachedTokens: 1000,
+          inputTokens: 2500,
+          outputReasoningTokens: 20,
+          outputTokens: 200,
+          serviceTier: 'default',
+        },
+      ],
+      inputCachedTokens: 9000,
+      inputTokens: 12_500,
+      outputReasoningTokens: 70,
+      outputTokens: 500,
+      serviceTier: 'default',
+    });
+  });
+
+  it('сбой persona не помечает уже разобранные темы дайджеста как failed и сохраняет usage', async () => {
+    let callIdx = 0;
+    const { updates } = digestDb([]);
+    const db = {
+      execute: vi.fn(async () => {
+        callIdx += 1;
+        if (callIdx === 1) return { rows: [{ after: null, id: 'tpc_ok' }] };
+        return { rows: [{ total: 10 }] };
+      }),
+      update: vi.fn(() => ({
+        set: (set: any) => ({
+          where: async () => {
+            updates.push({ set });
+          },
+        }),
+      })),
+    } as any;
+
+    mocks.getLatestPersonaDocument.mockResolvedValue(null);
+    mocks.buildUserPersonaJobInput.mockResolvedValue({ retrievedMemories: 'ctx' });
+    mocks.extractUserDigest.mockImplementation(async () => {
+      mocks.listener?.({ totalInputTokens: 5000, totalOutputTokens: 200 });
+      return {
+        extracted: true,
+        memoryIds: ['m1'],
+        serviceTier: 'flex',
+        topicIds: ['tpc_ok'],
+      };
+    });
+    mocks.composeWriting.mockRejectedValue(new Error('OpenAI timeout on persona'));
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await runDailyDigest(db, 'user-1', DIGEST);
+
+    expect(result).toMatchObject({ extracted: 1, failed: 0, memories: 1, topics: 1 });
+    expect(result.usage.serviceTier).toBe('flex');
+    expect(result.usage.calls).toBe(1);
+    expect(updates).toHaveLength(0);
+    errSpy.mockRestore();
   });
 });

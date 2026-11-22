@@ -9,6 +9,8 @@ import {
   RetrievalUserMemoryIdentitiesProvider,
   UserPersonaExtractor,
 } from '@lobechat/memory-user-memory';
+import type { ModelRuntime } from '@lobechat/model-runtime';
+import type { ModelUsage } from '@lobechat/types';
 import { desc, eq } from 'drizzle-orm';
 
 import { getBusinessModelRuntimeHooks } from '@/business/server/model-runtime';
@@ -27,7 +29,7 @@ import { resolveRuntimeAgentConfig } from '@/server/services/memory/userMemory/e
 import { LayersEnum } from '@/types/userMemory';
 import { trimBasedOnBatchProbe } from '@/utils/chunkers';
 
-interface UserPersonaAgentPayload {
+export interface UserPersonaAgentPayload {
   existingPersona?: string | null;
   language?: string;
   memoryIds?: string[];
@@ -41,26 +43,131 @@ interface UserPersonaAgentPayload {
   userProfile?: string;
 }
 
+export interface UserPersonaComposeOptions {
+  observeDigestCalls?: boolean;
+  onUsage?: (usage: ModelUsage, meta?: { serviceTier?: string }) => void;
+  reasoningEffort?: string;
+  serviceTier?: string;
+}
+
 interface UserPersonaAgentResult {
   agentResult: UserPersonaExtractionResult;
   diff?: UserPersonaDocumentHistoriesItem;
   document: UserPersonaDocument;
 }
 
+const isCapacityUnavailable = (error: unknown): boolean => {
+  const e = error as
+    | {
+        code?: string;
+        error?: { code?: string; message?: string; status?: number };
+        errorType?: string;
+        message?: string;
+        status?: number;
+      }
+    | undefined;
+  if (e?.errorType === 'QuotaLimitReached' || e?.error?.status === 429 || e?.status === 429) {
+    return true;
+  }
+  const text =
+    `${e?.error?.code ?? e?.code ?? ''} ${e?.error?.message ?? e?.message ?? ''}`.toLowerCase();
+  return text.includes('resource unavailable') || text.includes('resource_unavailable');
+};
+
+/**
+ * OpenAI Structured Outputs (`strict: true`) JSON Schema для `commit_user_persona`.
+ * Используем schema-ветку `generateObject` вместо `tools`, так как `generateObjectWithTools`
+ * в `openaiCompatibleFactory` отбрасывает `serviceTier` (`flex`) и `reasoningEffort`.
+ */
+const STRICT_PERSONA_OUTPUT_SCHEMA = {
+  description:
+    'Persist an updated user persona document that summarizes the user, preferences, relationships, and recent events.',
+  name: 'commit_user_persona',
+  schema: {
+    additionalProperties: false,
+    properties: {
+      diff: {
+        anyOf: [{ type: 'string' }, { type: 'null' }],
+        description: 'Bullet list of changes applied this run',
+      },
+      memoryIds: {
+        anyOf: [{ items: { type: 'string' }, type: 'array' }, { type: 'null' }],
+        description: 'Related memory IDs used to craft the persona',
+      },
+      persona: { description: 'Complete Markdown persona for the user', type: 'string' },
+      reasoning: {
+        anyOf: [{ type: 'string' }, { type: 'null' }],
+        description: 'Why these changes were applied',
+      },
+      sourceIds: {
+        anyOf: [{ items: { type: 'string' }, type: 'array' }, { type: 'null' }],
+        description: 'Source IDs (topic ID, document ID, or anything related) tied to this update',
+      },
+      tagline: {
+        anyOf: [{ type: 'string' }, { type: 'null' }],
+        description: 'Short one-liner/tagline that captures the persona',
+      },
+    },
+    required: ['persona', 'tagline', 'diff', 'reasoning', 'memoryIds', 'sourceIds'],
+    type: 'object' as const,
+  },
+  strict: true,
+};
+
+const stripNullOptionalFields = (raw: unknown): unknown => {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value !== null) cleaned[key] = value;
+  }
+  return cleaned;
+};
+
 export class UserPersonaService {
   private readonly preferredLanguage?: string;
+  private readonly defaultReasoningEffort?: string;
+  private readonly defaultServiceTier?: string;
   private readonly db: LobeChatDatabase;
   private readonly agentConfig: MemoryAgentConfig;
 
   constructor(db: LobeChatDatabase) {
-    const { agentPersonaWriter } = parseMemoryExtractionConfig();
+    const config = parseMemoryExtractionConfig();
+    const writerAgent = config.agentPersonaWriter;
+    const layerAgent = config.agentLayerExtractor;
+    const explicitWriterModel = process.env.MEMORY_USER_MEMORY_PERSONA_WRITER_MODEL?.trim();
+    const explicitWriterProvider = process.env.MEMORY_USER_MEMORY_PERSONA_WRITER_PROVIDER?.trim();
+
+    const provider =
+      explicitWriterProvider || layerAgent?.provider || writerAgent?.provider || 'openai';
+    const model =
+      explicitWriterModel ||
+      layerAgent?.layers?.context ||
+      layerAgent?.model ||
+      writerAgent?.model ||
+      'gpt-6-luna';
+    const apiKey =
+      writerAgent?.apiKey ||
+      layerAgent?.apiKey ||
+      (provider === 'openai' ? process.env.OPENAI_API_KEY : undefined);
+    const baseURL = writerAgent?.baseURL || layerAgent?.baseURL;
 
     this.db = db;
-    this.preferredLanguage = agentPersonaWriter.language;
-    this.agentConfig = agentPersonaWriter;
+    this.preferredLanguage = config.language || writerAgent?.language || layerAgent?.language;
+    this.defaultReasoningEffort = config.reasoningEffort;
+    this.defaultServiceTier = config.serviceTier;
+    this.agentConfig = {
+      ...writerAgent,
+      apiKey,
+      baseURL,
+      model,
+      provider,
+    };
   }
 
-  async composeWriting(payload: UserPersonaAgentPayload): Promise<UserPersonaAgentResult> {
+  async composeWriting(
+    payload: UserPersonaAgentPayload,
+    options?: UserPersonaComposeOptions,
+  ): Promise<UserPersonaAgentResult> {
     const aiInfraRepos = new AiInfraRepos(this.db, payload.userId, {});
     const runtimeState = await aiInfraRepos.getAiProviderRuntimeState(
       KeyVaultsGateKeeper.getUserKeyVaults,
@@ -89,11 +196,70 @@ export class UserPersonaService {
           apiKey: this.agentConfig.apiKey,
           baseURL: this.agentConfig.baseURL,
         },
+        observeDigestCalls: options?.observeDigestCalls,
         preferred: { providerIds: [providerId] },
         userId: payload.userId,
       } satisfies RuntimeResolveOptions,
       hooks,
     );
+
+    const effectiveReasoningEffort = options?.reasoningEffort ?? this.defaultReasoningEffort;
+    const effectiveServiceTier = options?.serviceTier ?? this.defaultServiceTier;
+
+    const wrappedRuntime: ModelRuntime =
+      runtime && typeof (runtime as ModelRuntime).generateObject === 'function'
+        ? (new Proxy(runtime as ModelRuntime, {
+            get(target, prop, receiver) {
+              if (prop === 'generateObject') {
+                return async (reqPayload: any, reqOptions?: any) => {
+                  const isPersonaToolCall =
+                    !reqPayload?.schema &&
+                    Array.isArray(reqPayload?.tools) &&
+                    reqPayload.tools.length === 1 &&
+                    reqPayload.tools[0]?.function?.name === 'commit_user_persona';
+                  const { tools: _omitTools, ...withoutTools } = reqPayload ?? {};
+                  const normalizedReq = isPersonaToolCall
+                    ? { ...withoutTools, schema: STRICT_PERSONA_OUTPUT_SCHEMA }
+                    : reqPayload;
+                  const basePayload = {
+                    ...normalizedReq,
+                    ...(effectiveReasoningEffort && { reasoningEffort: effectiveReasoningEffort }),
+                    ...(effectiveServiceTier && { serviceTier: effectiveServiceTier }),
+                  };
+                  const makeCallOptions = (usedTier: string) => ({
+                    ...reqOptions,
+                    ...(options?.onUsage || reqOptions?.onUsage
+                      ? {
+                          onUsage: (u: ModelUsage) => {
+                            reqOptions?.onUsage?.(u);
+                            options?.onUsage?.(u, { serviceTier: usedTier });
+                          },
+                        }
+                      : {}),
+                  });
+
+                  try {
+                    const out = await target.generateObject(
+                      basePayload,
+                      makeCallOptions(effectiveServiceTier || 'default'),
+                    );
+                    return isPersonaToolCall ? stripNullOptionalFields(out) : out;
+                  } catch (error) {
+                    if (!effectiveServiceTier || !isCapacityUnavailable(error)) throw error;
+                    const { serviceTier: _omit, ...standardPayload } = basePayload;
+                    const out = await target.generateObject(
+                      standardPayload,
+                      makeCallOptions('default'),
+                    );
+                    return isPersonaToolCall ? stripNullOptionalFields(out) : out;
+                  }
+                };
+              }
+              const value = Reflect.get(target, prop, receiver);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          }) as ModelRuntime)
+        : runtime;
 
     const personaModel = new UserPersonaModel(this.db, payload.userId);
     const lastDocument = await personaModel.getLatestPersonaDocument();
@@ -102,7 +268,7 @@ export class UserPersonaService {
     const extractor = new UserPersonaExtractor({
       agent: 'user-persona',
       model: this.agentConfig.model,
-      modelRuntime: runtime,
+      modelRuntime: wrappedRuntime,
     });
 
     const agentResult = await extractor.toolCall({

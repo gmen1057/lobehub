@@ -11,9 +11,15 @@ import MemoriesRoutes from '../../routes/memories.route';
 // служебный вход, пропуск при выключенном автосборе и лимиты запуска.
 
 const mocks = vi.hoisted(() => ({
+  createRule: vi.fn(),
+  deleteRule: vi.fn(),
   memory: undefined as Record<string, unknown> | undefined,
+  queryMemories: vi.fn(),
+  queryPreferencesExcludingRules: vi.fn(),
+  queryRules: vi.fn(),
   runAutoExtract: vi.fn(),
   runDailyDigest: vi.fn(),
+  updateRule: vi.fn(),
   updateSetting: vi.fn(),
   userIds: [] as string[],
 }));
@@ -29,8 +35,16 @@ vi.mock('@/database/models/userMemory', () => ({
   UserMemoryActivityModel: class {},
   UserMemoryContextModel: class {},
   UserMemoryExperienceModel: class {},
-  UserMemoryModel: class {},
-  UserMemoryPreferenceModel: class {},
+  UserMemoryModel: class {
+    queryMemories = mocks.queryMemories;
+  },
+  UserMemoryPreferenceModel: class {
+    queryRules = mocks.queryRules;
+    createRule = mocks.createRule;
+    updateRule = mocks.updateRule;
+    deleteRule = mocks.deleteRule;
+    queryPreferencesExcludingRules = mocks.queryPreferencesExcludingRules;
+  },
 }));
 vi.mock('@/database/repositories/aiInfra', () => ({ AiInfraRepos: class {} }));
 vi.mock('@/database/schemas', () => ({ agents: {}, knowledgeBases: {} }));
@@ -247,5 +261,143 @@ describe('POST /extract', () => {
     expect(mocks.runDailyDigest.mock.calls[0][2].maxTopics).toBe(80);
     expect((await call('POST', '/extract', { limit: 101, mode: 'digest' })).status).toBe(400);
     expect((await call('POST', '/extract', { limit: 11, mode: 'topics' })).status).toBe(400);
+  });
+
+  it('прокидывает excludeTopicIds в runDailyDigest и runAutoExtract', async () => {
+    mocks.memory = { autoExtract: true };
+    mocks.runDailyDigest.mockResolvedValue({
+      extracted: 0,
+      failed: 0,
+      memories: 0,
+      topics: 0,
+      usage: {},
+    });
+
+    const resDigest = await call('POST', '/extract', {
+      excludeTopicIds: ['tpc_guard_1', 'tpc_guard_2'],
+      mode: 'digest',
+    });
+    expect(resDigest.status).toBe(200);
+    expect(mocks.runDailyDigest).toHaveBeenCalledWith(
+      expect.anything(),
+      USER,
+      expect.objectContaining({
+        excludeTopicIds: ['tpc_guard_1', 'tpc_guard_2'],
+      }),
+    );
+
+    const resTopics = await call('POST', '/extract', {
+      excludeTopicIds: ['tpc_guard_1'],
+      mode: 'topics',
+    });
+    expect(resTopics.status).toBe(200);
+    expect(mocks.runAutoExtract).toHaveBeenCalledWith(
+      expect.anything(),
+      USER,
+      expect.objectContaining({
+        excludeTopicIds: ['tpc_guard_1'],
+      }),
+    );
+  });
+});
+
+describe('CRUD /api/v1/memories/rules и исключение правил из GET /api/v1/memories?layer=preference', () => {
+  it('GET /rules считает кириллические токены и возвращает лимиты 15 / 500', async () => {
+    mocks.queryRules.mockResolvedValue([
+      {
+        conclusionDirectives: 'Отвечай кратко и по делу',
+        createdAt: new Date('2026-11-22T15:00:00.000Z'),
+        id: 'mem_rule_1',
+        updatedAt: new Date('2026-11-22T15:00:00.000Z'),
+      },
+    ]);
+
+    const { body, status } = await call('GET', '/rules');
+    expect(status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.data).toEqual({
+      items: [
+        {
+          createdAt: '2026-11-22T15:00:00.000Z',
+          id: 'mem_rule_1',
+          text: 'Отвечай кратко и по делу',
+          tokens: 15,
+          updatedAt: '2026-11-22T15:00:00.000Z',
+        },
+      ],
+      maxRules: 15,
+      maxTokens: 500,
+      total: 1,
+      usedTokens: 15,
+    });
+  });
+
+  it('POST / PATCH / DELETE /rules возвращают 200 и коды ошибок 400 / 404', async () => {
+    mocks.createRule.mockResolvedValueOnce({
+      item: {
+        createdAt: '2026-11-22T15:00:00.000Z',
+        id: 'mem_rule_1',
+        text: 'Цены всегда в ₽',
+        tokens: 10,
+        updatedAt: '2026-11-22T15:00:00.000Z',
+      },
+      maxRules: 15,
+      maxTokens: 500,
+      total: 1,
+      usedTokens: 10,
+    });
+
+    const created = await call('POST', '/rules', { text: 'Цены всегда в ₽' });
+    expect(created.status).toBe(200);
+    expect(created.body.data.item.id).toBe('mem_rule_1');
+
+    for (const code of [
+      'RULE_LENGTH_INVALID',
+      'RULE_DUPLICATE',
+      'RULE_COUNT_LIMIT',
+      'RULE_TOKEN_LIMIT',
+    ]) {
+      mocks.createRule.mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+      const bad = await call('POST', '/rules', { text: 'x' });
+      expect(bad.status).toBe(400);
+      expect(bad.body).toMatchObject({ error: code, success: false });
+    }
+
+    mocks.updateRule.mockRejectedValueOnce(
+      Object.assign(new Error('RULE_NOT_FOUND'), { code: 'RULE_NOT_FOUND' }),
+    );
+    const notFound = await call('PATCH', '/rules/missing', { text: 'Новое правило' });
+    expect(notFound.status).toBe(404);
+    expect(notFound.body).toMatchObject({ error: 'RULE_NOT_FOUND', success: false });
+
+    // Static /rules/:id route MUST NOT be captured by DELETE /:id?layer=...
+    mocks.deleteRule.mockResolvedValueOnce({ deleted: true, id: 'mem_rule_1' });
+    const deleted = await call('DELETE', '/rules/mem_rule_1');
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toMatchObject({ data: { id: 'mem_rule_1' }, success: true });
+  });
+
+  it('GET /?layer=preference вызывает queryPreferencesExcludingRules вместо общего queryMemories', async () => {
+    mocks.queryPreferencesExcludingRules.mockResolvedValueOnce({
+      items: [],
+      page: 1,
+      pageSize: 50,
+      total: 0,
+    });
+
+    const prefRes = await call('GET', '?layer=preference&page=1&pageSize=50');
+    expect(prefRes.status).toBe(200);
+    expect(mocks.queryPreferencesExcludingRules).toHaveBeenCalledWith({
+      order: 'desc',
+      page: 1,
+      pageSize: 50,
+      q: undefined,
+    });
+    expect(mocks.queryMemories).not.toHaveBeenCalled();
+
+    mocks.queryMemories.mockResolvedValueOnce({ items: [], page: 1, pageSize: 50, total: 0 });
+    const ctxRes = await call('GET', '?layer=context');
+    expect(ctxRes.status).toBe(200);
+    expect(mocks.queryMemories).toHaveBeenCalledTimes(1);
   });
 });

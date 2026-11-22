@@ -2,7 +2,14 @@ import {
   DEFAULT_USER_MEMORY_EMBEDDING_DIMENSIONS,
   DEFAULT_USER_MEMORY_EMBEDDING_MODEL_ITEM,
 } from '@lobechat/const';
-import { messages, topics } from '@lobechat/database/schemas';
+import {
+  messages,
+  topics,
+  userMemories,
+  userMemoriesContexts,
+  userMemoriesExperiences,
+  userMemoriesPreferences,
+} from '@lobechat/database/schemas';
 import {
   type BenchmarkLocomoPart,
   type MemoryExtractionAgent,
@@ -12,15 +19,12 @@ import {
 } from '@lobechat/memory-user-memory';
 import {
   BenchmarkLocomoContextProvider,
-  ContextMemorySchema,
   DIGEST_LAYERS,
   DigestMemoryExtractor,
-  ExperienceMemorySchema,
   IdentityActionsSchema,
   LobeChatTopicContextProvider,
   LobeChatTopicResultRecorder,
   MemoryExtractionService,
-  PreferenceMemorySchema,
   RetrievalUserMemoryContextProvider,
   RetrievalUserMemoryIdentitiesProvider,
 } from '@lobechat/memory-user-memory';
@@ -57,7 +61,7 @@ import { RequestTrigger } from '@lobechat/types';
 import { type FlowControl } from '@upstash/qstash';
 import { Client } from '@upstash/workflow';
 import debug from 'debug';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { join } from 'pathe';
 import { z } from 'zod';
 
@@ -769,7 +773,7 @@ export class MemoryExtractionExecutor {
         item.withContext?.labels,
       );
 
-      const { memory } = await userMemoryModel.createContextMemory({
+      const { context, memory } = await userMemoryModel.createContextMemory({
         capturedAt: job.sourceUpdatedAt,
         context: {
           associatedObjects: UserMemoryModel.parseAssociatedObjects(
@@ -800,6 +804,54 @@ export class MemoryExtractionExecutor {
       });
 
       insertedIds.push(memory.id);
+
+      const rawSupersedeIds = (item as { supersedeIds?: string[] | null }).supersedeIds;
+      const supersedeIds = Array.isArray(rawSupersedeIds)
+        ? [
+            ...new Set(
+              rawSupersedeIds
+                .map((id) => id?.trim())
+                .filter((id): id is string => Boolean(id) && id !== context.id),
+            ),
+          ]
+        : [];
+      if (supersedeIds.length > 0) {
+        const targets = await db
+          .select({
+            id: userMemoriesContexts.id,
+            userMemoryIds: userMemoriesContexts.userMemoryIds,
+          })
+          .from(userMemoriesContexts)
+          .where(
+            and(
+              inArray(userMemoriesContexts.id, supersedeIds),
+              eq(userMemoriesContexts.userId, job.userId),
+            ),
+          );
+        if (targets.length > 0) {
+          const targetIds = targets.map((t) => t.id);
+          const parentIds = [
+            ...new Set(
+              targets
+                .flatMap((t) => (Array.isArray(t.userMemoryIds) ? t.userMemoryIds : []))
+                .filter((id): id is string => typeof id === 'string' && Boolean(id)),
+            ),
+          ];
+          if (parentIds.length > 0) {
+            await db
+              .delete(userMemories)
+              .where(and(inArray(userMemories.id, parentIds), eq(userMemories.userId, job.userId)));
+          }
+          await db
+            .delete(userMemoriesContexts)
+            .where(
+              and(
+                inArray(userMemoriesContexts.id, targetIds),
+                eq(userMemoriesContexts.userId, job.userId),
+              ),
+            );
+        }
+      }
     }
 
     return insertedIds;
@@ -839,7 +891,7 @@ export class MemoryExtractionExecutor {
         item.withExperience?.labels,
       );
 
-      const { memory } = await userMemoryModel.createExperienceMemory({
+      const { experience, memory } = await userMemoryModel.createExperienceMemory({
         capturedAt: job.sourceUpdatedAt,
         details: item.details ?? '',
         detailsEmbedding: detailsVector ?? undefined,
@@ -867,6 +919,52 @@ export class MemoryExtractionExecutor {
       });
 
       insertedIds.push(memory.id);
+
+      const rawSupersedeIds = (item as { supersedeIds?: string[] | null }).supersedeIds;
+      const supersedeIds = Array.isArray(rawSupersedeIds)
+        ? [
+            ...new Set(
+              rawSupersedeIds
+                .map((id) => id?.trim())
+                .filter((id): id is string => Boolean(id) && id !== experience.id),
+            ),
+          ]
+        : [];
+      if (supersedeIds.length > 0) {
+        const targets = await db
+          .select({
+            id: userMemoriesExperiences.id,
+            userMemoryId: userMemoriesExperiences.userMemoryId,
+          })
+          .from(userMemoriesExperiences)
+          .where(
+            and(
+              inArray(userMemoriesExperiences.id, supersedeIds),
+              eq(userMemoriesExperiences.userId, job.userId),
+            ),
+          );
+        if (targets.length > 0) {
+          const targetIds = targets.map((t) => t.id);
+          const parentIds = [
+            ...new Set(
+              targets.map((t) => t.userMemoryId).filter((id): id is string => Boolean(id)),
+            ),
+          ];
+          if (parentIds.length > 0) {
+            await db
+              .delete(userMemories)
+              .where(and(inArray(userMemories.id, parentIds), eq(userMemories.userId, job.userId)));
+          }
+          await db
+            .delete(userMemoriesExperiences)
+            .where(
+              and(
+                inArray(userMemoriesExperiences.id, targetIds),
+                eq(userMemoriesExperiences.userId, job.userId),
+              ),
+            );
+        }
+      }
     }
 
     return insertedIds;
@@ -898,14 +996,24 @@ export class MemoryExtractionExecutor {
         LayersEnum.Preference,
         item.withPreference?.extractedLabels,
       );
+      const rawPrefType = item.withPreference?.type;
+      const safeType =
+        typeof rawPrefType === 'string' && rawPrefType.trim().toLowerCase() === 'rule'
+          ? 'preference'
+          : (rawPrefType ?? null);
+      const rawMemoryType = item.memoryType as string | undefined;
+      const safeMemoryType =
+        typeof rawMemoryType === 'string' && rawMemoryType.trim().toLowerCase() === 'rule'
+          ? TypesEnum.Preference
+          : ((item.memoryType as TypesEnum) ?? TypesEnum.Preference);
 
-      const { memory } = await userMemoryModel.createPreferenceMemory({
+      const { memory, preference } = await userMemoryModel.createPreferenceMemory({
         capturedAt: job.sourceUpdatedAt,
         details: item.details ?? '',
         detailsEmbedding: detailsVector ?? undefined,
         memoryCategory: item.memoryCategory ?? null,
         memoryLayer: LayersEnum.Preference,
-        memoryType: (item.memoryType as TypesEnum) ?? TypesEnum.Preference,
+        memoryType: safeMemoryType,
         preference: {
           capturedAt: job.sourceUpdatedAt,
           conclusionDirectives: item.withPreference?.conclusionDirectives ?? null,
@@ -917,7 +1025,7 @@ export class MemoryExtractionExecutor {
           scorePriority: item.withPreference?.scorePriority ?? null,
           suggestions: item.withPreference?.suggestions?.join('\n') ?? null,
           tags: item.withPreference?.extractedLabels ?? null,
-          type: item.withPreference?.type ?? null,
+          type: safeType,
         },
         summary: item.summary ?? '',
         summaryEmbedding: summaryVector ?? undefined,
@@ -925,6 +1033,55 @@ export class MemoryExtractionExecutor {
       });
 
       insertedIds.push(memory.id);
+
+      const rawSupersedeIds = (item as { supersedeIds?: string[] | null }).supersedeIds;
+      const supersedeIds = Array.isArray(rawSupersedeIds)
+        ? [
+            ...new Set(
+              rawSupersedeIds
+                .map((id) => id?.trim())
+                .filter((id): id is string => Boolean(id) && id !== preference.id),
+            ),
+          ]
+        : [];
+      if (supersedeIds.length > 0) {
+        const nonRuleGuard = sql`COALESCE(${userMemoriesPreferences.type}, '') <> 'rule'`;
+        const targets = await db
+          .select({
+            id: userMemoriesPreferences.id,
+            userMemoryId: userMemoriesPreferences.userMemoryId,
+          })
+          .from(userMemoriesPreferences)
+          .where(
+            and(
+              inArray(userMemoriesPreferences.id, supersedeIds),
+              eq(userMemoriesPreferences.userId, job.userId),
+              nonRuleGuard,
+            ),
+          );
+        if (targets.length > 0) {
+          const targetPrefIds = targets.map((t) => t.id);
+          const parentIds = [
+            ...new Set(
+              targets.map((t) => t.userMemoryId).filter((id): id is string => Boolean(id)),
+            ),
+          ];
+          if (parentIds.length > 0) {
+            await db
+              .delete(userMemories)
+              .where(and(inArray(userMemories.id, parentIds), eq(userMemories.userId, job.userId)));
+          }
+          await db
+            .delete(userMemoriesPreferences)
+            .where(
+              and(
+                inArray(userMemoriesPreferences.id, targetPrefIds),
+                eq(userMemoriesPreferences.userId, job.userId),
+                nonRuleGuard,
+              ),
+            );
+        }
+      }
     }
 
     return insertedIds;
@@ -1649,8 +1806,10 @@ export class MemoryExtractionExecutor {
           const created = memory.createdAt
             ? new Date(memory.createdAt as string).toISOString().slice(0, 10)
             : '';
+          const pinnedAttr =
+            layer === LayersEnum.Preference && entry.type === 'rule' ? ' pinned="true"' : '';
           lines.push(
-            `<memory layer="${layer}" id="${escape(entry.id)}" date="${created}">${escape(memory.title)}${text ? ` — ${text}` : ''}</memory>`,
+            `<memory layer="${layer}" id="${escape(entry.id)}"${pinnedAttr} date="${created}">${escape(memory.title)}${text ? ` — ${text}` : ''}</memory>`,
           );
         }
         if (!items.length || page * 100 >= total) break;
@@ -1688,10 +1847,10 @@ export class MemoryExtractionExecutor {
     this.lastDigestServiceTier = extractor.lastServiceTier;
 
     const validators: Partial<Record<LayersEnum, { safeParse: (value: unknown) => any }>> = {
-      [LayersEnum.Context]: ContextMemorySchema,
-      [LayersEnum.Experience]: ExperienceMemorySchema,
+      [LayersEnum.Context]: DigestMemoryExtractor.ContextMemorySchema,
+      [LayersEnum.Experience]: DigestMemoryExtractor.ExperienceMemorySchema,
       [LayersEnum.Identity]: IdentityActionsSchema,
-      [LayersEnum.Preference]: PreferenceMemorySchema,
+      [LayersEnum.Preference]: DigestMemoryExtractor.PreferenceMemorySchema,
     };
     const outputs: Record<string, { data?: unknown; error?: unknown }> = {};
     const zero = Object.fromEntries(DIGEST_LAYERS.map((layer) => [layer, 0])) as Record<
