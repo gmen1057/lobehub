@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PDF_PREP_VERSION, type PdfPrepRecord } from '../../aiAgent/pdfPrepare';
@@ -7,6 +8,7 @@ import {
   type LayoutServiceDeps,
   LayoutToolError,
   MAX_FILE_BYTES,
+  resetRenderSlotsForTests,
 } from '../service';
 import type { RenderResult } from '../types';
 
@@ -84,7 +86,10 @@ const service = (deps: LayoutServiceDeps, ctx = {}) =>
     { budgetMs: 240_000, rounds: 3 },
   );
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  resetRenderSlotsForTests();
+});
 
 describe('поиск последней версии артефакта', () => {
   it('последняя версия — тело в самом позднем сообщении ассистента', async () => {
@@ -476,5 +481,288 @@ describe('checkLayout: приёмы, которые выбросит почта'
     } finally {
       delete process.env.ARCKEP_LAYOUT_TECHNIQUES;
     }
+  });
+});
+
+describe('renderArtifact: автономный визуальный рендер HTML без PDF-макета', () => {
+  const sampleJpegBase64 = async (width = 640, height = 400) => {
+    const buf = await sharp({
+      create: { background: '#2563eb', channels: 3, height, width },
+    })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+    return buf.toString('base64');
+  };
+
+  it('vision-модель: рендерит HTML без PDF, сжимает и сохраняет превью, возвращает геометрию и screenshotAttached=true', async () => {
+    const shotBase64 = await sampleJpegBase64(1800, 2600);
+    const savePreviewImage = vi.fn(async (_buf: Buffer, _name: string) => ({
+      address: 'https://arckep.ru/chat/f/file_SHOT/',
+      fileId: 'file_SHOT',
+    }));
+    const { deps, saved } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => true),
+      recentRenderCount: vi.fn(async () => 0),
+      render: vi.fn(async () => ({
+        elapsed_ms: 11200,
+        failed_images: [],
+        height: 2600,
+        images: [{ h: 80, loaded: true, src: 'data:image/png;base64,...', w: 120, x: 10, y: 20 }],
+        lines: [
+          { font_size: 28, font_weight: '700', found: true, h: 34, text: 'Герой', x: 30, y: 40 },
+        ],
+        render_path: { browser: 'arckep_render', sanitizer: 'arckep_render' },
+        renderer: 'arckep_render' as const,
+        screenshot_jpeg_base64: shotBase64,
+        scroll_width: 1280,
+        width: 1280,
+      })),
+      savePreviewImage,
+      topicPdfs: vi.fn(async () => []), // PDF-макета в теме нет!
+      turnModel: vi.fn(async () => ({ model: 'claude-opus-5-5', provider: 'anthropic' })),
+    });
+
+    const result = await service(deps).renderArtifact({
+      identifier: 'mail',
+      lines: ['Герой', '   ', 'x'.repeat(100)],
+    });
+
+    expect(result.status).toBe('rendered');
+    expect(result.width).toBe(1280);
+    expect(result.height).toBe(2600);
+    expect(result.scrollWidth).toBe(1280);
+    expect(result.horizontalOverflowPx).toBe(0);
+    expect(result.attempt).toBe(1);
+    expect(result.limit).toBe(3);
+    expect(result.renderer).toBe('arckep_render');
+    expect(result.renderPath).toEqual({ browser: 'arckep_render', sanitizer: 'arckep_render' });
+    expect(result.screenshotAttached).toBe(true);
+    expect(result.screenshot).toMatchObject({
+      address: 'https://arckep.ru/chat/f/file_SHOT/',
+      fileId: 'file_SHOT',
+      scaled: true,
+    });
+    expect(result.screenshot!.width).toBeLessThanOrEqual(1568);
+    expect(result.screenshot!.height).toBeLessThanOrEqual(2000);
+    // HTML-артефакт не перезаписывался
+    expect(saved).toEqual([]);
+    expect(savePreviewImage).toHaveBeenCalledTimes(1);
+    expect(savePreviewImage.mock.calls[0][1]).toBe('mail-preview-2.jpg');
+    expect(deps.render).toHaveBeenCalledWith({
+      html: HTML.v0,
+      lines: ['Герой', 'x'.repeat(60)],
+      messageId: 'msg_A',
+      topicId: 'tpc_1',
+      userId: 15,
+      width: 1280,
+    });
+  });
+
+  it('text-only модель (deepseek-v4-pro) и неизвестная модель хода: превью НЕ сохраняется и НЕ прикладывается, геометрия и переполнение возвращаются', async () => {
+    const shotBase64 = await sampleJpegBase64(572, 1000);
+    const savePreviewImage = vi.fn();
+    const { deps } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => false),
+      recentRenderCount: vi.fn(async () => 0),
+      render: vi.fn(async () => ({
+        elapsed_ms: 9500,
+        failed_images: [
+          { origin: 'external' as const, reason: 'not_https', url: 'http://x/a.png' },
+        ],
+        height: 1000,
+        images: [
+          {
+            error: 'not_https',
+            h: 20,
+            loaded: false,
+            origin: 'external' as const,
+            src: 'http://x/a.png',
+            w: 40,
+            x: 0,
+            y: 10,
+          },
+        ],
+        lines: [],
+        screenshot_jpeg_base64: shotBase64,
+        scroll_width: 572,
+        width: 390,
+      })),
+      savePreviewImage,
+      topicPdfs: vi.fn(async () => []),
+      turnModel: vi.fn(async () => ({ model: 'deepseek-v4-pro', provider: 'deepseek' })),
+    });
+
+    const result = await service(deps).renderArtifact({ identifier: 'mail', width: 390 });
+    expect(result.status).toBe('rendered');
+    expect(result.horizontalOverflowPx).toBe(182);
+    expect(result.screenshotAttached).toBe(false);
+    expect(result.screenshot).toBeUndefined();
+    expect(savePreviewImage).not.toHaveBeenCalled();
+
+    // Неизвестная модель хода (turnModel === undefined) → тоже строго без картинки
+    const unknownTurn = makeDeps({
+      modelHasStrictVision: vi.fn(async () => true),
+      render: vi.fn(async () => ({
+        failed_images: [],
+        height: 400,
+        images: [],
+        lines: [],
+        screenshot_jpeg_base64: shotBase64,
+        scroll_width: 600,
+        width: 600,
+      })),
+      savePreviewImage,
+      turnModel: vi.fn(async () => undefined),
+    });
+    const resUnknown = await service(unknownTurn.deps).renderArtifact({
+      identifier: 'mail',
+      width: 600,
+    });
+    expect(resUnknown.screenshotAttached).toBe(false);
+    expect(savePreviewImage).not.toHaveBeenCalled();
+  });
+
+  it('ширина за пределами 320–1600 аккуратно ограничивается с пометкой clampedFromWidth', async () => {
+    const { deps } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => false),
+      render: vi.fn(async ({ width }) => ({
+        failed_images: [],
+        height: 800,
+        images: [],
+        lines: [],
+        screenshot_jpeg_base64: '',
+        scroll_width: width,
+        width,
+      })),
+    });
+
+    const wide = await service(deps).renderArtifact({ identifier: 'mail', width: 2400 });
+    expect(wide.width).toBe(1600);
+    expect(wide.clampedFromWidth).toBe(2400);
+
+    const narrow = await service(deps).renderArtifact({ identifier: 'mail', width: 120 });
+    expect(narrow.width).toBe(320);
+    expect(narrow.clampedFromWidth).toBe(120);
+  });
+
+  it('защита от бесконечного цикла: после 3 вызовов в одном ходе возвращает limit_reached без вызова E2B', async () => {
+    const { deps } = makeDeps({
+      recentRenderCount: vi.fn(async () => 3),
+    });
+    const result = await service(deps).renderArtifact({ identifier: 'mail' });
+    expect(result).toMatchObject({
+      attempt: 3,
+      identifier: 'mail',
+      limit: 3,
+      status: 'limit_reached',
+    });
+    expect(deps.render).not.toHaveBeenCalled();
+  });
+
+  it('параллельная пачка call_tools_batch (4 вызова в Promise.all): лимит 3 соблюдается, 4-й получает limit_reached без удара в E2B', async () => {
+    const render = vi.fn(async ({ width }) => {
+      await new Promise((resolve) => setTimeout(resolve, 15));
+      return {
+        failed_images: [],
+        height: 800,
+        images: [],
+        lines: [],
+        screenshot_jpeg_base64: '',
+        scroll_width: width,
+        width,
+      };
+    });
+    const { deps } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => false),
+      recentRenderCount: vi.fn(async () => 0),
+      render,
+    });
+    const svc = service(deps, { parentMessageId: 'msg_batch_1' });
+    const results = await Promise.all([
+      svc.renderArtifact({ identifier: 'mail', width: 390 }),
+      svc.renderArtifact({ identifier: 'mail', width: 600 }),
+      svc.renderArtifact({ identifier: 'mail', width: 1280 }),
+      svc.renderArtifact({ identifier: 'mail', width: 1440 }),
+    ]);
+
+    expect(render).toHaveBeenCalledTimes(3);
+    expect(results.filter((r) => r.status === 'rendered').map((r) => r.attempt)).toEqual([1, 2, 3]);
+    expect(results.filter((r) => r.status === 'limit_reached')).toHaveLength(1);
+  });
+
+  it('пачка на шаге 2 после 1 рендера из шага 1: baselineDbPrior=1 + завершённый в пачке не позволяют обойти лимит 3', async () => {
+    const render = vi.fn(async ({ width }) => ({
+      failed_images: [],
+      height: 800,
+      images: [],
+      lines: [],
+      screenshot_jpeg_base64: '',
+      scroll_width: width,
+      width,
+    }));
+    const { deps } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => false),
+      recentRenderCount: vi.fn(async () => 1), // 1 уже был на шаге 1
+      render,
+    });
+    const svc = service(deps, { parentMessageId: 'msg_step_2' });
+    const r1 = await svc.renderArtifact({ identifier: 'mail', width: 600 });
+    const r2 = await svc.renderArtifact({ identifier: 'mail', width: 1280 });
+    const r3 = await svc.renderArtifact({ identifier: 'mail', width: 390 });
+
+    expect(render).toHaveBeenCalledTimes(2);
+    expect([r1.status, r2.status, r3.status]).toEqual(['rendered', 'rendered', 'limit_reached']);
+    expect([r1.attempt, r2.attempt, r3.attempt]).toEqual([2, 3, 3]);
+  });
+
+  it('HTML длиннее 500 000 знаков → мягкий unavailable без вызова бэкенда', async () => {
+    const big = 'a'.repeat(500_001);
+    const { deps } = makeDeps({
+      artifactMessages: vi.fn(async () => [{ content: tag('mail', big), id: 'm1' }]),
+    });
+    const result = await service(deps).renderArtifact({ identifier: 'mail' });
+    expect(result.status).toBe('unavailable');
+    expect(result.unavailableReason).toMatch(/500000/);
+    expect(deps.render).not.toHaveBeenCalled();
+  });
+
+  it('сбой E2B (LayoutRenderError 502/429/timeout) → мягкий unavailable без падения хода', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { deps } = makeDeps({
+      render: vi.fn(async () => {
+        throw new LayoutRenderError('unavailable', 'отрисовка сейчас недоступна', 502);
+      }),
+    });
+    const result = await service(deps).renderArtifact({ identifier: 'mail' });
+    expect(result).toMatchObject({
+      identifier: 'mail',
+      status: 'unavailable',
+      unavailableReason: 'отрисовка сейчас недоступна',
+    });
+  });
+
+  it('сбой сохранения превью-снимка не ломает выдачу замеров геометрии', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const shotBase64 = await sampleJpegBase64(400, 300);
+    const { deps } = makeDeps({
+      modelHasStrictVision: vi.fn(async () => true),
+      render: vi.fn(async () => ({
+        failed_images: [],
+        height: 300,
+        images: [],
+        lines: [],
+        screenshot_jpeg_base64: shotBase64,
+        scroll_width: 400,
+        width: 400,
+      })),
+      savePreviewImage: vi.fn(async () => {
+        throw new Error('S3 down');
+      }),
+    });
+    const result = await service(deps).renderArtifact({ identifier: 'mail', width: 400 });
+    expect(result.status).toBe('rendered');
+    expect(result.width).toBe(400);
+    expect(result.screenshotAttached).toBe(false);
+    expect(result.screenshot).toBeUndefined();
   });
 });

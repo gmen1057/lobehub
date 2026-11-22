@@ -88,6 +88,39 @@ export const ArckepLayoutManifest: BuiltinToolManifest = {
         type: 'object',
       },
     },
+    {
+      description:
+        'Render the latest version of an HTML artifact in headless Chromium (sandboxed, no internet) to inspect real layout geometry, horizontal overflow, loaded/broken images, optional text line positions, and (for vision-capable models only) a scaled preview screenshot. Use ONLY for complex visual HTML artifacts (landing pages, slide decks, dashboards, infographics, styled emails without a PDF mockup) — never for plain code snippets, simple text, or trivial pages. Call at most 1–2 times per turn (hard cap 3/turn; never polish in an endless loop). Never withhold or hide the artifact from the user if rendering is unavailable or after finishing inspection. Do not pass HTML.',
+      name: ArckepLayoutApiName.renderArtifact,
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          identifier: {
+            description:
+              'identifier attribute of the text/html <lobeArtifact> to render and inspect',
+            type: 'string',
+          },
+          lines: {
+            description:
+              'Optional prefixes of key text lines (up to 50, each cut to 60 chars) to check visibility and exact x/y/font metrics on the rendered page',
+            items: {
+              type: 'string',
+            },
+            maxItems: 50,
+            type: 'array',
+          },
+          width: {
+            description:
+              'Viewport width in CSS px (320–1600; default 1280 for desktop/slides, 600 for HTML emails, 390 for mobile)',
+            maximum: 1600,
+            minimum: 320,
+            type: 'number',
+          },
+        },
+        required: ['identifier'],
+        type: 'object',
+      },
+    },
   ],
   identifier: ArckepLayoutIdentifier,
   meta: {

@@ -2,6 +2,7 @@ import {
   ArckepLayoutIdentifier,
   type CheckLayoutParams,
   type EditArtifactParams,
+  type RenderArtifactParams,
   type WriteArtifactParams,
 } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepLayoutExecutionRuntime } from '@lobechat/builtin-tool-arckep-layout/executionRuntime';
@@ -13,9 +14,9 @@ import { resolveArckepUserId } from './arckepStudio';
 import { type ServerRuntimeRegistration } from './types';
 
 /**
- * Сверка письма с макетом PDF и правки артефакта кусками (arckep, 19.10.2026). Всю работу делает
- * `ArckepLayoutService` (src/server/services/arckepLayout): отрисовка в бэкенде студии, сравнение, короткие
- * круги правщика вне переписки. Здесь — только привязка к человеку и теме хода.
+ * Сверка письма с макетом PDF, визуальный рендер HTML в Chromium и правки артефакта кусками (arckep). Всю работу делает
+ * `ArckepLayoutService` (src/server/services/arckepLayout): отрисовка в бэкенде студии (`POST /api/chat/layout-render`),
+ * сравнение, короткие круги правщика вне переписки. Здесь — только привязка к человеку и теме хода.
  */
 export const arckepLayoutRuntime: ServerRuntimeRegistration = {
   factory: (context) => {
@@ -31,6 +32,7 @@ export const arckepLayoutRuntime: ServerRuntimeRegistration = {
     return new ArckepLayoutExecutionRuntime({
       checkLayout: (params: CheckLayoutParams) => service.checkLayout(params),
       editArtifact: (params: EditArtifactParams) => service.editArtifact(params),
+      renderArtifact: (params: RenderArtifactParams) => service.renderArtifact(params),
       writeArtifact: (params: WriteArtifactParams) => service.writeArtifact(params),
     });
   },
