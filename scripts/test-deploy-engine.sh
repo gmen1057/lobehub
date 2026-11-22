@@ -175,8 +175,17 @@ exit 0
 EOF
 chmod +x "$MOCK_BIN/augenrules"
 
+cat > "$MOCK_BIN/pnpm" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$MOCK_BIN/pnpm"
+
 cat > "$MOCK_BIN/ss" <<'EOF'
 #!/usr/bin/env bash
+if [[ -n "${MOCK_SS_DYNAMIC_FILE:-}" && -f "${MOCK_SS_DYNAMIC_FILE}" ]]; then
+    cat "${MOCK_SS_DYNAMIC_FILE}"
+fi
 if [[ -n "${MOCK_SS_OUTPUT:-}" ]]; then
     printf '%s\n' "$MOCK_SS_OUTPUT"
 fi
@@ -353,6 +362,12 @@ cat > "$MOCK_NODE" <<'EOF'
 if [[ -n "${ENV_FILE_PATH:-}" ]]; then
     if [[ -n "${MOCK_BG_COUNTER_FILE:-}" ]]; then
         echo "quiet_check" >> "$MOCK_BG_COUNTER_FILE"
+        if [[ -n "${MOCK_CONN_ON_BG_CALL:-}" && -n "${MOCK_SS_DYNAMIC_FILE:-}" ]]; then
+            cnt=$(wc -l < "$MOCK_BG_COUNTER_FILE")
+            if [[ "$cnt" -eq "${MOCK_CONN_ON_BG_CALL}" ]]; then
+                echo "ESTAB 0 0 127.0.0.1:3403 127.0.0.1:54321" > "${MOCK_SS_DYNAMIC_FILE}"
+            fi
+        fi
     fi
     if [[ "${MOCK_BG_CHECK_RESULT:-QUIET}" != "QUIET" ]]; then
         printf '%s' "${MOCK_BG_CHECK_RESULT}"
@@ -437,6 +452,23 @@ env "${COMMON_ENV[@]}" MOCK_BG_CHECK_RESULT="BUSY_REDIS:2" bash "$FAKE_SRC/deplo
 init_busy_pg_rc=0
 env "${COMMON_ENV[@]}" MOCK_BG_CHECK_RESULT="BUSY_PG:1" bash "$FAKE_SRC/deploy-engine.sh" --init >/dev/null 2>&1 || init_busy_pg_rc=$?
 [[ "$init_busy_pg_rc" -ne 0 ]] || fail "#4: --init allowed stopping legacy while Postgres assistant '...' row was active!"
+
+# v4 #4: Client connection arriving DURING the final Redis/PG check must block `systemctl stop image-studio-lobechat-next`!
+rm -f "$SANDBOX/systemd-state/ops.log" "$SANDBOX/bg-checks-race.log" "$SANDBOX/ss-dynamic.txt"
+echo "active" > "$SANDBOX/systemd-state/image-studio-lobechat-next.active"
+init_race_rc=0
+env "${COMMON_ENV[@]}" \
+    MOCK_BG_CHECK_RESULT="QUIET" \
+    MOCK_BG_COUNTER_FILE="$SANDBOX/bg-checks-race.log" \
+    MOCK_CONN_ON_BG_CALL="3" \
+    MOCK_SS_DYNAMIC_FILE="$SANDBOX/ss-dynamic.txt" \
+    bash "$FAKE_SRC/deploy-engine.sh" --init >/dev/null 2>&1 || init_race_rc=$?
+[[ "$init_race_rc" -ne 0 ]] || fail "v4 #4: --init stopped legacy even though TCP client connected during final Redis/PG check!"
+[[ "$(cat "$SANDBOX/systemd-state/image-studio-lobechat-next.active")" == "active" ]] || fail "v4 #4: legacy service was stopped despite client connection during Redis/PG check!"
+if grep -q "^stop image-studio-lobechat-next$" "$SANDBOX/systemd-state/ops.log" 2>/dev/null; then
+    fail "v4 #4: systemctl stop image-studio-lobechat-next was called despite late TCP connection!"
+fi
+rm -f "$SANDBOX/ss-dynamic.txt"
 
 echo "blue" > "$HTTP_CTRL_DIR/router_active_slot"
 echo "true" > "$HTTP_CTRL_DIR/blue_draining"

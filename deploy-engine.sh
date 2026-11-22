@@ -1546,6 +1546,31 @@ copy_verified_env_to_slot() {
 # P1 #7 + #4: Fail-closed quietness check on legacy :$PORT before one-time --init cutover.
 # Verifies TCP sockets, `/engine-slot/status` (if present), Redis `agent_runtime_step_lock:*`,
 # AND Postgres `messages` (`role='assistant' AND content='...' AND error IS NULL` in last 35m).
+check_legacy_sockets_quiet() {
+    if ! command -v ss >/dev/null 2>&1; then
+        err "Утилита 'ss' недоступна — невозможно безопасно проверить отсутствие активных соединений на :$PORT (fail-closed)."
+        return 1
+    fi
+
+    local ss_out ss_rc=0
+    ss_out=$(ss -Htan state established "( sport = :$PORT )" 2>/dev/null) || ss_rc=$?
+    if [[ $ss_rc -ne 0 ]]; then
+        err "Команда 'ss -Htan state established ( sport = :$PORT )' завершилась с кодом $ss_rc (fail-closed)."
+        return 1
+    fi
+
+    local established_count=0
+    if [[ -n "$ss_out" ]]; then
+        established_count=$(printf '%s\n' "$ss_out" | awk 'NF > 0 {c++} END {print c+0}')
+    fi
+    if (( established_count > 0 )); then
+        err "На :$PORT обнаружены открытые клиентские соединения ($established_count). Дождись тихого окна или передай '--init --force'."
+        return 1
+    fi
+
+    return 0
+}
+
 check_legacy_port_quiet() {
     local env_path="$1"
 
@@ -1588,25 +1613,8 @@ PY
         fi
     fi
 
-    # 2. Fail-closed established TCP socket check via ss with separate arguments
-    if ! command -v ss >/dev/null 2>&1; then
-        err "Утилита 'ss' недоступна — невозможно безопасно проверить отсутствие активных соединений на :$PORT (fail-closed)."
-        return 1
-    fi
-
-    local ss_out ss_rc=0
-    ss_out=$(ss -Htan state established "( sport = :$PORT )" 2>/dev/null) || ss_rc=$?
-    if [[ $ss_rc -ne 0 ]]; then
-        err "Команда 'ss -Htan state established ( sport = :$PORT )' завершилась с кодом $ss_rc (fail-closed)."
-        return 1
-    fi
-
-    local established_count=0
-    if [[ -n "$ss_out" ]]; then
-        established_count=$(printf '%s\n' "$ss_out" | awk 'NF > 0 {c++} END {print c+0}')
-    fi
-    if (( established_count > 0 )); then
-        err "На :$PORT обнаружены открытые клиентские соединения ($established_count). Дождись тихого окна или передай '--init --force'."
+    # 2. Fast pre-check of established TCP sockets before spawning Node.js
+    if ! check_legacy_sockets_quiet; then
         return 1
     fi
 
@@ -1719,6 +1727,12 @@ const fs = require("node:fs");
         else
             err "Не удалось подтвердить отсутствие фоновых генераций старого движка (${bg_out:-node_failed}, fail-closed). Дождись завершения или передай '--init --force'."
         fi
+        return 1
+    fi
+
+    # 4. Final sub-millisecond TCP socket re-check AFTER Redis/PG check so a connection
+    # opened while Node.js queried Redis/Postgres cannot slip into `systemctl stop $LEGACY_SERVICE`.
+    if ! check_legacy_sockets_quiet; then
         return 1
     fi
 
