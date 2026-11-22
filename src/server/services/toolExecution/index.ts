@@ -38,8 +38,8 @@ import {
 
 const log = debug('lobe-server:tool-execution-service');
 
-/** Заголовки шлюза, которыми выбирается песочница: их выставляет только сервер. */
-const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-mcp-topic-id']);
+/** Заголовки шлюза и MCP студии для темы: их выставляет только сервер. */
+const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-arckep-topic-id', 'x-mcp-topic-id']);
 
 // Куда ходят подключения студии mcp-arckep-studio-* (F6): публичный MCP Arckep на этой же машине (служба
 // image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения: `getStudioMcpUrl()` (./mcpPolicy,
@@ -292,8 +292,22 @@ export class ToolExecutionService {
       // Адрес и заголовки — только серверные: манифест (в том числе свой плагин человека с таким же
       // префиксом) не решает, куда уйдёт служебный токен. Номер человека тоже выведен сервером, так что
       // чужой манифест с этим префиксом даёт ровно то же, что подключение из каталога.
+      const trustedHeaders: Record<string, string> = {
+        'Authorization': `Bearer ${token}`,
+        'X-Arckep-User': String(arckepUserId),
+      };
+      const cleanTopicId =
+        typeof context.topicId === 'string'
+          ? context.topicId
+              .replaceAll(/[\r\n\0]/g, '')
+              .trim()
+              .slice(0, 128)
+          : '';
+      if (cleanTopicId && (await userOwnsTopic(context.serverDB, context.userId, cleanTopicId))) {
+        trustedHeaders['X-Arckep-Topic-Id'] = cleanTopicId;
+      }
       return {
-        headers: { 'Authorization': `Bearer ${token}`, 'X-Arckep-User': String(arckepUserId) },
+        headers: trustedHeaders,
         type: 'http',
         url: getStudioMcpUrl(),
       };

@@ -13,6 +13,12 @@ import {
   imageOptionsBody,
 } from '../arckepStudio';
 
+const mockFindTopic = vi.hoisted(() => vi.fn());
+
+vi.mock('@/database/models/topic', () => ({
+  TopicModel: vi.fn(() => ({ findById: mockFindTopic })),
+}));
+
 const BASE = 'http://127.0.0.1:8202';
 
 /** serverDB stand-in: `select().from().where().limit()` resolves to one users row. */
@@ -48,6 +54,8 @@ describe('arckepStudioRuntime', () => {
 
   beforeEach(() => {
     fetchMock.mockReset();
+    mockFindTopic.mockReset();
+    mockFindTopic.mockResolvedValue({ id: 'topic-1' });
     vi.stubGlobal('fetch', fetchMock);
     vi.stubEnv('LOBECHAT_BACKEND_KEY', 'secret-key');
     vi.stubEnv('ARCKEP_INTERNAL_TOKEN', '');
@@ -105,6 +113,7 @@ describe('arckepStudioRuntime', () => {
       expect(url).toBe(`${BASE}/api/chat/studio-tool/create-image`);
       expect(init.method).toBe('POST');
       expect(init.headers['X-Arckep-Token']).toBe('secret-key');
+      expect(init.headers['X-Arckep-Topic-Id']).toBe('topic-1');
       expect(sentBody()).toMatchObject({ prompt: 'a red cat', topic_id: 'topic-1', user_id: 42 });
       expect(out.success).toBe(true);
       expect(out.content).toContain('![generated](https://arckep.ru/api/images/gen/42/a.png)');
@@ -260,6 +269,7 @@ describe('arckepStudioRuntime', () => {
       const timeout = vi.spyOn(AbortSignal, 'timeout');
       const out = await runtime().createSpeech({ text: 'Привет', voice_id: 'Puck' });
       expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/api/chat/studio-tool/create-speech`);
+      expect(fetchMock.mock.calls[0][1].headers['X-Arckep-Topic-Id']).toBe('topic-1');
       expect(sentBody()).toMatchObject({
         text: 'Привет',
         topic_id: 'topic-1',
@@ -293,6 +303,37 @@ describe('arckepStudioRuntime', () => {
       expect(fetchMock.mock.calls[0][0]).toBe(
         'http://studio.internal:9000/api/chat/studio-tool/get-balance',
       );
+    });
+
+    it('sanitizes topicId into X-Arckep-Topic-Id and omits header when absent', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(completedJob));
+
+      await runtime({ ...makeContext(), topicId: '  tpc_abc\r\n ' }).createImage({ prompt: 'cat' });
+      expect(fetchMock.mock.calls[0][1].headers['X-Arckep-Topic-Id']).toBe('tpc_abc');
+      expect(sentBody(0).topic_id).toBe('tpc_abc');
+
+      await runtime({ ...makeContext(), topicId: undefined }).createImage({ prompt: 'dog' });
+      expect(fetchMock.mock.calls[1][1].headers['X-Arckep-Topic-Id']).toBeUndefined();
+      expect(sentBody(1)).not.toHaveProperty('topic_id');
+    });
+
+    it('omits body topic_id for 65..128 char ids (legacy 64-char compat) while keeping full header', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(completedJob));
+      const longTopicId = 't'.repeat(80);
+      mockFindTopic.mockResolvedValueOnce({ id: longTopicId });
+
+      await runtime({ ...makeContext(), topicId: longTopicId }).createImage({ prompt: 'cat' });
+      expect(fetchMock.mock.calls[0][1].headers['X-Arckep-Topic-Id']).toBe(longTopicId);
+      expect(sentBody(0)).not.toHaveProperty('topic_id');
+    });
+
+    it('omits both header and body topic_id when topic does not belong to user', async () => {
+      fetchMock.mockResolvedValue(jsonResponse(completedJob));
+      mockFindTopic.mockResolvedValueOnce(undefined);
+
+      await runtime({ ...makeContext(), topicId: 'foreign-topic' }).createImage({ prompt: 'cat' });
+      expect(fetchMock.mock.calls[0][1].headers['X-Arckep-Topic-Id']).toBeUndefined();
+      expect(sentBody(0)).not.toHaveProperty('topic_id');
     });
   });
 });
