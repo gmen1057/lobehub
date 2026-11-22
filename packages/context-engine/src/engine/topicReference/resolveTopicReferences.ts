@@ -1,4 +1,8 @@
 import type { TopicReferenceItem } from '../../providers/TopicReferenceContextInjector';
+import {
+  rewriteSavedCodeArtifactTagsForLLM,
+  rewriteStoredMessageContentForLLM,
+} from '../../utils/codeArtifactTags';
 
 /**
  * Parsed refer_topic tag info
@@ -89,7 +93,11 @@ export async function resolveTopicReferences(
       const title = topic?.title || topicTitle;
 
       if (topic?.historySummary) {
-        refs.push({ summary: topic.historySummary, topicId, topicTitle: title });
+        refs.push({
+          summary: rewriteSavedCodeArtifactTagsForLLM(topic.historySummary),
+          topicId,
+          topicTitle: title,
+        });
         continue;
       }
 
@@ -98,15 +106,21 @@ export async function resolveTopicReferences(
         try {
           const allMessages = await lookupMessages(topicId);
 
-          // Filter to user/assistant only, take last N, truncate content
+          // Filter to user/assistant only, take last N, sanitize non-user code-artifact tags, truncate
           const recent = allMessages
             .filter((m) => m.role === 'user' || m.role === 'assistant')
             .filter((m) => m.content?.trim())
             .slice(-MAX_RECENT_MESSAGES)
-            .map((m) => ({
-              content: truncate(m.content!.trim(), MAX_MESSAGE_LENGTH),
-              role: m.role,
-            }));
+            .map((m) => {
+              const sanitized =
+                m.role === 'user'
+                  ? m.content!
+                  : String(rewriteStoredMessageContentForLLM(m.content!) ?? '');
+              return {
+                content: truncate(sanitized.trim(), MAX_MESSAGE_LENGTH),
+                role: m.role,
+              };
+            });
 
           if (recent.length > 0) {
             refs.push({ recentMessages: recent, topicId, topicTitle: title });

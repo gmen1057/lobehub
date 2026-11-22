@@ -549,5 +549,33 @@ describe('GroupRoleTransformProcessor', () => {
         toolTransformed: 1, // weather tool result
       });
     });
+
+    it('should sanitize saved /chat/code-artifact/ tags when converting another agent assistant message to user', async () => {
+      const fileId = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+      const rawTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Module1.bas" language="vb" src="/chat/code-artifact/${fileId}/"></lobeArtifact>`;
+      const processor = new GroupRoleTransformProcessor({
+        agentMap: {
+          'agent-a': { name: 'Current Agent', role: 'participant' },
+          'agent-b': { name: 'Coder Agent', role: 'participant' },
+        },
+        currentAgentId: 'agent-a',
+      });
+
+      const context = createContext([
+        {
+          agentId: 'agent-b',
+          content: `Part 1 done:\n${rawTag}`,
+          id: 'msg-other',
+          role: 'assistant',
+        },
+      ]);
+
+      const result = await processor.process(context);
+      expect(result.messages[0].role).toBe('user');
+      expect(result.messages[0].content).toContain('<speaker name="Coder Agent" />');
+      expect(result.messages[0].content).toContain(`fileId=${fileId}`);
+      expect(result.messages[0].content).not.toContain('/chat/code-artifact/');
+      expect(result.messages[0].content).not.toContain('<lobeArtifact');
+    });
   });
 });

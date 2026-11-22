@@ -48,7 +48,10 @@ const isSyntheticContinuationUserPrompt = (message: ActiveTurnMessage): boolean 
   if (typeof message.content !== 'string') return false;
   return (
     message.content.startsWith('All tasks above have been completed.') ||
-    message.content.includes('Исправь синтаксическую ошибку')
+    message.content.includes('Исправь синтаксическую ошибку') ||
+    message.content.includes(
+      'В твоём предыдущем ответе вместо реального кода оказался пустой служебный тег',
+    )
   );
 };
 

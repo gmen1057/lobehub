@@ -46,3 +46,8 @@ export {
   ToolMessageReorder,
   ToolResultImagesProcessor,
 } from './processors';
+export {
+  rewriteMessageContentCodeArtifactTags,
+  rewriteSavedCodeArtifactTagsForLLM,
+  rewriteStoredMessageContentForLLM,
+} from './utils/codeArtifactTags';

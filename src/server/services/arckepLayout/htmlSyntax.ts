@@ -372,7 +372,14 @@ const cleanArtifactBody = (raw: string): string => {
 
 const parseLooseAttrs = (
   attrsRaw: string,
-): { escapedQuotes: boolean; identifier: string; src?: string; title: string; type: string } => {
+): {
+  escapedQuotes: boolean;
+  identifier: string;
+  rawTitle?: string;
+  src?: string;
+  title: string;
+  type: string;
+} => {
   const escapedQuotes = /\\["']/.test(attrsRaw);
   const attrs: Record<string, string> = {};
   const attrRe = /([a-z_:][\w:.-]*)\s*=\s*(?:\\?"([^"\\]*)\\?"|\\?'([^'\\]*)\\?')/gi;
@@ -387,6 +394,7 @@ const parseLooseAttrs = (
   return {
     escapedQuotes,
     identifier: attrs.identifier || 'html-artifact',
+    rawTitle: attrs.title,
     src: attrs.src,
     title: attrs.title || attrs.identifier || 'HTML Artifact',
     type: (attrs.type || '').trim().toLowerCase(),
@@ -420,9 +428,18 @@ export interface StreamGateFinalizeOptions {
     identifier: string;
     title: string;
   }) => Promise<{ address: string; fileId: string } | undefined>;
+  /**
+   * When true and model-emitted bodyless `/chat/code-artifact/` tags are rejected,
+   * hold back `'Файл не сохранён.'` and trailing prose from `postStreamDelta` / `finalContent`
+   * so an automatic repair pass can regenerate the answer cleanly.
+   */
+  suppressCodeArtifactFallback?: boolean;
 }
 
 export interface StreamGateFinalizeResult {
+  codeArtifactDiagnostics: string[];
+  codeArtifactFallbackContent?: string;
+  codeArtifactFallbackDelta?: string;
   diagnostics: string[];
   finalContent: string;
   hasHtmlArtifacts: boolean;
@@ -434,6 +451,7 @@ export interface StreamGateFinalizeResult {
     src?: string;
     title: string;
   }>;
+  sanitizedAttemptContent?: string;
   valid: boolean;
 }
 
@@ -448,7 +466,9 @@ export class HtmlArtifactStreamGate {
   private segments: StreamSegment[] = [];
   // From the first private reference onward the suffix must keep its original order on SSE.
   private heldSuffixAt: number | undefined;
-  constructor(private readonly verifyPrivateFile?: (fileId: string) => Promise<boolean>) {}
+  constructor(verifyPrivateFile?: (fileId: string) => Promise<boolean>) {
+    void verifyPrivateFile;
+  }
 
   private mode: 'artifact_body' | 'opening_tag' | 'text' = 'text';
   private buffer = '';
@@ -629,6 +649,7 @@ export class HtmlArtifactStreamGate {
         .map((seg) => (seg.kind === 'text' ? seg.text : seg.rawTag))
         .join('');
       return {
+        codeArtifactDiagnostics: [],
         diagnostics: [],
         finalContent,
         hasHtmlArtifacts: false,
@@ -638,17 +659,43 @@ export class HtmlArtifactStreamGate {
       };
     }
 
+    const hasInvalidCodeArtifact = this.segments.some((seg) => {
+      if (seg.kind !== 'html_artifact') return false;
+      const parsed = parseLooseAttrs(seg.attrsRaw);
+      const isPrivateCode =
+        parsed.type !== 'text/html' &&
+        (parsed.src?.trim().startsWith('/chat/code-artifact/') ||
+          (!seg.closed && seg.rawTag.includes('/chat/code-artifact/')));
+      if (!isPrivateCode) return false;
+      return !(Boolean(seg.bodyRaw.trim()) && parsed.type === 'application/lobe.artifacts.code');
+    });
+    const suppress = Boolean(options.suppressCodeArtifactFallback) && hasInvalidCodeArtifact;
+
     const diagnostics: string[] = [];
+    const codeArtifactDiagnostics: string[] = [];
     const publishedArtifacts: StreamGateFinalizeResult['publishedArtifacts'] = [];
-    const finalParts: string[] = [];
+    const fallbackParts: string[] = [];
+    const suppressedParts: string[] = [];
+    const sanitizedAttemptParts: string[] = [];
 
     // Everything following a held private tag is delivered here, including plain trailing text.
     if (this.heldSuffixAt !== undefined) postStreamDelta = '';
+    let fallbackDelta = postStreamDelta;
+    let suppressedDelta = postStreamDelta;
+    let unsentFallbackDelta = '';
+    let sawInvalidCodeArtifact = false;
+
     for (const [index, seg] of this.segments.entries()) {
+      const isHeldByPrivateTag = this.heldSuffixAt !== undefined && index >= this.heldSuffixAt;
       if (seg.kind === 'text') {
-        if (this.heldSuffixAt !== undefined && index >= this.heldSuffixAt)
-          postStreamDelta += seg.text;
-        finalParts.push(seg.text);
+        if (isHeldByPrivateTag) {
+          fallbackDelta += seg.text;
+          unsentFallbackDelta += seg.text;
+        } else {
+          suppressedParts.push(seg.text);
+        }
+        fallbackParts.push(seg.text);
+        sanitizedAttemptParts.push(seg.text);
         continue;
       }
 
@@ -658,32 +705,44 @@ export class HtmlArtifactStreamGate {
         (parsed.src?.trim().startsWith('/chat/code-artifact/') ||
           (!seg.closed && seg.rawTag.includes('/chat/code-artifact/')))
       ) {
-        const id = /^\/chat\/code-artifact\/([a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})\/?$/.exec(
-          parsed.src?.trim() || '',
-        )?.[1];
-        let verified = false;
-        if (
-          seg.closed &&
-          id &&
-          parsed.type === 'application/lobe.artifacts.code' &&
-          this.verifyPrivateFile
-        ) {
-          try {
-            verified = await this.verifyPrivateFile(id);
-          } catch {
-            /* A lookup failure cannot establish ownership. */
+        const hasInlineCodeBody =
+          Boolean(seg.bodyRaw.trim()) && parsed.type === 'application/lobe.artifacts.code';
+        if (hasInlineCodeBody) {
+          const safe =
+            seg.openTag.replaceAll(
+              /\s+src\s*=\s*(?:"[^"]*"|'[^']*'|\\"[^"]*\\"|\\'[^']*\\')/gi,
+              '',
+            ) +
+            seg.bodyRaw +
+            '</lobeArtifact>';
+          fallbackParts.push(safe);
+          fallbackDelta += safe;
+          sanitizedAttemptParts.push(safe);
+          if (!isHeldByPrivateTag && !sawInvalidCodeArtifact) {
+            suppressedParts.push(safe);
+            suppressedDelta += safe;
+          } else {
+            unsentFallbackDelta += safe;
           }
+          continue;
         }
-        const inline = seg.bodyRaw.trim() && parsed.type === 'application/lobe.artifacts.code';
-        const safe = verified
-          ? seg.rawTag
-          : inline
-            ? seg.openTag.replaceAll(/\s+src\s*=\s*(?:"[^"]*"|'[^']*')/gi, '') +
-              seg.bodyRaw +
-              '</lobeArtifact>'
-            : 'Файл не сохранён.';
-        finalParts.push(safe);
-        postStreamDelta += safe;
+
+        sawInvalidCodeArtifact = true;
+        const rawTitle = parsed.rawTitle?.trim();
+        const rawSrc = parsed.src?.trim();
+        const details = [
+          rawTitle ? `title="${rawTitle}"` : undefined,
+          rawSrc ? `src="${rawSrc}"` : undefined,
+        ]
+          .filter(Boolean)
+          .join(', ');
+        codeArtifactDiagnostics.push(
+          `Model emitted an invalid empty <lobeArtifact> reference (${details || '/chat/code-artifact/'}) instead of writing actual code.`,
+        );
+        fallbackParts.push('Файл не сохранён.');
+        fallbackDelta += 'Файл не сохранён.';
+        unsentFallbackDelta += 'Файл не сохранён.';
+        sanitizedAttemptParts.push('[omitted invalid empty file reference tag]');
         continue;
       }
       const body = cleanArtifactBody(seg.bodyRaw);
@@ -717,8 +776,15 @@ export class HtmlArtifactStreamGate {
           src: parsed.src!,
           title: parsed.title,
         });
-        postStreamDelta += canonicalTag;
-        finalParts.push(canonicalTag);
+        fallbackDelta += canonicalTag;
+        fallbackParts.push(canonicalTag);
+        sanitizedAttemptParts.push(canonicalTag);
+        if (!isHeldByPrivateTag && !sawInvalidCodeArtifact) {
+          suppressedDelta += canonicalTag;
+          suppressedParts.push(canonicalTag);
+        } else {
+          unsentFallbackDelta += canonicalTag;
+        }
         publishedArtifacts.push({
           fileId: srcFileId,
           identifier: parsed.identifier,
@@ -742,6 +808,7 @@ export class HtmlArtifactStreamGate {
             parsed.identifier,
           ),
         );
+        sanitizedAttemptParts.push(seg.rawTag);
         // Do NOT emit broken HTML bytes to postStreamDelta or finalParts!
         continue;
       }
@@ -749,8 +816,9 @@ export class HtmlArtifactStreamGate {
       const sha256 = computeHtmlSha256(body);
       let publishedTag = `<lobeArtifact identifier="${escapeAttr(parsed.identifier)}" type="text/html" title="${escapeAttr(parsed.title)}">\n${body}\n</lobeArtifact>`;
       let savedInfo: { address: string; fileId: string } | undefined;
+      const isSuppressedSegment = suppress && (isHeldByPrivateTag || sawInvalidCodeArtifact);
 
-      if (options.saveHtml) {
+      if (options.saveHtml && !isSuppressedSegment) {
         savedInfo = await options.saveHtml({
           html: body,
           identifier: parsed.identifier,
@@ -765,8 +833,15 @@ export class HtmlArtifactStreamGate {
         }
       }
 
-      postStreamDelta += publishedTag;
-      finalParts.push(publishedTag);
+      fallbackDelta += publishedTag;
+      fallbackParts.push(publishedTag);
+      sanitizedAttemptParts.push(publishedTag);
+      if (!isHeldByPrivateTag && !sawInvalidCodeArtifact) {
+        suppressedDelta += publishedTag;
+        suppressedParts.push(publishedTag);
+      } else {
+        unsentFallbackDelta += publishedTag;
+      }
       publishedArtifacts.push({
         fileId: savedInfo?.fileId,
         identifier: parsed.identifier,
@@ -776,13 +851,25 @@ export class HtmlArtifactStreamGate {
       });
     }
 
+    const fallbackContent = fallbackParts.join('');
+    const finalContent = suppress ? suppressedParts.join('') : fallbackContent;
+    const finalPostStreamDelta = suppress ? suppressedDelta : fallbackDelta;
+
     return {
+      codeArtifactDiagnostics,
+      ...(codeArtifactDiagnostics.length > 0
+        ? {
+            codeArtifactFallbackContent: fallbackContent,
+            codeArtifactFallbackDelta: suppress ? unsentFallbackDelta : '',
+            sanitizedAttemptContent: sanitizedAttemptParts.join(''),
+          }
+        : {}),
       diagnostics,
-      finalContent: finalParts.join(''),
+      finalContent,
       hasHtmlArtifacts: true,
-      postStreamDelta,
+      postStreamDelta: finalPostStreamDelta,
       publishedArtifacts,
-      valid: diagnostics.length === 0,
+      valid: diagnostics.length === 0 && codeArtifactDiagnostics.length === 0,
     };
   }
 }

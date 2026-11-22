@@ -370,5 +370,47 @@ describe('MessageCleanupProcessor', () => {
       expect(result.messages).toBeDefined();
       expect(result.metadata).toBeDefined();
     });
+
+    it('should rewrite saved code-artifact tags in assistant string and multimodal content without mutating input', async () => {
+      const processor = new MessageCleanupProcessor();
+      const fileId = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+      const rawTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Module1.bas" language="vb" src="/chat/code-artifact/${fileId}/"></lobeArtifact>`;
+      const htmlTag =
+        '<lobeArtifact identifier="page" type="text/html" title="Page" src="/chat/f/file_9/"></lobeArtifact>';
+      const originalAssistant = {
+        content: `Done:\n${rawTag}\n${htmlTag}`,
+        id: 'asst-1',
+        role: 'assistant',
+      };
+      const originalMultimodal = {
+        content: [
+          { text: `Part 2:\n${rawTag}`, type: 'text' },
+          { image_url: { url: 'https://example.com/img.png' }, type: 'image_url' },
+        ],
+        id: 'asst-2',
+        role: 'assistant',
+      };
+
+      const result = await processor.process(
+        createContext([originalAssistant, originalMultimodal]),
+      );
+
+      expect(result.messages[0].content).toContain(
+        `[Saved "Module1.bas" (vb), fileId=${fileId} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${fileId}") if you need to inspect it.]`,
+      );
+      expect(result.messages[0].content).toContain(htmlTag);
+      expect(result.messages[0].content).not.toContain('/chat/code-artifact/');
+
+      expect(result.messages[1].content[0].text).not.toContain('/chat/code-artifact/');
+      expect(result.messages[1].content[0].text).toContain(`fileId=${fileId}`);
+      expect(result.messages[1].content[1]).toEqual({
+        image_url: { url: 'https://example.com/img.png' },
+        type: 'image_url',
+      });
+
+      // Original DB-backed message objects must remain untouched
+      expect(originalAssistant.content).toContain(rawTag);
+      expect((originalMultimodal.content[0] as any).text).toContain(rawTag);
+    });
   });
 });

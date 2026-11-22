@@ -233,4 +233,33 @@ describe('resolveTopicReferences', () => {
     expect(result![0].summary).toBeUndefined();
     expect(result![0].recentMessages).toBeUndefined();
   });
+
+  it('should sanitize saved /chat/code-artifact/ tags in historySummary and fallback assistant messages', async () => {
+    const fileId = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+    const rawTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Mod1.bas" language="vb" src="/chat/code-artifact/${fileId}/"></lobeArtifact>`;
+
+    const summaryResult = await resolveTopicReferences(
+      [{ content: '<refer_topic name="T1" id="t1" />' }],
+      vi.fn().mockResolvedValue({ historySummary: `Summary with ${rawTag}`, title: 'T1' }),
+    );
+    expect(summaryResult![0].summary).toContain(`fileId=${fileId}`);
+    expect(summaryResult![0].summary).not.toContain('/chat/code-artifact/');
+    expect(summaryResult![0].summary).not.toContain('<lobeArtifact');
+
+    const serializedMultimodal = JSON.stringify([
+      { text: `Delivered:\n${rawTag}`, type: 'text' },
+      { image: 'https://example.com/a.png', type: 'image' },
+    ]);
+    const recentResult = await resolveTopicReferences(
+      [{ content: '<refer_topic name="T2" id="t2" />' }],
+      vi.fn().mockResolvedValue({ historySummary: null, title: 'T2' }),
+      vi.fn().mockResolvedValue([
+        { content: 'Write Mod1.bas', role: 'user' },
+        { content: serializedMultimodal, role: 'assistant' },
+      ]),
+    );
+    expect(recentResult![0].recentMessages![1].content).toContain(`fileId=${fileId}`);
+    expect(recentResult![0].recentMessages![1].content).not.toContain('/chat/code-artifact/');
+    expect(recentResult![0].recentMessages![1].content).not.toContain('<lobeArtifact');
+  });
 });

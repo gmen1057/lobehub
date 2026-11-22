@@ -109,4 +109,20 @@ describe('HistorySummaryProvider', () => {
     const systemMessage = result.messages.find((msg) => msg.role === 'system');
     expect(systemMessage).toBeUndefined();
   });
+
+  it('should sanitize saved /chat/code-artifact/ tags before injecting historySummary into system message', async () => {
+    const fileId = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+    const rawTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Mod1.bas" language="vb" src="/chat/code-artifact/${fileId}/"></lobeArtifact>`;
+    const provider = new HistorySummaryProvider({
+      historySummary: `Earlier saved ${rawTag}`,
+    });
+
+    const result = await provider.process(
+      createContext([{ id: 'u1', role: 'user', content: 'Continue' }]),
+    );
+    const systemMessage = result.messages.find((msg) => msg.role === 'system');
+    expect(systemMessage?.content).toContain(`fileId=${fileId}`);
+    expect(systemMessage?.content).not.toContain('/chat/code-artifact/');
+    expect(systemMessage?.content).not.toContain('<lobeArtifact');
+  });
 });

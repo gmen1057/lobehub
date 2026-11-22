@@ -19,6 +19,8 @@ export interface GeneralAgentCallLLMInstructionPayload {
 }
 
 export interface GeneralAgentCallLLMResultPayload {
+  /** Set when model emitted an invalid bodyless /chat/code-artifact/ tag and needs a repair pass */
+  codeArtifactRepairError?: string;
   hasToolsCalling: boolean;
   /** Set when a direct-streamed text/html <lobeArtifact> failed syntax verification and needs a repair pass */
   htmlArtifactSyntaxError?: string;

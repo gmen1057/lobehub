@@ -23,6 +23,13 @@ beforeAll(async () => {
   const source = { createdAt: new Date('2026-11-03T10:00:00Z'), topicId: 'topic', userId: 'owner' };
   await db.insert(messages).values([
     { ...source, id: 'original', role: 'user', content: 'Original document 731.25' },
+    {
+      ...source,
+      id: 'assistant-code',
+      role: 'assistant',
+      content:
+        'Saved part 1:\n<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Module1.bas" language="vb" src="/chat/code-artifact/849f7fc2-dd0e-4b18-9aa8-aab327c49b30/"></lobeArtifact>',
+    },
     { ...source, id: 'document', role: 'tool', content: 'Useful tool document' },
     { ...source, id: 'other-tool', role: 'tool', content: 'Other getTopicContext tool' },
     { ...source, id: 'old-summary', role: 'tool', content: 'Derived topic summary' },
@@ -58,6 +65,9 @@ describe('archive source selection', () => {
       getTopicContext(db as any, 'owner', { mode: 'archive', snapshotAt, topicId: 'topic' });
     const original = await read();
     expect(original.content).toContain('Original document 731.25');
+    expect(original.content).toContain('fileId=849f7fc2-dd0e-4b18-9aa8-aab327c49b30');
+    expect(original.content).not.toContain('/chat/code-artifact/');
+    expect(original.content).not.toContain('<lobeArtifact');
     expect(original.content).toContain('Useful tool document');
     expect(original.content).toContain('Other getTopicContext tool');
     expect(original.content).not.toContain('Derived topic summary');
@@ -68,24 +78,20 @@ describe('archive source selection', () => {
     // Their content must not get escaped and copied back into the archive.
     for (let attempt = 0; attempt < 3; attempt++) {
       const id = `archive-${attempt}`;
-      await db
-        .insert(messages)
-        .values({
-          id,
-          userId: 'owner',
-          topicId: 'topic',
-          role: 'tool',
-          content: original.content,
-          createdAt: new Date('2026-11-03T11:00:00Z'),
-        });
-      await db
-        .insert(messagePlugins)
-        .values({
-          id,
-          userId: 'owner',
-          identifier: 'lobe-topic-reference',
-          apiName: 'getTopicContext',
-        });
+      await db.insert(messages).values({
+        id,
+        userId: 'owner',
+        topicId: 'topic',
+        role: 'tool',
+        content: original.content,
+        createdAt: new Date('2026-11-03T11:00:00Z'),
+      });
+      await db.insert(messagePlugins).values({
+        id,
+        userId: 'owner',
+        identifier: 'lobe-topic-reference',
+        apiName: 'getTopicContext',
+      });
       expect((await read()).content).toBe(original.content);
     }
   });

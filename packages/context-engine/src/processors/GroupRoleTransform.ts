@@ -2,6 +2,7 @@ import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { Message, PipelineContext, ProcessorOptions } from '../types';
+import { rewriteStoredMessageContentForLLM } from '../utils/codeArtifactTags';
 
 declare module '../types' {
   interface PipelineContextMetadataOverrides {
@@ -153,8 +154,9 @@ export class GroupRoleTransformProcessor extends BaseProcessor {
     const agentName = agentInfo.name;
     let content = this.buildSpeakerTag(agentName);
 
-    // Add original content
-    const originalContent = this.getStringContent(msg.content);
+    // Add original content (sanitizing any saved /chat/code-artifact/ tags before role becomes user)
+    const sanitizedContent = rewriteStoredMessageContentForLLM(msg.content);
+    const originalContent = this.getStringContent(sanitizedContent as string | any[]);
     if (originalContent) {
       content += originalContent;
     }
