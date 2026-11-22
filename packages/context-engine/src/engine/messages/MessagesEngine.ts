@@ -139,6 +139,7 @@ export class MessagesEngine {
       enableHistoryCount,
       historyCount,
       forceFinish,
+      forceFinishPrompt,
       historySummary,
       formatHistorySummary,
       knowledge,
@@ -447,8 +448,8 @@ export class MessagesEngine {
             }),
           ]
         : []),
-      // Force finish summary (when maxSteps exceeded)
-      new ForceFinishSummaryInjector({ enabled: !!forceFinish }),
+      // Force finish summary (when maxSteps exceeded or circuit breaker tripped)
+      new ForceFinishSummaryInjector({ enabled: !!forceFinish, prompt: forceFinishPrompt }),
       // Message cleanup (final step)
       new MessageCleanupProcessor({}, { model, provider }),
     ];

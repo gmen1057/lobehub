@@ -228,6 +228,8 @@ export interface MessagesEngineParams {
   enableHistoryCount?: boolean;
   /** Force finish flag: when true, injects summary prompt for max-steps completion */
   forceFinish?: boolean;
+  /** Optional custom system prompt for forceFinish (e.g. tool-error circuit breaker) */
+  forceFinishPrompt?: string;
   /** Function to format history summary */
   formatHistorySummary?: (summary: string) => string;
   /** History message count limit */

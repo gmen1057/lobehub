@@ -26,6 +26,7 @@ import {
 } from '../types';
 import { hasCompressibleHistory } from '../utils/activeTurn';
 import { shouldCompress } from '../utils/tokenCounter';
+import { isToolErrorCircuitBreakerTripped } from '../utils/toolErrorCircuitBreaker';
 
 // Leave 35% of the model window after the first compression so a small
 // follow-up does not immediately trigger another summarization pass.
@@ -511,7 +512,11 @@ export class GeneralChatAgent implements Agent {
           parentMessageId,
         } = context.payload as GeneralAgentCallLLMResultPayload;
 
-        if (hasToolsCalling && toolsCalling && toolsCalling.length > 0) {
+        const circuitBreakerTripped = isToolErrorCircuitBreakerTripped(
+          state.toolErrorCircuitBreaker,
+        );
+
+        if (hasToolsCalling && toolsCalling && toolsCalling.length > 0 && !circuitBreakerTripped) {
           // Check which tools need human intervention
           const [toolsNeedingIntervention, toolsToExecute] = await this.checkInterventionNeeded(
             toolsCalling,
@@ -574,10 +579,16 @@ export class GeneralChatAgent implements Agent {
 
         // No tool calls, conversation is complete
         return {
-          reason: state.forceFinish ? 'max_steps_completed' : 'completed',
-          reasonDetail: state.forceFinish
-            ? 'Force finish: LLM produced final text response after max steps'
-            : 'LLM response completed without tool calls',
+          reason: circuitBreakerTripped
+            ? 'tool_error_limit'
+            : state.forceFinish
+              ? 'max_steps_completed'
+              : 'completed',
+          reasonDetail: circuitBreakerTripped
+            ? `Force finish: tool "${state.toolErrorCircuitBreaker?.toolKey ?? 'unknown'}" failed ${state.toolErrorCircuitBreaker?.consecutiveErrors ?? 0} consecutive times`
+            : state.forceFinish
+              ? 'Force finish: LLM produced final text response after max steps'
+              : 'LLM response completed without tool calls',
           type: 'finish',
         };
       }
@@ -667,7 +678,7 @@ export class GeneralChatAgent implements Agent {
             model: this.config.modelRuntimeConfig?.model,
             parentMessageId,
             provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
+            tools: state.forceFinish ? [] : state.tools,
           } as GeneralAgentCallLLMInstructionPayload,
           state,
         );
@@ -706,7 +717,7 @@ export class GeneralChatAgent implements Agent {
             model: this.config.modelRuntimeConfig?.model,
             parentMessageId,
             provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
+            tools: state.forceFinish ? [] : state.tools,
           } as GeneralAgentCallLLMInstructionPayload,
           state,
         );
@@ -777,7 +788,7 @@ export class GeneralChatAgent implements Agent {
             model: this.config.modelRuntimeConfig?.model,
             parentMessageId: compressionPayload.parentMessageId,
             provider: this.config.modelRuntimeConfig?.provider,
-            tools: state.tools,
+            tools: state.forceFinish ? [] : state.tools,
           } as GeneralAgentCallLLMInstructionPayload,
           type: 'call_llm',
         };

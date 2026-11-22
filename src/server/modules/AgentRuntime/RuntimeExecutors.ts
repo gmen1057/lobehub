@@ -3,6 +3,7 @@ import {
   type AgentInstruction,
   type AgentInstructionCompressContext,
   type AgentState,
+  buildToolErrorCircuitBreakerPrompt,
   calculatePromptTokens,
   type CallLLMPayload,
   estimateTokens,
@@ -12,8 +13,10 @@ import {
   hasRepeatedToolCall,
   type InstructionExecutor,
   isEmptyAssistantPlaceholder,
+  isToolErrorCircuitBreakerTripped,
   resolveAssistantParentId,
   TOOL_CALL_REPEAT_STOP_MESSAGE,
+  TOOL_ERROR_CIRCUIT_BREAKER_FALLBACK_MESSAGE,
   updateToolCallRepeatGuard,
   UsageCounter,
 } from '@lobechat/agent-runtime';
@@ -827,6 +830,10 @@ export const createRuntimeExecutors = (
       // Process messages through serverMessagesEngine to inject system role, knowledge, etc.
       // Rebuild params from agentConfig at execution time (capabilities built dynamically)
       const agentConfig = ctx.agentConfig;
+      const circuitBreakerTripped = isToolErrorCircuitBreakerTripped(state.toolErrorCircuitBreaker);
+      const forceFinishPrompt = circuitBreakerTripped
+        ? buildToolErrorCircuitBreakerPrompt(state.toolErrorCircuitBreaker)
+        : undefined;
       let processedMessages;
       let wireSourceIds: (string | undefined)[] = [];
       if (agentConfig) {
@@ -932,6 +939,7 @@ export const createRuntimeExecutors = (
           enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,
           evalContext: ctx.evalContext,
           forceFinish: state.forceFinish,
+          ...(forceFinishPrompt ? { forceFinishPrompt } : {}),
           historyCount: agentConfig.chatConfig?.historyCount ?? undefined,
           knowledge: {
             fileContents: agentConfig.files
@@ -1015,7 +1023,10 @@ export const createRuntimeExecutors = (
           type: 'context_engine_result',
         } as any);
       } else {
-        processedMessages = llmPayload.messages;
+        processedMessages =
+          state.forceFinish && forceFinishPrompt
+            ? [...llmPayload.messages, { content: forceFinishPrompt, role: 'system' }]
+            : llmPayload.messages;
       }
 
       // Initialize ModelRuntime (read user's keyVaults from database).
@@ -1032,7 +1043,9 @@ export const createRuntimeExecutors = (
       const stream = ctx.stream ?? true;
       // arckep: встроенный поиск модели в серверном контуре (REST-движок студии, боты, cron).
       // Клиентский чат включает его через getSearchConfig; здесь те же правила.
-      const enabledSearch = await resolveServerEnabledSearch(agentConfig, model, provider);
+      const enabledSearch = state.forceFinish
+        ? false
+        : await resolveServerEnabledSearch(agentConfig, model, provider);
       // arckep (chat-next-redesign, E1): температура помощника и параметры рассуждений — как в
       // браузерном чате; раньше серверный вызов их не передавал вовсе.
       const modelParams = await resolveServerModelParams(agentConfig, model, provider);
@@ -1046,7 +1059,9 @@ export const createRuntimeExecutors = (
         ...(enabledSearch ? { enabledSearch: true } : {}),
         ...(provider === 'deepseek' && model === 'deepseek-flash'
           ? {
-              read_url: !!(agentConfig?.chatConfig as any)?.deepseekReadUrl,
+              read_url: state.forceFinish
+                ? false
+                : !!(agentConfig?.chatConfig as any)?.deepseekReadUrl,
               safety_check: !!(agentConfig?.chatConfig as any)?.deepseekSafetyCheck,
             }
           : {}),
@@ -1323,6 +1338,10 @@ export const createRuntimeExecutors = (
                 }
               },
               onToolsCalling: async ({ toolsCalling: raw }) => {
+                // Suppress phantom tool calls and avoid streaming orphaned tools_calling cards
+                // during the final tool-free turn after the tool-error circuit breaker trips.
+                if (circuitBreakerTripped) return;
+
                 const passthroughIdentifiers = Object.entries(resolved.sourceMap)
                   .filter(([, source]) => source === 'client')
                   .map(([id]) => id);
@@ -1580,6 +1599,23 @@ export const createRuntimeExecutors = (
             blockedRepeatedToolCall = true;
           }
 
+          if (
+            !blockedRepeatedToolCall &&
+            circuitBreakerTripped &&
+            !(await isOperationInterrupted(ctx))
+          ) {
+            // Never allow another tool call (resolved or unresolved) on the post-breaker turn.
+            toolsCalling = [];
+            tool_calls = [];
+            resolvedToolCalls = [];
+            unresolvedToolCalls = [];
+            if (!content.trim() && !hasContentImages) {
+              content = TOOL_ERROR_CIRCUIT_BREAKER_FALLBACK_MESSAGE;
+              textBuffer += TOOL_ERROR_CIRCUIT_BREAKER_FALLBACK_MESSAGE;
+              await flushTextBuffer();
+            }
+          }
+
           const prevUnresolved = Number(state.metadata?.consecutiveUnresolvedToolCalls ?? 0);
           let nextConsecutiveUnresolved: number | undefined;
           let blockedUnresolvedToolCall = false;
@@ -1776,7 +1812,9 @@ export const createRuntimeExecutors = (
                 ? { finishReason: 'tool_call_repeat_limit' }
                 : blockedUnresolvedToolCall
                   ? { finishReason: 'unresolved_tool_call_limit' }
-                  : {}),
+                  : circuitBreakerTripped
+                    ? { finishReason: 'tool_error_limit' }
+                    : {}),
               reasoning: thinkingContent,
               tool_calls,
               usage: currentStepUsage,

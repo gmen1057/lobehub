@@ -218,6 +218,13 @@ export interface ChatCompletionFunctions {
   parameters?: {
     [key: string]: any;
   };
+  /**
+   * Whether to enable strict schema adherence when generating the function call.
+   * For OpenAI Responses API function tools, omitting this defaults to `false` in the runtime
+   * because OpenAI's Responses API otherwise defaults `strict` to `true` and rejects arbitrary
+   * MCP/JSON schemas with optional properties.
+   */
+  strict?: boolean;
 }
 
 export interface ChatCompletionTool {

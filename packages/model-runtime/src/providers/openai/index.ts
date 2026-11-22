@@ -148,6 +148,7 @@ export const params = {
   },
   provider: ModelProvider.OpenAI,
   responses: {
+    defaultToolStrict: false,
     handlePayload: (payload) => {
       const {
         enabledSearch,

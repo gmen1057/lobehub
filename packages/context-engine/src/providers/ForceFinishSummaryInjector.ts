@@ -13,6 +13,8 @@ const log = debug('context-engine:provider:ForceFinishSummaryInjector');
 
 export interface ForceFinishSummaryInjectorConfig {
   enabled: boolean;
+  /** Optional custom force-finish system prompt (defaults to max-steps summary prompt) */
+  prompt?: string;
 }
 
 /**
@@ -45,6 +47,7 @@ export class ForceFinishSummaryInjector extends BaseProvider {
 
     clonedContext.messages.push({
       content:
+        this.config.prompt ||
         'You have reached the maximum step limit. Please summarize your progress and provide a final response. Do not attempt to use any tools.',
       role: 'system' as const,
     });

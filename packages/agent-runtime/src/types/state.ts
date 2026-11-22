@@ -13,6 +13,18 @@ import type {
 import type { Cost, CostLimit, Usage } from './usage';
 
 /**
+ * Serializable state for the consecutive tool-error circuit breaker.
+ */
+export interface ToolErrorCircuitBreakerState {
+  /** Number of consecutive failed executions for `toolKey` */
+  consecutiveErrors: number;
+  /** Canonical tool key (`identifier::apiName`) currently failing */
+  toolKey?: string;
+  /** True once `consecutiveErrors` reached the circuit-breaker limit */
+  tripped?: boolean;
+}
+
+/**
  * Agent's serializable state.
  * This is the "passport" that can be persisted and transferred.
  */
@@ -130,6 +142,13 @@ export interface AgentState {
   toolCallRepeatGuard?: {
     counts: Record<string, number>;
   };
+
+  /**
+   * Consecutive failed executions of the same tool (`identifier::apiName`).
+   * Trips `forceFinish` once the failure threshold is reached so runaway error loops
+   * end with a clean final assistant explanation instead of burning maxSteps.
+   */
+  toolErrorCircuitBreaker?: ToolErrorCircuitBreakerState;
 
   toolManifestMap: Record<string, any>;
 

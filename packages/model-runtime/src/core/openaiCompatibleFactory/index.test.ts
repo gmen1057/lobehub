@@ -1214,6 +1214,269 @@ describe('LobeOpenAICompatibleFactory', () => {
         );
       });
 
+      it('should default strict to false on Responses API function tools when responses.defaultToolStrict is false while preserving explicit strict values and non-function tools', async () => {
+        const LobeMockProviderUseResponses = createOpenAICompatibleRuntime({
+          baseURL: 'https://api.test.com/v1',
+          chatCompletion: {
+            useResponse: true,
+          },
+          provider: ModelProvider.OpenAI,
+          responses: {
+            defaultToolStrict: false,
+            handlePayload: (payload) => ({
+              ...payload,
+              tools: [
+                ...(payload.tools || []),
+                { type: 'web_search' } as any,
+                { quality: 'medium', type: 'image_generation' } as any,
+              ],
+            }),
+          },
+        });
+
+        const inst = new LobeMockProviderUseResponses({ apiKey: 'test' });
+        const mockResponsesCreate = vi.spyOn(inst['client'].responses, 'create').mockResolvedValue({
+          tee: () => [
+            new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+            new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+          ],
+        } as any);
+
+        await inst.chat({
+          messages: [{ content: 'create 3d model', role: 'user' }],
+          model: 'gpt-6.2-sol',
+          tools: [
+            {
+              function: {
+                description: 'Tool without strict specified',
+                name: 'create_3d',
+                parameters: {
+                  properties: {
+                    prompt: { type: 'string' },
+                    texture: { type: 'boolean' },
+                  },
+                  required: ['prompt'],
+                  type: 'object',
+                },
+              },
+              type: 'function',
+            },
+            {
+              function: {
+                description: 'Tool with explicit strict true',
+                name: 'strict_tool',
+                parameters: {
+                  additionalProperties: false,
+                  properties: { id: { type: 'string' } },
+                  required: ['id'],
+                  type: 'object',
+                },
+                strict: true,
+              },
+              type: 'function',
+            },
+            {
+              function: {
+                description: 'Tool with explicit strict false',
+                name: 'non_strict_tool',
+                parameters: {
+                  properties: { query: { type: 'string' } },
+                  type: 'object',
+                },
+                strict: false,
+              },
+              type: 'function',
+            },
+          ],
+        });
+
+        expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+        const requestPayload = mockResponsesCreate.mock.calls[0][0];
+        expect(requestPayload.tools).toEqual([
+          {
+            description: 'Tool without strict specified',
+            name: 'create_3d',
+            parameters: {
+              properties: {
+                prompt: { type: 'string' },
+                texture: { type: 'boolean' },
+              },
+              required: ['prompt'],
+              type: 'object',
+            },
+            strict: false,
+            type: 'function',
+          },
+          {
+            description: 'Tool with explicit strict true',
+            name: 'strict_tool',
+            parameters: {
+              additionalProperties: false,
+              properties: { id: { type: 'string' } },
+              required: ['id'],
+              type: 'object',
+            },
+            strict: true,
+            type: 'function',
+          },
+          {
+            description: 'Tool with explicit strict false',
+            name: 'non_strict_tool',
+            parameters: {
+              properties: { query: { type: 'string' } },
+              type: 'object',
+            },
+            strict: false,
+            type: 'function',
+          },
+          { type: 'web_search' },
+          { quality: 'medium', type: 'image_generation' },
+        ]);
+      });
+
+      it('should omit strict on Responses API function tools for providers without responses.defaultToolStrict', async () => {
+        const LobeMockNonOpenAIResponses = createOpenAICompatibleRuntime({
+          baseURL: 'https://api.x.ai/v1',
+          chatCompletion: {
+            useResponse: true,
+          },
+          provider: ModelProvider.XAI,
+        });
+
+        const inst = new LobeMockNonOpenAIResponses({ apiKey: 'test' });
+        const mockResponsesCreate = vi.spyOn(inst['client'].responses, 'create').mockResolvedValue({
+          tee: () => [
+            new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+            new ReadableStream({
+              start(controller) {
+                controller.close();
+              },
+            }),
+          ],
+        } as any);
+
+        await inst.chat({
+          messages: [{ content: 'hi', role: 'user' }],
+          model: 'grok-4',
+          tools: [
+            {
+              function: {
+                description: 'Search',
+                name: 'search',
+                parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+              },
+              type: 'function',
+            },
+            {
+              function: {
+                description: 'Explicit strict tool',
+                name: 'explicit_strict',
+                parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+                strict: true,
+              },
+              type: 'function',
+            },
+          ],
+        });
+
+        expect(mockResponsesCreate).toHaveBeenCalledTimes(1);
+        expect(mockResponsesCreate.mock.calls[0][0].tools).toEqual([
+          {
+            description: 'Search',
+            name: 'search',
+            parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+            type: 'function',
+          },
+          {
+            description: 'Explicit strict tool',
+            name: 'explicit_strict',
+            parameters: { properties: { q: { type: 'string' } }, type: 'object' },
+            strict: true,
+            type: 'function',
+          },
+        ]);
+      });
+
+      it('should default strict to false on Responses API tools in generateObjectWithTools when responses.defaultToolStrict is false while preserving explicit strict: true', async () => {
+        const LobeMockProviderUseResponses = createOpenAICompatibleRuntime({
+          baseURL: 'https://api.test.com/v1',
+          generateObject: {
+            useResponse: true,
+          },
+          provider: ModelProvider.OpenAI,
+          responses: {
+            defaultToolStrict: false,
+          },
+        });
+
+        const inst = new LobeMockProviderUseResponses({ apiKey: 'test' });
+        const mockResponsesCreate = vi.spyOn(inst['client'].responses, 'create').mockResolvedValue({
+          output: [
+            {
+              arguments: '{"city":"Moscow"}',
+              name: 'get_weather',
+              type: 'function_call',
+            },
+          ],
+        } as any);
+
+        const result = await inst.generateObject({
+          messages: [{ content: 'Weather in Moscow', role: 'user' }],
+          model: 'gpt-6.2-sol',
+          tools: [
+            {
+              function: {
+                description: 'Get weather',
+                name: 'get_weather',
+                parameters: {
+                  properties: { city: { type: 'string' }, unit: { type: 'string' } },
+                  required: ['city'],
+                  type: 'object',
+                },
+              },
+              type: 'function',
+            },
+            {
+              function: {
+                description: 'Strict schema tool',
+                name: 'strict_extract',
+                parameters: {
+                  additionalProperties: false,
+                  properties: { city: { type: 'string' } },
+                  required: ['city'],
+                  type: 'object',
+                },
+                strict: true,
+              },
+              type: 'function',
+            },
+          ],
+        });
+
+        expect(result).toEqual([{ arguments: { city: 'Moscow' }, name: 'get_weather' }]);
+        expect(mockResponsesCreate).toHaveBeenCalledWith(
+          expect.objectContaining({
+            tools: [
+              expect.objectContaining({ name: 'get_weather', strict: false, type: 'function' }),
+              expect.objectContaining({ name: 'strict_extract', strict: true, type: 'function' }),
+            ],
+          }),
+          expect.any(Object),
+        );
+      });
+
       it(
         'should route to Responses API when model matches useResponseModels',
         async () => {
