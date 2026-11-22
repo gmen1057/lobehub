@@ -1,5 +1,7 @@
 const RECEIPT = 'ARCKEP_TEXT_FILE_V1\n';
 const MAX_TAIL = 4096;
+const WRITER_CALL_RE = /^arckep-text-file____(?:writePart|patchFile)(?:____|$)/;
+const PATCH_CALL_RE = /^arckep-text-file____patchFile(?:____|$)/;
 
 // Only compact a call for which the engine has already returned a successful durable receipt.
 // Keep the most recent pair for each file. Preserve all unrelated tool calls, their results and
@@ -17,8 +19,7 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
   let lastPageId: string | undefined;
   for (const message of current) {
     for (const call of message.tool_calls ?? []) {
-      if (call.function?.name?.startsWith('arckep-text-file____writePart'))
-        writerCalls.add(call.id);
+      if (WRITER_CALL_RE.test(call.function?.name || '')) writerCalls.add(call.id);
       if (
         /^(?:lobe-topic-reference____getTopicContext|lobe-knowledge-base____readKnowledge|lobe-agent-documents____readDocument(?:ByFilename)?)(?:____|$)/.test(
           call.function?.name || '',
@@ -45,6 +46,10 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
             'endOffset',
             'nextOffset',
             'totalCharCount',
+            'startLine',
+            'endLine',
+            'nextStartLine',
+            'totalLines',
             'snapshot',
             'snapshotAt',
           ])
@@ -73,7 +78,9 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
     )
       continue;
     try {
-      const receipt = JSON.parse(message.content.slice(RECEIPT.length));
+      const body = message.content.slice(RECEIPT.length);
+      const newlineIndex = body.indexOf('\n');
+      const receipt = JSON.parse(newlineIndex >= 0 ? body.slice(0, newlineIndex) : body);
       if (typeof receipt.documentId !== 'string' || !Number.isSafeInteger(receipt.part)) continue;
       latest.set(receipt.documentId, message.tool_call_id);
       completed.set(message.tool_call_id, receipt.documentId);
@@ -102,30 +109,43 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
       if (!retained.has(call.id)) return [];
       try {
         const args = JSON.parse(call.function.arguments);
-        if (
-          args &&
-          typeof args === 'object' &&
-          typeof args.text === 'string' &&
-          args.text.length > MAX_TAIL
-        ) {
-          const { text, ...rest } = args;
-          const compactArgs =
-            args.final === true
-              ? { ...rest, _savedChars: text.length }
-              : {
-                  ...rest,
-                  _continuationTailReadOnly: text.slice(-MAX_TAIL),
-                  _savedChars: text.length,
-                };
-          return [
-            {
-              ...call,
-              function: {
-                ...call.function,
-                arguments: JSON.stringify(compactArgs),
+        if (args && typeof args === 'object') {
+          if (PATCH_CALL_RE.test(call.function?.name || '') && 'edits' in args) {
+            const { edits, ...rest } = args;
+            const compactArgs = {
+              ...rest,
+              _appliedEditsCount: Array.isArray(edits) ? edits.length : 0,
+            };
+            return [
+              {
+                ...call,
+                function: {
+                  ...call.function,
+                  arguments: JSON.stringify(compactArgs),
+                },
               },
-            },
-          ];
+            ];
+          }
+          if (typeof args.text === 'string' && args.text.length > MAX_TAIL) {
+            const { text, ...rest } = args;
+            const compactArgs =
+              args.final === true
+                ? { ...rest, _savedChars: text.length }
+                : {
+                    ...rest,
+                    _continuationTailReadOnly: text.slice(-MAX_TAIL),
+                    _savedChars: text.length,
+                  };
+            return [
+              {
+                ...call,
+                function: {
+                  ...call.function,
+                  arguments: JSON.stringify(compactArgs),
+                },
+              },
+            ];
+          }
         }
       } catch {
         /* The receipt is still authoritative when historical arguments are unavailable. */

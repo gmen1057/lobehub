@@ -25,6 +25,7 @@ import {
 } from '@/server/services/agentRuntime/orphanPlaceholders';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { FileService } from '@/server/services/file';
+import { stripTextFileReceiptForClient } from '@/server/services/textFiles/store';
 
 import { BaseService } from '../common/base.service';
 import type {
@@ -427,10 +428,9 @@ export class ResponsesService extends BaseService {
             // Decode internal tool name format back to display name
             const fnName = this.decodeToolName(rawToolName);
             output.push({
-              arguments:
-                fnName === 'arckep-text-file/writePart'
-                  ? '{}'
-                  : (toolCall.function?.arguments ?? '{}'),
+              arguments: fnName.startsWith('arckep-text-file/')
+                ? '{}'
+                : (toolCall.function?.arguments ?? '{}'),
               call_id: toolCall.id ?? `call_${itemCounter}`,
               id: `fc_${responseId}_${itemCounter++}`,
               name: fnName,
@@ -446,7 +446,9 @@ export class ResponsesService extends BaseService {
         output.push({
           call_id: msg.tool_call_id ?? '',
           id: `fco_${responseId}_${itemCounter++}`,
-          output: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          output: stripTextFileReceiptForClient(
+            typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          ),
           status: 'completed' as const,
           type: 'function_call_output' as const,
         });
@@ -1214,12 +1216,13 @@ export class ResponsesService extends BaseService {
               result: { content: string };
             };
             const fcoItemId = `fco_${responseId}_${itemCounter++}`;
+            const clientToolOutput = stripTextFileReceiptForClient(toolData.result?.content ?? '');
 
             yield {
               item: {
                 call_id: toolData.payload.toolCalling.id,
                 id: fcoItemId,
-                output: toolData.result?.content ?? '',
+                output: clientToolOutput,
                 status: 'completed' as const,
                 type: 'function_call_output' as const,
               } as OutputItem,
@@ -1231,7 +1234,7 @@ export class ResponsesService extends BaseService {
               item: {
                 call_id: toolData.payload.toolCalling.id,
                 id: fcoItemId,
-                output: toolData.result?.content ?? '',
+                output: clientToolOutput,
                 status: 'completed' as const,
                 type: 'function_call_output' as const,
               } as OutputItem,

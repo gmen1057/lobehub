@@ -626,6 +626,73 @@ describe('ArckepToolResultTrimProcessor', () => {
       expect(out.messages[7].content).toContain(htmlV1); // kept-art still has full htmlV1
       expect(out.messages[11].content).toContain(htmlV2);
     });
+
+    it('never touches arckep-text-file patchFile args or receipt even in old turns or without identifier', async () => {
+      const processor = new ArckepToolResultTrimProcessor();
+      const bigEditText = 'P'.repeat(8500);
+      const patchReceipt = `ARCKEP_TEXT_FILE_V1\n${JSON.stringify({
+        documentId: 'doc-p1',
+        fileId: 'file-p1',
+        fileName: 'mod.bas',
+        part: 2,
+        status: 'ready',
+      })}\nPatch applied: 1 edit\n${'+line\n'.repeat(100)}`;
+
+      const messages = [
+        { content: 'u1', id: 'u1', role: 'user' },
+        ...makeToolPair({
+          apiName: 'patchFile',
+          args: { documentId: 'doc-p1', edits: [{ newText: bigEditText, oldText: 'old' }] },
+          assistantId: 'a-patch',
+          content: patchReceipt,
+          identifier: 'arckep-text-file',
+          toolCallId: 'tc-patch',
+          toolMsgId: 't-patch',
+        }),
+        {
+          content: '',
+          id: 'a-patch-anon',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: JSON.stringify({ edits: [{ newText: bigEditText, oldText: 'old' }] }),
+                name: 'unknown.patchFile',
+              },
+              id: 'tc-patch-anon',
+              type: 'function',
+            },
+          ],
+          tools: [
+            {
+              apiName: 'patchFile',
+              arguments: JSON.stringify({ edits: [{ newText: bigEditText, oldText: 'old' }] }),
+              id: 'tc-patch-anon',
+              identifier: '',
+            },
+          ],
+        },
+        {
+          content: 'X'.repeat(6000),
+          id: 't-patch-anon',
+          role: 'tool',
+          tool_call_id: 'tc-patch-anon',
+        },
+        { content: 'u2', id: 'u2', role: 'user' },
+        { content: 'u3', id: 'u3', role: 'user' },
+        { content: 'u4', id: 'u4', role: 'user' },
+      ];
+
+      const out = await processor.process(makeContext(messages));
+      expect(JSON.parse(out.messages[1].tool_calls[0].function.arguments).edits[0].newText).toBe(
+        bigEditText,
+      );
+      expect(out.messages[2].content).toBe(patchReceipt);
+      expect(JSON.parse(out.messages[3].tool_calls[0].function.arguments).edits[0].newText).toBe(
+        bigEditText,
+      );
+      expect(out.messages[4].content).toBe('X'.repeat(6000));
+    });
   });
 
   describe('User turn detection & Warm-cache break-even gate + Sticky replay', () => {

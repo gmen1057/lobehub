@@ -278,3 +278,156 @@ it('extractAssistantContent skips internalRepairAttempt messages so omitted mark
   };
   expect(svc['extractAssistantContent'](withPriorAnswerState)).toBe('Previous clean answer');
 });
+
+describe('arckep-text-file masking and receipt stripping for clients', () => {
+  it('masks arguments to "{}" for all arckep-text-file/* tools and strips diff tail from function_call_output', () => {
+    const canonicalReceipt =
+      'ARCKEP_TEXT_FILE_V1\n' +
+      JSON.stringify({
+        documentId: '11111111-1111-5111-a111-111111111111',
+        fileId: '22222222-2222-5222-a222-222222222222',
+        fileName: 'Module1.bas',
+        part: 2,
+        status: 'ready',
+      });
+    const fullContentWithDiff =
+      canonicalReceipt +
+      '\nPatch applied: 1 edit, lines 10 -> 11 (+1 / -0), encoding utf-8 -> utf-8, lineEnding CRLF.\n@@ -1,2 +1,3 @@\n+secret = 1';
+
+    const messages = [
+      {
+        content: '',
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: {
+              arguments: JSON.stringify({
+                documentId: '11111111-1111-5111-a111-111111111111',
+                edits: [{ newText: 'secret = 1', oldText: 'old = 0' }],
+              }),
+              name: 'arckep-text-file____patchFile____builtin',
+            },
+            id: 'call_patch_1',
+          },
+          {
+            function: {
+              arguments: JSON.stringify({
+                fileName: 'other.ts',
+                final: true,
+                part: 1,
+                text: 'secret source',
+              }),
+              name: 'arckep-text-file____writePart____builtin',
+            },
+            id: 'call_write_1',
+          },
+        ],
+      },
+      {
+        content: fullContentWithDiff,
+        role: 'tool',
+        tool_call_id: 'call_patch_1',
+      },
+      {
+        content: canonicalReceipt,
+        role: 'tool',
+        tool_call_id: 'call_write_1',
+      },
+    ];
+
+    const { output } = callExtractOutputItems(messages, 'tpc_patch');
+    const patchCall = output.find(
+      (i: any) => i.call_id === 'call_patch_1' && i.type === 'function_call',
+    );
+    const writeCall = output.find(
+      (i: any) => i.call_id === 'call_write_1' && i.type === 'function_call',
+    );
+    const patchOut = output.find(
+      (i: any) => i.call_id === 'call_patch_1' && i.type === 'function_call_output',
+    );
+    const writeOut = output.find(
+      (i: any) => i.call_id === 'call_write_1' && i.type === 'function_call_output',
+    );
+
+    expect(patchCall.name).toBe('arckep-text-file/patchFile');
+    expect(patchCall.arguments).toBe('{}');
+    expect(writeCall.name).toBe('arckep-text-file/writePart');
+    expect(writeCall.arguments).toBe('{}');
+
+    // Strictly canonical 2-line 5-key receipt — no diff tail leaked to clients!
+    expect(patchOut.output).toBe(canonicalReceipt);
+    expect(patchOut.output.split('\n')).toHaveLength(2);
+    expect(Object.keys(JSON.parse(patchOut.output.split('\n')[1]))).toHaveLength(5);
+    expect(writeOut.output).toBe(canonicalReceipt);
+  });
+
+  it('strips diff tail from SSE tool_end function_call_output events', async () => {
+    const canonicalReceipt =
+      'ARCKEP_TEXT_FILE_V1\n' +
+      JSON.stringify({
+        documentId: '11111111-1111-5111-a111-111111111111',
+        fileId: '22222222-2222-5222-a222-222222222222',
+        fileName: 'Module1.bas',
+        part: 2,
+        status: 'ready',
+      });
+    const fullContentWithDiff =
+      canonicalReceipt + '\nPatch applied: 1 edit\n@@ -1,1 +1,1 @@\n-old\n+new';
+
+    const svc = new (ResponsesService as any)(null, null);
+    const fakeOp: any = {
+      finalState: {
+        messages: [
+          {
+            content: fullContentWithDiff,
+            role: 'tool',
+            tool_call_id: 'call_patch_sse',
+          },
+        ],
+        status: 'done',
+      },
+      operationId: 'op_sse_patch',
+      responseId: 'resp_sse_patch',
+    };
+
+    const { responsesStreamHub } = await import('../responsesStreamHub');
+    const attachSpy = vi.spyOn(responsesStreamHub, 'attach').mockReturnValue({
+      done: true,
+      history: [
+        {
+          data: {
+            isSuccess: true,
+            payload: { toolCalling: { id: 'call_patch_sse' } },
+            result: { content: fullContentWithDiff },
+          },
+          stepIndex: 1,
+          type: 'tool_end',
+        } as any,
+      ],
+      truncated: false,
+      unsubscribe: vi.fn(),
+    });
+
+    try {
+      const events: any[] = [];
+      for await (const ev of svc['streamOperationEvents'](
+        fakeOp,
+        { id: 'resp_sse_patch', output: [], status: 'in_progress' },
+        0,
+      )) {
+        events.push(ev);
+      }
+
+      const fcoEvents = events.filter((e) => e.item?.type === 'function_call_output');
+      expect(fcoEvents).toHaveLength(2);
+      for (const ev of fcoEvents) {
+        expect(ev.item.output).toBe(canonicalReceipt);
+        expect(ev.item.output).not.toContain('Patch applied');
+      }
+      const completed = events.find((e) => e.type === 'response.completed');
+      expect(completed?.response.output[0].output).toBe(canonicalReceipt);
+    } finally {
+      attachSpy.mockRestore();
+    }
+  });
+});

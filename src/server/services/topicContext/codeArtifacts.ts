@@ -11,7 +11,7 @@ import type { TopicContextParams } from './index';
 const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const VERSION_PAGE_SIZE = 12;
 
-function ownedCodeArtifacts(
+export function ownedCodeArtifacts(
   db: LobeChatDatabase,
   userId: string,
   topicId: string,

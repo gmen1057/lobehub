@@ -15,11 +15,18 @@ it('omits source arguments and continuation tail from Langfuse and step diagnost
         arguments: 'secret source',
       },
     },
-    counts: { '["arckep-text-file","writePart","secret source"]': 2 },
+    counts: {
+      '["arckep-text-file","patchFile","secret patch"]': 1,
+      '["arckep-text-file","writePart","secret source"]': 2,
+    },
     other: { function: { name: 'weather', arguments: 'Toronto' } },
+    patchCall: { function: { name: 'arckep-text-file____patchFile', arguments: 'secret patch' } },
   };
-  const safe = JSON.stringify(redactTextFileDiagnostics(raw));
+  const redacted = redactTextFileDiagnostics(raw);
+  const safe = JSON.stringify(redacted);
   expect(safe).not.toContain('secret');
   expect(safe).toContain('Toronto');
+  expect(safe).toContain('arckep-text-file/patchFile');
+  expect(safe).toContain('arckep-text-file/writePart');
   expect(raw.payload.toolCalling.arguments).toBe('secret source');
 });

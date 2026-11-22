@@ -214,3 +214,133 @@ it('retains the latest of nine 20k Cyrillic source pages plus recoverable cursor
   expect(compacted[0]).toEqual(messages[0]);
   expect(JSON.stringify(compacted).length).toBeLessThan(25000);
 });
+
+it('compacts patchFile edits into _appliedEditsCount, parses diff-tailed receipts, and drops superseded writes/patches', () => {
+  const receipt1 =
+    'ARCKEP_TEXT_FILE_V1\n' +
+    JSON.stringify({
+      documentId: 'doc-p',
+      fileId: 'f1',
+      fileName: 'm.bas',
+      part: 1,
+      status: 'ready',
+    }) +
+    '\nPatch applied: 2 edits, lines 10 -> 10 (+2 / -2)\n@@ -1,2 +1,2 @@\n-a\n+b';
+  const receipt2 =
+    'ARCKEP_TEXT_FILE_V1\n' +
+    JSON.stringify({
+      documentId: 'doc-p',
+      fileId: 'f2',
+      fileName: 'm.bas',
+      part: 2,
+      status: 'ready',
+    }) +
+    '\nPatch applied: 3 edits, lines 10 -> 12 (+3 / -1)\n@@ -5,2 +5,4 @@\n+new line';
+
+  const messages = [
+    { content: 'Patch the file', id: 'req-p', role: 'user' },
+    {
+      content: '',
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              edits: [
+                { newText: 'b1'.repeat(2000), oldText: 'a1'.repeat(2000) },
+                { newText: 'b2', oldText: 'a2' },
+              ],
+              fileName: 'm.bas',
+              sourceFileId: 'src-1',
+            }),
+            name: 'arckep-text-file____patchFile____builtin',
+          },
+          id: 'p1',
+        },
+      ],
+    },
+    { content: receipt1, role: 'tool', tool_call_id: 'p1' },
+    {
+      content: '',
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              documentId: 'doc-p',
+              edits: [
+                { newText: 'n1'.repeat(3000), oldText: 'o1'.repeat(3000) },
+                { newText: 'n2', oldText: 'o2' },
+                { newText: 'n3', oldText: 'o3' },
+              ],
+            }),
+            name: 'arckep-text-file____patchFile____builtin',
+          },
+          id: 'p2',
+        },
+      ],
+    },
+    { content: receipt2, role: 'tool', tool_call_id: 'p2' },
+  ];
+
+  const compacted = compactWriterContext(messages, 'req-p');
+  // p1 (superseded) dropped; p2 (latest) retained with edits folded into _appliedEditsCount
+  expect(compacted).toHaveLength(3);
+  const callArgs = JSON.parse(compacted[1].tool_calls[0].function.arguments);
+  expect(callArgs).toEqual({
+    _appliedEditsCount: 3,
+    documentId: 'doc-p',
+  });
+  expect('edits' in callArgs).toBe(false);
+  // Full tool content with diff summary is preserved for the LLM on the retained latest patch
+  expect(compacted[2].content).toBe(receipt2);
+});
+
+it('retains line-based cursor fields (startLine, endLine, nextStartLine, totalLines) in compacted oldPages', () => {
+  const page = (startLine: number, endLine: number, nextStartLine: number | null) =>
+    JSON.stringify({
+      endLine,
+      fileId: 'f-lines',
+      nextStartLine,
+      startLine,
+      totalLines: 800,
+    }) +
+    '\n' +
+    'L1: '.repeat(1500);
+
+  const messages = [
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-lines'], startLine: 1 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk1',
+        },
+      ],
+    },
+    { content: page(1, 250, 251), role: 'tool', tool_call_id: 'rk1' },
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-lines'], startLine: 251 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk2',
+        },
+      ],
+    },
+    { content: page(251, 500, 501), role: 'tool', tool_call_id: 'rk2' },
+  ];
+
+  const compacted = compactWriterContext(messages);
+  expect(compacted[1].content).toContain('"startLine":1');
+  expect(compacted[1].content).toContain('"endLine":250');
+  expect(compacted[1].content).toContain('"nextStartLine":251');
+  expect(compacted[1].content).toContain('"totalLines":800');
+  expect(compacted[3].content).toBe(messages[3].content);
+});

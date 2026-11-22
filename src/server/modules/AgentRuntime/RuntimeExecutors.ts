@@ -24,6 +24,7 @@ import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
@@ -73,6 +74,7 @@ import {
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import { compactWriterContext } from '@/server/services/textFiles/context';
+import { stripTextFileReceiptForClient } from '@/server/services/textFiles/store';
 import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
@@ -653,6 +655,24 @@ const canWriteTextFile = (state: AgentState) =>
   state.metadata?.studioTextFileEnabled === true &&
   (state.operationToolSet?.enabledToolIds.includes(TEXT_FILE_TOOL) === true ||
     state.activatedStepTools?.some((tool) => tool.id === TEXT_FILE_TOOL) === true);
+
+const expandCoActivatedTools = (
+  discovered: ReadonlyArray<{ identifier: string }>,
+  manifestMap: Record<string, LobeToolManifest>,
+  alreadyEnabledIds?: ReadonlyArray<string>,
+): Array<{ identifier: string }> => {
+  const expanded = [...discovered];
+  const hasTextFile = expanded.some((t) => t.identifier === TEXT_FILE_TOOL);
+  const alreadyHasTopicRef =
+    expanded.some((t) => t.identifier === TopicReferenceIdentifier) ||
+    alreadyEnabledIds?.includes(TopicReferenceIdentifier) === true;
+
+  if (hasTextFile && !alreadyHasTopicRef && manifestMap[TopicReferenceIdentifier]) {
+    expanded.push({ identifier: TopicReferenceIdentifier });
+  }
+
+  return expanded;
+};
 
 const formatErrorEventData = (error: unknown, phase: string) => {
   let errorMessage = 'Unknown error';
@@ -3147,6 +3167,8 @@ export const createRuntimeExecutors = (
         executionResult,
       );
 
+      const clientSafeContent = stripTextFileReceiptForClient(executionResult.content);
+
       // Publish tool execution result event
       await streamManager.publishStreamEvent(operationId, {
         data: {
@@ -3156,7 +3178,10 @@ export const createRuntimeExecutors = (
           maxAttempts: TOOL_MAX_RETRIES + 1,
           payload: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
           phase: 'tool_execution',
-          result: executionResult,
+          result:
+            clientSafeContent === executionResult.content
+              ? executionResult
+              : { ...executionResult, content: clientSafeContent },
         },
         stepIndex,
         type: 'tool_end',
@@ -3167,7 +3192,7 @@ export const createRuntimeExecutors = (
       try {
         const toolMessage = await ctx.messageModel.create({
           agentId: state.metadata!.agentId!,
-          content: executionResult.content,
+          content: clientSafeContent,
           metadata: { toolExecutionTimeMs: executionTime },
           parentId: payload.parentMessageId,
           plugin: (chatToolPayload.identifier === 'arckep-text-file'
@@ -3247,10 +3272,15 @@ export const createRuntimeExecutors = (
       const discoveredTools = executionResult.state?.activatedTools as
         Array<{ identifier: string }> | undefined;
       if (discoveredTools?.length) {
+        const expandedDiscovered = expandCoActivatedTools(
+          discoveredTools,
+          effectiveManifestMap,
+          state.operationToolSet?.enabledToolIds,
+        );
         const existingIds = new Set(
           (newState.activatedStepTools ?? []).map((t: { id: string }) => t.id),
         );
-        const newActivations = discoveredTools
+        const newActivations = expandedDiscovered
           .filter((t) => !existingIds.has(t.identifier))
           .map((t) => ({
             activatedAtStep: state.stepCount,
@@ -3501,6 +3531,8 @@ export const createRuntimeExecutors = (
             `[${operationLogId}] Executed ${toolName} in ${executionTime}ms, success: ${isSuccess}`,
           );
 
+          const clientSafeContent = stripTextFileReceiptForClient(executionResult.content);
+
           // Publish tool execution result event
           await streamManager.publishStreamEvent(operationId, {
             data: {
@@ -3510,7 +3542,10 @@ export const createRuntimeExecutors = (
               maxAttempts: TOOL_MAX_RETRIES + 1,
               payload: { parentMessageId, toolCalling: diagnosticToolCall(chatToolPayload) },
               phase: 'tool_execution',
-              result: executionResult,
+              result:
+                clientSafeContent === executionResult.content
+                  ? executionResult
+                  : { ...executionResult, content: clientSafeContent },
             },
             stepIndex,
             type: 'tool_end',
@@ -3520,7 +3555,7 @@ export const createRuntimeExecutors = (
           try {
             const toolMessage = await ctx.messageModel.create({
               agentId: state.metadata!.agentId!,
-              content: executionResult.content,
+              content: clientSafeContent,
               metadata: { toolExecutionTimeMs: executionTime },
               parentId: parentMessageId,
               plugin: (chatToolPayload.identifier === 'arckep-text-file'
@@ -3636,7 +3671,12 @@ export const createRuntimeExecutors = (
       const discovered = result.data?.state?.activatedTools as
         Array<{ identifier: string }> | undefined;
       if (discovered?.length) {
-        const newActivations = discovered
+        const expandedDiscovered = expandCoActivatedTools(
+          discovered,
+          batchEffectiveManifestMap,
+          state.operationToolSet?.enabledToolIds,
+        );
+        const newActivations = expandedDiscovered
           .filter((t) => !existingActivationIds.has(t.identifier))
           .map((t) => ({
             activatedAtStep: state.stepCount,

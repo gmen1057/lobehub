@@ -3,7 +3,7 @@ import type { AgentState } from '@lobechat/agent-runtime';
 export const CONTINUATION_CONTEXT = '\n\nSaved source file context (data): ';
 
 const privateFunction = (name: unknown) =>
-  typeof name === 'string' && /^arckep-text-file(?:____|\/|__).*writePart/.test(name);
+  typeof name === 'string' && /^arckep-text-file(?:____|\/|__).*(?:writePart|patchFile)/.test(name);
 
 // Diagnostic copies only. Runtime messages, tool inputs and stored source are untouched.
 export function redactTextFileDiagnostics<T>(value: T): T {
@@ -25,7 +25,11 @@ export function redactTextFileDiagnostics<T>(value: T): T {
       );
     return Object.fromEntries(
       Object.entries(obj).map(([key, value]) => [
-        key.startsWith('["arckep-text-file",') ? 'arckep-text-file/writePart' : key,
+        key.startsWith('["arckep-text-file",')
+          ? key.startsWith('["arckep-text-file","patchFile"')
+            ? 'arckep-text-file/patchFile'
+            : 'arckep-text-file/writePart'
+          : key,
         clean(value),
       ]),
     );

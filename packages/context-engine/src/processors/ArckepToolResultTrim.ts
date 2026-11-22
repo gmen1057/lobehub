@@ -163,7 +163,8 @@ const isProtectedTextFileTool = (
   apiName: string,
   rawName?: string,
 ): boolean => {
-  if (identifier === 'arckep-text-file' || apiName === 'writePart') return true;
+  if (identifier === 'arckep-text-file' || apiName === 'writePart' || apiName === 'patchFile')
+    return true;
   if (typeof rawName === 'string' && rawName.startsWith('arckep-text-file____')) return true;
   return false;
 };
