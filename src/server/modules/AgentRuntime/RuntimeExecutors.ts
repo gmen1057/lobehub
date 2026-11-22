@@ -3,11 +3,15 @@ import {
   type AgentInstruction,
   type AgentInstructionCompressContext,
   type AgentState,
+  calculatePromptTokens,
   type CallLLMPayload,
+  estimateTokens,
+  findActiveTurnStartIndex,
   type GeneralAgentCallLLMResultPayload,
   type GeneralAgentCompressionResultPayload,
   hasRepeatedToolCall,
   type InstructionExecutor,
+  isEmptyAssistantPlaceholder,
   resolveAssistantParentId,
   TOOL_CALL_REPEAT_STOP_MESSAGE,
   updateToolCallRepeatGuard,
@@ -18,7 +22,6 @@ import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
-import { LOADING_FLAT } from '@lobechat/const';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -36,7 +39,13 @@ import {
 } from '@lobechat/context-engine';
 import { parse } from '@lobechat/conversation-flow';
 import { type ChatStreamPayload, consumeStreamUntilDone } from '@lobechat/model-runtime';
-import { chainCompressContext } from '@lobechat/prompts';
+import {
+  chainCompressContext,
+  chatHistoryPrompts,
+  compressContextSystemPrompt,
+  compressContextUserPrompt,
+  fileReferences,
+} from '@lobechat/prompts';
 import { type ChatToolPayload, type MessageToolCall, type UIChatMessage } from '@lobechat/types';
 import { serializePartsForStorage } from '@lobechat/utils';
 import debug from 'debug';
@@ -93,6 +102,306 @@ const normalizeDocumentPosition = (
   return VALID_DOCUMENT_POSITIONS.has(position as AgentContextDocument['loadPosition'])
     ? (position as AgentContextDocument['loadPosition'])
     : undefined;
+};
+
+const DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS = 20_000;
+const DEEPSEEK_CHUNK_ACK = 'Фрагмент истории принят.';
+const SUMMARIZER_TOOL_BODY_MAX_CHARS = 8_000;
+const SUMMARIZER_TOOL_HEAD_CHARS = 5_500;
+const SUMMARIZER_TOOL_TAIL_CHARS = 2_000;
+const VIRTUAL_GROUP_ROLES = new Set([
+  'agentCouncil',
+  'assistantGroup',
+  'compare',
+  'groupTasks',
+  'supervisor',
+  'tasks',
+]);
+
+const truncateForSummarizer = (text: string, label: string): string => {
+  if (text.length <= SUMMARIZER_TOOL_BODY_MAX_CHARS) return text;
+  const omittedChars = text.length - SUMMARIZER_TOOL_HEAD_CHARS - SUMMARIZER_TOOL_TAIL_CHARS;
+  return (
+    text.slice(0, SUMMARIZER_TOOL_HEAD_CHARS) +
+    `\n\n[... ${omittedChars} chars of ${label} omitted during summarization; full original is preserved in getTopicContext(mode="archive") ...]\n\n` +
+    text.slice(-SUMMARIZER_TOOL_TAIL_CHARS)
+  );
+};
+
+const prepareMessageForSummarizer = (message: UIChatMessage): UIChatMessage => {
+  let nextContent = message.content;
+  let contentChanged = false;
+  if (
+    message.role === 'tool' &&
+    typeof message.content === 'string' &&
+    message.content.length > SUMMARIZER_TOOL_BODY_MAX_CHARS
+  ) {
+    nextContent = truncateForSummarizer(message.content, 'tool result');
+    contentChanged = true;
+  }
+
+  let nextTools = message.tools;
+  let toolsChanged = false;
+  if (
+    Array.isArray(message.tools) &&
+    message.tools.some(
+      (tool) =>
+        typeof tool?.arguments === 'string' &&
+        tool.arguments.length > SUMMARIZER_TOOL_BODY_MAX_CHARS,
+    )
+  ) {
+    nextTools = message.tools.map((tool) =>
+      typeof tool?.arguments === 'string' && tool.arguments.length > SUMMARIZER_TOOL_BODY_MAX_CHARS
+        ? { ...tool, arguments: truncateForSummarizer(tool.arguments, 'tool arguments') }
+        : tool,
+    );
+    toolsChanged = true;
+  }
+
+  if (!contentChanged && !toolsChanged) return message;
+  return {
+    ...message,
+    ...(contentChanged ? { content: nextContent } : {}),
+    ...(toolsChanged ? { tools: nextTools } : {}),
+  };
+};
+
+/**
+ * Conservative per-user-turn token estimator for DeepSeek's 32,768 single-user-turn limit.
+ * `tokenx` has no Cyrillic language rule (~4.0-4.6 chars/token on Russian prose vs real DeepSeek
+ * BPE ~2.0-2.5 chars/token). Taking the max with `ceil(utf8Bytes / 3)` caps Russian (2 UTF-8
+ * bytes/char) at <= ~30K chars (<= 60K bytes, ~12K-15K real tokens) within a 20K budget.
+ */
+export const estimateDeepSeekUserTurnTokens = (text: string): number => {
+  if (!text) return 0;
+  return Math.max(estimateTokens(text), Math.ceil(Buffer.byteLength(text, 'utf8') / 3));
+};
+
+const extractTextForDeepSeekTurn = (content: unknown): string => {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((part: unknown) => {
+        if (!part || typeof part !== 'object') return '';
+        if ('text' in part && typeof (part as { text?: unknown }).text === 'string') {
+          return (part as { text: string }).text;
+        }
+        if ('thinking' in part && typeof (part as { thinking?: unknown }).thinking === 'string') {
+          return (part as { thinking: string }).thinking;
+        }
+        return '';
+      })
+      .join('\n');
+  }
+  return content ? JSON.stringify(content) : '';
+};
+
+const estimateDeepSeekPromptUserTurnTokens = (message: {
+  content?: unknown;
+  role?: string;
+}): number => {
+  const text = extractTextForDeepSeekTurn(message.content);
+  return Math.max(
+    calculatePromptTokens([message as any]),
+    estimateDeepSeekUserTurnTokens(text) + 4,
+  );
+};
+
+const hasOversizedDeepSeekUserTurn = (
+  promptMessages: ChatStreamPayload['messages'],
+  budgetTokens: number,
+): boolean => {
+  let consecutiveUserCount = 0;
+  let consecutiveUserRunTokens = 0;
+
+  for (const msg of promptMessages) {
+    if (msg.role === 'user') {
+      consecutiveUserCount += 1;
+      consecutiveUserRunTokens += estimateDeepSeekPromptUserTurnTokens(msg);
+      if (consecutiveUserCount > 1 || consecutiveUserRunTokens > budgetTokens) {
+        return true;
+      }
+    } else {
+      consecutiveUserCount = 0;
+      consecutiveUserRunTokens = 0;
+    }
+  }
+
+  return false;
+};
+
+const isSurrogatePairAt = (text: string, index: number): boolean => {
+  if (index < 0 || index + 1 >= text.length) return false;
+  const high = text.charCodeAt(index);
+  const low = text.charCodeAt(index + 1);
+  return high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+};
+
+const adjustSliceEndForSurrogatePair = (text: string, start: number, end: number): number => {
+  if (end <= start + 1 || end >= text.length) return end;
+  const lastCodeUnit = text.charCodeAt(end - 1);
+  if (lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff) {
+    return end - 1;
+  }
+  return end;
+};
+
+export const splitTextToTokenBudget = (text: string, maxTokens: number): string[] => {
+  if (!text) return [];
+  const budget = Math.max(1, Math.floor(maxTokens));
+  if (estimateDeepSeekUserTurnTokens(text) <= budget) return [text];
+
+  const slices: string[] = [];
+  let offset = 0;
+  while (offset < text.length) {
+    const remainingText = text.slice(offset);
+    if (estimateDeepSeekUserTurnTokens(remainingText) <= budget) {
+      slices.push(remainingText);
+      break;
+    }
+
+    const minEnd = isSurrogatePairAt(text, offset) ? offset + 2 : offset + 1;
+    // Every UTF-16 code unit encodes to at least 1 UTF-8 byte, so `budget * 3` code units
+    // is a strict upper bound for `ceil(utf8Bytes / 3) <= budget`.
+    let low = minEnd;
+    let high = Math.min(text.length, Math.max(minEnd, offset + budget * 3));
+    let best = minEnd;
+
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      if (estimateDeepSeekUserTurnTokens(text.slice(offset, mid)) <= budget) {
+        best = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    let end = adjustSliceEndForSurrogatePair(text, offset, best);
+    if (end < minEnd) end = minEnd;
+    while (end > minEnd && estimateDeepSeekUserTurnTokens(text.slice(offset, end)) > budget) {
+      end = Math.max(minEnd, adjustSliceEndForSurrogatePair(text, offset, end - 1));
+    }
+
+    slices.push(text.slice(offset, end));
+    offset = end;
+  }
+  return slices;
+};
+
+/**
+ * DeepSeek accepts up to 1M total context in one call, but rejects any single or consecutive
+ * `role: 'user'` turn above 32,768 tokens. When the formatted compression prompt exceeds our
+ * safe per-user-turn budget (~20K tokens), split `<existing_summary>` and `<chat_history>`
+ * into alternating `user` chunks separated by a short `assistant` acknowledgment, ending with
+ * a short final `user` instruction so the entire compression still runs in ONE LLM call.
+ */
+const buildDeepSeekAlternatingCompressionMessages = (params: {
+  existingSummary?: string;
+  messages: UIChatMessage[];
+  priorCompressedGroups: UIChatMessage[];
+}): ChatStreamPayload['messages'] => {
+  const { existingSummary, messages, priorCompressedGroups } = params;
+  const result: ChatStreamPayload['messages'] = [
+    { content: compressContextSystemPrompt, role: 'system' },
+  ];
+
+  const pushAlternatingUserSegment = (content: string) => {
+    result.push({ content, role: 'user' }, { content: DEEPSEEK_CHUNK_ACK, role: 'assistant' });
+  };
+
+  const trimmedSummary = existingSummary?.trim();
+  if (trimmedSummary) {
+    const summarySlices = splitTextToTokenBudget(
+      trimmedSummary,
+      DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS - 256,
+    );
+    for (let i = 0; i < summarySlices.length; i++) {
+      const tag =
+        summarySlices.length === 1
+          ? '<existing_summary>'
+          : `<existing_summary part="${i + 1}/${summarySlices.length}">`;
+      pushAlternatingUserSegment(`${tag}\n${summarySlices[i]}\n</existing_summary>`);
+    }
+  }
+
+  const maxSingleMessageTokens = DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS - 512;
+  const expandedMessages: UIChatMessage[] = [];
+  for (const msg of messages) {
+    const rawBody =
+      `${typeof msg.content === 'string' ? msg.content : ''}` +
+      (msg.tools?.length ? `\nTool calls: ${JSON.stringify(msg.tools)}` : '');
+    const headerPrefix = `[source_message_id: ${msg.id}]\n`;
+    if (estimateDeepSeekUserTurnTokens(headerPrefix + rawBody) <= maxSingleMessageTokens) {
+      expandedMessages.push({ ...msg, content: headerPrefix + rawBody, tools: undefined });
+    } else {
+      const parts = splitTextToTokenBudget(rawBody, maxSingleMessageTokens - 64);
+      for (let partIdx = 0; partIdx < parts.length; partIdx++) {
+        expandedMessages.push({
+          ...msg,
+          content: `[source_message_id: ${msg.id} part ${partIdx + 1}/${parts.length}]\n${parts[partIdx]}`,
+          tools: undefined,
+        });
+      }
+    }
+  }
+
+  let chunk: UIChatMessage[] = [];
+  let chunkApproxTokens = 0;
+  const flushChunk = () => {
+    if (chunk.length === 0) return;
+    pushAlternatingUserSegment(chatHistoryPrompts(chunk));
+    chunk = [];
+    chunkApproxTokens = 0;
+  };
+
+  for (const msg of expandedMessages) {
+    const msgTokens = estimateDeepSeekUserTurnTokens(msg.content) + 32;
+    if (
+      chunk.length > 0 &&
+      chunkApproxTokens + msgTokens > DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS - 256
+    ) {
+      flushChunk();
+    }
+    chunk.push(msg);
+    chunkApproxTokens += msgTokens;
+    if (
+      chunk.length > 1 &&
+      estimateDeepSeekPromptUserTurnTokens({ content: chatHistoryPrompts(chunk), role: 'user' }) >
+        DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS
+    ) {
+      const overflow = chunk.pop()!;
+      flushChunk();
+      chunk.push(overflow);
+      chunkApproxTokens = msgTokens;
+    }
+  }
+  flushChunk();
+
+  const fileReferenceSources =
+    priorCompressedGroups.length > 0 ? [...priorCompressedGroups, ...messages] : messages;
+  const fileRefsText = fileReferences(fileReferenceSources).trim();
+  const finalInstructionContent = fileRefsText
+    ? `${fileRefsText}\n\n${compressContextUserPrompt}`
+    : compressContextUserPrompt;
+
+  if (
+    estimateDeepSeekPromptUserTurnTokens({ content: finalInstructionContent, role: 'user' }) <=
+    DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS
+  ) {
+    result.push({ content: finalInstructionContent, role: 'user' });
+  } else {
+    const refSlices = splitTextToTokenBudget(
+      fileRefsText,
+      DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS - 256,
+    );
+    for (const slice of refSlices) {
+      pushAlternatingUserSegment(slice);
+    }
+    result.push({ content: compressContextUserPrompt, role: 'user' });
+  }
+
+  return result;
 };
 
 // Tool pricing configuration (USD per call)
@@ -1700,6 +2009,7 @@ export const createRuntimeExecutors = (
               llmPayload.messages,
               wireSourceIds,
               classified.rejectedInput,
+              [classified.message, error],
             );
             if (messages) {
               recoveredInput = true;
@@ -1788,6 +2098,7 @@ export const createRuntimeExecutors = (
     const { payload } = instruction as AgentInstructionCompressContext;
     const {
       assistantMessageId: incomingAssistantMessageId,
+      existingSummary: payloadExistingSummary,
       messages,
       currentTokenCount,
       parentMessageId: incomingParentMessageId,
@@ -1798,46 +2109,7 @@ export const createRuntimeExecutors = (
     const events: AgentEvent[] = [];
     const newState = structuredClone(state);
     const topicId = state.metadata?.topicId;
-    const lastMessage = messages.at(-1);
-    const preservedMessages =
-      messages.length > 1 && lastMessage?.role === 'user' ? [lastMessage] : [];
-    const preservedMessageIds = new Set(
-      preservedMessages.map((message) => message.id).filter((id): id is string => Boolean(id)),
-    );
-    if (incomingAssistantMessageId) {
-      preservedMessageIds.add(incomingAssistantMessageId);
-    }
-    const isEmptyAssistantPlaceholder = (message: {
-      content?: unknown;
-      imageList?: unknown;
-      reasoning?: unknown;
-      role?: string;
-      tool_calls?: unknown;
-      tools?: unknown;
-    }): boolean => {
-      if (message?.role !== 'assistant') return false;
-      if (
-        message.content !== undefined &&
-        message.content !== null &&
-        typeof message.content !== 'string'
-      ) {
-        return false;
-      }
-      const text = typeof message.content === 'string' ? message.content.trim() : '';
-      if (text !== '' && text !== LOADING_FLAT) return false;
-      const hasTools =
-        (Array.isArray(message.tools) && message.tools.length > 0) ||
-        (Array.isArray(message.tool_calls) && message.tool_calls.length > 0);
-      const hasReasoning = Boolean(
-        typeof message.reasoning === 'string'
-          ? message.reasoning.trim()
-          : (message.reasoning as { content?: string } | null | undefined)?.content?.trim?.(),
-      );
-      const hasImages = Array.isArray(message.imageList) && message.imageList.length > 0;
-      return !hasTools && !hasReasoning && !hasImages;
-    };
-    const messagesToCompress = preservedMessages.length > 0 ? messages.slice(0, -1) : messages;
-    const compressedMessagesFallback = [...messagesToCompress, ...preservedMessages];
+    const compressedMessagesFallback = [...messages];
     const assistantPlaceholderPatch = incomingAssistantMessageId
       ? { assistantMessageId: incomingAssistantMessageId }
       : {};
@@ -1882,11 +2154,27 @@ export const createRuntimeExecutors = (
         topicId,
       });
 
-      // Keep the exact source snapshot while the model is running. Messages added
-      // concurrently must not be hidden by a summary that never saw them.
-      // Exclude both the active turn's LOADING_FLAT placeholder (preservedMessageIds)
-      // and any historical empty/loading assistant stubs without tools or reasoning.
-      const messagesToSummarize = dbMessages.filter(
+      // Preserve the entire active turn in DB (from the last persisted user message through
+      // all in-flight assistant/tool/task rows of the active turn) plus incomingAssistantMessageId.
+      // Only history strictly before the active user turn is eligible for rolling compression.
+      const lastDbUserIndex = dbMessages.findLastIndex((message) => message.role === 'user');
+      const historyDbRows =
+        lastDbUserIndex >= 0 ? dbMessages.slice(0, lastDbUserIndex) : dbMessages;
+      const activeTurnDbRows = lastDbUserIndex >= 0 ? dbMessages.slice(lastDbUserIndex) : [];
+
+      const preservedMessageIds = new Set<string>(
+        activeTurnDbRows.map((message) => message.id).filter((id): id is string => Boolean(id)),
+      );
+      if (incomingAssistantMessageId) {
+        preservedMessageIds.add(incomingAssistantMessageId);
+      }
+
+      const priorCompressedGroups = historyDbRows.filter(
+        (message) => message.role === 'compressedGroup',
+      );
+      // Exclude the active turn, incomingAssistantMessageId, and any historical empty/loading
+      // assistant stubs without tools or reasoning.
+      const messagesToSummarize = historyDbRows.filter(
         (message) =>
           message.role !== 'compressedGroup' &&
           Boolean(message.id) &&
@@ -1895,7 +2183,15 @@ export const createRuntimeExecutors = (
       );
       const messageIds = messagesToSummarize.map((message) => message.id);
 
-      if (messageIds.length === 0 || messagesToCompress.length === 0) {
+      const dbExistingSummary = priorCompressedGroups
+        .map((group) => (typeof group.content === 'string' ? group.content.trim() : ''))
+        .filter(Boolean)
+        .join('\n\n');
+      const existingSummary = dbExistingSummary || payloadExistingSummary?.trim() || undefined;
+
+      // Allow running when there are new prior-turn messages to roll in OR >= 2 legacy stacked
+      // compressedGroups to consolidate into a single rolling summary.
+      if (messageIds.length === 0 && priorCompressedGroups.length <= 1) {
         return {
           events,
           newState,
@@ -1950,7 +2246,32 @@ export const createRuntimeExecutors = (
         };
       }
 
-      const compressionPayload = chainCompressContext(messagesToSummarize);
+      const preparedMessages = messagesToSummarize.map(prepareMessageForSummarizer);
+      const compressOptions =
+        existingSummary || priorCompressedGroups.length > 0
+          ? {
+              ...(existingSummary ? { existingSummary } : {}),
+              ...(priorCompressedGroups.length > 0 ? { priorMessages: priorCompressedGroups } : {}),
+            }
+          : undefined;
+      const compressionPayload = compressOptions
+        ? chainCompressContext(preparedMessages, compressOptions)
+        : chainCompressContext(preparedMessages);
+      const rawPromptMessages = compressionPayload.messages ?? [];
+      const needsDeepSeekTurnChunking =
+        compressionModel.provider === 'deepseek' &&
+        hasOversizedDeepSeekUserTurn(
+          rawPromptMessages,
+          DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS,
+        );
+      const compressionMessages = needsDeepSeekTurnChunking
+        ? buildDeepSeekAlternatingCompressionMessages({
+            existingSummary,
+            messages: preparedMessages,
+            priorCompressedGroups,
+          })
+        : rawPromptMessages;
+
       // Do NOT forward assistantMessageId here: billing_proxy's _persist_assistant_message_content
       // writes any x-assistant-message-id stream directly into LobeChat's messages row when
       // content is '...' (LOADING_FLAT) or reasoning is NULL, which would leak the internal
@@ -1974,7 +2295,7 @@ export const createRuntimeExecutors = (
       const compressionResponse = await compressionRuntime.chat(
         {
           enabledContextCaching: false,
-          messages: compressionPayload.messages!,
+          messages: compressionMessages,
           model: compressionModel.model,
           stream: true,
           ...(compressionEffort ? { effort: compressionEffort } : {}),
@@ -2012,9 +2333,9 @@ export const createRuntimeExecutors = (
 
       if (!summaryContent.trim()) throw new Error('Compression returned an empty summary');
 
-      // Publish a complete summary and hide its source messages atomically, only
+      // Publish a single rolling summary and hide its source messages atomically, only
       // after the stream has finished successfully.
-      const compressionResult = await messageService.createCompressionGroup(
+      const compressionResult = await messageService.upsertRollingCompressionGroup(
         topicId,
         messageIds,
         {
@@ -2025,33 +2346,237 @@ export const createRuntimeExecutors = (
         summaryContent,
       );
 
+      newState.metadata = {
+        ...newState.metadata,
+        compressionConsecutiveFailures: 0,
+      };
+
       const preservedTargetAssistant = incomingAssistantMessageId
         ? dbMessages.find(
             (message) =>
               message.id === incomingAssistantMessageId && !isEmptyAssistantPlaceholder(message),
           )
         : undefined;
-      const rawCompressedBase =
-        compressionResult.messages ||
-        (preservedTargetAssistant
-          ? [...messagesToSummarize, preservedTargetAssistant]
-          : messagesToSummarize);
+      const fallbackActiveRows =
+        preservedTargetAssistant &&
+        !activeTurnDbRows.some((message) => message.id === preservedTargetAssistant.id)
+          ? [...activeTurnDbRows, preservedTargetAssistant]
+          : activeTurnDbRows;
+      const rawCompressedBase = compressionResult.messages || [
+        ...messagesToSummarize,
+        ...fallbackActiveRows,
+      ];
       const compressedMessagesBase = rawCompressedBase.filter(
         (message) => !isEmptyAssistantPlaceholder(message),
       );
       const compressedMessages = [...compressedMessagesBase];
 
-      for (const preservedMessage of preservedMessages) {
-        if (
-          !compressedMessages.some(
-            (message) =>
-              message === preservedMessage ||
-              (Boolean(message.id) &&
-                Boolean(preservedMessage.id) &&
-                message.id === preservedMessage.id),
-          )
-        ) {
-          compressedMessages.push(preservedMessage);
+      // Preserve any trailing in-memory-only messages belonging to the active turn
+      // (htmlArtifactSyntaxError repair prompt, tasks_batch_result continuation prompt,
+      // synthetic unresolved-tool feedback) without duplicating DB-backed rows or virtual groups.
+      const lastDbUserId = lastDbUserIndex >= 0 ? dbMessages[lastDbUserIndex]?.id : undefined;
+      const activeTurnStateIndex = (() => {
+        if (lastDbUserId) {
+          const matchedIndex = messages.findLastIndex((message) => message?.id === lastDbUserId);
+          if (matchedIndex >= 0) return matchedIndex;
+        }
+        return findActiveTurnStartIndex(messages);
+      })();
+
+      const compressedMessageIdSet = new Set(messageIds);
+
+      if (activeTurnStateIndex >= 0) {
+        for (const candidate of messages.slice(activeTurnStateIndex)) {
+          if (!candidate || isEmptyAssistantPlaceholder(candidate)) continue;
+
+          if (VIRTUAL_GROUP_ROLES.has(candidate.role)) {
+            // Persisted DB children of virtual groups are already in compressedMessagesBase.
+            // Only carry over synthetic unresolved-tool entries injected purely in memory.
+            if (Array.isArray(candidate.children)) {
+              for (const child of candidate.children) {
+                if (!Array.isArray(child?.tools)) continue;
+                let restoredChildAssistantIndex = -1;
+                for (const tool of child.tools) {
+                  const isSynthetic =
+                    typeof tool?.id === 'string' &&
+                    tool.id.length > 0 &&
+                    typeof tool?.result?.id === 'string' &&
+                    tool.result.id.startsWith('synthetic-');
+                  if (!isSynthetic) continue;
+                  const alreadyHasToolResult = compressedMessages.some(
+                    (existing) => existing?.role === 'tool' && existing.tool_call_id === tool.id,
+                  );
+                  if (alreadyHasToolResult) continue;
+
+                  const { result: _ignoredResult, ...toolCallOnly } = tool;
+                  let targetAssistantIndex = child.id
+                    ? compressedMessages.findIndex(
+                        (existing) => existing?.role === 'assistant' && existing.id === child.id,
+                      )
+                    : restoredChildAssistantIndex;
+
+                  if (targetAssistantIndex >= 0) {
+                    const targetAssistant = compressedMessages[targetAssistantIndex];
+                    const existingTools = Array.isArray((targetAssistant as any).tools)
+                      ? (targetAssistant as any).tools
+                      : [];
+                    const hasToolCall = existingTools.some(
+                      (existingTool: any) => existingTool?.id === tool.id,
+                    );
+                    if (!hasToolCall) {
+                      compressedMessages[targetAssistantIndex] = {
+                        ...targetAssistant,
+                        tools: [...existingTools, toolCallOnly],
+                      };
+                    }
+                  } else {
+                    // Persisted assistant was filtered as an empty placeholder (e.g.
+                    // shouldReuseAssistantForFollowUp) or never persisted: restore a minimal
+                    // assistant entry carrying the synthetic tool call so tool-call / tool-result
+                    // pairing stays valid.
+                    const restoredAssistant: any = {
+                      content: typeof child.content === 'string' ? child.content : '',
+                      role: 'assistant',
+                      tools: [toolCallOnly],
+                      ...(child.id ? { id: child.id } : {}),
+                    };
+                    compressedMessages.push(restoredAssistant);
+                    targetAssistantIndex = compressedMessages.length - 1;
+                    restoredChildAssistantIndex = targetAssistantIndex;
+                  }
+
+                  let insertIndex = targetAssistantIndex + 1;
+                  while (
+                    insertIndex < compressedMessages.length &&
+                    compressedMessages[insertIndex]?.role === 'tool'
+                  ) {
+                    insertIndex += 1;
+                  }
+                  compressedMessages.splice(insertIndex, 0, {
+                    content: tool.result.content,
+                    role: 'tool',
+                    tool_call_id: tool.id,
+                  } as any);
+                }
+              }
+            }
+            continue;
+          }
+
+          if (candidate.id) {
+            if (
+              !compressedMessageIdSet.has(candidate.id) &&
+              !compressedMessages.some((existing) => existing?.id === candidate.id)
+            ) {
+              compressedMessages.push(candidate);
+            }
+            continue;
+          }
+
+          // In-memory message with no id (e.g. HTML repair prompt, tasks_batch_result prompt,
+          // flat call_tool push, or purely-synthetic unresolved-tool feedback).
+          if (candidate.role === 'assistant') {
+            const candidateToolCalls = Array.isArray((candidate as any).tool_calls)
+              ? (candidate as any).tool_calls
+              : [];
+            const candidateTools = Array.isArray((candidate as any).tools)
+              ? (candidate as any).tools
+              : [];
+            const candidateCallIds = new Set<string>([
+              ...candidateToolCalls.map((tc: any) => tc?.id).filter(Boolean),
+              ...candidateTools.map((t: any) => t?.id).filter(Boolean),
+            ]);
+
+            const matchIndex = compressedMessages.findLastIndex((existing: any) => {
+              if (existing?.role !== 'assistant') return false;
+              const existingCallIds = [
+                ...(Array.isArray(existing.tool_calls) ? existing.tool_calls : []),
+                ...(Array.isArray(existing.tools) ? existing.tools : []),
+              ]
+                .map((t: any) => t?.id)
+                .filter(Boolean);
+              if (
+                candidateCallIds.size > 0 &&
+                existingCallIds.some((id: string) => candidateCallIds.has(id))
+              ) {
+                return true;
+              }
+              return (
+                typeof candidate.content === 'string' && existing.content === candidate.content
+              );
+            });
+
+            if (matchIndex >= 0) {
+              const matched: any = compressedMessages[matchIndex];
+              let nextMatched = matched;
+
+              if (candidateToolCalls.length > 0) {
+                const existingTc = Array.isArray(matched.tool_calls) ? matched.tool_calls : [];
+                const seenTc = new Set(existingTc.map((tc: any) => tc?.id).filter(Boolean));
+                const missingTc = candidateToolCalls.filter(
+                  (tc: any) => tc?.id && !seenTc.has(tc.id),
+                );
+                if (missingTc.length > 0) {
+                  nextMatched = { ...nextMatched, tool_calls: [...existingTc, ...missingTc] };
+                }
+              }
+              if (candidateTools.length > 0) {
+                const existingT = Array.isArray(matched.tools) ? matched.tools : [];
+                const seenT = new Set(existingT.map((t: any) => t?.id).filter(Boolean));
+                const missingT = candidateTools.filter((t: any) => t?.id && !seenT.has(t.id));
+                if (missingT.length > 0) {
+                  nextMatched = { ...nextMatched, tools: [...existingT, ...missingT] };
+                }
+              }
+
+              if (nextMatched !== matched) {
+                compressedMessages[matchIndex] = nextMatched;
+              }
+              continue;
+            }
+
+            if (!compressedMessages.includes(candidate)) {
+              compressedMessages.push(candidate);
+            }
+            continue;
+          }
+
+          if (candidate.role === 'tool') {
+            const toolCallId = (candidate as any).tool_call_id;
+            if (
+              !toolCallId ||
+              compressedMessages.some(
+                (existing: any) =>
+                  existing?.role === 'tool' && existing?.tool_call_id === toolCallId,
+              )
+            ) {
+              continue;
+            }
+
+            const ownerIndex = compressedMessages.findLastIndex(
+              (existing: any) =>
+                existing?.role === 'assistant' &&
+                ((Array.isArray(existing.tool_calls) &&
+                  existing.tool_calls.some((tc: any) => tc?.id === toolCallId)) ||
+                  (Array.isArray(existing.tools) &&
+                    existing.tools.some((t: any) => t?.id === toolCallId))),
+            );
+            if (ownerIndex >= 0) {
+              let insertIndex = ownerIndex + 1;
+              while (
+                insertIndex < compressedMessages.length &&
+                compressedMessages[insertIndex]?.role === 'tool'
+              ) {
+                insertIndex += 1;
+              }
+              compressedMessages.splice(insertIndex, 0, candidate);
+            }
+            continue;
+          }
+
+          if (!compressedMessages.includes(candidate)) {
+            compressedMessages.push(candidate);
+          }
         }
       }
 
@@ -2087,6 +2612,11 @@ export const createRuntimeExecutors = (
         newState.status = 'interrupted';
         return { events, newState };
       }
+      newState.metadata = {
+        ...newState.metadata,
+        compressionConsecutiveFailures:
+          (newState.metadata?.compressionConsecutiveFailures ?? 0) + 1,
+      };
       log(
         `${stagePrefix} Compression failed. originalTokens=%d error=%O`,
         currentTokenCount,

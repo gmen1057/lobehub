@@ -237,4 +237,107 @@ describe('reduce the rejected wire prompt', () => {
       role: 'user',
     });
   });
+
+  it('calibrates DeepSeek per-user-turn refusals against the longest consecutive user run instead of total prompt + tools', () => {
+    const hugeTools = Array.from({ length: 40 }, (_, idx) => ({
+      function: {
+        description: `Tool documentation block ${idx} `.repeat(60),
+        name: `workspace_tool_${idx}`,
+        parameters: { properties: {}, type: 'object' },
+      },
+      type: 'function' as const,
+    }));
+    const priorUser = { content: 'Earlier turn prompt '.repeat(400), role: 'user' as const };
+    const priorAssistant = {
+      content: 'Earlier analysis '.repeat(1200),
+      role: 'assistant' as const,
+      tool_calls: [calls[0]],
+    };
+    const priorTool = {
+      content: 'Large prior tool result '.repeat(1500),
+      role: 'tool' as const,
+      tool_call_id: calls[0].id,
+    };
+    const injectedContext = {
+      content: 'Project knowledge context '.repeat(300),
+      role: 'user' as const,
+    };
+    const rollingArchive = {
+      content:
+        '<compressed_history_summary>' +
+        'Consolidated rolling history details. '.repeat(600) +
+        '</compressed_history_summary><original_history>topic-1</original_history>',
+      role: 'user' as const,
+    };
+    const activeUser = {
+      content: 'Detailed current user request with excerpt '.repeat(3200),
+      role: 'user' as const,
+    };
+
+    const messages: ChatStreamPayload['messages'] = [
+      system,
+      priorUser,
+      priorAssistant,
+      priorTool,
+      injectedContext,
+      rollingArchive,
+      activeUser,
+    ];
+    const source = [
+      { id: 'u0', role: 'user' },
+      { id: 'a0', role: 'assistant' },
+      { id: 't0', role: 'tool' },
+      { id: 'grp-rolling', role: 'compressedGroup' },
+      { id: 'u1', role: 'user' },
+    ];
+    const wireSourceIds = [undefined, 'u0', 'a0', 't0', undefined, 'grp-rolling', 'u1'];
+
+    // Consecutive user run = [injectedContext, rollingArchive, activeUser] (~35K tokens),
+    // while total prompt + tools is far larger (~70K+ tokens). Omitting the rolling summary
+    // alone reduces the consecutive user run below 32,768 tokens.
+    const userRunTokens = calculatePromptTokens([injectedContext, rollingArchive, activeUser]);
+    const simulatedProviderUserTokens = Math.max(35_000, userRunTokens);
+    const reduced = fitRejectedPrompt(
+      { messages, tools: hugeTools },
+      source,
+      wireSourceIds,
+      { inputTokens: simulatedProviderUserTokens, maxTokens: 32_768 },
+      `user input too long, ${simulatedProviderUserTokens} tokens exceeds max 32768 tokens`,
+    );
+
+    expect(reduced).toBeDefined();
+    // Earlier turns and active user prompt stay completely intact; ONLY the summary was omitted
+    expect(reduced).toHaveLength(messages.length);
+    expect(reduced![1]).toEqual(priorUser);
+    expect(reduced![2]).toEqual(priorAssistant);
+    expect(reduced![3]).toEqual(priorTool);
+    expect(reduced![5]).toEqual({
+      content: '[Earlier summary omitted.]<original_history>topic-1</original_history>',
+      role: 'user',
+    });
+    expect(reduced![6]).toEqual(activeUser);
+  });
+
+  it('trims an oversized single user turn on DeepSeek per-user-turn refusal when no archive summary exists', () => {
+    const hugeUser = {
+      content: 'Very long pasted document line with figures and clauses. '.repeat(2600),
+      role: 'user' as const,
+    };
+    const messages: ChatStreamPayload['messages'] = [system, hugeUser];
+    const userTokens = calculatePromptTokens([hugeUser]);
+    const maxTokens = Math.floor(userTokens * 0.7);
+    const reduced = fitRejectedPrompt(
+      { messages, tools: [tool] },
+      [{ id: 'u1', role: 'user' }],
+      [undefined, 'u1'],
+      { inputTokens: userTokens, maxTokens },
+      `user input too long, ${userTokens} tokens exceeds max ${maxTokens} tokens`,
+    );
+
+    expect(reduced).toBeDefined();
+    expect(reduced).toHaveLength(2);
+    expect(reduced![0]).toEqual(system);
+    expect(String(reduced![1].content)).toContain('User input shortened');
+    expect(calculatePromptTokens([reduced![1]])).toBeLessThanOrEqual(maxTokens);
+  });
 });

@@ -2,6 +2,7 @@ import { type ChatToolPayload, type GlobalInterventionAuditConfig } from '@lobec
 import { describe, expect, it } from 'vitest';
 
 import { type AgentRuntimeContext, type AgentState } from '../../types';
+import { findActiveTurnStartIndex, hasCompressibleHistory } from '../../utils/activeTurn';
 import { GeneralChatAgent } from '../GeneralChatAgent';
 
 describe('GeneralChatAgent', () => {
@@ -636,14 +637,16 @@ describe('GeneralChatAgent', () => {
       });
     });
 
-    it('should return compress_context before continuing to LLM when tool results exceed window', async () => {
+    it('should return compress_context before continuing to LLM when tool results exceed window and prior history exists', async () => {
       const agent = createCompressionAgent();
 
       const state = createMockState({
         messages: [
-          { role: 'user', content: 'Hello' },
-          { role: 'assistant', content: '' },
-          { role: 'tool', content: 'Result', tool_call_id: 'call-1' },
+          { content: 'Earlier turn', id: 'u0', role: 'user' },
+          { content: 'Earlier reply', id: 'a0', role: 'assistant' },
+          { content: 'Hello', id: 'u1', role: 'user' },
+          { content: '', id: 'a1', role: 'assistant' },
+          { content: 'Result', id: 'tool-msg-1', role: 'tool', tool_call_id: 'call-1' },
         ] as any,
       });
 
@@ -654,6 +657,30 @@ describe('GeneralChatAgent', () => {
       const result = await agent.runner(context, state);
 
       expect(result).toEqual(expectCompressionInstruction(state.messages, 'tool-msg-1'));
+    });
+
+    it('should NOT trigger compress_context mid-turn on Turn 1 when no prior history exists before the active user message', async () => {
+      const agent = createCompressionAgent();
+
+      const state = createMockState({
+        messages: [
+          { content: 'Turn 1 prompt', id: 'u1', role: 'user' },
+          { content: '', id: 'a1', role: 'assistant' },
+          {
+            content: 'Huge tool result '.repeat(500),
+            id: 'tool-msg-1',
+            role: 'tool',
+            tool_call_id: 'call-1',
+          },
+        ] as any,
+      });
+
+      const result = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 'tool-msg-1' }),
+        state,
+      );
+
+      expect((result as any).type).toBe('call_llm');
     });
 
     it('should return request_human_approve when there are pending tools', async () => {
@@ -781,15 +808,17 @@ describe('GeneralChatAgent', () => {
       });
     });
 
-    it('should return compress_context before continuing to LLM when batch tool results exceed window', async () => {
+    it('should return compress_context before continuing to LLM when batch tool results exceed window and prior history exists', async () => {
       const agent = createCompressionAgent();
 
       const state = createMockState({
         messages: [
-          { role: 'user', content: 'Hello' },
-          { role: 'assistant', content: '' },
-          { role: 'tool', content: 'Result 1', tool_call_id: 'call-1' },
-          { role: 'tool', content: 'Result 2', tool_call_id: 'call-2' },
+          { content: 'Earlier turn', id: 'u0', role: 'user' },
+          { content: 'Earlier reply', id: 'a0', role: 'assistant' },
+          { content: 'Hello', id: 'u1', role: 'user' },
+          { content: '', id: 'a1', role: 'assistant' },
+          { content: 'Result 1', id: 'tool-msg-1', role: 'tool', tool_call_id: 'call-1' },
+          { content: 'Result 2', id: 'tool-msg-2', role: 'tool', tool_call_id: 'call-2' },
         ] as any,
       });
 
@@ -800,6 +829,42 @@ describe('GeneralChatAgent', () => {
       const result = await agent.runner(context, state);
 
       expect(result).toEqual(expectCompressionInstruction(state.messages, 'tool-msg-2'));
+    });
+
+    it('should NOT trigger compress_context on Turn 1 tools_batch_result even with large assistantGroup children', async () => {
+      const agent = createCompressionAgent();
+
+      const state = createMockState({
+        messages: [
+          { content: 'Single turn task', id: 'u1', role: 'user' },
+          {
+            children: [
+              {
+                content: 'Running batch tools',
+                tools: [
+                  {
+                    apiName: 'readFile',
+                    arguments: '{}',
+                    id: 'call-1',
+                    identifier: 'local',
+                    result: { content: 'Large payload '.repeat(500), id: 'tool-msg-1' },
+                  },
+                ],
+              },
+            ],
+            content: '',
+            id: 'group-a1',
+            role: 'assistantGroup',
+          },
+        ] as any,
+      });
+
+      const result = await agent.runner(
+        createMockContext('tools_batch_result', { parentMessageId: 'tool-msg-1' }),
+        state,
+      );
+
+      expect((result as any).type).toBe('call_llm');
     });
   });
 
@@ -1250,14 +1315,21 @@ describe('GeneralChatAgent', () => {
       });
     });
 
-    it('should return compress_context before continuing to LLM when task results exceed window', async () => {
+    it('should return compress_context before continuing to LLM when task results exceed window and prior history exists', async () => {
       const agent = createCompressionAgent();
 
       const state = createMockState({
         messages: [
-          { role: 'user', content: 'Execute task' },
-          { role: 'assistant', content: '' },
-          { role: 'task', content: 'Task result', metadata: { instruction: 'Do task' } },
+          { content: 'Earlier turn', id: 'u0', role: 'user' },
+          { content: 'Earlier reply', id: 'a0', role: 'assistant' },
+          { content: 'Execute task', id: 'u1', role: 'user' },
+          { content: '', id: 'a1', role: 'assistant' },
+          {
+            content: 'Task result',
+            id: 'task-1',
+            metadata: { instruction: 'Do task' },
+            role: 'task',
+          },
         ] as any,
       });
 
@@ -1367,15 +1439,27 @@ describe('GeneralChatAgent', () => {
       });
     });
 
-    it('should return compress_context and preserve the follow-up prompt when tasks exceed window', async () => {
+    it('should return compress_context and preserve the follow-up prompt when tasks exceed window and prior history exists', async () => {
       const agent = createCompressionAgent();
 
       const state = createMockState({
         messages: [
-          { role: 'user', content: 'Execute tasks' },
-          { role: 'assistant', content: '' },
-          { role: 'task', content: 'Task 1 result', metadata: { instruction: 'Do task 1' } },
-          { role: 'task', content: 'Task 2 result', metadata: { instruction: 'Do task 2' } },
+          { content: 'Earlier turn', id: 'u0', role: 'user' },
+          { content: 'Earlier reply', id: 'a0', role: 'assistant' },
+          { content: 'Execute tasks', id: 'u1', role: 'user' },
+          { content: '', id: 'a1', role: 'assistant' },
+          {
+            content: 'Task 1 result',
+            id: 'task-1',
+            metadata: { instruction: 'Do task 1' },
+            role: 'task',
+          },
+          {
+            content: 'Task 2 result',
+            id: 'task-2',
+            metadata: { instruction: 'Do task 2' },
+            role: 'task',
+          },
         ] as any,
       });
 
@@ -1528,6 +1612,8 @@ describe('GeneralChatAgent', () => {
       const agent = createCompressionAgent();
       const state = createMockState({
         messages: [
+          { content: 'Earlier user turn', id: 'msg-0', role: 'user' },
+          { content: 'Earlier assistant reply', id: 'asst-0', role: 'assistant' },
           { content: 'Create an interactive dashboard', id: 'msg-1', role: 'user' },
           { content: '<lobeArtifact>broken', id: 'asst-broken', role: 'assistant' },
         ] as any,
@@ -1676,7 +1762,7 @@ describe('GeneralChatAgent', () => {
         messages: [
           { content: 'Existing summary', role: 'compressedGroup' },
           {
-            content: '',
+            content: 'Assistant response',
             metadata: { usage: { totalOutputTokens: 40_000 } },
             role: 'assistant',
           },
@@ -1700,6 +1786,276 @@ describe('GeneralChatAgent', () => {
       const result = await agent.runner(createMockContext('user_input', {}), state);
 
       expect((result as any).type).toBe('call_llm');
+    });
+
+    it('should trigger consolidation when >= 2 legacy stacked compressedGroups precede the active turn', async () => {
+      const agent = createCompressionAgent();
+      const state = createMockState({
+        messages: [
+          { content: 'Summary 1', id: 'group-1', role: 'compressedGroup' },
+          { content: 'Summary 2', id: 'group-2', role: 'compressedGroup' },
+          { content: 'Current question', id: 'user-3', role: 'user' },
+        ] as any,
+      });
+
+      const result = await agent.runner(
+        createMockContext('user_input', { parentMessageId: 'user-3' }),
+        state,
+      );
+
+      expect(result).toEqual({
+        payload: {
+          currentTokenCount: expect.any(Number),
+          existingSummary: 'Summary 1\n\nSummary 2',
+          messages: state.messages,
+          parentMessageId: 'user-3',
+        },
+        type: 'compress_context',
+      });
+    });
+
+    it('should NOT trigger compression when only 1 compressedGroup precedes the active turn (even if active turn is huge)', async () => {
+      const agent = createCompressionAgent();
+      const state = createMockState({
+        messages: [
+          { content: 'Single rolling summary', id: 'group-1', role: 'compressedGroup' },
+          { content: 'Current question', id: 'user-2', role: 'user' },
+          { content: '', id: 'asst-2', role: 'assistant' },
+          { content: 'Huge active tool output '.repeat(500), id: 'tool-2', role: 'tool' },
+        ] as any,
+      });
+
+      const result = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 'tool-2' }),
+        state,
+      );
+
+      expect((result as any).type).toBe('call_llm');
+    });
+
+    it('should stop retrying compress_context after 2 consecutive compression failures in the same operation', async () => {
+      const agent = createCompressionAgent();
+      const baseMessages = [
+        { content: 'Earlier user turn', id: 'u0', role: 'user' },
+        { content: 'Earlier assistant reply', id: 'a0', role: 'assistant' },
+        { content: 'Current turn', id: 'u1', role: 'user' },
+        { content: 'Tool output', id: 't1', role: 'tool' },
+      ] as any;
+
+      const stateAfterOneFailure = createMockState({
+        messages: baseMessages,
+        metadata: { compressionConsecutiveFailures: 1 },
+      });
+      const afterOne = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 't1' }),
+        stateAfterOneFailure,
+      );
+      expect((afterOne as any).type).toBe('compress_context');
+
+      const stateAfterTwoFailures = createMockState({
+        messages: baseMessages,
+        metadata: { compressionConsecutiveFailures: 2 },
+      });
+      const afterTwo = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 't1' }),
+        stateAfterTwoFailures,
+      );
+      expect((afterTwo as any).type).toBe('call_llm');
+    });
+
+    it('activeTurn helpers ignore synthetic trailing user prompts without id', () => {
+      const singleTurnWithRepair = [
+        { content: 'Build dashboard', id: 'u1', role: 'user' },
+        { content: '<lobeArtifact>broken', id: 'a1', role: 'assistant' },
+        { content: 'Line 1: Исправь синтаксическую ошибку...', role: 'user' },
+      ];
+      expect(findActiveTurnStartIndex(singleTurnWithRepair)).toBe(0);
+      expect(hasCompressibleHistory(singleTurnWithRepair)).toBe(false);
+
+      const singleTurnWithTasksPrompt = [
+        { content: 'Run sub-agents', id: 'u1', role: 'user' },
+        { content: '', id: 'a1', role: 'assistant' },
+        { content: 'Sub-agent result', id: 'task-1', role: 'task' },
+        {
+          content:
+            'All tasks above have been completed. Please summarize the results or continue with your response following user query language.',
+          role: 'user',
+        },
+      ];
+      expect(findActiveTurnStartIndex(singleTurnWithTasksPrompt)).toBe(0);
+      expect(hasCompressibleHistory(singleTurnWithTasksPrompt)).toBe(false);
+
+      const multiTurnWithRepair = [
+        { content: 'Turn 0', id: 'u0', role: 'user' },
+        { content: 'Reply 0', id: 'a0', role: 'assistant' },
+        ...singleTurnWithRepair,
+      ];
+      expect(findActiveTurnStartIndex(multiTurnWithRepair)).toBe(2);
+      expect(hasCompressibleHistory(multiTurnWithRepair)).toBe(true);
+    });
+
+    it('hasCompressibleHistory ignores historical empty/loading assistant stubs while preserving tool/reasoning assistants', async () => {
+      // Empty, whitespace, and LOADING_FLAT ('...') historical stubs must NOT count as compressible history
+      expect(
+        hasCompressibleHistory([
+          { content: '', id: 'stub-1', role: 'assistant' },
+          { content: '   ', id: 'stub-2', role: 'assistant' },
+          { content: '...', id: 'stub-3', role: 'assistant' },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(false);
+
+      // Single rolling summary + historical empty/loading stubs must still return false
+      expect(
+        hasCompressibleHistory([
+          { content: 'Rolling summary', id: 'grp-1', role: 'compressedGroup' },
+          { content: '', id: 'stub-1', role: 'assistant' },
+          { content: '   ', id: 'stub-2', role: 'assistant' },
+          { content: '...', id: 'stub-3', role: 'assistant' },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(false);
+
+      // Historical assistant messages carrying tools, tool_calls, reasoning, reasoning_content, or imageList MUST remain compressible
+      expect(
+        hasCompressibleHistory([
+          { content: '', id: 'a-tools', role: 'assistant', tools: [{ id: 'tc-1' }] },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(true);
+      expect(
+        hasCompressibleHistory([
+          { content: '', id: 'a-tool-calls', role: 'assistant', tool_calls: [{ id: 'tc-1' }] },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(true);
+      expect(
+        hasCompressibleHistory([
+          {
+            content: '',
+            id: 'a-reasoning-obj',
+            reasoning: { content: 'Chain of thought' },
+            role: 'assistant',
+          },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(true);
+      expect(
+        hasCompressibleHistory([
+          {
+            content: '',
+            id: 'a-reasoning-str',
+            reasoning_content: 'Direct reasoning text',
+            role: 'assistant',
+          },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(true);
+      expect(
+        hasCompressibleHistory([
+          {
+            content: '',
+            id: 'a-img',
+            imageList: [{ url: 'https://example.com/a.png' }],
+            role: 'assistant',
+          },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+        ]),
+      ).toBe(true);
+
+      // End-to-end mid-turn guard: single compressedGroup + historical empty/loading assistant stubs
+      // above 85% physical window must proceed straight to call_llm (no skipped compress_context loop).
+      const agent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 100 },
+        compressionConfig: {
+          enabled: true,
+          maxWindowToken: 1_000_000,
+          midTurnThresholdRatio: 0.85,
+          physicalWindowToken: 1_000_000,
+          recompressionThresholdRatio: 0.415,
+          thresholdRatio: 0.345,
+        },
+        modelRuntimeConfig: { model: 'deepseek-flash', provider: 'deepseek' },
+        operationId: 'test-session',
+      });
+
+      const state = createMockState({
+        messages: [
+          { content: 'Existing rolling summary', id: 'grp-1', role: 'compressedGroup' },
+          { content: '', id: 'stub-empty', role: 'assistant' },
+          { content: '   ', id: 'stub-ws', role: 'assistant' },
+          { content: '...', id: 'stub-loading', role: 'assistant' },
+          { content: 'Active turn', id: 'u-active', role: 'user' },
+          {
+            content: 'Working on step',
+            id: 'a-active',
+            metadata: { usage: { totalOutputTokens: 900_000 } },
+            role: 'assistant',
+          },
+          { content: 'Tool output', id: 't-active', role: 'tool' },
+        ] as any,
+      });
+
+      const decision = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 't-active' }),
+        state,
+      );
+      expect((decision as any).type).toBe('call_llm');
+    });
+
+    it('separates Step-0 working threshold (345K) from mid-turn emergency threshold (850K on 1M physical window)', async () => {
+      const agent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 100 },
+        compressionConfig: {
+          enabled: true,
+          maxWindowToken: 1_000_000,
+          midTurnThresholdRatio: 0.85,
+          physicalWindowToken: 1_000_000,
+          recompressionThresholdRatio: 0.415,
+          thresholdRatio: 0.345,
+        },
+        modelRuntimeConfig: { model: 'deepseek-flash', provider: 'deepseek' },
+        operationId: 'test-session',
+      });
+
+      const makeMultiTurnState = (tokens: number) =>
+        createMockState({
+          messages: [
+            { content: 'Turn 1', id: 'u1', role: 'user' },
+            {
+              content: '',
+              id: 'a1',
+              metadata: { usage: { totalOutputTokens: tokens } },
+              role: 'assistant',
+            },
+            { content: 'Turn 2', id: 'u2', role: 'user' },
+            { content: 'Tool output', id: 't2', role: 'tool' },
+          ] as any,
+        });
+
+      // Step 0 at 360K (> 345K working threshold): triggers normal compression
+      const step0At360k = await agent.runner(
+        createMockContext('user_input', { parentMessageId: 'u2' }),
+        makeMultiTurnState(360_000),
+      );
+      expect((step0At360k as any).type).toBe('compress_context');
+
+      // Mid-turn (tool_result) at 450K (< 850K emergency threshold): stays on warm cache -> call_llm!
+      const midTurnAt450k = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 't2' }),
+        makeMultiTurnState(450_000),
+      );
+      expect((midTurnAt450k as any).type).toBe('call_llm');
+
+      // Mid-turn (tool_result) at 860K (> 850K emergency threshold): triggers emergency compress_context!
+      const midTurnAt860k = await agent.runner(
+        createMockContext('tool_result', { parentMessageId: 't2' }),
+        makeMultiTurnState(860_000),
+      );
+      expect(midTurnAt860k).toMatchObject({
+        payload: { parentMessageId: 't2' },
+        type: 'compress_context',
+      });
     });
   });
 

@@ -12,6 +12,7 @@ import {
 } from '../RuntimeExecutors';
 
 const mockCreateCompressionGroup = vi.fn();
+const mockUpsertRollingCompressionGroup = vi.fn();
 const mockFinalizeCompression = vi.fn();
 
 // Mock dependencies
@@ -26,6 +27,7 @@ vi.mock('@/server/services/message', () => ({
   MessageService: vi.fn().mockImplementation(() => ({
     createCompressionGroup: mockCreateCompressionGroup,
     finalizeCompression: mockFinalizeCompression,
+    upsertRollingCompressionGroup: mockUpsertRollingCompressionGroup,
   })),
 }));
 
@@ -102,6 +104,10 @@ describe('RuntimeExecutors', () => {
       messageGroupId: 'group-123',
       messagesToSummarize: [],
       success: true,
+    });
+    mockUpsertRollingCompressionGroup.mockResolvedValue({
+      messageGroupId: 'group-123',
+      messages: [],
     });
     mockFinalizeCompression.mockResolvedValue({ success: true });
 
@@ -333,7 +339,7 @@ describe('RuntimeExecutors', () => {
 
     it('should execute compress_context and return compression_result', async () => {
       const mockChat = vi.fn().mockImplementation(async (_payload, options) => {
-        expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+        expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
         await options?.callback?.onText?.('summary');
         await options?.callback?.onCompletion?.({
           usage: {
@@ -346,37 +352,28 @@ describe('RuntimeExecutors', () => {
       });
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
 
+      const currentUser = { content: 'follow-up', id: 'msg-current', role: 'user' };
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        currentUser,
       ]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        success: true,
-      });
-      mockCreateCompressionGroup.mockResolvedValue({
-        messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        messages: [
-          { content: 'summary', id: 'group-123', role: 'compressedGroup' },
-          { content: 'loading', id: 'assistant-existing', role: 'assistant' },
-        ],
-        success: true,
+        messages: [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }, currentUser],
       });
 
       const executors = createRuntimeExecutors(ctx);
       const state = createMockState({
-        messages: [{ content: 'x '.repeat(70000), role: 'user' }],
+        messages: [{ content: 'x '.repeat(70000), id: 'msg-history', role: 'user' }, currentUser],
       });
 
-      const instruction = createCompressContextInstruction([
-        { content: 'x '.repeat(70000), role: 'user' },
-      ]);
+      const instruction = createCompressContextInstruction(state.messages);
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).toHaveBeenCalledTimes(1);
+      expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledTimes(1);
+      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
       expect(mockFinalizeCompression).not.toHaveBeenCalled();
       expect(mockChat).toHaveBeenCalledTimes(1);
       expect(result.nextContext?.phase).toBe('compression_result');
@@ -420,15 +417,17 @@ describe('RuntimeExecutors', () => {
       });
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
       const history = { content: 'history', id: 'msg-history', role: 'user' };
-      mockMessageModel.query.mockResolvedValue([history]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      const currentUser = { content: 'next', id: 'msg-current', role: 'user' };
+      mockMessageModel.query.mockResolvedValue([history, currentUser]);
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messages: [{ content: 'First summary.', id: 'group-123', role: 'compressedGroup' }],
-        messagesToSummarize: [history],
-        success: true,
+        messages: [
+          { content: 'First summary.', id: 'group-123', role: 'compressedGroup' },
+          currentUser,
+        ],
       });
       const state = createMockState({
-        messages: [history],
+        messages: [history, currentUser],
         metadata: { agentId: 'agent-123', sessionId: 'session-123', topicId: 'topic-123' },
         modelRuntimeConfig: { model: 'gemini-3.8-pro', provider: 'google' },
       });
@@ -438,7 +437,7 @@ describe('RuntimeExecutors', () => {
         state,
       );
 
-      expect(mockCreateCompressionGroup).toHaveBeenCalledWith(
+      expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledWith(
         'topic-123',
         ['msg-history'],
         expect.any(Object),
@@ -455,23 +454,25 @@ describe('RuntimeExecutors', () => {
       'should leave original history intact for an empty summary (%j)',
       async (summary) => {
         const history = { content: 'history', id: 'msg-history', role: 'user' };
-        mockMessageModel.query.mockResolvedValue([history]);
+        const currentUser = { content: 'next', id: 'msg-current', role: 'user' };
+        mockMessageModel.query.mockResolvedValue([history, currentUser]);
         vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
           chat: vi.fn(async (_payload, options) => {
             await options.callback.onText?.(summary);
             return new Response('done');
           }),
         } as any);
-        const state = createMockState({ messages: [history] });
+        const state = createMockState({ messages: [history, currentUser] });
 
         const result = await createRuntimeExecutors(ctx).compress_context!(
           createCompressContextInstruction(state.messages),
           state,
         );
 
+        expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
         expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
         expect(mockFinalizeCompression).not.toHaveBeenCalled();
-        expect(result.newState.messages).toEqual([history]);
+        expect(result.newState.messages).toEqual([history, currentUser]);
         expect(result.nextContext?.payload).toMatchObject({ skipped: true });
         expect(result.events).toContainEqual(
           expect.objectContaining({ type: 'compression_error' }),
@@ -481,8 +482,9 @@ describe('RuntimeExecutors', () => {
 
     it('should not compress messages received while the summary is being generated', async () => {
       const history = { content: 'history', id: 'msg-history', role: 'user' };
+      const currentUser = { content: 'current question', id: 'msg-current', role: 'user' };
       const concurrent = { content: 'new instruction', id: 'msg-new', role: 'user' };
-      const dbMessages = [history];
+      const dbMessages = [history, currentUser];
       mockMessageModel.query.mockResolvedValue(dbMessages);
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
         chat: vi.fn(async (_payload, options) => {
@@ -491,19 +493,22 @@ describe('RuntimeExecutors', () => {
           return new Response('done');
         }),
       } as any);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messages: [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }, concurrent],
-        success: true,
+        messages: [
+          { content: 'summary', id: 'group-123', role: 'compressedGroup' },
+          currentUser,
+          concurrent,
+        ],
       });
-      const state = createMockState({ messages: [history] });
+      const state = createMockState({ messages: [history, currentUser] });
 
       const result = await createRuntimeExecutors(ctx).compress_context!(
         createCompressContextInstruction(state.messages),
         state,
       );
 
-      expect(mockCreateCompressionGroup).toHaveBeenCalledWith(
+      expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledWith(
         'topic-123',
         ['msg-history'],
         expect.any(Object),
@@ -517,7 +522,8 @@ describe('RuntimeExecutors', () => {
       async (hasUsage) => {
         const controller = new AbortController();
         const history = { content: 'history', id: 'msg-history', role: 'user' };
-        mockMessageModel.query.mockResolvedValue([history]);
+        const currentUser = { content: 'next', id: 'msg-current', role: 'user' };
+        mockMessageModel.query.mockResolvedValue([history, currentUser]);
         vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
           chat: vi.fn(async (_payload, options) => {
             expect(options.signal).toBe(controller.signal);
@@ -530,13 +536,14 @@ describe('RuntimeExecutors', () => {
             return new Response('done');
           }),
         } as any);
-        const state = createMockState({ messages: [history] });
+        const state = createMockState({ messages: [history, currentUser] });
 
         const result = await createRuntimeExecutors({ ...ctx, signal: controller.signal })
           .compress_context!(createCompressContextInstruction(state.messages), state);
 
+        expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
         expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
-        expect(result.newState.messages).toEqual([history]);
+        expect(result.newState.messages).toEqual([history, currentUser]);
         expect(result.newState.status).toBe('interrupted');
         expect(result.nextContext).toBeUndefined();
         if (hasUsage) expect(result.newState.usage?.llm.tokens.total).toBe(13);
@@ -559,7 +566,7 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+      expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
       expect((result.nextContext?.payload as any).skipped).toBe(true);
     });
 
@@ -576,7 +583,7 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+      expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
       expect((result.nextContext?.payload as any).skipped).toBe(true);
     });
 
@@ -592,7 +599,7 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+      expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
       expect(result.nextContext?.payload as any).toMatchObject({
         compressedMessages: state.messages,
         groupId: '',
@@ -602,32 +609,34 @@ describe('RuntimeExecutors', () => {
     });
 
     it('should skip compress_context when compression model config is missing', async () => {
+      const currentUser = { content: 'follow-up', id: 'msg-current', role: 'user' };
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        currentUser,
       ]);
 
       const executors = createRuntimeExecutors(ctx);
       const state = createMockState({
-        messages: [{ content: 'history', role: 'user' }],
+        messages: [{ content: 'history', id: 'msg-history', role: 'user' }, currentUser],
         modelRuntimeConfig: undefined,
       });
 
-      const instruction = createCompressContextInstruction([{ content: 'history', role: 'user' }]);
+      const instruction = createCompressContextInstruction(state.messages);
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+      expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
       expect(mockFinalizeCompression).not.toHaveBeenCalled();
       expect(result.nextContext?.payload as any).toMatchObject({
-        compressedMessages: [{ content: 'history', role: 'user' }],
+        compressedMessages: state.messages,
         parentMessageId: 'assistant-existing',
         skipped: true,
       });
     });
 
     it('should continue when compress_context fails', async () => {
-      mockCreateCompressionGroup.mockRejectedValueOnce(new Error('compression failed'));
+      mockUpsertRollingCompressionGroup.mockRejectedValueOnce(new Error('compression failed'));
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
         chat: vi.fn(async (_payload, options) => {
           await options.callback.onText?.('summary');
@@ -635,15 +644,17 @@ describe('RuntimeExecutors', () => {
         }),
       } as any);
 
+      const currentUser = { content: 'follow-up', id: 'msg-current', role: 'user' };
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
+        currentUser,
       ]);
       const executors = createRuntimeExecutors(ctx);
       const state = createMockState({
-        messages: [{ content: 'history', role: 'user' }],
+        messages: [{ content: 'history', id: 'msg-history', role: 'user' }, currentUser],
       });
 
-      const instruction = createCompressContextInstruction([{ content: 'history', role: 'user' }]);
+      const instruction = createCompressContextInstruction(state.messages);
 
       const result = await executors.compress_context!(instruction, state);
 
@@ -664,17 +675,11 @@ describe('RuntimeExecutors', () => {
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        { content: 'continue with this exact instruction', id: 'msg-follow-up', role: 'user' },
       ]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        success: true,
-      });
-      mockCreateCompressionGroup.mockResolvedValue({
-        messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: [{ content: 'summary', id: 'group-123', role: 'compressedGroup' }],
-        success: true,
       });
 
       const executors = createRuntimeExecutors(ctx);
@@ -689,7 +694,7 @@ describe('RuntimeExecutors', () => {
 
       const result = await executors.compress_context!(instruction, state);
 
-      expect(mockCreateCompressionGroup).toHaveBeenCalledWith(
+      expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledWith(
         'topic-123',
         ['msg-history', 'assistant-existing'],
         expect.any(Object),
@@ -708,25 +713,20 @@ describe('RuntimeExecutors', () => {
       });
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
 
+      const currentUser = { content: 'follow-up', id: 'msg-current', role: 'user' };
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        currentUser,
       ]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        success: true,
-      });
-      mockCreateCompressionGroup.mockResolvedValue({
-        messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: undefined,
-        success: true,
       });
 
       const executors = createRuntimeExecutors(ctx);
       const state = createMockState({
-        messages: [{ content: 'history', role: 'user' }],
+        messages: [{ content: 'history', id: 'msg-history', role: 'user' }, currentUser],
       });
 
       const instruction = createCompressContextInstruction(state.messages);
@@ -736,6 +736,7 @@ describe('RuntimeExecutors', () => {
       expect((result.nextContext?.payload as any).compressedMessages).toEqual([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        currentUser,
       ]);
     });
 
@@ -757,19 +758,12 @@ describe('RuntimeExecutors', () => {
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
         preservedMessage,
       ]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        success: true,
-      });
-      mockCreateCompressionGroup.mockResolvedValue({
-        messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
         messages: [
           { content: 'summary', id: 'group-123', role: 'compressedGroup' },
           preservedMessage,
         ],
-        success: true,
       });
 
       const executors = createRuntimeExecutors(ctx);
@@ -795,19 +789,20 @@ describe('RuntimeExecutors', () => {
       });
       vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: mockChat } as any);
 
+      const currentUser = { content: 'follow-up', id: 'msg-current', role: 'user' };
       mockMessageModel.query.mockResolvedValue([
         { content: 'history', id: 'msg-history', role: 'user' },
         { content: 'loading', id: 'assistant-existing', role: 'assistant' },
+        currentUser,
       ]);
-      mockCreateCompressionGroup.mockResolvedValue({
+      mockUpsertRollingCompressionGroup.mockResolvedValue({
         messageGroupId: 'group-123',
-        messagesToSummarize: [{ content: 'history', id: 'msg-history', role: 'user' }],
-        success: true,
+        messages: [],
       });
 
       const executors = createRuntimeExecutors(ctx);
       const state = createMockState({
-        messages: [{ content: 'history', role: 'user' }],
+        messages: [{ content: 'history', id: 'msg-history', role: 'user' }, currentUser],
       });
 
       const instruction = createCompressContextInstruction(state.messages);
@@ -815,7 +810,7 @@ describe('RuntimeExecutors', () => {
       const result = await executors.compress_context!(instruction, state);
 
       expect(mockFinalizeCompression).not.toHaveBeenCalled();
-      expect(mockCreateCompressionGroup).not.toHaveBeenCalled();
+      expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
       expect((result.nextContext?.payload as any).skipped).toBe(true);
       expect(result.events).toContainEqual(
         expect.objectContaining({

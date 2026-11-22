@@ -464,6 +464,38 @@ export class MessageService {
   }
 
   /**
+   * Upsert a single rolling compression group for a topic and return updated messages.
+   * Consolidates any prior compression groups in-place without deleting messages rows.
+   */
+  async upsertRollingCompressionGroup(
+    topicId: string,
+    messageIds: string[],
+    options: QueryOptions = {},
+    content?: string,
+  ): Promise<{ messageGroupId: string; messages: UIChatMessage[] }> {
+    if (!content?.trim()) {
+      throw new Error('Compression summary must not be empty');
+    }
+
+    const messageGroupId = await this.compressionRepository.upsertRollingCompressionGroup({
+      content,
+      messageIds,
+      metadata: {
+        compressionStrategy: 'summarize',
+        originalMessageCount: messageIds.length,
+      },
+      topicId,
+    });
+
+    const messages = await this.messageModel.query({ topicId, ...options }, this.getQueryOptions());
+
+    return {
+      messageGroupId,
+      messages,
+    };
+  }
+
+  /**
    * Finalize compression by updating the group with actual summary content
    *
    * @param messageGroupId - The compression group ID
