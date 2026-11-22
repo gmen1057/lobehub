@@ -48,23 +48,26 @@ const makeMessagesWithTokens = (approxTokens: number) => [
 ];
 
 describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limits', () => {
-  it('resolves deepseek/deepseek-flash route ceiling to 32_768 (~22K initial, ~26K recompression)', () => {
+  it('resolves deepseek/deepseek-flash to the 360K 1M-model ceiling (no premature 22K/26K compression)', async () => {
     const policy = resolveCompressionThresholds('deepseek-flash', 'deepseek');
     expect(policy).toEqual({
-      maxWindowToken: 32_768,
-      recompressionThresholdRatio: 0.8,
-      thresholdRatio: 0.68,
+      maxWindowToken: EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
+      recompressionThresholdRatio: 0.65,
+      thresholdRatio: 0.5,
     });
+    expect(resolveCompressionThresholds('deepseek-flash')).toEqual(policy);
 
-    // ~20K tokens: below ~22,282 threshold -> no compression
-    expect(shouldCompress(makeMessagesWithTokens(20_000), policy).needsCompression).toBe(false);
+    // Must NOT prematurely compress at 24K, 35K, 70K, or 150K (regression: 32_768 override caused 22K/26K loops)
+    for (const tokens of [24_000, 35_000, 70_000, 150_000]) {
+      expect(shouldCompress(makeMessagesWithTokens(tokens), policy).needsCompression).toBe(false);
+    }
 
-    // ~24K tokens: above ~22,282 threshold (well before 32,768 HTTP 413) -> triggers compression
-    const check24k = shouldCompress(makeMessagesWithTokens(24_000), policy);
-    expect(check24k.threshold).toBe(Math.floor(32_768 * 0.68));
-    expect(check24k.needsCompression).toBe(true);
+    // Triggers above 180K
+    const check185k = shouldCompress(makeMessagesWithTokens(185_000), policy);
+    expect(check185k.threshold).toBe(180_000);
+    expect(check185k.needsCompression).toBe(true);
 
-    // Hysteresis after first compression: 24K < ~26,214 -> does NOT immediately recompress
+    // Hysteresis after first compression holds until 234K
     const agent = new GeneralChatAgent({
       compressionConfig: { ...policy, enabled: true },
       modelRuntimeConfig: { model: 'deepseek-flash', provider: 'deepseek' },
@@ -73,12 +76,12 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
     const stateAfterFirstCompress = AgentRuntime.createInitialState({
       messages: [
         { content: 'Summary of earlier turns', id: 'grp-1', role: 'compressedGroup' },
-        ...makeMessagesWithTokens(23_500),
+        ...makeMessagesWithTokens(210_000),
       ] as any,
       operationId: 'op-ds-flash',
       status: 'running',
     });
-    return expect(
+    await expect(
       agent.runner({ payload: {}, phase: 'user_input' }, stateAfterFirstCompress),
     ).resolves.toMatchObject({ type: 'call_llm' });
   });
@@ -90,6 +93,7 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
     ['anthropic', 'claude-haiku-5-5'],
     ['google', 'gemini-4-carbon'],
     ['openai', 'gpt-6.2-sol'],
+    ['deepseek', 'deepseek-flash'],
     ['deepseek', 'deepseek-v4-pro'],
     ['qwen', 'qwen4-max'],
   ])(
@@ -268,7 +272,7 @@ describe('ENG-2A: RuntimeExecutors.compress_context cache disable & LOADING_FLAT
       {
         content: 'Turn 1 assistant answer',
         id: 'msg-a1',
-        metadata: { usage: { totalOutputTokens: 25_000 } },
+        metadata: { usage: { totalOutputTokens: 185_000 } },
         role: 'assistant',
       },
       // Historical tool-only assistant message (empty text, but HAS tools -> must be kept!)
