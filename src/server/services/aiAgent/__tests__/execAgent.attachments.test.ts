@@ -1,5 +1,14 @@
+import {
+  KnowledgeBaseIdentifier,
+  KnowledgeBaseManifest,
+} from '@lobechat/builtin-tool-knowledge-base';
+import { buildStepToolDelta, ToolResolver } from '@lobechat/context-engine';
+import { FILE_PREVIEW_CHARS } from '@lobechat/prompts';
 import type * as ModelBankModule from 'model-bank';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { createServerAgentToolsEngine } from '@/server/modules/Mecha';
+import { createServerAgentToolsEngine as realToolsEngine } from '@/server/modules/Mecha/AgentToolsEngine';
 
 import { AiAgentService } from '../index';
 import { PDF_PAGES_PENDING_NOTE, PDF_PREP_VERSION } from '../pdfPrepare';
@@ -1355,6 +1364,307 @@ describe('AiAgentService.execAgent — arckep: вложения для моде�
       });
 
       expect(mockCreateOperation).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('ENG-4: автоподключение readKnowledge при текстовых вложениях > 8K', () => {
+    const runRealTools = async (
+      params: Partial<Parameters<AiAgentService['execAgent']>[0]> = {},
+      agentOverrides: Record<string, unknown> = {},
+    ) => {
+      vi.mocked(createServerAgentToolsEngine).mockImplementationOnce(realToolsEngine);
+      mockGetAgentConfig.mockResolvedValue({
+        ...agent(),
+        knowledgeBases: [],
+        ...agentOverrides,
+      });
+
+      await service.execAgent({
+        agentId: 'agent-1',
+        prompt: 'Разбери вложение',
+        ...params,
+      });
+
+      const opArgs = mockCreateOperation.mock.calls.at(-1)![0];
+      return {
+        initialContext: opArgs.initialContext,
+        initialMessages: opArgs.initialMessages,
+        toolSet: opArgs.toolSet,
+      };
+    };
+
+    const toolNames = (tools: Array<{ function: { name: string } }> | undefined) =>
+      (tools ?? []).map((t) => t.function.name);
+
+    it('0 файлов и 0 БЗ: lobe-knowledge-base остаётся lazy (0 лишних схем на Step 0)', async () => {
+      const { toolSet } = await runRealTools();
+
+      expect(toolSet.enabledToolIds).toContain('lobe-activator');
+      expect(toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(toolNames(toolSet.tools).some((n) => n.startsWith(KnowledgeBaseIdentifier))).toBe(
+        false,
+      );
+      expect(toolSet.manifestMap[KnowledgeBaseIdentifier]?.api.map((a: any) => a.name)).toEqual([
+        'searchKnowledgeBase',
+        'readKnowledge',
+      ]);
+    });
+
+    it('картинка (imageList, content == null) и файл без текста при 0 БЗ: lobe-knowledge-base остаётся lazy', async () => {
+      mockParseFile.mockResolvedValueOnce({ content: null });
+
+      const { toolSet } = await runRealTools({
+        files: [
+          {
+            fileId: 'img-1',
+            mimeType: 'image/png',
+            name: 'photo.png',
+            url: 'https://s3/photo.png',
+          },
+          {
+            fileId: 'bin-1',
+            mimeType: 'application/octet-stream',
+            name: 'archive.bin',
+            url: 'https://s3/archive.bin',
+          },
+        ],
+      });
+
+      expect(toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(toolNames(toolSet.tools).some((n) => n.startsWith(KnowledgeBaseIdentifier))).toBe(
+        false,
+      );
+    });
+
+    it('короткий файл 3K и граница ровно 8 000 знаков при 0 БЗ: lobe-knowledge-base остаётся lazy', async () => {
+      mockParseFile.mockResolvedValueOnce({ content: 'a'.repeat(3_000) });
+      const shortRes = await runRealTools({
+        files: [
+          {
+            fileId: 'short-1',
+            mimeType: 'text/plain',
+            name: 'short.txt',
+            url: 'https://s3/short.txt',
+          },
+        ],
+      });
+      expect(shortRes.toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(
+        toolNames(shortRes.toolSet.tools).some((n) => n.startsWith(KnowledgeBaseIdentifier)),
+      ).toBe(false);
+
+      mockParseFile.mockResolvedValueOnce({ content: 'b'.repeat(FILE_PREVIEW_CHARS) });
+      const exactRes = await runRealTools({
+        files: [
+          {
+            fileId: 'exact-8k',
+            mimeType: 'text/plain',
+            name: 'exact.txt',
+            url: 'https://s3/exact.txt',
+          },
+        ],
+      });
+      expect(exactRes.toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(
+        toolNames(exactRes.toolSet.tools).some((n) => n.startsWith(KnowledgeBaseIdentifier)),
+      ).toBe(false);
+    });
+
+    it('файл 25K (> 8K) и граница 8 001 знак при 0 БЗ: readKnowledge eager на Step 0 без searchKnowledgeBase', async () => {
+      for (const length of [FILE_PREVIEW_CHARS + 1, 25_000]) {
+        mockParseFile.mockResolvedValueOnce({ content: 'x'.repeat(length) });
+        const { initialContext, toolSet } = await runRealTools({
+          files: [
+            {
+              fileId: `doc-${length}`,
+              mimeType: 'text/plain',
+              name: `doc-${length}.txt`,
+              url: `https://s3/doc-${length}.txt`,
+            },
+          ],
+        });
+
+        expect(toolSet.enabledToolIds).toContain(KnowledgeBaseIdentifier);
+        expect(toolNames(toolSet.tools)).toContain(
+          'lobe-knowledge-base____readKnowledge____builtin',
+        );
+        expect(toolNames(toolSet.tools)).not.toContain(
+          'lobe-knowledge-base____searchKnowledgeBase____builtin',
+        );
+        expect(toolNames(initialContext.payload.tools)).toEqual(toolNames(toolSet.tools));
+
+        const kbManifest = toolSet.manifestMap[KnowledgeBaseIdentifier];
+        expect(kbManifest.api.map((a: any) => a.name)).toEqual(['readKnowledge']);
+        expect(kbManifest.systemRole).not.toContain('searchKnowledgeBase');
+      }
+    });
+
+    it('follow-up ход темы (и сжатая группа compressedGroup) сохраняет стабильный набор tools без мигания', async () => {
+      const longText = 'z'.repeat(25_000);
+      mockParseFile.mockResolvedValueOnce({ content: longText });
+
+      const turn1 = await runRealTools({
+        files: [
+          {
+            fileId: 'doc-long',
+            mimeType: 'text/plain',
+            name: 'contract.txt',
+            url: 'https://s3/contract.txt',
+          },
+        ],
+        prompt: 'Найди раздел про штрафы',
+      });
+
+      mockMessageQuery.mockResolvedValueOnce([
+        {
+          content: 'Найди раздел про штрафы',
+          fileList: [
+            {
+              content: longText,
+              fileType: 'text/plain',
+              id: 'doc-long',
+              name: 'contract.txt',
+              size: 25_000,
+              url: 'https://s3/contract.txt',
+            },
+          ],
+          id: 'm1',
+          imageList: [],
+          role: 'user',
+        },
+        { content: 'Вот раздел...', id: 'm2', role: 'assistant' },
+      ]);
+
+      const turn2 = await runRealTools({
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'А что в приложении 2?',
+      });
+
+      expect(turn2.toolSet.enabledToolIds).toContain(KnowledgeBaseIdentifier);
+      expect(JSON.stringify(turn2.toolSet.tools)).toBe(JSON.stringify(turn1.toolSet.tools));
+
+      // И после сжатия истории в compressedGroup состав tools остаётся тем же
+      mockMessageQuery.mockResolvedValueOnce([
+        {
+          compressedMessages: [
+            {
+              content: 'Найди раздел про штрафы',
+              fileList: [
+                {
+                  content: longText,
+                  fileType: 'text/plain',
+                  id: 'doc-long',
+                  name: 'contract.txt',
+                  size: 25_000,
+                  url: 'https://s3/contract.txt',
+                },
+              ],
+              id: 'm1',
+              role: 'user',
+            },
+          ],
+          content: 'Краткое содержание',
+          id: 'cg-1',
+          role: 'compressedGroup',
+        },
+      ]);
+
+      const turn3 = await runRealTools({
+        appContext: { topicId: 'topic-existing' },
+        prompt: 'Уточни пункт 4.2',
+      });
+
+      expect(turn3.toolSet.enabledToolIds).toContain(KnowledgeBaseIdentifier);
+      expect(JSON.stringify(turn3.toolSet.tools)).toBe(JSON.stringify(turn1.toolSet.tools));
+
+      // Проверка ToolResolver: Step 0 и последующие шаги получают идентичные функции
+      const resolved = new ToolResolver().resolve(
+        turn2.toolSet,
+        buildStepToolDelta({
+          enabledToolIds: turn2.toolSet.enabledToolIds,
+          operationManifestMap: turn2.toolSet.manifestMap,
+        } as any),
+        [],
+      );
+      expect(toolNames(resolved.tools)).toEqual(toolNames(turn1.toolSet.tools));
+    });
+
+    it('не мутирует глобальный синглтон KnowledgeBaseManifest между запросами', async () => {
+      mockParseFile.mockResolvedValueOnce({ content: 'y'.repeat(25_000) });
+
+      // 1. Запрос с >8K файлом и 0 БЗ → read-only копия манифеста
+      const readOnlyRun = await runRealTools({
+        files: [
+          {
+            fileId: 'doc-big',
+            mimeType: 'text/plain',
+            name: 'big.txt',
+            url: 'https://s3/big.txt',
+          },
+        ],
+      });
+      expect(
+        readOnlyRun.toolSet.manifestMap[KnowledgeBaseIdentifier].api.map((a: any) => a.name),
+      ).toEqual(['readKnowledge']);
+
+      // Синглтон остался полностью нетронутым
+      expect(KnowledgeBaseManifest.api.map((a) => a.name)).toEqual([
+        'searchKnowledgeBase',
+        'readKnowledge',
+      ]);
+      expect(KnowledgeBaseManifest.systemRole).toContain('searchKnowledgeBase');
+
+      // 2. Следующий запрос с включённой БЗ → получает оба API
+      const withKbRun = await runRealTools({}, { knowledgeBases: [{ enabled: true, id: 'kb-1' }] });
+      expect(toolNames(withKbRun.toolSet.tools)).toEqual(
+        expect.arrayContaining([
+          'lobe-knowledge-base____searchKnowledgeBase____builtin',
+          'lobe-knowledge-base____readKnowledge____builtin',
+        ]),
+      );
+
+      // 3. Следующий обычный запрос без файлов и БЗ → снова lazy с полным манифестом в карте
+      const plainRun = await runRealTools();
+      expect(plainRun.toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(
+        plainRun.toolSet.manifestMap[KnowledgeBaseIdentifier].api.map((a: any) => a.name),
+      ).toEqual(['searchKnowledgeBase', 'readKnowledge']);
+    });
+
+    it('уважает excludePluginIds и явный выбор additionalPluginIds даже при файле > 8K', async () => {
+      mockParseFile.mockResolvedValueOnce({ content: 'q'.repeat(25_000) });
+      const excluded = await runRealTools({
+        excludePluginIds: [KnowledgeBaseIdentifier],
+        files: [
+          {
+            fileId: 'doc-ex',
+            mimeType: 'text/plain',
+            name: 'doc.txt',
+            url: 'https://s3/doc.txt',
+          },
+        ],
+      });
+      expect(excluded.toolSet.enabledToolIds).not.toContain(KnowledgeBaseIdentifier);
+      expect(excluded.toolSet.manifestMap[KnowledgeBaseIdentifier]).toBeUndefined();
+
+      mockParseFile.mockResolvedValueOnce({ content: 'q'.repeat(25_000) });
+      const picked = await runRealTools({
+        additionalPluginIds: [KnowledgeBaseIdentifier],
+        files: [
+          {
+            fileId: 'doc-pick',
+            mimeType: 'text/plain',
+            name: 'doc.txt',
+            url: 'https://s3/doc.txt',
+          },
+        ],
+      });
+      expect(toolNames(picked.toolSet.tools)).toEqual(
+        expect.arrayContaining([
+          'lobe-knowledge-base____searchKnowledgeBase____builtin',
+          'lobe-knowledge-base____readKnowledge____builtin',
+        ]),
+      );
     });
   });
 });
