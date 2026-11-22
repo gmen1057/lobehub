@@ -7,6 +7,7 @@ import {
   AgentCouncilFlattenProcessor,
   ArckepToolResultTrimProcessor,
   CompressedGroupRoleTransformProcessor,
+  DisabledToolCallFilter,
   GroupMessageFlattenProcessor,
   GroupOrchestrationFilterProcessor,
   GroupRoleTransformProcessor,
@@ -14,6 +15,7 @@ import {
   InputTemplateProcessor,
   MessageCleanupProcessor,
   MessageContentProcessor,
+  PlaceholderMessageFilter,
   PlaceholderVariablesProcessor,
   ReactionFeedbackProcessor,
   SupervisorRoleRestoreProcessor,
@@ -368,6 +370,8 @@ export class MessagesEngine {
       new SupervisorRoleRestoreProcessor(),
       // Compressed group role transform
       new CompressedGroupRoleTransformProcessor(),
+      // Placeholder/empty assistant stub filter (must run BEFORE GroupOrchestrationFilter/MessageContent/MessageCleanup)
+      new PlaceholderMessageFilter(),
       // Group orchestration filter (must run BEFORE GroupRoleTransformProcessor)
       ...(isAgentGroupEnabled && agentGroup.agentMap && agentGroup.currentAgentId
         ? [
@@ -418,6 +422,10 @@ export class MessagesEngine {
       ...(toolResultTrim?.enabled !== false
         ? [new ArckepToolResultTrimProcessor(toolResultTrim)]
         : []),
+      // Filter historical tool calls for disabled tools (strictly AFTER ToolCallProcessor & ArckepToolResultTrimProcessor, strictly BEFORE ToolMessageReorder)
+      new DisabledToolCallFilter({
+        disabledToolIdentifiers: toolsConfig?.disabledToolIdentifiers,
+      }),
 
       // =============================================
       // Phase 7: Cleanup

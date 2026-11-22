@@ -1,6 +1,6 @@
 import { type AgentRuntimeContext, type AgentState } from '@lobechat/agent-runtime';
 import type { LobeToolManifest, OperationSkillSet, ToolSource } from '@lobechat/context-engine';
-import { type UserInterventionConfig } from '@lobechat/types';
+import { type SecurityBlacklistConfig, type UserInterventionConfig } from '@lobechat/types';
 
 import { type ServerUserMemoryConfig } from '@/server/modules/Mecha/ContextEngineering/types';
 
@@ -9,6 +9,7 @@ import { type AgentHook } from './hooks/types';
 // ==================== Operation Tool Set ====================
 
 export interface OperationToolSet {
+  disabledToolIds?: string[];
   enabledToolIds?: string[];
   manifestMap: Record<string, LobeToolManifest>;
   sourceMap?: Record<string, ToolSource>;
@@ -167,6 +168,8 @@ export interface OperationCreationParams {
   operationSkillSet?: OperationSkillSet;
   queueRetries?: number;
   queueRetryDelay?: string;
+  /** Optional security blacklist override (e.g. [] for headless REST runs) */
+  securityBlacklist?: SecurityBlacklistConfig;
   /** Abort startup before the first step is scheduled */
   signal?: AbortSignal;
   /**

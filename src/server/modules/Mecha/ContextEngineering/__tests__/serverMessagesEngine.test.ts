@@ -558,5 +558,36 @@ describe('serverMessagesEngine', () => {
       expect(onSourceIds).toHaveBeenCalledWith([undefined, 'msg-1']);
       processSpy.mockRestore();
     });
+
+    it('should forward toolsConfig.disabledToolIdentifiers to MessagesEngine', async () => {
+      let capturedParams: any;
+      const processSpy = vi
+        .spyOn(MessagesEngine.prototype, 'process')
+        .mockImplementation(async function (this: any) {
+          capturedParams = this.params;
+          return {
+            messages: [{ content: 'ok', role: 'user' }],
+            metadata: { messageSourceIds: [undefined, 'msg-1'] },
+            stats: {},
+          } as any;
+        });
+
+      await serverMessagesEngine({
+        messages: createBasicMessages(),
+        model: 'gpt-4',
+        provider: 'openai',
+        toolsConfig: {
+          disabledToolIdentifiers: ['arckep-studio', 'lobe-cron'],
+          manifests: [],
+          tools: ['lobe-activator'],
+        },
+      });
+
+      expect(capturedParams?.toolsConfig?.disabledToolIdentifiers).toEqual([
+        'arckep-studio',
+        'lobe-cron',
+      ]);
+      processSpy.mockRestore();
+    });
   });
 });

@@ -103,6 +103,21 @@ const TOOL_PRICING: Record<string, number> = {
 
 const TOOL_MAX_RETRIES = 2;
 const DOCUMENTS_TOOL_IDENTIFIER = 'lobe-documents';
+export const UNRESOLVED_TOOL_FEEDBACK_LIMIT = 2;
+const UNRESOLVED_TOOL_IDENTIFIER = '__arckep_unresolved_tool__';
+const UNRESOLVED_TOOL_STOP_MESSAGE =
+  'Не удалось выполнить запрос: модель повторно обратилась к недоступному инструменту. Попробуйте переформулировать задачу или включить нужный инструмент.';
+
+type UnresolvedToolCallItem = ReturnType<
+  ToolNameResolver['resolveWithDiagnostics']
+>['unresolved'][number];
+
+const stripSyntheticManifest = (
+  map: Record<string, LobeToolManifest> | undefined,
+): Record<string, LobeToolManifest> =>
+  Object.fromEntries(
+    Object.entries(map ?? {}).filter(([key]) => key !== UNRESOLVED_TOOL_IDENTIFIER),
+  );
 
 const diagnosticToolCall = (call: ChatToolPayload) =>
   call.identifier === 'arckep-text-file'
@@ -215,12 +230,16 @@ export const buildToolDiscoveryConfig = (
   enabledToolIds: string[],
 ) => {
   const enabledToolSet = new Set(enabledToolIds);
+  const disabledToolSet = new Set(operationToolSet.disabledToolIds ?? []);
 
   if (!enabledToolSet.has(LobeActivatorIdentifier)) return undefined;
 
   const availableTools = Object.entries(operationToolSet.manifestMap)
     .filter(
-      ([identifier]) => !enabledToolSet.has(identifier) && !HIDDEN_FROM_DISCOVERY.has(identifier),
+      ([identifier]) =>
+        !enabledToolSet.has(identifier) &&
+        !disabledToolSet.has(identifier) &&
+        !HIDDEN_FROM_DISCOVERY.has(identifier),
     )
     .map(([identifier, manifest]) => ({
       description: manifest.meta?.description || '',
@@ -231,6 +250,37 @@ export const buildToolDiscoveryConfig = (
   if (availableTools.length === 0) return undefined;
 
   return { availableTools };
+};
+
+const buildUnresolvedToolErrorMessage = (
+  unresolvedCall: UnresolvedToolCallItem,
+  toolDiscoveryConfig: ReturnType<typeof buildToolDiscoveryConfig>,
+  operationManifestMap: Record<string, LobeToolManifest>,
+): string => {
+  const { rawName, reason } = unresolvedCall;
+  const availableTools = toolDiscoveryConfig?.availableTools ?? [];
+  const availableIds = new Set(availableTools.map((t) => t.identifier));
+  const prefixCandidates = [
+    rawName,
+    rawName.split('____')[0],
+    rawName.split('__')[0],
+    rawName.split('/')[0],
+    rawName.split('.')[0],
+  ].filter(Boolean);
+  const isDiscoverable =
+    reason !== 'disabled' &&
+    (prefixCandidates.some((candidate) => availableIds.has(candidate)) ||
+      availableTools.some((t) =>
+        operationManifestMap[t.identifier]?.api?.some((api) => api.name === rawName),
+      ));
+
+  if (isDiscoverable) {
+    return `Tool "${rawName}" is not active in this step. Call lobe-activator____activateTools first to activate it, or choose from currently enabled tools.`;
+  }
+  if (reason === 'disabled') {
+    return `Tool "${rawName}" is disabled in this conversation and cannot be used.`;
+  }
+  return `Tool "${rawName}" is not available in this step. Check active tool names (format: identifier____apiName) and try again.`;
 };
 
 // A model can repeat a function name from conversation history even when its schema is absent.
@@ -322,12 +372,17 @@ export const createRuntimeExecutors = (
     const provider = llmPayload.provider || state.modelRuntimeConfig?.provider;
     // Resolve tools via ToolResolver (unified tool injection)
     const activeDeviceId = state.metadata?.activeDeviceId;
-    const operationToolSet: OperationToolSet = state.operationToolSet ?? {
-      enabledToolIds: [],
-      manifestMap: state.toolManifestMap ?? {},
-      sourceMap: state.toolSourceMap ?? {},
-      tools: state.tools ?? [],
-    };
+    const operationToolSet: OperationToolSet = state.operationToolSet
+      ? {
+          ...state.operationToolSet,
+          manifestMap: stripSyntheticManifest(state.operationToolSet.manifestMap),
+        }
+      : {
+          enabledToolIds: [],
+          manifestMap: stripSyntheticManifest(state.toolManifestMap),
+          sourceMap: state.toolSourceMap ?? {},
+          tools: state.tools ?? [],
+        };
 
     const stepDelta = buildStepToolDelta({
       activeDeviceId,
@@ -395,8 +450,11 @@ export const createRuntimeExecutors = (
     }
 
     // Get or create assistant message
-    // If assistantMessageId is provided in payload, use existing message instead of creating new one
-    const existingAssistantMessageId = (llmPayload as any).assistantMessageId;
+    // If assistantMessageId is provided in payload (or reused after a pure synthetic unresolved-tool step),
+    // use existing message instead of creating an orphan empty assistant row in DB.
+    const existingAssistantMessageId =
+      (llmPayload as any).assistantMessageId ||
+      (state.metadata?.reuseAssistantMessageId as string | undefined);
     let assistantMessageItem: { id: string };
 
     if (existingAssistantMessageId) {
@@ -492,6 +550,21 @@ export const createRuntimeExecutors = (
           }
         }
 
+        const hasHistoricalSyntheticUnresolved =
+          state.metadata?.deliverUnresolvedToolFeedback !== true &&
+          (llmPayload.messages as any[]).some((m) =>
+            JSON.stringify(
+              m?.tools ?? m?.tool_calls ?? (Array.isArray(m?.children) ? m.children : ''),
+            ).includes(UNRESOLVED_TOOL_IDENTIFIER),
+          );
+        const baseDisabledIds =
+          operationToolSet.disabledToolIds !== undefined
+            ? operationToolSet.disabledToolIds.filter((id) => !resolved.enabledToolIds.includes(id))
+            : undefined;
+        const disabledToolIdentifiers = hasHistoricalSyntheticUnresolved
+          ? [...new Set([...(baseDisabledIds ?? []), UNRESOLVED_TOOL_IDENTIFIER])]
+          : baseDisabledIds;
+
         const contextEngineInput = {
           agentDocuments,
           additionalVariables: state.metadata?.deviceSystemInfo,
@@ -543,6 +616,7 @@ export const createRuntimeExecutors = (
           systemRole: agentConfig.systemRole ?? undefined,
           toolDiscoveryConfig,
           toolsConfig: {
+            ...(disabledToolIdentifiers !== undefined && { disabledToolIdentifiers }),
             manifests: Object.values(resolved.manifestMap),
             tools: resolved.enabledToolIds,
           },
@@ -712,6 +786,8 @@ export const createRuntimeExecutors = (
         let rawContent = '';
         let toolsCalling: ChatToolPayload[] = [];
         let tool_calls: MessageToolCall[] = [];
+        let resolvedToolCalls: ChatToolPayload[] = [];
+        let unresolvedToolCalls: UnresolvedToolCallItem[] = [];
         let thinkingContent = '';
         const imageList: any[] = [];
         let grounding: any = null;
@@ -863,6 +939,8 @@ export const createRuntimeExecutors = (
                   thinkingContent = '';
                   toolsCalling = [];
                   tool_calls = [];
+                  resolvedToolCalls = [];
+                  unresolvedToolCalls = [];
                   contentParts.length = 0;
                   reasoningParts.length = 0;
                   imageList.length = 0;
@@ -919,14 +997,34 @@ export const createRuntimeExecutors = (
                 }
               },
               onToolsCalling: async ({ toolsCalling: raw }) => {
-                const resolvedCalls = new ToolNameResolver().resolve(raw, resolved.manifestMap);
+                const passthroughIdentifiers = Object.entries(resolved.sourceMap)
+                  .filter(([, source]) => source === 'client')
+                  .map(([id]) => id);
+                const enforceActiveManifests =
+                  Object.keys(operationToolSet.manifestMap).length > 0 ||
+                  (operationToolSet.disabledToolIds?.length ?? 0) > 0;
+                const resolver = new ToolNameResolver();
+                const diagnostics = resolver.resolveWithDiagnostics(raw, resolved.manifestMap, {
+                  disabledToolIds: operationToolSet.disabledToolIds,
+                  enforceActiveManifests,
+                  passthroughIdentifiers,
+                });
+
+                for (const tc of raw) {
+                  const repaired = diagnostics.repairedNames[tc.id];
+                  if (repaired && tc.function) {
+                    tc.function.name = repaired;
+                  }
+                }
+
                 // Add source field from resolved sourceMap for routing tool execution
-                const payload = resolvedCalls.map((p) => ({
+                const resolvedPayload = diagnostics.resolved.map((p) => ({
                   ...p,
                   source: resolved.sourceMap[p.identifier],
                 }));
-                // log(`[${operationLogId}][toolsCalling]`, payload);
-                toolsCalling = payload;
+                resolvedToolCalls = resolvedPayload;
+                unresolvedToolCalls = diagnostics.unresolved;
+                toolsCalling = resolvedPayload;
                 tool_calls = raw;
 
                 // If textBuffer exists, flush it first
@@ -934,12 +1032,14 @@ export const createRuntimeExecutors = (
                   await flushTextBuffer();
                 }
 
-                await streamManager.publishStreamChunk(operationId, stepIndex, {
-                  chunkType: 'tools_calling',
-                  toolsCalling: payload.map((call) =>
-                    call.identifier === 'arckep-text-file' ? { ...call, arguments: '{}' } : call,
-                  ),
-                });
+                if (resolvedPayload.length > 0) {
+                  await streamManager.publishStreamChunk(operationId, stepIndex, {
+                    chunkType: 'tools_calling',
+                    toolsCalling: resolvedPayload.map((call) =>
+                      call.identifier === 'arckep-text-file' ? { ...call, arguments: '{}' } : call,
+                    ),
+                  });
+                }
               },
               onError: async (errorData) => {
                 streamError = errorData;
@@ -1110,10 +1210,10 @@ export const createRuntimeExecutors = (
             log(`[${operationLogId}][usage] %O`, currentStepUsage);
           }
 
-          // arckep: tool-call repeat guard
+          // arckep: tool-call repeat guard (tracks only real resolved calls)
           const toolCallRepeatGuard = updateToolCallRepeatGuard(
             state.toolCallRepeatGuard,
-            toolsCalling,
+            resolvedToolCalls,
           );
           let blockedRepeatedToolCall = false;
           if (hasRepeatedToolCall(toolCallRepeatGuard) && !(await isOperationInterrupted(ctx))) {
@@ -1121,7 +1221,82 @@ export const createRuntimeExecutors = (
             hasContentImages = false;
             toolsCalling = [];
             tool_calls = [];
+            resolvedToolCalls = [];
+            unresolvedToolCalls = [];
             blockedRepeatedToolCall = true;
+          }
+
+          const prevUnresolved = Number(state.metadata?.consecutiveUnresolvedToolCalls ?? 0);
+          let nextConsecutiveUnresolved: number | undefined;
+          let blockedUnresolvedToolCall = false;
+          const pendingUnresolvedErrors: Record<string, string> = {};
+          const syntheticManifestApis: Array<{
+            description: string;
+            humanIntervention: any;
+            name: string;
+            parameters: Record<string, any>;
+          }> = [];
+
+          if (!blockedRepeatedToolCall) {
+            if (unresolvedToolCalls.length === 0 && resolvedToolCalls.length > 0) {
+              nextConsecutiveUnresolved = 0;
+            } else if (unresolvedToolCalls.length > 0) {
+              nextConsecutiveUnresolved = resolvedToolCalls.length > 0 ? 0 : prevUnresolved + 1;
+
+              if (
+                resolvedToolCalls.length === 0 &&
+                nextConsecutiveUnresolved >= UNRESOLVED_TOOL_FEEDBACK_LIMIT &&
+                !(await isOperationInterrupted(ctx))
+              ) {
+                toolsCalling = [];
+                tool_calls = [];
+                if (!content.trim() && !hasContentImages) {
+                  content = UNRESOLVED_TOOL_STOP_MESSAGE;
+                  textBuffer += UNRESOLVED_TOOL_STOP_MESSAGE;
+                  await flushTextBuffer();
+                }
+                blockedUnresolvedToolCall = true;
+              } else {
+                const resolver = new ToolNameResolver();
+                const syntheticById = new Map<string, ChatToolPayload>();
+                for (const u of unresolvedToolCalls) {
+                  const safeApiName = (u.rawName.replaceAll(/[^\w-]/g, '_') || 'unknown').slice(
+                    0,
+                    32,
+                  );
+                  const safeWireName = resolver.generate(UNRESOLVED_TOOL_IDENTIFIER, safeApiName);
+                  const matchingRaw = tool_calls.find((tc) => tc.id === u.toolCall.id);
+                  if (matchingRaw?.function) {
+                    matchingRaw.function.name = safeWireName;
+                  }
+                  const errorMessage = buildUnresolvedToolErrorMessage(
+                    u,
+                    toolDiscoveryConfig,
+                    operationToolSet.manifestMap,
+                  );
+                  pendingUnresolvedErrors[u.toolCall.id] = errorMessage;
+                  syntheticById.set(u.toolCall.id, {
+                    apiName: safeApiName,
+                    arguments: '{}',
+                    id: u.toolCall.id,
+                    identifier: UNRESOLVED_TOOL_IDENTIFIER,
+                    type: 'builtin',
+                  });
+                  syntheticManifestApis.push({
+                    description: 'Synthetic unresolved tool placeholder',
+                    humanIntervention: {
+                      dynamic: { default: 'never', type: '__arckep_unresolved_noop__' },
+                    } as any,
+                    name: safeApiName,
+                    parameters: { properties: {}, type: 'object' },
+                  });
+                }
+                const resolvedById = new Map(resolvedToolCalls.map((c) => [c.id, c]));
+                toolsCalling = tool_calls
+                  .map((tc) => resolvedById.get(tc.id) ?? syntheticById.get(tc.id))
+                  .filter((c): c is ChatToolPayload => Boolean(c));
+              }
+            }
           }
 
           const htmlSyntaxRepairAttempts =
@@ -1131,6 +1306,7 @@ export const createRuntimeExecutors = (
           const canScheduleSyntaxRepair =
             htmlGateDiagnostics.length > 0 &&
             !blockedRepeatedToolCall &&
+            !blockedUnresolvedToolCall &&
             toolsCalling.length === 0 &&
             !state.forceFinish &&
             htmlSyntaxRepairAttempts <= 2 &&
@@ -1204,7 +1380,11 @@ export const createRuntimeExecutors = (
           events.push({
             result: {
               content: finalContent,
-              ...(blockedRepeatedToolCall ? { finishReason: 'tool_call_repeat_limit' } : {}),
+              ...(blockedRepeatedToolCall
+                ? { finishReason: 'tool_call_repeat_limit' }
+                : blockedUnresolvedToolCall
+                  ? { finishReason: 'unresolved_tool_call_limit' }
+                  : {}),
               reasoning: thinkingContent,
               tool_calls,
               usage: currentStepUsage,
@@ -1219,7 +1399,9 @@ export const createRuntimeExecutors = (
               grounding,
               imageList: imageList.length > 0 ? imageList : undefined,
               reasoning: thinkingContent || undefined,
-              toolsCalling,
+              toolsCalling: toolsCalling.filter(
+                (call) => call.identifier !== UNRESOLVED_TOOL_IDENTIFIER,
+              ),
               usage: currentStepUsage,
             },
             stepIndex,
@@ -1242,6 +1424,16 @@ export const createRuntimeExecutors = (
               content: thinkingContent,
             };
           }
+
+          const persistedToolsCalling = toolsCalling.filter(
+            (call) => call.identifier !== UNRESOLVED_TOOL_IDENTIFIER,
+          );
+          const shouldReuseAssistantForFollowUp =
+            toolsCalling.length > 0 &&
+            persistedToolsCalling.length === 0 &&
+            !finalContent.trim() &&
+            !hasContentImages &&
+            !finalReasoning;
 
           try {
             // Build metadata object
@@ -1266,8 +1458,8 @@ export const createRuntimeExecutors = (
               reasoning: finalReasoning,
               search: grounding,
               tools:
-                toolsCalling.length > 0
-                  ? toolsCalling.map((call) =>
+                persistedToolsCalling.length > 0
+                  ? persistedToolsCalling.map((call) =>
                       call.identifier === 'arckep-text-file' ? { ...call, arguments: '{}' } : call,
                     )
                   : undefined,
@@ -1296,6 +1488,55 @@ export const createRuntimeExecutors = (
           // ===== 2. Then accumulate to AgentState =====
           const newState = structuredClone(state);
           newState.toolCallRepeatGuard = toolCallRepeatGuard;
+          if (shouldReuseAssistantForFollowUp) {
+            newState.metadata = {
+              ...newState.metadata,
+              reuseAssistantMessageId: assistantMessageItem.id,
+            };
+          } else if (newState.metadata?.reuseAssistantMessageId) {
+            newState.metadata = {
+              ...newState.metadata,
+              reuseAssistantMessageId: undefined,
+            };
+          }
+          if (newState.metadata?.deliverUnresolvedToolFeedback) {
+            newState.metadata = {
+              ...newState.metadata,
+              deliverUnresolvedToolFeedback: undefined,
+            };
+          }
+          if (nextConsecutiveUnresolved !== undefined) {
+            newState.metadata = {
+              ...newState.metadata,
+              consecutiveUnresolvedToolCalls: nextConsecutiveUnresolved,
+            };
+          }
+          if (Object.keys(pendingUnresolvedErrors).length > 0) {
+            newState.metadata = {
+              ...newState.metadata,
+              pendingUnresolvedToolErrors: {
+                ...newState.metadata?.pendingUnresolvedToolErrors,
+                ...pendingUnresolvedErrors,
+              },
+            };
+            const existingApis = newState.toolManifestMap?.[UNRESOLVED_TOOL_IDENTIFIER]?.api ?? [];
+            const apiMap = new Map<string, any>();
+            for (const api of [...existingApis, ...syntheticManifestApis]) {
+              apiMap.set(api.name, api);
+            }
+            newState.toolManifestMap = {
+              ...newState.toolManifestMap,
+              [UNRESOLVED_TOOL_IDENTIFIER]: {
+                api: [...apiMap.values()],
+                humanIntervention: {
+                  dynamic: { default: 'never', type: '__arckep_unresolved_noop__' },
+                } as any,
+                identifier: UNRESOLVED_TOOL_IDENTIFIER,
+                meta: { title: 'Unresolved Tool' },
+                type: 'builtin',
+              } as any,
+            };
+          }
           if (htmlGateDiagnostics.length > 0) {
             newState.metadata = {
               ...newState.metadata,
@@ -1905,12 +2146,16 @@ export const createRuntimeExecutors = (
       toolCalling: diagnosticToolCall(payload.toolCalling),
     });
 
-    // Publish tool execution start event
-    await streamManager.publishStreamEvent(operationId, {
-      data: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
-      stepIndex,
-      type: 'tool_start',
-    });
+    const isSyntheticUnresolved = payload.toolCalling?.identifier === UNRESOLVED_TOOL_IDENTIFIER;
+
+    // Publish tool execution start event (skip internal synthetic unresolved tool)
+    if (!isSyntheticUnresolved) {
+      await streamManager.publishStreamEvent(operationId, {
+        data: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
+        stepIndex,
+        type: 'tool_start',
+      });
+    }
 
     try {
       throwIfAborted(ctx.signal);
@@ -1918,6 +2163,76 @@ export const createRuntimeExecutors = (
       const chatToolPayload: ChatToolPayload = payload.toolCalling;
 
       const toolName = `${chatToolPayload.identifier}/${chatToolPayload.apiName}`;
+
+      if (chatToolPayload.identifier === UNRESOLVED_TOOL_IDENTIFIER) {
+        const errorMessage =
+          state.metadata?.pendingUnresolvedToolErrors?.[chatToolPayload.id] ??
+          `Tool "${chatToolPayload.apiName}" is not available in this step.`;
+        const executionResult: ToolExecutionResultResponse = {
+          content: JSON.stringify({ error: errorMessage, success: false, synthetic: true }),
+          error: { message: errorMessage, type: 'ToolNotFound' },
+          executionTime: 0,
+          state: undefined,
+          success: false,
+        };
+
+        // Never persist __arckep_unresolved_tool__ rows to PostgreSQL: otherwise GET /messages
+        // renders an internal tool card in /chat UI and pollutes future topic turns.
+        const newState = structuredClone(state);
+        const remaining = { ...newState.metadata?.pendingUnresolvedToolErrors };
+        delete remaining[chatToolPayload.id];
+        newState.metadata = {
+          ...newState.metadata,
+          deliverUnresolvedToolFeedback: true,
+          pendingUnresolvedToolErrors: Object.keys(remaining).length > 0 ? remaining : undefined,
+        };
+        if (
+          !newState.metadata?.pendingUnresolvedToolErrors &&
+          newState.toolManifestMap?.[UNRESOLVED_TOOL_IDENTIFIER]
+        ) {
+          const cleanedMap = { ...newState.toolManifestMap };
+          delete cleanedMap[UNRESOLVED_TOOL_IDENTIFIER];
+          newState.toolManifestMap = cleanedMap;
+        }
+
+        newState.messages.push({
+          content: executionResult.content,
+          role: 'tool',
+          tool_call_id: chatToolPayload.id,
+        });
+
+        events.push({ id: chatToolPayload.id, result: executionResult, type: 'tool_result' });
+        if (ctx.signal?.aborted) newState.status = 'interrupted';
+
+        return {
+          events,
+          newState,
+          nextContext: {
+            payload: {
+              data: executionResult,
+              executionTime: 0,
+              isSuccess: false,
+              parentMessageId: payload.parentMessageId,
+              toolCall: chatToolPayload,
+              toolCallId: chatToolPayload.id,
+            },
+            phase: 'tool_result',
+            session: {
+              eventCount: events.length,
+              messageCount: newState.messages.length,
+              sessionId: operationId,
+              status: 'running',
+              stepCount: state.stepCount + 1,
+            },
+            stepUsage: {
+              cost: 0,
+              toolName,
+              unitPrice: 0,
+              usageCount: 1,
+            },
+          },
+        };
+      }
 
       // Check if this is a client-side function tool — pause instead of executing
       const toolSource =
@@ -2272,9 +2587,36 @@ export const createRuntimeExecutors = (
 
     // Execute server tools concurrently (skip client tools in mixed batch)
     const toolsToExecute = serverTools.length > 0 ? serverTools : toolsCalling;
+    const consumedUnresolvedIds: string[] = [];
     await Promise.all(
       toolsToExecute.map(async (chatToolPayload: ChatToolPayload) => {
         const toolName = `${chatToolPayload.identifier}/${chatToolPayload.apiName}`;
+
+        if (chatToolPayload.identifier === UNRESOLVED_TOOL_IDENTIFIER) {
+          const errorMessage =
+            state.metadata?.pendingUnresolvedToolErrors?.[chatToolPayload.id] ??
+            `Tool "${chatToolPayload.apiName}" is not available in this step.`;
+          const executionResult: ToolExecutionResultResponse = {
+            content: JSON.stringify({ error: errorMessage, success: false, synthetic: true }),
+            error: { message: errorMessage, type: 'ToolNotFound' },
+            executionTime: 0,
+            state: undefined,
+            success: false,
+          };
+          consumedUnresolvedIds.push(chatToolPayload.id);
+
+          // Never write __arckep_unresolved_tool__ tool rows to PostgreSQL; keep synthetic feedback in memory only.
+          toolResults.push({
+            data: executionResult,
+            executionTime: 0,
+            isSuccess: false,
+            synthetic: true,
+            toolCall: chatToolPayload,
+            toolCallId: chatToolPayload.id,
+          });
+          events.push({ id: chatToolPayload.id, result: executionResult, type: 'tool_result' });
+          return;
+        }
 
         // Publish tool execution start event
         await streamManager.publishStreamEvent(operationId, {
@@ -2418,6 +2760,25 @@ export const createRuntimeExecutors = (
 
     // Accumulate tool usage sequentially after all tools have finished
     const newState = structuredClone(state);
+    if (consumedUnresolvedIds.length > 0) {
+      const remaining = { ...newState.metadata?.pendingUnresolvedToolErrors };
+      for (const id of consumedUnresolvedIds) {
+        delete remaining[id];
+      }
+      newState.metadata = {
+        ...newState.metadata,
+        deliverUnresolvedToolFeedback: true,
+        pendingUnresolvedToolErrors: Object.keys(remaining).length > 0 ? remaining : undefined,
+      };
+      if (
+        !newState.metadata?.pendingUnresolvedToolErrors &&
+        newState.toolManifestMap?.[UNRESOLVED_TOOL_IDENTIFIER]
+      ) {
+        const cleanedMap = { ...newState.toolManifestMap };
+        delete cleanedMap[UNRESOLVED_TOOL_IDENTIFIER];
+        newState.toolManifestMap = cleanedMap;
+      }
+    }
     for (const result of toolResults) {
       if (
         result.toolCall.identifier === 'arckep-text-file' &&
@@ -2496,6 +2857,15 @@ export const createRuntimeExecutors = (
         newState.messages,
         newState.metadata.studioTextFileRequestId,
       );
+    } else if (toolMessageIds.length === 0 && toolResults.some((r) => r.synthetic)) {
+      // Purely synthetic unresolved batch: no DB tool rows were written, keep in-memory messages intact
+      for (const syn of toolResults.filter((r) => r.synthetic)) {
+        newState.messages.push({
+          content: syn.data.content,
+          role: 'tool',
+          tool_call_id: syn.toolCallId,
+        });
+      }
     } else {
       // Refresh messages from database to ensure state is in sync
 
@@ -2522,6 +2892,98 @@ export const createRuntimeExecutors = (
       // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
       const { flatList } = parse(latestMessages);
       newState.messages = hydrateGroupMessages(flatList, latestMessages);
+
+      const syntheticResults = toolResults.filter((r) => r.synthetic);
+      if (syntheticResults.length > 0) {
+        if (newState.messages.length === 0 && state.messages.length > 0) {
+          newState.messages = structuredClone(state.messages);
+        }
+
+        // Inject synthetic tool calls + results into hydrated assistantGroup child (or flat assistant)
+        // so Step 1's GroupMessageFlatten + ToolCallProcessor + ToolMessageReorder pair them in memory
+        // without ever persisting __arckep_unresolved_tool__ to PostgreSQL.
+        let attachedToGroup = false;
+        for (let i = newState.messages.length - 1; i >= 0; i--) {
+          const msg: any = newState.messages[i];
+          if (
+            msg?.role === 'assistantGroup' &&
+            Array.isArray(msg.children) &&
+            msg.children.length > 0
+          ) {
+            const targetChild =
+              msg.children.find((c: any) => c?.id === parentMessageId) ?? msg.children.at(-1);
+            if (targetChild) {
+              const existingIds = new Set(
+                (Array.isArray(targetChild.tools) ? targetChild.tools : []).map((t: any) => t?.id),
+              );
+              const appendedTools = syntheticResults
+                .filter((syn) => !existingIds.has(syn.toolCallId))
+                .map((syn) => ({
+                  ...syn.toolCall,
+                  result: {
+                    content: syn.data.content,
+                    id: `synthetic-${syn.toolCallId}`,
+                  },
+                }));
+              targetChild.tools = [...(targetChild.tools ?? []), ...appendedTools];
+              attachedToGroup = true;
+              break;
+            }
+          }
+        }
+
+        if (!attachedToGroup) {
+          const resolver = new ToolNameResolver();
+          const targetAssistant =
+            newState.messages.findLast(
+              (m: any) => m?.role === 'assistant' && (!parentMessageId || m.id === parentMessageId),
+            ) ?? newState.messages.findLast((m: any) => m?.role === 'assistant');
+          if (targetAssistant) {
+            if (Array.isArray((targetAssistant as any).tools)) {
+              const seenTools = new Set((targetAssistant as any).tools.map((t: any) => t?.id));
+              for (const syn of syntheticResults) {
+                if (!seenTools.has(syn.toolCallId)) {
+                  (targetAssistant as any).tools.push(syn.toolCall);
+                }
+              }
+            }
+            if (Array.isArray(targetAssistant.tool_calls)) {
+              const seenCalls = new Set(targetAssistant.tool_calls.map((tc: any) => tc?.id));
+              for (const syn of syntheticResults) {
+                if (!seenCalls.has(syn.toolCallId)) {
+                  targetAssistant.tool_calls.push({
+                    function: {
+                      arguments: '{}',
+                      name: resolver.generate(
+                        syn.toolCall.identifier,
+                        syn.toolCall.apiName,
+                        syn.toolCall.type,
+                      ),
+                    },
+                    id: syn.toolCallId,
+                    type: 'function',
+                  });
+                }
+              }
+            }
+          }
+
+          const existingToolCallIds = new Set(
+            newState.messages
+              .filter((m: any) => m.role === 'tool' && m.tool_call_id)
+              .map((m: any) => m.tool_call_id),
+          );
+          for (const syn of syntheticResults) {
+            if (!existingToolCallIds.has(syn.toolCallId)) {
+              newState.messages.push({
+                content: syn.data.content,
+                role: 'tool',
+                tool_call_id: syn.toolCallId,
+              });
+            }
+          }
+        }
+      }
 
       log(
         `[${operationLogId}][call_tools_batch] Refreshed ${newState.messages.length} messages from database`,

@@ -698,4 +698,225 @@ describe('ToolNameResolver', () => {
       expect(result[0].type).toBe(type);
     });
   });
+
+  describe('resolveWithDiagnostics & soft separator repair', () => {
+    const activeManifests = {
+      'lobe-image-designer': {
+        api: [{ description: 'Generate image', name: 'text2image', parameters: {} }],
+        identifier: 'lobe-image-designer',
+        meta: {},
+        type: 'builtin' as const,
+      },
+      'lobe-web-browsing': {
+        api: [
+          { description: 'Search web', name: 'search', parameters: {} },
+          { description: 'Read file', name: 'readFile', parameters: {} },
+        ],
+        identifier: 'lobe-web-browsing',
+        meta: {},
+        type: 'builtin' as const,
+      },
+      'mcp.github_v2': {
+        api: [
+          { description: 'Get issue', name: 'issues.get__detail', parameters: {} },
+          { description: 'Read file', name: 'readFile', parameters: {} },
+        ],
+        identifier: 'mcp.github_v2',
+        meta: {},
+        type: 'mcp' as const,
+      },
+    };
+
+    it('should repair __, ., and / separators (with or without type suffix) strictly within manifests', () => {
+      const toolCalls = [
+        {
+          function: { arguments: '{"q":"1"}', name: 'lobe-web-browsing__search' },
+          id: 'c1',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{"q":"2"}', name: 'lobe-web-browsing.search.builtin' },
+          id: 'c2',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{"q":"3"}', name: 'lobe-image-designer/text2image' },
+          id: 'c3',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{"id":42}', name: 'mcp.github_v2.issues.get__detail' },
+          id: 'c4',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{"id":43}', name: 'mcp.github_v2/issues.get__detail/mcp' },
+          id: 'c5',
+          type: 'function' as const,
+        },
+      ];
+
+      const diag = resolver.resolveWithDiagnostics(toolCalls, activeManifests, {
+        enforceActiveManifests: true,
+      });
+
+      expect(diag.unresolved).toEqual([]);
+      expect(diag.resolved).toHaveLength(5);
+      expect(diag.repairedNames).toEqual({
+        c1: 'lobe-web-browsing____search____builtin',
+        c2: 'lobe-web-browsing____search____builtin',
+        c3: 'lobe-image-designer____text2image____builtin',
+        c4: 'mcp.github_v2____issues.get__detail____mcp',
+        c5: 'mcp.github_v2____issues.get__detail____mcp',
+      });
+      expect(diag.resolved[3]).toMatchObject({
+        apiName: 'issues.get__detail',
+        identifier: 'mcp.github_v2',
+        type: 'mcp',
+      });
+
+      // resolve() also benefits from soft separator repair
+      expect(resolver.resolve(toolCalls, activeManifests)).toHaveLength(5);
+    });
+
+    it('should repair unique bare apiName and reject ambiguous bare apiName', () => {
+      const toolCalls = [
+        {
+          function: { arguments: '{"q":"unique"}', name: 'text2image' },
+          id: 'call_unique',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{"path":"a.md"}', name: 'readFile' },
+          id: 'call_ambiguous',
+          type: 'function' as const,
+        },
+      ];
+
+      const diag = resolver.resolveWithDiagnostics(toolCalls, activeManifests, {
+        enforceActiveManifests: true,
+      });
+
+      expect(diag.resolved).toEqual([
+        {
+          apiName: 'text2image',
+          arguments: '{"q":"unique"}',
+          id: 'call_unique',
+          identifier: 'lobe-image-designer',
+          thoughtSignature: undefined,
+          type: 'builtin',
+        },
+      ]);
+      expect(diag.repairedNames).toEqual({
+        call_unique: 'lobe-image-designer____text2image____builtin',
+      });
+      expect(diag.unresolved).toEqual([
+        {
+          rawName: 'readFile',
+          reason: 'ambiguous_bare_name',
+          toolCall: toolCalls[1],
+        },
+      ]);
+    });
+
+    it('should refuse to guess or repair tools absent from manifests (lazy or unknown)', () => {
+      const toolCalls = [
+        {
+          function: { arguments: '{}', name: 'lobe-knowledge-base____readKnowledge____builtin' },
+          id: 'call_lazy_quad',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'lobe-knowledge-base.readKnowledge' },
+          id: 'call_lazy_dot',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'readKnowledge' },
+          id: 'call_lazy_bare',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'other-plugin.search' },
+          id: 'call_wrong_prefix',
+          type: 'function' as const,
+        },
+      ];
+
+      const diag = resolver.resolveWithDiagnostics(toolCalls, activeManifests, {
+        enforceActiveManifests: true,
+      });
+
+      expect(diag.resolved).toEqual([]);
+      expect(diag.repairedNames).toEqual({});
+      expect(diag.unresolved.map((u) => [u.toolCall.id, u.reason])).toEqual([
+        ['call_lazy_quad', 'inactive_or_unknown'],
+        ['call_lazy_dot', 'invalid_format'],
+        ['call_lazy_bare', 'invalid_format'],
+        ['call_wrong_prefix', 'invalid_format'],
+      ]);
+    });
+
+    it('should block disabledToolIds across standard, corrupted, and hashed names while allowing passthroughIdentifiers', () => {
+      const longDisabledId = 'very-long-disabled-plugin-identifier-that-will-cause-overflow';
+      const hashedDisabledCall = resolver.generate(longDisabledId, 'secretAction', 'standalone');
+
+      const toolCalls = [
+        {
+          function: { arguments: '{}', name: 'arckep-studio____createImage____builtin' },
+          id: 'd1',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'arckep-studio__createImage' },
+          id: 'd2',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'arckep-studio.createImage' },
+          id: 'd3',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'arckep-studio/createImage' },
+          id: 'd4',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: hashedDisabledCall },
+          id: 'd5',
+          type: 'function' as const,
+        },
+        {
+          function: { arguments: '{}', name: 'lobe-client-fn____openModal' },
+          id: 'p1',
+          type: 'function' as const,
+        },
+      ];
+
+      const diag = resolver.resolveWithDiagnostics(toolCalls, activeManifests, {
+        disabledToolIds: ['arckep-studio', longDisabledId],
+        enforceActiveManifests: true,
+        passthroughIdentifiers: ['lobe-client-fn'],
+      });
+
+      expect(diag.resolved).toEqual([
+        {
+          apiName: 'openModal',
+          arguments: '{}',
+          id: 'p1',
+          identifier: 'lobe-client-fn',
+          thoughtSignature: undefined,
+          type: 'default',
+        },
+      ]);
+      expect(diag.unresolved.map((u) => [u.toolCall.id, u.reason])).toEqual([
+        ['d1', 'disabled'],
+        ['d2', 'disabled'],
+        ['d3', 'disabled'],
+        ['d4', 'disabled'],
+        ['d5', 'disabled'],
+      ]);
+    });
+  });
 });

@@ -129,6 +129,7 @@ export const serverMessagesEngine = async ({
     // Tools configuration
     toolDiscoveryConfig,
     toolsConfig: {
+      disabledToolIdentifiers: toolsConfig?.disabledToolIdentifiers,
       manifests: toolsConfig?.manifests,
       tools: toolsConfig?.tools,
     },

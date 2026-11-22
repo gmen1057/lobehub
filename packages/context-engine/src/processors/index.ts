@@ -11,6 +11,10 @@ export {
   RECENT_UNCOMPACTED_USER_TURNS,
 } from './ArckepToolResultTrim';
 export { CompressedGroupRoleTransformProcessor } from './CompressedGroupRoleTransform';
+export {
+  DisabledToolCallFilter,
+  type DisabledToolCallFilterConfig,
+} from './DisabledToolCallFilter';
 export { GroupMessageFlattenProcessor, hydrateGroupMessages } from './GroupMessageFlatten';
 export {
   type GroupOrchestrationFilterConfig,
@@ -22,6 +26,10 @@ export { HistoryTruncateProcessor } from './HistoryTruncate';
 export { InputTemplateProcessor } from './InputTemplate';
 export { MessageCleanupProcessor } from './MessageCleanup';
 export { MessageContentProcessor } from './MessageContent';
+export {
+  isEmptyOrPlaceholderAssistantMessage,
+  PlaceholderMessageFilter,
+} from './PlaceholderMessageFilter';
 export {
   buildPlaceholderGenerators,
   formatPlaceholderValues,
