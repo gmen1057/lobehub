@@ -102,8 +102,8 @@ describe('decodeSourceText', () => {
       expect((e as TextEncodingError).code).toBe('binary_content');
     }
 
-    // Control byte 0x07 (BEL) and 0x1B (ESC)
-    for (const ctrl of [0x01, 0x07, 0x08, 0x0e, 0x1b, 0x1f]) {
+    // Control bytes 0x01..0x08, 0x0E..0x1F, and 0x7F (DEL)
+    for (const ctrl of [0x01, 0x07, 0x08, 0x0e, 0x1b, 0x1f, 0x7f]) {
       const buf = Uint8Array.from([0x61, ctrl, 0x62]);
       expect(() => decodeSourceText(buf)).toThrowError(TextEncodingError);
       try {
@@ -136,12 +136,25 @@ describe('decodeSourceText', () => {
     }
   });
 
-  it('rejects single isolated non-UTF-8 high byte (e.g. truncated UTF-8 or lone Latin-1 char)', () => {
-    // "caf\xE9" in Latin-1 has only 1 high byte (0xE9)
-    const latin1Single = Uint8Array.from([0x63, 0x61, 0x66, 0xe9]);
-    expect(() => decodeSourceText(latin1Single)).toThrowError(TextEncodingError);
+  it('decodes single CP1251 Cyrillic or typography byte (synced with studio upload check) and rejects non-Cyrillic high byte', () => {
+    const singleCyrillic = encodeCp1251('Const RUB = "р"\r\n');
+    expect(decodeSourceText(singleCyrillic)).toEqual({
+      encoding: 'windows-1251',
+      lineEnding: 'CRLF',
+      text: 'Const RUB = "р"\r\n',
+    });
+
+    const singleNumero = encodeCp1251('Order №1\n');
+    expect(decodeSourceText(singleNumero)).toEqual({
+      encoding: 'windows-1251',
+      lineEnding: 'LF',
+      text: 'Order №1\n',
+    });
+
+    const singleNonCyrillic = Uint8Array.from([0x63, 0x61, 0x66, 0xa0]);
+    expect(() => decodeSourceText(singleNonCyrillic)).toThrowError(TextEncodingError);
     try {
-      decodeSourceText(latin1Single);
+      decodeSourceText(singleNonCyrillic);
     } catch (e) {
       expect((e as TextEncodingError).code).toBe('unsupported_encoding');
     }

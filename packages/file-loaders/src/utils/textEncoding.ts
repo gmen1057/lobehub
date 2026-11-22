@@ -24,11 +24,14 @@ export class TextEncodingError extends Error {
   }
 }
 
-const MIN_CP1251_HIGH_BYTES = 2;
+const MIN_CP1251_HIGH_BYTES = 1;
 const MIN_CP1251_VALID_RATIO = 0.75;
 
 const isBinaryControlByte = (byte: number): boolean =>
-  byte === 0x00 || (byte >= 0x01 && byte <= 0x08) || (byte >= 0x0e && byte <= 0x1f);
+  byte === 0x00 ||
+  (byte >= 0x01 && byte <= 0x08) ||
+  (byte >= 0x0e && byte <= 0x1f) ||
+  byte === 0x7f;
 
 const isCp1251CyrillicOrTypography = (byte: number): boolean =>
   (byte >= 0xc0 && byte <= 0xff) ||
