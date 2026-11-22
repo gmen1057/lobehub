@@ -24,6 +24,7 @@ export const TEXT_READABLE_FILE_TYPES = [
   'less',
   'js',
   'jsx',
+  'cjs',
   'ts',
   'tsx',
   'mjs',
@@ -49,6 +50,10 @@ export const TEXT_READABLE_FILE_TYPES = [
   'bash',
   'bat',
   'ps1',
+  'bas',
+  'cls',
+  'bsl',
+  'lua',
 
   // Other
   'log',
