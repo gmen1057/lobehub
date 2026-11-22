@@ -154,6 +154,101 @@ const chatStreamable = async function* <T>(stream: AsyncIterable<T>) {
 
 const ERROR_CHUNK_PREFIX = '%FIRST_CHUNK_ERROR%: ';
 
+const STREAM_INTERRUPTED_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNRESET',
+  'EPIPE',
+  'ERR_STREAM_PREMATURE_CLOSE',
+  'HPE_INVALID_EOF_STATE',
+  'PROVIDERSTREAMINTERRUPTED',
+  'PROVIDER_STREAM_INTERRUPTED',
+  'UND_ERR_SOCKET',
+]);
+
+const ABORT_ERROR_CODES = new Set(['ABORT_ERR', 'ERR_CANCELED', 'UND_ERR_ABORTED']);
+const ABORT_ERROR_NAMES = new Set(['APIUserAbortError', 'AbortError']);
+
+const ABORT_MESSAGE_RE =
+  /\b(?:request|stream|operation|agent execution)\s+was\s+(?:aborted|cancelled|canceled|interrupted)\b|^(?:stream cancelled|request aborted|operation aborted|this operation was aborted|the operation was aborted|agent execution (?:aborted|interrupted))$/i;
+
+const STREAM_INTERRUPTED_MESSAGE_RE =
+  /^(?:llm stream error:\s*)?(?:typeerror:\s*)?terminated(?:\s*:.*)?$|\b(?:econnreset|epipe|und_err_socket|hpe_invalid_eof_state|err_stream_premature_close|connection reset|other side closed|socket hang up|incomplete chunked read|premature close|stream ended unexpectedly|unexpected (?:eof|end of file)|peer closed connection)\b/i;
+
+export const isProviderStreamInterruptedError = (error: unknown): boolean => {
+  const seen = new Set<object>();
+  let isAborted = false;
+  let hasHttp4xx = false;
+  let isInterrupted = false;
+
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 5 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.length > 16_000) return;
+      if (ABORT_MESSAGE_RE.test(trimmed)) isAborted = true;
+      if (STREAM_INTERRUPTED_MESSAGE_RE.test(trimmed)) isInterrupted = true;
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.name === 'string' && ABORT_ERROR_NAMES.has(raw.name.trim())) {
+      isAborted = true;
+    }
+    if (raw.reason === 'aborted') {
+      isAborted = true;
+    }
+    if (raw.reason === 'unexpected_end') {
+      isInterrupted = true;
+    }
+    for (const statusField of ['status', 'statusCode']) {
+      const candidate = raw[statusField];
+      if (
+        typeof candidate === 'number' &&
+        Number.isFinite(candidate) &&
+        candidate >= 400 &&
+        candidate < 500
+      ) {
+        hasHttp4xx = true;
+      }
+    }
+    for (const typeField of ['errorType', 'type']) {
+      if (raw[typeField] === AgentRuntimeErrorType.ProviderStreamInterrupted) {
+        isInterrupted = true;
+      }
+    }
+    for (const codeField of ['code', 'errno']) {
+      const candidate = raw[codeField];
+      if (typeof candidate === 'string' && candidate.trim()) {
+        const normalized = candidate
+          .trim()
+          .toUpperCase()
+          .replaceAll(/[\s-]+/g, '_');
+        if (ABORT_ERROR_CODES.has(normalized)) isAborted = true;
+        if (STREAM_INTERRUPTED_CODES.has(normalized)) isInterrupted = true;
+      }
+    }
+    if (typeof raw.message === 'string') {
+      const trimmed = raw.message.trim();
+      if (ABORT_MESSAGE_RE.test(trimmed)) isAborted = true;
+      if (STREAM_INTERRUPTED_MESSAGE_RE.test(trimmed)) isInterrupted = true;
+    }
+
+    for (const nestedKey of ['cause', 'error', 'body']) {
+      if (raw[nestedKey] !== undefined) visit(raw[nestedKey], depth + 1);
+    }
+  };
+
+  visit(error);
+  return isInterrupted && !isAborted && !hasHttp4xx;
+};
+
 const pickNumericStatus = (...candidates: unknown[]): number | undefined => {
   for (const candidate of candidates) {
     if (typeof candidate === 'number' && Number.isFinite(candidate)) return candidate;
@@ -182,6 +277,10 @@ const pickRetrySafe = (directCandidates: unknown[], details: unknown): boolean |
 const serializeStreamErrorChunk = (e: unknown): string => {
   const error = e as Error;
   const raw = e && typeof e === 'object' ? (e as Record<string, unknown>) : undefined;
+  const causeRecord =
+    raw?.cause && typeof raw.cause === 'object' && !Array.isArray(raw.cause)
+      ? (raw.cause as Record<string, unknown>)
+      : undefined;
   const nested =
     raw?.error && typeof raw.error === 'object' && !Array.isArray(raw.error)
       ? (raw.error as Record<string, unknown>)
@@ -203,16 +302,29 @@ const serializeStreamErrorChunk = (e: unknown): string => {
       ? nested.code
       : undefined,
   );
-  const code = raw?.code ?? nested?.code ?? nestedError?.code;
+  const code = raw?.code ?? causeRecord?.code ?? nested?.code ?? nestedError?.code;
   const type =
     raw?.type ??
     (nested?.type === 'error' && nestedError?.type !== undefined
       ? nestedError.type
       : (nested?.type ?? nestedError?.type));
+  const errorType = isProviderStreamInterruptedError(e)
+    ? AgentRuntimeErrorType.ProviderStreamInterrupted
+    : typeof raw?.errorType === 'string'
+      ? raw.errorType
+      : undefined;
   const retrySafe = pickRetrySafe(
     [raw?.retrySafe, nested?.retrySafe, nestedError?.retrySafe],
     details,
   );
+  const causeSummary = causeRecord
+    ? {
+        ...(causeRecord.code !== undefined ? { code: causeRecord.code } : {}),
+        ...(typeof causeRecord.message === 'string' ? { message: causeRecord.message } : {}),
+        ...(typeof causeRecord.name === 'string' ? { name: causeRecord.name } : {}),
+      }
+    : undefined;
+  const hasCauseSummary = causeSummary && Object.keys(causeSummary).length > 0;
   const message =
     typeof error?.message === 'string' && !/^\s*\{/.test(error.message)
       ? error.message
@@ -224,8 +336,10 @@ const serializeStreamErrorChunk = (e: unknown): string => {
     return (
       ERROR_CHUNK_PREFIX +
       JSON.stringify({
+        ...(hasCauseSummary ? { cause: causeSummary } : {}),
         ...(code !== undefined ? { code } : {}),
         ...(details !== undefined ? { details } : {}),
+        ...(errorType !== undefined ? { errorType } : {}),
         message,
         name: error?.name,
         ...(retrySafe !== undefined ? { retrySafe } : {}),
@@ -237,7 +351,12 @@ const serializeStreamErrorChunk = (e: unknown): string => {
   } catch {
     return (
       ERROR_CHUNK_PREFIX +
-      JSON.stringify({ message: error?.message, name: error?.name, stack: error?.stack })
+      JSON.stringify({
+        ...(errorType !== undefined ? { errorType } : {}),
+        message: error?.message,
+        name: error?.name,
+        stack: error?.stack,
+      })
     );
   }
 };
@@ -532,11 +651,16 @@ export const createFirstErrorHandleTransformer = (
     transform(chunk, controller) {
       if (chunk.toString().startsWith(ERROR_CHUNK_PREFIX)) {
         const errorData = JSON.parse(chunk.toString().replace(ERROR_CHUNK_PREFIX, ''));
+        const defaultErrorType =
+          errorData.errorType === AgentRuntimeErrorType.ProviderStreamInterrupted ||
+          isProviderStreamInterruptedError(errorData)
+            ? AgentRuntimeErrorType.ProviderStreamInterrupted
+            : AgentRuntimeErrorType.ProviderBizError;
 
         controller.enqueue({
           ...errorData,
           [FIRST_CHUNK_ERROR_KEY]: true,
-          errorType: errorHandler?.(errorData) || AgentRuntimeErrorType.ProviderBizError,
+          errorType: errorHandler?.(errorData) || defaultErrorType,
           provider,
         });
       } else {

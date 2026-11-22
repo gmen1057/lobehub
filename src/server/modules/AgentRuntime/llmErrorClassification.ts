@@ -30,9 +30,96 @@ const RETRY_ERROR_TYPES = new Set([
   'AgentRuntimeError',
   'OllamaServiceUnavailable',
   'ProviderBizError',
+  'ProviderStreamInterrupted',
   'QuotaLimitReached',
   'StreamChunkError',
 ]);
+
+const STREAM_INTERRUPTED_CODES = new Set([
+  'ECONNABORTED',
+  'ECONNRESET',
+  'EPIPE',
+  'ERR_STREAM_PREMATURE_CLOSE',
+  'HPE_INVALID_EOF_STATE',
+  'PROVIDERSTREAMINTERRUPTED',
+  'PROVIDER_STREAM_INTERRUPTED',
+  'UND_ERR_SOCKET',
+]);
+
+const ABORT_CODES = new Set(['ABORT_ERR', 'ERR_CANCELED', 'UND_ERR_ABORTED']);
+const ABORT_NAMES = new Set(['APIUserAbortError', 'AbortError']);
+
+const ABORT_MESSAGE_RE =
+  /\b(?:request|stream|operation|agent execution)\s+was\s+(?:aborted|cancelled|canceled|interrupted)\b|^(?:stream cancelled|request aborted|operation aborted|this operation was aborted|the operation was aborted|agent execution (?:aborted|interrupted))$/i;
+
+const STREAM_INTERRUPTED_MESSAGE_RE =
+  /^(?:llm stream error:\s*)?(?:typeerror:\s*)?terminated(?:\s*:.*)?$|\b(?:econnreset|epipe|und_err_socket|hpe_invalid_eof_state|err_stream_premature_close|connection reset|other side closed|socket hang up|incomplete chunked read|premature close|stream ended unexpectedly|unexpected (?:eof|end of file)|peer closed connection)\b/i;
+
+const isStreamInterruptedError = (error: unknown, signal: LLMErrorSignal): boolean => {
+  if (signal.status !== undefined && signal.status >= 400 && signal.status < 500) {
+    return false;
+  }
+
+  const seen = new Set<object>();
+  let isAborted = false;
+  let isInterrupted =
+    signal.errorType === 'ProviderStreamInterrupted' ||
+    Boolean(signal.code && STREAM_INTERRUPTED_CODES.has(signal.code));
+
+  if (ABORT_MESSAGE_RE.test(signal.message.trim())) {
+    isAborted = true;
+  } else if (STREAM_INTERRUPTED_MESSAGE_RE.test(signal.message.trim())) {
+    isInterrupted = true;
+  }
+
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 5 || value === null || value === undefined) return;
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed || trimmed.length > 16_000) return;
+      if (ABORT_MESSAGE_RE.test(trimmed)) isAborted = true;
+      if (STREAM_INTERRUPTED_MESSAGE_RE.test(trimmed)) isInterrupted = true;
+      return;
+    }
+    if (typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (Array.isArray(value)) {
+      for (const item of value) visit(item, depth + 1);
+      return;
+    }
+    const raw = value as Record<string, unknown>;
+    if (typeof raw.name === 'string' && ABORT_NAMES.has(raw.name.trim())) {
+      isAborted = true;
+    }
+    if (raw.reason === 'aborted') isAborted = true;
+    if (raw.reason === 'unexpected_end') isInterrupted = true;
+    for (const typeField of ['errorType', 'type']) {
+      if (raw[typeField] === 'ProviderStreamInterrupted') isInterrupted = true;
+    }
+    for (const codeField of ['code', 'errno']) {
+      const candidate = raw[codeField];
+      if (typeof candidate === 'string' && candidate.trim()) {
+        const norm = candidate
+          .trim()
+          .toUpperCase()
+          .replaceAll(/[\s-]+/g, '_');
+        if (ABORT_CODES.has(norm)) isAborted = true;
+        if (STREAM_INTERRUPTED_CODES.has(norm)) isInterrupted = true;
+      }
+    }
+    if (typeof raw.message === 'string') {
+      const trimmed = raw.message.trim();
+      if (ABORT_MESSAGE_RE.test(trimmed)) isAborted = true;
+      if (STREAM_INTERRUPTED_MESSAGE_RE.test(trimmed)) isInterrupted = true;
+    }
+    for (const nestedKey of ['cause', 'error', 'body']) {
+      if (raw[nestedKey] !== undefined) visit(raw[nestedKey], depth + 1);
+    }
+  };
+
+  visit(error);
+  return isInterrupted && !isAborted;
+};
 const STOP_ERROR_TYPES = new Set([
   'ExceededContextWindow',
   'InsufficientQuota',
@@ -384,15 +471,27 @@ export const classifyLLMError = (error: unknown): ClassifiedLLMError => {
   };
 
   const providerWallet = recovery.providerCode === 'provider_credits_exhausted';
+  const customerBalance = !providerWallet && recovery.customerBalance;
+  const streamInterrupted =
+    !customerBalance &&
+    !signal.billing &&
+    !recovery.providerCode &&
+    isStreamInterruptedError(error, signal);
+  const resolvedSignal = streamInterrupted
+    ? { ...signal, errorType: 'ProviderStreamInterrupted' }
+    : signal;
+
   return {
-    billing: !providerWallet && recovery.customerBalance,
-    code: recovery.providerCode ?? (signal.code || signal.errorType),
-    kind: classifyKind(signal),
+    billing: customerBalance,
+    code:
+      recovery.providerCode ??
+      (streamInterrupted ? 'ProviderStreamInterrupted' : signal.code || signal.errorType),
+    kind: classifyKind(resolvedSignal),
     rejectedInput: recovery.rejectedInput,
     message: signal.message,
     retrySafe: signal.retrySafe,
     status: signal.status,
-    type: signal.errorType,
+    type: resolvedSignal.errorType,
   };
 };
 

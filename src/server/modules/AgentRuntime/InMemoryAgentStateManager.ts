@@ -1,7 +1,11 @@
 import { type AgentState } from '@lobechat/agent-runtime';
 import debug from 'debug';
 
-import { type AgentOperationMetadata, type StepResult } from './AgentStateManager';
+import {
+  type AgentOperationMetadata,
+  OPERATION_HEARTBEAT_TTL_SECONDS,
+  type StepResult,
+} from './AgentStateManager';
 import { preserveInterruption } from './agentStateWrite';
 import { type IAgentStateManager } from './types';
 
@@ -16,6 +20,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
   private steps: Map<string, any[]> = new Map();
   private metadata: Map<string, AgentOperationMetadata> = new Map();
   private events: Map<string, any[][]> = new Map();
+  private liveHeartbeats: Map<string, number> = new Map();
 
   async saveAgentState(operationId: string, state: AgentState): Promise<void> {
     preserveInterruption(this.states.get(operationId), state);
@@ -151,6 +156,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     const metadata: AgentOperationMetadata = {
       agentConfig: data.agentConfig,
       createdAt: new Date().toISOString(),
+      heartbeatSupported: true,
       lastActiveAt: new Date().toISOString(),
       modelRuntimeConfig: data.modelRuntimeConfig,
       status: 'idle',
@@ -160,6 +166,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     };
 
     this.metadata.set(operationId, metadata);
+    await this.touchOperationHeartbeat(operationId, OPERATION_HEARTBEAT_TTL_SECONDS);
     log('[%s] Created operation metadata', operationId);
   }
 
@@ -168,11 +175,43 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     this.steps.delete(operationId);
     this.metadata.delete(operationId);
     this.events.delete(operationId);
+    this.liveHeartbeats.delete(operationId);
     log('Deleted operation %s', operationId);
   }
 
   async getActiveOperations(): Promise<string[]> {
     return Array.from(this.states.keys());
+  }
+
+  async getActiveOperationsForTopic(topicId: string): Promise<string[]> {
+    if (!topicId) return [];
+    const marker = `_${topicId}_`;
+    return Array.from(this.states.keys()).filter((opId) => opId.includes(marker));
+  }
+
+  async touchOperationHeartbeat(
+    operationId: string,
+    ttlSeconds: number = OPERATION_HEARTBEAT_TTL_SECONDS,
+  ): Promise<void> {
+    this.liveHeartbeats.set(operationId, Date.now() + ttlSeconds * 1000);
+    const meta = this.metadata.get(operationId);
+    if (meta) meta.lastActiveAt = new Date().toISOString();
+  }
+
+  async clearOperationHeartbeat(operationId: string): Promise<void> {
+    this.liveHeartbeats.delete(operationId);
+  }
+
+  async hasOperationHeartbeat(operationId: string): Promise<boolean | null> {
+    const meta = this.metadata.get(operationId);
+    if (!meta?.heartbeatSupported) return null;
+    const expiresAt = this.liveHeartbeats.get(operationId);
+    if (expiresAt === undefined) return false;
+    if (Date.now() > expiresAt) {
+      this.liveHeartbeats.delete(operationId);
+      return false;
+    }
+    return true;
   }
 
   async cleanupExpiredOperations(): Promise<number> {
@@ -264,6 +303,7 @@ export class InMemoryAgentStateManager implements IAgentStateManager {
     this.steps.clear();
     this.metadata.clear();
     this.events.clear();
+    this.liveHeartbeats.clear();
     log('All data cleared');
   }
 

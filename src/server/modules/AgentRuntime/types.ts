@@ -14,6 +14,11 @@ export interface IAgentStateManager {
   cleanupExpiredOperations: () => Promise<number>;
 
   /**
+   * Clear live process heartbeat for a finished/aborted operation.
+   */
+  clearOperationHeartbeat?: (operationId: string) => Promise<void>;
+
+  /**
    * Create new operation metadata
    */
   createOperationMetadata: (
@@ -41,6 +46,11 @@ export interface IAgentStateManager {
   getActiveOperations: () => Promise<string[]>;
 
   /**
+   * Get operation IDs matching a specific topicId (non-blocking scan when backed by Redis).
+   */
+  getActiveOperationsForTopic?: (topicId: string) => Promise<string[]>;
+
+  /**
    * Get execution history
    */
   getExecutionHistory: (operationId: string, limit?: number) => Promise<any[]>;
@@ -59,6 +69,13 @@ export interface IAgentStateManager {
     errorOperations: number;
     totalOperations: number;
   }>;
+
+  /**
+   * Check whether a running operation still has an unexpired process heartbeat across slots.
+   * Returns `true` if alive, `false` if heartbeat-enabled operation lost its heartbeat (process crash),
+   * or `null` if the operation metadata predates heartbeat support (legacy rollout).
+   */
+  hasOperationHeartbeat?: (operationId: string) => Promise<boolean | null>;
 
   /** Atomically interrupt an active state; never overwrite a completed result. */
   interruptAgentState: (operationId: string) => Promise<AgentState | null>;
@@ -82,6 +99,11 @@ export interface IAgentStateManager {
    * Save step execution result
    */
   saveStepResult: (operationId: string, stepResult: StepResult) => Promise<void>;
+
+  /**
+   * Refresh live process heartbeat TTL for an active operation (multi-slot Blue-Green liveness).
+   */
+  touchOperationHeartbeat?: (operationId: string, ttlSeconds?: number) => Promise<void>;
 
   /**
    * Atomically try to claim a step for execution (distributed lock).

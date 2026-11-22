@@ -1,3 +1,4 @@
+import { isProviderStreamInterruptedError } from '../core/streams/protocol';
 import type { ILobeAgentRuntimeErrorType } from '../types/error';
 import { AgentRuntimeErrorType } from '../types/error';
 import { isExceededContextWindowError } from './isExceededContextWindowError';
@@ -267,6 +268,13 @@ export function parseGoogleErrorMessage(message: string): ParsedError {
   const errorObj = extractStatusCodeFromError(message);
   if (errorObj.errorDetails) {
     return { error: errorObj.errorDetails, errorType: AgentRuntimeErrorType.ProviderBizError };
+  }
+
+  if (isProviderStreamInterruptedError(message)) {
+    return {
+      error: { message },
+      errorType: AgentRuntimeErrorType.ProviderStreamInterrupted,
+    };
   }
 
   return defaultError;

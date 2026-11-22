@@ -1,5 +1,10 @@
 import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
-import { AgentRuntime, findInMessages, GeneralChatAgent } from '@lobechat/agent-runtime';
+import {
+  AgentRuntime,
+  findInMessages,
+  GeneralChatAgent,
+  UsageCounter,
+} from '@lobechat/agent-runtime';
 import type { ISnapshotStore } from '@lobechat/agent-tracing';
 import { dynamicInterventionAudits } from '@lobechat/builtin-tools/dynamicInterventionAudits';
 import { AgentRuntimeErrorType, ChatErrorType, type ChatMessageError } from '@lobechat/types';
@@ -11,8 +16,15 @@ import { type LobeChatDatabase } from '@/database/type';
 import { appEnv } from '@/envs/app';
 import { type AgentRuntimeCoordinatorOptions } from '@/server/modules/AgentRuntime';
 import { AgentRuntimeCoordinator, createStreamEventManager } from '@/server/modules/AgentRuntime';
+import {
+  DEFAULT_STEP_LOCK_TTL_SECONDS,
+  OPERATION_HEARTBEAT_TTL_SECONDS,
+} from '@/server/modules/AgentRuntime/AgentStateManager';
 import { resolveCompressionThresholds } from '@/server/modules/AgentRuntime/compressionThresholds';
-import { getPersistedLLMError } from '@/server/modules/AgentRuntime/persistedLLMError';
+import {
+  getFailedLLMPartialResult,
+  getPersistedLLMError,
+} from '@/server/modules/AgentRuntime/persistedLLMError';
 import { type RuntimeExecutorContext } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { createRuntimeExecutors } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { type IStreamEventManager } from '@/server/modules/AgentRuntime/types';
@@ -27,6 +39,11 @@ import { isAbortError, throwIfAborted } from './abort';
 import { seedActivatedStepToolsFromHistory } from './activatedToolsFromHistory';
 import { hookDispatcher } from './hooks';
 import { type OperationInterruption, watchOperationInterruption } from './operationInterruption';
+import {
+  findOrphanPlaceholderIdsInTopic,
+  markOrphanPlaceholdersInDB,
+  ORPHAN_LOADING_MIN_AGE_MS,
+} from './orphanPlaceholders';
 import {
   type AgentExecutionParams,
   type AgentExecutionResult,
@@ -205,17 +222,152 @@ export class AgentRuntimeService {
    * пользователя (кнопка «стоп» в студии). Id операции содержит тему: `op_<ts>_<agent>_<topic>_<rand>`.
    * Сохранённая отмена доходит до исполняющего процесса через поток событий операции.
    */
+  private async listTopicOperations(topicId: string): Promise<string[]> {
+    if (!topicId) return [];
+    if (typeof this.coordinator.getActiveOperationsForTopic === 'function') {
+      return this.coordinator.getActiveOperationsForTopic(topicId);
+    }
+    const marker = `_${topicId}_`;
+    const all = await this.coordinator.getActiveOperations();
+    return all.filter((opId) => opId.includes(marker));
+  }
+
   async interruptTopicOperations(topicId: string): Promise<number> {
     if (!topicId) return 0;
-    const marker = `_${topicId}_`;
+    let operationIds: string[];
+    try {
+      operationIds = await this.listTopicOperations(topicId);
+    } catch (error) {
+      log('Failed to list topic operations for interrupt (%s): %O', topicId, error);
+      return 0;
+    }
     let interrupted = 0;
-    for (const operationId of await this.coordinator.getActiveOperations()) {
-      if (!operationId.includes(marker)) continue;
+    for (const operationId of operationIds) {
       const metadata = await this.coordinator.getOperationMetadata(operationId);
       if (metadata?.userId && metadata.userId !== this.userId) continue;
       if (await this.interruptOperation(operationId)) interrupted += 1;
     }
     return interrupted;
+  }
+
+  /**
+   * Multi-slot Blue-Green liveness check for a topic across Redis / Coordinator.
+   * Ensures a long-running LLM/tool/compression step on a draining slot (`:3404`) is never
+   * mistaken for an orphan when another slot (`:3405`) reads or starts a turn on the same topic.
+   * Fails closed (`returns true`) on any transient Redis / coordinator read error.
+   */
+  async hasLiveTopicOperation(topicId: string, nowMs: number = Date.now()): Promise<boolean> {
+    if (!topicId) return false;
+
+    try {
+      const operationIds = await this.listTopicOperations(topicId);
+      if (operationIds.length === 0) return false;
+
+      const HEARTBEAT_GRACE_MS = (OPERATION_HEARTBEAT_TTL_SECONDS + 5) * 1000;
+      const WAITING_HUMAN_TTL_MS = 2 * 60 * 60 * 1000;
+      const LEGACY_LOCK_TTL_MS = DEFAULT_STEP_LOCK_TTL_SECONDS * 1000;
+
+      for (const operationId of operationIds) {
+        const [state, metadata] = await Promise.all([
+          this.coordinator.loadAgentState(operationId),
+          this.coordinator.getOperationMetadata(operationId),
+        ]);
+        if (!state && !metadata) continue;
+        if (metadata?.userId && metadata.userId !== this.userId) continue;
+
+        const status = metadata?.status ?? state?.status;
+        if (!status || status === 'done' || status === 'error' || status === 'interrupted') {
+          continue;
+        }
+
+        const lastActiveRaw = metadata?.lastActiveAt ?? state?.lastModified ?? metadata?.createdAt;
+        const lastActiveMs = lastActiveRaw ? new Date(lastActiveRaw).getTime() : Number.NaN;
+        const createdRaw = metadata?.createdAt ?? state?.createdAt;
+        const createdMs = createdRaw ? new Date(createdRaw).getTime() : Number.NaN;
+
+        if (status === 'waiting_for_human') {
+          if (!Number.isFinite(lastActiveMs) || nowMs - lastActiveMs < WAITING_HUMAN_TTL_MS) {
+            return true;
+          }
+          continue;
+        }
+
+        const heartbeat =
+          typeof this.coordinator.hasOperationHeartbeat === 'function'
+            ? await this.coordinator.hasOperationHeartbeat(operationId)
+            : null;
+        if (heartbeat === true) {
+          return true;
+        }
+
+        if (heartbeat === false) {
+          // Heartbeat-capable operation lost its lease (e.g. SIGKILL / OOM crash on a slot).
+          // Give newly created operations a brief startup grace before declaring them dead.
+          if (Number.isFinite(createdMs) && nowMs - createdMs < HEARTBEAT_GRACE_MS) {
+            return true;
+          }
+          continue;
+        }
+
+        // heartbeat === null: operation started on a legacy pre-heartbeat slot during rollout
+        if (!Number.isFinite(lastActiveMs) || nowMs - lastActiveMs < LEGACY_LOCK_TTL_MS) {
+          return true;
+        }
+      }
+
+      return false;
+    } catch (error) {
+      log(
+        'Failed to verify topic liveness for %s (failing closed to preserve live turns): %O',
+        topicId,
+        error,
+      );
+      return true;
+    }
+  }
+
+  /**
+   * Safely marks stale (`> 2 min`) orphaned `LOADING_FLAT` assistant rows in `topicId` as
+   * interrupted with `ProviderStreamInterrupted`, ONLY after verifying no slot/process owns a
+   * live operation for the topic.
+   */
+  async reapOrphanTopicPlaceholders(
+    topicId: string,
+    options?: {
+      candidateIds?: string[];
+      excludeMessageId?: string;
+      isTopicActiveLocally?: () => boolean;
+      minAgeMs?: number;
+      nowMs?: number;
+    },
+  ): Promise<string[]> {
+    if (!topicId || !this.userId || !this.serverDB) return [];
+    if (options?.isTopicActiveLocally?.()) return [];
+
+    const nowMs = options?.nowMs ?? Date.now();
+    const minAgeMs = options?.minAgeMs ?? ORPHAN_LOADING_MIN_AGE_MS;
+
+    const candidateIds =
+      options?.candidateIds ??
+      (await findOrphanPlaceholderIdsInTopic({
+        db: this.serverDB,
+        excludeMessageId: options?.excludeMessageId,
+        minAgeMs,
+        nowMs,
+        topicId,
+        userId: this.userId,
+      }));
+
+    if (candidateIds.length === 0) return [];
+    if (options?.isTopicActiveLocally?.()) return [];
+    if (await this.hasLiveTopicOperation(topicId, nowMs)) return [];
+
+    return markOrphanPlaceholdersInDB({
+      candidateIds,
+      db: this.serverDB,
+      nowMs,
+      userId: this.userId,
+    });
   }
 
   // ==================== Operation Management ====================
@@ -259,6 +411,18 @@ export class AgentRuntimeService {
 
     try {
       throwIfAborted(signal, 'Agent execution aborted before operation startup');
+
+      if (appContext?.topicId) {
+        try {
+          await this.reapOrphanTopicPlaceholders(appContext.topicId, {
+            excludeMessageId: (
+              initialContext?.payload as { assistantMessageId?: string } | undefined
+            )?.assistantMessageId,
+          });
+        } catch (reapError) {
+          log('[%s] Non-fatal orphan placeholder reap error: %O', operationId, reapError);
+        }
+      }
 
       const memories = userMemory?.memories;
       log(
@@ -454,6 +618,14 @@ export class AgentRuntimeService {
       };
     }
 
+    const HEARTBEAT_REFRESH_MS = 25_000;
+    await this.coordinator.touchOperationHeartbeat?.(operationId);
+    const heartbeatTimer = setInterval(() => {
+      void this.coordinator.touchOperationHeartbeat?.(operationId);
+    }, HEARTBEAT_REFRESH_MS);
+    heartbeatTimer.unref?.();
+    let clearHeartbeatOnExit = false;
+
     let interruption: OperationInterruption | undefined;
     try {
       log('[%s][%d] Start step executing...', operationId, stepIndex);
@@ -593,9 +765,35 @@ export class AgentRuntimeService {
       throwIfAborted(interruption.signal);
       const stepResult = await runtime.step(currentState, currentContext);
       // AgentRuntime catches executor failures itself. Normalize before JSON
-      // persistence/SSE, while the original error still has its safe mapping.
-      const persistedError = getPersistedLLMError(stepResult.newState.error);
+      // persistence/SSE, while the original error still has its safe mapping
+      // and any paid partial output / token usage emitted before mid-stream drop.
+      const rawStepError = stepResult.newState.error;
+      const partialFailureResult = getFailedLLMPartialResult(rawStepError);
+      const persistedError = getPersistedLLMError(rawStepError);
       if (persistedError) stepResult.newState.error = persistedError;
+      if (partialFailureResult) {
+        if (partialFailureResult.content) {
+          stepResult.newState.messages = [
+            ...(stepResult.newState.messages ?? []),
+            { content: partialFailureResult.content, role: 'assistant' },
+          ];
+        }
+        if (
+          partialFailureResult.usage &&
+          partialFailureResult.model &&
+          partialFailureResult.provider
+        ) {
+          const { usage, cost } = UsageCounter.accumulateLLM({
+            cost: stepResult.newState.cost,
+            model: partialFailureResult.model,
+            modelUsage: partialFailureResult.usage,
+            provider: partialFailureResult.provider,
+            usage: stepResult.newState.usage,
+          });
+          stepResult.newState.usage = usage;
+          if (cost) stepResult.newState.cost = cost;
+        }
+      }
       for (const event of stepResult.events) {
         if (event.type === 'error') {
           const persistedEventError = getPersistedLLMError(event.error);
@@ -1009,6 +1207,7 @@ export class AgentRuntimeService {
 
       // Check if operation is complete
       if (!shouldContinue) {
+        clearHeartbeatOnExit = true;
         const reason = this.determineCompletionReason(stepResult.newState);
 
         // Dispatch onComplete hooks
@@ -1070,6 +1269,7 @@ export class AgentRuntimeService {
         success: true,
       };
     } catch (error) {
+      clearHeartbeatOnExit = true;
       if (isAbortError(error) && interruption?.signal.aborted) {
         const state = await this.coordinator.loadAgentState(operationId);
         if (!state) throw error;
@@ -1138,12 +1338,19 @@ export class AgentRuntimeService {
 
       throw error;
     } finally {
+      clearInterval(heartbeatTimer);
       try {
-        await interruption?.dispose();
+        if (clearHeartbeatOnExit) {
+          await this.coordinator.clearOperationHeartbeat?.(operationId);
+        }
       } finally {
-        // Release even if subscription cleanup fails. Process death remains
-        // covered by the existing lock TTL.
-        await this.coordinator.releaseStepLock(operationId, stepIndex);
+        try {
+          await interruption?.dispose();
+        } finally {
+          // Release even if subscription cleanup fails. Process death remains
+          // covered by the existing lock TTL.
+          await this.coordinator.releaseStepLock(operationId, stepIndex);
+        }
       }
     }
   }

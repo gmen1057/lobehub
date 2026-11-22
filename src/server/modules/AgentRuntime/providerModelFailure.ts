@@ -1,5 +1,9 @@
 /** Safe public reasons shared by message persistence and Responses. Vendor diagnostics stay private. */
 const failures = {
+  ProviderStreamInterrupted: [
+    502,
+    'Соединение с моделью прервалось во время ответа. Попробуйте ещё раз.',
+  ],
   context_length_exceeded: [
     413,
     'Текст слишком длинный для этой модели. Сократите сообщение или начните новый чат.',
@@ -42,6 +46,8 @@ export const providerModelFailure = (code: ProviderFailureCode) => {
 // Only map diagnostic codes with a known meaning. A bare 403 may also concern permissions.
 const aliases: Record<string, ProviderFailureCode> = {
   exceededcontextwindow: 'context_length_exceeded',
+  provider_stream_interrupted: 'ProviderStreamInterrupted',
+  providerstreaminterrupted: 'ProviderStreamInterrupted',
   content_policy_violation: 'provider_moderation',
   content_filter: 'provider_moderation',
   safety_violations: 'provider_moderation',

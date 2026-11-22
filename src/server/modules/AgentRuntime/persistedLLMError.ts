@@ -45,6 +45,15 @@ export const formatPersistedLLMError = (error: unknown): ChatMessageError => {
 
 const persistedErrors = new WeakMap<object, ChatMessageError>();
 
+export interface FailedLLMPartialResult {
+  content?: string;
+  model?: string;
+  provider?: string;
+  usage?: any;
+}
+
+const persistedPartialResults = new WeakMap<object, FailedLLMPartialResult>();
+
 /** Keep the original exception for diagnostics while state/stream use the saved safe cause. */
 export const rememberPersistedLLMError = (error: unknown, messageError: ChatMessageError) => {
   const original = error && typeof error === 'object' ? error : new Error(String(error));
@@ -54,3 +63,13 @@ export const rememberPersistedLLMError = (error: unknown, messageError: ChatMess
 
 export const getPersistedLLMError = (error: unknown) =>
   error && typeof error === 'object' ? persistedErrors.get(error) : undefined;
+
+export const rememberFailedLLMPartialResult = (
+  error: object,
+  partial: FailedLLMPartialResult,
+): void => {
+  persistedPartialResults.set(error, partial);
+};
+
+export const getFailedLLMPartialResult = (error: unknown): FailedLLMPartialResult | undefined =>
+  error && typeof error === 'object' ? persistedPartialResults.get(error) : undefined;

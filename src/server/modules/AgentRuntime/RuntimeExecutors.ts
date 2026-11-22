@@ -85,7 +85,12 @@ import {
 import { assertDeepSeekDocumentsGuardCompatible } from './deepseekDocumentGuard';
 import { classifyLLMError, type LLMErrorKind } from './llmErrorClassification';
 import { createEngineTraceCallbacks, withEngineTrace } from './llmTrace';
-import { formatPersistedLLMError, rememberPersistedLLMError } from './persistedLLMError';
+import {
+  type FailedLLMPartialResult,
+  formatPersistedLLMError,
+  rememberFailedLLMPartialResult,
+  rememberPersistedLLMError,
+} from './persistedLLMError';
 import { persistFailedLLM } from './persistFailedLLM';
 import { persistInterruptedLLM } from './persistInterruptedLLM';
 import { fitRejectedPrompt } from './rejectedPrompt';
@@ -823,6 +828,8 @@ export const createRuntimeExecutors = (
       stepIndex,
       type: 'stream_start',
     });
+
+    let partialResultOnFailure: FailedLLMPartialResult | undefined;
 
     try {
       type ContentPart = { text: string; type: 'text' } | { image: string; type: 'image' };
@@ -2103,20 +2110,39 @@ export const createRuntimeExecutors = (
           // Retrying an emitted/billable response would replace received output
           // and may charge again. Keep it on the same assistant, then report the
           // failure; only an empty transient attempt can restart automatically.
+          const hasBillableGrounding = Boolean(
+            grounding &&
+            ((Array.isArray(grounding.citations) && grounding.citations.length > 0) ||
+              (Array.isArray((grounding as any).imageResults) &&
+                (grounding as any).imageResults.length > 0) ||
+              Boolean((grounding as any).deepseek?.server_tool_calls?.length) ||
+              Boolean((grounding as any).deepseek?.server_tool_events?.length) ||
+              Boolean((grounding as any).deepseek?.usage)),
+          );
           const hasReceivedResult = Boolean(
             rawContent ||
             thinkingContent ||
             hasContentImages ||
             hasReasoningImages ||
+            hasBillableGrounding ||
             toolsCalling.length ||
             tool_calls.length ||
             currentStepUsage,
           );
           if (hasReceivedResult) {
+            const partialContent = hasContentImages
+              ? serializePartsForStorage(contentParts)
+              : content;
+            partialResultOnFailure = {
+              content: partialContent,
+              model,
+              provider,
+              usage: currentStepUsage,
+            };
             try {
               await persistFailedLLM(ctx, {
                 assistantMessageId: assistantMessageItem.id,
-                content: hasContentImages ? serializePartsForStorage(contentParts) : content,
+                content: partialContent,
                 grounding,
                 imageList,
                 isMultimodal: hasContentImages,
@@ -2249,7 +2275,11 @@ export const createRuntimeExecutors = (
         `[StreamingLLMExecutor][${operationId}:${stepIndex}] LLM execution failed:`,
         error,
       );
-      throw rememberPersistedLLMError(error, messageError);
+      const remembered = rememberPersistedLLMError(error, messageError);
+      if (partialResultOnFailure) {
+        rememberFailedLLMPartialResult(remembered, partialResultOnFailure);
+      }
+      throw remembered;
     }
   },
 

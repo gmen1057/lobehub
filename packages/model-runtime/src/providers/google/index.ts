@@ -12,6 +12,7 @@ import { type LobeRuntimeAI } from '../../core/BaseAI';
 import { buildGoogleMessages, buildGoogleTools } from '../../core/contextBuilders/google';
 import { GoogleGenerativeAIStream } from '../../core/streams';
 import { LOBE_ERROR_KEY } from '../../core/streams/google';
+import { isProviderStreamInterruptedError } from '../../core/streams/protocol';
 import {
   type ChatCompletionTool,
   type ChatMethodOptions,
@@ -292,7 +293,10 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       const err = e as Error;
 
       // Remove previous silent handling, throw error uniformly
-      if (isAbortError(err)) {
+      if (
+        (isAbortError(err) && !isProviderStreamInterruptedError(err)) ||
+        options?.signal?.aborted
+      ) {
         log('Request was cancelled');
         throw AgentRuntimeError.chat({
           error: { message: 'Request was cancelled' },
@@ -302,9 +306,21 @@ export class LobeGoogleAI implements LobeRuntimeAI {
       }
 
       log('Error: %O', err);
-      const { errorType, error } = parseGoogleErrorMessage(err.message);
+      const { errorType: parsedErrorType, error } = parseGoogleErrorMessage(err.message);
+      const streamInterrupted =
+        (parsedErrorType === AgentRuntimeErrorType.ProviderBizError ||
+          parsedErrorType === AgentRuntimeErrorType.ProviderStreamInterrupted) &&
+        isProviderStreamInterruptedError(err);
+      const errorType = streamInterrupted
+        ? AgentRuntimeErrorType.ProviderStreamInterrupted
+        : parsedErrorType;
+      const causeCode = (err as any)?.code ?? (err as any)?.cause?.code;
+      const enrichedError =
+        streamInterrupted && causeCode && error && typeof error === 'object'
+          ? { ...error, code: error.code ?? causeCode }
+          : error;
 
-      throw AgentRuntimeError.chat({ error, errorType, provider: this.provider });
+      throw AgentRuntimeError.chat({ error: enrichedError, errorType, provider: this.provider });
     }
   }
 
@@ -409,7 +425,7 @@ export class LobeGoogleAI implements LobeRuntimeAI {
           const err = error as Error;
 
           // Handle all errors uniformly, including abort errors
-          if (isAbortError(err) || signal.aborted) {
+          if ((isAbortError(err) && !isProviderStreamInterruptedError(err)) || signal.aborted) {
             // If data has already been output, close the stream gracefully
             if (hasData) {
               log('Stream reading cancelled gracefully, preserving existing output');
@@ -447,14 +463,29 @@ export class LobeGoogleAI implements LobeRuntimeAI {
             // Handle other stream parsing errors
             log('Stream parsing error: %O', err);
             // Try to parse Google error and extract code/message/status
-            const { error: parsedError, errorType } = parseGoogleErrorMessage(
+            const { error: parsedError, errorType: parsedErrorType } = parseGoogleErrorMessage(
               err?.message || String(err),
             );
+            const streamInterrupted =
+              (parsedErrorType === AgentRuntimeErrorType.ProviderBizError ||
+                parsedErrorType === AgentRuntimeErrorType.ProviderStreamInterrupted) &&
+              isProviderStreamInterruptedError(err);
+            const errorType = streamInterrupted
+              ? AgentRuntimeErrorType.ProviderStreamInterrupted
+              : parsedErrorType;
+            const causeCode = (err as any)?.code ?? (err as any)?.cause?.code;
 
             // Inject an error marker with detailed error information to be handled by downstream google-ai transformer to output error event
             controller.enqueue({
               [LOBE_ERROR_KEY]: {
-                body: { ...parsedError, provider },
+                body: {
+                  ...parsedError,
+                  ...(streamInterrupted && causeCode
+                    ? { code: parsedError?.code ?? causeCode }
+                    : {}),
+                  provider,
+                },
+                ...(streamInterrupted && causeCode ? { code: causeCode } : {}),
                 message: parsedError?.message || err.message || 'Stream parsing error',
                 name: 'Stream parsing error',
                 type: errorType ?? AgentRuntimeErrorType.StreamChunkError,
