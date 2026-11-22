@@ -3,6 +3,7 @@ import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { Message, PipelineContext, ProcessorOptions } from '../types';
+import { rewriteSavedCodeArtifactTagsForLLM } from '../utils/codeArtifactTags';
 
 declare module '../types' {
   interface PipelineContextMetadataOverrides {
@@ -53,8 +54,12 @@ export class CompressedGroupRoleTransformProcessor extends BaseProcessor {
         log(`Transforming compressedGroup message to user role`);
 
         // Wrap the compressed summary content in a context block
-        const summaryContent = msg.content
-          ? `<compressed_history_summary>\n${msg.content}\n</compressed_history_summary>`
+        const sanitizedSummary =
+          typeof msg.content === 'string'
+            ? rewriteSavedCodeArtifactTagsForLLM(msg.content)
+            : msg.content;
+        const summaryContent = sanitizedSummary
+          ? `<compressed_history_summary>\n${sanitizedSummary}\n</compressed_history_summary>`
           : '';
         const wrappedContent =
           summaryContent +

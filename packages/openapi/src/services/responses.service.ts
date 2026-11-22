@@ -349,7 +349,11 @@ export class ResponsesService extends BaseService {
 
     for (let i = state.messages.length - 1; i >= 0; i--) {
       const msg = state.messages[i];
-      if (msg.role === 'assistant' && msg.content) {
+      if (
+        msg.role === 'assistant' &&
+        (msg as any).metadata?.internalRepairAttempt !== true &&
+        msg.content
+      ) {
         return typeof msg.content === 'string' ? msg.content : '';
       }
     }
@@ -378,6 +382,9 @@ export class ResponsesService extends BaseService {
     // Skip system messages; process assistant and tool messages in order
     for (const msg of state.messages) {
       if (msg.role === 'assistant') {
+        if ((msg as any).metadata?.internalRepairAttempt === true) {
+          continue;
+        }
         const hasToolCalls = msg.tool_calls && msg.tool_calls.length > 0;
 
         // Emit message item for assistant text content (even when tool_calls are present)
@@ -1169,6 +1176,9 @@ export class ResponsesService extends BaseService {
             // LLM retry — discard stale tool call state from the failed attempt
             // so we don't emit phantom function_calls on final flush
             activeToolCalls.clear();
+            if ((event.data as { resetText?: boolean } | undefined)?.resetText === true) {
+              accumulatedText = '';
+            }
           }
         }
       }

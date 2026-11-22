@@ -224,3 +224,57 @@ it('retains native citation offsets in completed output', () => {
   );
   expect((result.output[0] as any).content[0].annotations).toEqual(annotations);
 });
+
+it('skips discarded assistant messages marked with internalRepairAttempt', () => {
+  const messages = [
+    {
+      content: 'Вот модуль:\n[omitted invalid empty file reference tag]',
+      metadata: { internalRepairAttempt: true },
+      role: 'assistant',
+    },
+    {
+      content: 'Повтори ответ целиком с кодом',
+      role: 'user',
+    },
+    {
+      content: 'Вот исправленный код:\n```vb\nSub Main()\nEnd Sub\n```',
+      role: 'assistant',
+    },
+  ];
+
+  const { output, outputText } = callExtractOutputItems(messages, 'tpc_repair');
+
+  expect(output).toHaveLength(1);
+  expect((output[0] as any).content[0].text).toBe(
+    'Вот исправленный код:\n```vb\nSub Main()\nEnd Sub\n```',
+  );
+  expect(outputText).toBe('Вот исправленный код:\n```vb\nSub Main()\nEnd Sub\n```');
+});
+
+it('extractAssistantContent skips internalRepairAttempt messages so omitted markers never leak into output_text', () => {
+  const svc = new (ResponsesService as any)(null, null);
+  const onlyRepairState = {
+    messages: [
+      { content: 'Write code', role: 'user' },
+      {
+        content: 'Вот модуль:\n[omitted invalid empty file reference tag]',
+        metadata: { internalRepairAttempt: true },
+        role: 'assistant',
+      },
+      { content: 'Повтори ответ целиком', role: 'user' },
+    ],
+  };
+  expect(svc['extractAssistantContent'](onlyRepairState)).toBe('');
+
+  const withPriorAnswerState = {
+    messages: [
+      { content: 'Previous clean answer', role: 'assistant' },
+      {
+        content: '[omitted invalid empty file reference tag]',
+        metadata: { internalRepairAttempt: true },
+        role: 'assistant',
+      },
+    ],
+  };
+  expect(svc['extractAssistantContent'](withPriorAnswerState)).toBe('Previous clean answer');
+});

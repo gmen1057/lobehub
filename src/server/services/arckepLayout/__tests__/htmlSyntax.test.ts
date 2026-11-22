@@ -1,9 +1,6 @@
 // @vitest-environment node
 import { GeneralChatAgent } from '@lobechat/agent-runtime';
-import {
-  ArckepLayoutIdentifier,
-  ArckepLayoutManifest,
-} from '@lobechat/builtin-tool-arckep-layout';
+import { ArckepLayoutIdentifier, ArckepLayoutManifest } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepLayoutExecutionRuntime } from '@lobechat/builtin-tool-arckep-layout/executionRuntime';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -337,5 +334,82 @@ describe('HtmlArtifactStreamGate и перехват битого прямого
       reason: 'max_steps_completed',
       type: 'finish',
     });
+  });
+
+  it('блокирует пустой модельный <lobeArtifact ... src="/chat/code-artifact/..."> и поддерживает suppressCodeArtifactFallback', async () => {
+    const validExistingUuid = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+    const rawTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Module1.bas" language="vb" src="/chat/code-artifact/${validExistingUuid}/"></lobeArtifact>`;
+
+    const gateDefault = new HtmlArtifactStreamGate(async () => true);
+    const streamedDefault = gateDefault.push(`Часть 2:\n${rawTag}\nГотово.`);
+    expect(streamedDefault).toBe('Часть 2:\n');
+    const resDefault = await gateDefault.finalize();
+    expect(resDefault.valid).toBe(false);
+    expect(resDefault.diagnostics).toEqual([]);
+    expect(resDefault.codeArtifactDiagnostics).toHaveLength(1);
+    expect(resDefault.finalContent).toBe('Часть 2:\nФайл не сохранён.\nГотово.');
+    expect(streamedDefault + resDefault.postStreamDelta).toBe(resDefault.finalContent);
+    expect(resDefault.sanitizedAttemptContent).toBe(
+      'Часть 2:\n[omitted invalid empty file reference tag]\nГотово.',
+    );
+
+    const gateRepair = new HtmlArtifactStreamGate(async () => true);
+    const streamedRepair = gateRepair.push(`Часть 2:\n${rawTag}\nГотово.`);
+    expect(streamedRepair).toBe('Часть 2:\n');
+    const resRepair = await gateRepair.finalize({ suppressCodeArtifactFallback: true });
+    expect(resRepair.valid).toBe(false);
+    expect(resRepair.codeArtifactDiagnostics).toHaveLength(1);
+    expect(resRepair.finalContent).toBe('Часть 2:\n');
+    expect(resRepair.postStreamDelta).toBe('');
+    expect(resRepair.codeArtifactFallbackContent).toBe('Часть 2:\nФайл не сохранён.\nГотово.');
+    expect(resRepair.codeArtifactFallbackDelta).toBe('Файл не сохранён.\nГотово.');
+  });
+
+  it('M1: при смешанном валидном HTML и пустом /chat/code-artifact/ возвращает только неотправленный хвост и не вызывает saveHtml для подавленного HTML', async () => {
+    const validExistingUuid = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+    const htmlTag = `<lobeArtifact identifier="calc" type="text/html" title="Калькулятор">${VALID_INTERACTIVE_HTML}</lobeArtifact>`;
+    const codeTag = `<lobeArtifact type="application/lobe.artifacts.code" identifier="code-vb-1" title="Module1.bas" language="vb" src="/chat/code-artifact/${validExistingUuid}/"></lobeArtifact>`;
+
+    // Порядок 1: валидный HTML ПЕРЕД пустым code-artifact
+    const saveHtmlBefore = vi.fn(async () => ({
+      address: '/chat/f/file_HTML1/',
+      fileId: 'file_HTML1',
+    }));
+    const gateBefore = new HtmlArtifactStreamGate();
+    const deliveredBefore = gateBefore.push(`Intro ${htmlTag} middle ${codeTag} end`);
+    expect(deliveredBefore).toBe('Intro  middle ');
+    const resBefore = await gateBefore.finalize({
+      saveHtml: saveHtmlBefore,
+      suppressCodeArtifactFallback: true,
+    });
+    expect(saveHtmlBefore).toHaveBeenCalledOnce();
+    expect(resBefore.valid).toBe(false);
+    expect(resBefore.postStreamDelta).toContain('src="/chat/f/file_HTML1/"');
+    // Unsent remainder must NOT repeat the already-sent HTML tag
+    expect(resBefore.codeArtifactFallbackDelta).toBe('Файл не сохранён. end');
+    expect(resBefore.codeArtifactFallbackDelta).not.toContain('file_HTML1');
+
+    // Порядок 2: пустой code-artifact ПЕРЕД валидным HTML
+    const saveHtmlAfter = vi.fn(async () => ({
+      address: '/chat/f/file_HTML2/',
+      fileId: 'file_HTML2',
+    }));
+    const gateAfter = new HtmlArtifactStreamGate();
+    const deliveredAfter = gateAfter.push(`Intro ${codeTag} middle ${htmlTag} end`);
+    expect(deliveredAfter).toBe('Intro ');
+    const resAfter = await gateAfter.finalize({
+      saveHtml: saveHtmlAfter,
+      suppressCodeArtifactFallback: true,
+    });
+    // Suppressed HTML segment must NOT trigger saveHtml upload
+    expect(saveHtmlAfter).not.toHaveBeenCalled();
+    expect(resAfter.valid).toBe(false);
+    expect(resAfter.finalContent).toBe('Intro ');
+    expect(resAfter.postStreamDelta).toBe('');
+    expect(resAfter.codeArtifactFallbackDelta).toContain('Файл не сохранён. middle ');
+    expect(resAfter.codeArtifactFallbackDelta).toContain('<lobeArtifact identifier="calc"');
+    expect(deliveredAfter + resAfter.postStreamDelta + resAfter.codeArtifactFallbackDelta).toBe(
+      resAfter.codeArtifactFallbackContent,
+    );
   });
 });

@@ -190,6 +190,7 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     expect(config.systemRole).toContain('mode="code_artifacts"');
     expect(config.systemRole).toContain('fileId');
     expect(config.systemRole).toContain('Keep the filename');
+    expect(config.systemRole).toContain('/chat/code-artifact/');
     const engine = vi.mocked(createServerAgentToolsEngine).mock.results[0].value;
     expect(engine.generateToolsDetailed).toHaveBeenCalledWith(
       expect.objectContaining({ toolIds: expect.arrayContaining(['lobe-topic-reference']) }),

@@ -1640,6 +1640,107 @@ describe('GeneralChatAgent', () => {
         type: 'compress_context',
       });
     });
+
+    it('should schedule call_llm (and preserve assistantMessageId across compress_context) for codeArtifactRepairError while respecting forceFinish and hasQueuedMessages', async () => {
+      const regularAgent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 10 },
+        compressionConfig: { enabled: false },
+        modelRuntimeConfig: mockModelRuntimeConfig,
+        operationId: 'op-code-repair',
+      });
+      const repairState = createMockState({
+        messages: [
+          { content: 'Write part 2', id: 'msg-u1', role: 'user' },
+          {
+            content: 'Here is part 2:\n[omitted invalid empty file reference tag]',
+            metadata: { internalRepairAttempt: true },
+            role: 'assistant',
+          },
+          { content: 'Repeat with real fenced code', role: 'user' },
+        ] as any,
+      });
+
+      const retryInstruction = await regularAgent.runner(
+        createMockContext('llm_result', {
+          codeArtifactRepairError: 'Model emitted an invalid empty <lobeArtifact> reference',
+          hasToolsCalling: false,
+          parentMessageId: 'asst-code-1',
+          toolsCalling: [],
+        }),
+        repairState,
+      );
+      expect(retryInstruction).toMatchObject({
+        payload: {
+          assistantMessageId: 'asst-code-1',
+          parentMessageId: 'asst-code-1',
+        },
+        type: 'call_llm',
+      });
+
+      const forcedResult = await regularAgent.runner(
+        createMockContext('llm_result', {
+          codeArtifactRepairError: 'Model emitted an invalid empty <lobeArtifact> reference',
+          hasToolsCalling: false,
+          parentMessageId: 'asst-code-1',
+          toolsCalling: [],
+        }),
+        { ...repairState, forceFinish: true },
+      );
+      expect(forcedResult).toMatchObject({
+        reason: 'max_steps_completed',
+        type: 'finish',
+      });
+
+      const queuedResult = await regularAgent.runner(
+        {
+          ...createMockContext('llm_result', {
+            codeArtifactRepairError: 'Model emitted an invalid empty <lobeArtifact> reference',
+            hasToolsCalling: false,
+            parentMessageId: 'asst-code-1',
+            toolsCalling: [],
+          }),
+          stepContext: { hasQueuedMessages: true },
+        },
+        repairState,
+      );
+      expect(queuedResult).toMatchObject({
+        reason: 'queued_message_interrupt',
+        type: 'finish',
+      });
+
+      const compressionAgent = createCompressionAgent();
+      const largeState = createMockState({
+        messages: [
+          { content: 'Earlier user turn', id: 'msg-0', role: 'user' },
+          { content: 'Earlier assistant reply', id: 'asst-0', role: 'assistant' },
+          { content: 'Write part 2', id: 'msg-1', role: 'user' },
+          {
+            content: '[omitted invalid empty file reference tag]',
+            metadata: { internalRepairAttempt: true },
+            role: 'assistant',
+          },
+        ] as any,
+      });
+      const compressResult = await compressionAgent.runner(
+        createMockContext('llm_result', {
+          codeArtifactRepairError: 'Model emitted an invalid empty <lobeArtifact> reference',
+          hasToolsCalling: false,
+          parentMessageId: 'asst-code-compress',
+          toolsCalling: [],
+        }),
+        largeState,
+      );
+      expect(compressResult).toEqual({
+        payload: {
+          assistantMessageId: 'asst-code-compress',
+          currentTokenCount: expect.any(Number),
+          existingSummary: undefined,
+          messages: largeState.messages,
+          parentMessageId: 'asst-code-compress',
+        },
+        type: 'compress_context',
+      });
+    });
   });
 
   describe('context compression hysteresis', () => {

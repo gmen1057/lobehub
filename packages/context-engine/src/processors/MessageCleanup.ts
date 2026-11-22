@@ -2,6 +2,7 @@ import debug from 'debug';
 
 import { BaseProcessor } from '../base/BaseProcessor';
 import type { PipelineContext, ProcessorOptions } from '../types';
+import { rewriteStoredMessageContentForLLM } from '../utils/codeArtifactTags';
 import { deepseekApplicationContext } from './deepseekApplicationContext';
 
 declare module '../types' {
@@ -86,7 +87,7 @@ export class MessageCleanupProcessor extends BaseProcessor {
 
       case 'assistant': {
         return {
-          content: message.content,
+          content: rewriteStoredMessageContentForLLM(message.content),
           role: message.role,
           ...(message.tool_calls && { tool_calls: message.tool_calls }),
           ...(message.reasoning && { reasoning: message.reasoning }),

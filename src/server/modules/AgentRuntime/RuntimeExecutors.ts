@@ -33,6 +33,8 @@ import {
   type OperationToolSet,
   type ResolvedToolSet,
   resolveTopicReferences,
+  rewriteSavedCodeArtifactTagsForLLM,
+  rewriteStoredMessageContentForLLM,
   SkillResolver,
   ToolNameResolver,
   ToolResolver,
@@ -69,7 +71,6 @@ import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
 } from '@/server/services/toolExecution';
-import { isTrustedPrivateCodeFile } from '@/server/services/topicContext/codeArtifacts';
 import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
@@ -128,7 +129,7 @@ const truncateForSummarizer = (text: string, label: string): string => {
   );
 };
 
-const prepareMessageForSummarizer = (message: UIChatMessage): UIChatMessage => {
+export const prepareMessageForSummarizer = (message: UIChatMessage): UIChatMessage => {
   let nextContent = message.content;
   let contentChanged = false;
   if (
@@ -138,6 +139,33 @@ const prepareMessageForSummarizer = (message: UIChatMessage): UIChatMessage => {
   ) {
     nextContent = truncateForSummarizer(message.content, 'tool result');
     contentChanged = true;
+  } else if (
+    (message.role === 'assistant' || message.role === 'assistantGroup') &&
+    typeof message.content === 'string'
+  ) {
+    const rewritten = rewriteStoredMessageContentForLLM(message.content) as string;
+    if (rewritten !== message.content) {
+      nextContent = rewritten;
+      contentChanged = true;
+    }
+  }
+
+  let nextChildren = (message as any).children;
+  let childrenChanged = false;
+  if (message.role === 'assistantGroup' && Array.isArray(nextChildren)) {
+    const mappedChildren = nextChildren.map((child: any) => {
+      if (child && typeof child.content === 'string') {
+        const rewritten = rewriteStoredMessageContentForLLM(child.content) as string;
+        if (rewritten !== child.content) {
+          childrenChanged = true;
+          return { ...child, content: rewritten };
+        }
+      }
+      return child;
+    });
+    if (childrenChanged) {
+      nextChildren = mappedChildren;
+    }
   }
 
   let nextTools = message.tools;
@@ -158,10 +186,11 @@ const prepareMessageForSummarizer = (message: UIChatMessage): UIChatMessage => {
     toolsChanged = true;
   }
 
-  if (!contentChanged && !toolsChanged) return message;
+  if (!contentChanged && !toolsChanged && !childrenChanged) return message;
   return {
     ...message,
     ...(contentChanged ? { content: nextContent } : {}),
+    ...(childrenChanged ? { children: nextChildren } : {}),
     ...(toolsChanged ? { tools: nextTools } : {}),
   };
 };
@@ -1106,19 +1135,7 @@ export const createRuntimeExecutors = (
         const reasoningParts: ContentPart[] = [];
         let hasContentImages = false;
         let hasReasoningImages = false;
-        const htmlStreamGate = new HtmlArtifactStreamGate(async (fileId) =>
-          Boolean(
-            ctx.serverDB &&
-            ctx.userId &&
-            (state.metadata?.topicId ?? ctx.topicId) &&
-            (await isTrustedPrivateCodeFile(
-              ctx.serverDB,
-              ctx.userId,
-              state.metadata?.topicId ?? ctx.topicId,
-              fileId,
-            )),
-          ),
-        );
+        const htmlStreamGate = new HtmlArtifactStreamGate();
         textBuffer = '';
         reasoningBuffer = '';
 
@@ -1477,9 +1494,26 @@ export const createRuntimeExecutors = (
             rawContent = content;
             textBuffer = content;
           }
+          const prevCodeArtifactRepairAttempts =
+            (state.metadata?.codeArtifactRepairAttempts as number | undefined) ?? 0;
+          const canTentativelyRepairCodeArtifact =
+            toolsCalling.length === 0 &&
+            tool_calls.length === 0 &&
+            !state.forceFinish &&
+            prevCodeArtifactRepairAttempts + 1 <= 2 &&
+            !ctx.signal?.aborted &&
+            !(await isOperationInterrupted(ctx));
+
           let htmlGateDiagnostics: string[] = [];
+          let codeArtifactGateDiagnostics: string[] = [];
+          let codeArtifactSanitizedAttempt: string | undefined;
+          let codeArtifactFallbackContent: string | undefined;
+          let codeArtifactFallbackDelta: string | undefined;
+          let suppressedCodeArtifactFallback = false;
           if (rawContent.includes('<lobeArtifact') || rawContent !== content) {
-            const gateResult = await htmlStreamGate.finalize();
+            const gateResult = await htmlStreamGate.finalize({
+              suppressCodeArtifactFallback: canTentativelyRepairCodeArtifact,
+            });
             if (gateResult.postStreamDelta) {
               textBuffer += gateResult.postStreamDelta;
               if (hasContentImages) {
@@ -1489,6 +1523,17 @@ export const createRuntimeExecutors = (
             content = gateResult.finalContent;
             if (!gateResult.valid) {
               htmlGateDiagnostics = gateResult.diagnostics;
+              codeArtifactGateDiagnostics = gateResult.codeArtifactDiagnostics;
+              codeArtifactSanitizedAttempt = gateResult.sanitizedAttemptContent;
+              if (
+                canTentativelyRepairCodeArtifact &&
+                gateResult.codeArtifactDiagnostics.length > 0 &&
+                gateResult.codeArtifactFallbackContent !== undefined
+              ) {
+                suppressedCodeArtifactFallback = true;
+                codeArtifactFallbackContent = gateResult.codeArtifactFallbackContent;
+                codeArtifactFallbackDelta = gateResult.codeArtifactFallbackDelta ?? '';
+              }
             }
           }
 
@@ -1624,9 +1669,46 @@ export const createRuntimeExecutors = (
           const htmlArtifactSyntaxError = canScheduleSyntaxRepair
             ? htmlGateDiagnostics.join('\n\n')
             : undefined;
+
+          const codeArtifactRepairAttempts =
+            codeArtifactGateDiagnostics.length > 0 && !htmlArtifactSyntaxError
+              ? prevCodeArtifactRepairAttempts + 1
+              : prevCodeArtifactRepairAttempts;
+          const canScheduleCodeArtifactRepair =
+            codeArtifactGateDiagnostics.length > 0 &&
+            !htmlArtifactSyntaxError &&
+            !blockedRepeatedToolCall &&
+            !blockedUnresolvedToolCall &&
+            toolsCalling.length === 0 &&
+            !state.forceFinish &&
+            codeArtifactRepairAttempts <= 2 &&
+            !ctx.signal?.aborted &&
+            !(await isOperationInterrupted(ctx));
+          const codeArtifactRepairError = canScheduleCodeArtifactRepair
+            ? codeArtifactGateDiagnostics.join('\n\n')
+            : undefined;
+
+          if (
+            codeArtifactGateDiagnostics.length > 0 &&
+            !canScheduleCodeArtifactRepair &&
+            !canScheduleSyntaxRepair &&
+            suppressedCodeArtifactFallback &&
+            codeArtifactFallbackContent !== undefined
+          ) {
+            if (codeArtifactFallbackDelta) {
+              textBuffer += codeArtifactFallbackDelta;
+              if (hasContentImages) {
+                appendTextToContentParts(codeArtifactFallbackDelta);
+              }
+              await flushTextBuffer();
+            }
+            content = codeArtifactFallbackContent;
+          }
+
           if (
             htmlGateDiagnostics.length > 0 &&
             !canScheduleSyntaxRepair &&
+            !canScheduleCodeArtifactRepair &&
             toolsCalling.length === 0
           ) {
             const fallbackNotice =
@@ -1642,7 +1724,8 @@ export const createRuntimeExecutors = (
             ctx.userId &&
             artifactTopicId &&
             toolsCalling.length === 0 &&
-            !htmlArtifactSyntaxError
+            !htmlArtifactSyntaxError &&
+            !codeArtifactRepairError
           ) {
             originalCodeArtifactContent = hasContentImages
               ? serializePartsForStorage(contentParts)
@@ -1717,6 +1800,17 @@ export const createRuntimeExecutors = (
             type: 'stream_end',
           });
 
+          if (htmlArtifactSyntaxError || codeArtifactRepairError) {
+            await streamManager.publishStreamEvent(operationId, {
+              data: {
+                reason: htmlArtifactSyntaxError ? 'html_artifact_repair' : 'code_artifact_repair',
+                resetText: true,
+              },
+              stepIndex,
+              type: 'stream_retry',
+            });
+          }
+
           log('[%s:%d] call_llm completed', operationId, stepIndex);
 
           // Determine final reasoning - handle multimodal reasoning
@@ -1781,6 +1875,8 @@ export const createRuntimeExecutors = (
             ctx.serverDB &&
             ctx.userId &&
             toolsCalling.length === 0 &&
+            !htmlArtifactSyntaxError &&
+            !codeArtifactRepairError &&
             shouldAutoAttachSpreadsheet(
               finalContent,
               llmPayload.messages as Array<{ content?: unknown; role?: string }>,
@@ -1852,11 +1948,22 @@ export const createRuntimeExecutors = (
               htmlSyntaxRepairAttempts,
             };
           }
+          if (codeArtifactGateDiagnostics.length > 0 && !htmlArtifactSyntaxError) {
+            newState.metadata = {
+              ...newState.metadata,
+              codeArtifactRepairAttempts,
+            };
+          }
 
           if (htmlArtifactSyntaxError) {
             newState.messages.push(
               {
-                content: rawContent,
+                content:
+                  codeArtifactGateDiagnostics.length > 0
+                    ? (codeArtifactSanitizedAttempt ?? rawContent)
+                    : rawContent,
+                id: assistantMessageItem.id,
+                metadata: { internalRepairAttempt: true },
                 role: 'assistant',
               },
               {
@@ -1879,6 +1986,19 @@ export const createRuntimeExecutors = (
                 ];
               }
             }
+          } else if (codeArtifactRepairError) {
+            newState.messages.push(
+              {
+                content: codeArtifactSanitizedAttempt ?? content,
+                id: assistantMessageItem.id,
+                metadata: { internalRepairAttempt: true },
+                role: 'assistant',
+              },
+              {
+                content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...). Такие теги создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart.`,
+                role: 'user',
+              },
+            );
           } else {
             newState.messages.push({
               content,
@@ -1917,6 +2037,7 @@ export const createRuntimeExecutors = (
             newState,
             nextContext: {
               payload: {
+                ...(codeArtifactRepairError ? { codeArtifactRepairError } : {}),
                 hasToolsCalling: toolsCalling.length > 0,
                 ...(htmlArtifactSyntaxError ? { htmlArtifactSyntaxError } : {}),
                 // Pass assistant message ID as parentMessageId for tool calls
@@ -2247,11 +2368,21 @@ export const createRuntimeExecutors = (
       }
 
       const preparedMessages = messagesToSummarize.map(prepareMessageForSummarizer);
+      const sanitizedExistingSummary = existingSummary
+        ? rewriteSavedCodeArtifactTagsForLLM(existingSummary)
+        : existingSummary;
+      const sanitizedPriorCompressedGroups = priorCompressedGroups.map((group) => {
+        if (typeof group.content !== 'string') return group;
+        const rewritten = rewriteSavedCodeArtifactTagsForLLM(group.content);
+        return rewritten !== group.content ? { ...group, content: rewritten } : group;
+      });
       const compressOptions =
-        existingSummary || priorCompressedGroups.length > 0
+        sanitizedExistingSummary || sanitizedPriorCompressedGroups.length > 0
           ? {
-              ...(existingSummary ? { existingSummary } : {}),
-              ...(priorCompressedGroups.length > 0 ? { priorMessages: priorCompressedGroups } : {}),
+              ...(sanitizedExistingSummary ? { existingSummary: sanitizedExistingSummary } : {}),
+              ...(sanitizedPriorCompressedGroups.length > 0
+                ? { priorMessages: sanitizedPriorCompressedGroups }
+                : {}),
             }
           : undefined;
       const compressionPayload = compressOptions
@@ -2266,9 +2397,9 @@ export const createRuntimeExecutors = (
         );
       const compressionMessages = needsDeepSeekTurnChunking
         ? buildDeepSeekAlternatingCompressionMessages({
-            existingSummary,
+            existingSummary: sanitizedExistingSummary,
             messages: preparedMessages,
-            priorCompressedGroups,
+            priorCompressedGroups: sanitizedPriorCompressedGroups,
           })
         : rawPromptMessages;
 
@@ -2464,10 +2595,17 @@ export const createRuntimeExecutors = (
           }
 
           if (candidate.id) {
-            if (
-              !compressedMessageIdSet.has(candidate.id) &&
-              !compressedMessages.some((existing) => existing?.id === candidate.id)
-            ) {
+            const existingIndex = compressedMessages.findIndex(
+              (existing) => existing?.id === candidate.id,
+            );
+            if (existingIndex >= 0) {
+              if (
+                candidate.role === 'assistant' &&
+                (candidate as any).metadata?.internalRepairAttempt === true
+              ) {
+                compressedMessages[existingIndex] = candidate;
+              }
+            } else if (!compressedMessageIdSet.has(candidate.id)) {
               compressedMessages.push(candidate);
             }
             continue;

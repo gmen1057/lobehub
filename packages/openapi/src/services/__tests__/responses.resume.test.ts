@@ -552,3 +552,51 @@ it('emits native grounding and clears already accumulated partial text on termin
   ).toBe('content_filter');
   expect(replay.at(-1).response.output_text).toBe('refusal');
 });
+
+it('resets accumulatedText on stream_retry with resetText=true so repair retry never concatenates discarded Step 1 intro', async () => {
+  responsesStreamHub.clear();
+  mockExecAgent.mockResolvedValue({ operationId: OP, success: true, topicId: 'tpc_1' });
+  mockExecuteSync.mockImplementation(async () => {
+    await responsesStreamHub.publishStreamChunk(OP, 0, {
+      chunkType: 'text',
+      content: 'Вот часть 2 (черновик):\n',
+    });
+    await responsesStreamHub.publishStreamEvent(OP, {
+      data: { reason: 'code_artifact_repair', resetText: true },
+      stepIndex: 0,
+      type: 'stream_retry',
+    });
+    await responsesStreamHub.publishStreamChunk(OP, 1, {
+      chunkType: 'text',
+      content: 'Чистый финальный ответ с кодом.',
+    });
+    return {
+      messages: [
+        { content: 'Write code', role: 'user' },
+        {
+          content: 'Вот часть 2 (черновик):\n[omitted invalid empty file reference tag]',
+          metadata: { internalRepairAttempt: true },
+          role: 'assistant',
+        },
+        { content: 'Repeat with fenced code', role: 'user' },
+        { content: 'Чистый финальный ответ с кодом.', role: 'assistant' },
+      ],
+      status: 'done',
+    };
+  });
+
+  const service = new ResponsesService({} as any, 'u1');
+  const events = await drain(service.createStreamingResponse(params));
+
+  const textDone = events.find((e) => e.type === 'response.output_text.done');
+  const partDone = events.find((e) => e.type === 'response.content_part.done');
+  const itemDone = events.find((e) => e.type === 'response.output_item.done');
+  const completed = events.at(-1);
+
+  expect(textDone.text).toBe('Чистый финальный ответ с кодом.');
+  expect(partDone.part.text).toBe('Чистый финальный ответ с кодом.');
+  expect(itemDone.item.content[0].text).toBe('Чистый финальный ответ с кодом.');
+  expect(completed.response.output_text).toBe('Чистый финальный ответ с кодом.');
+  expect(JSON.stringify(completed)).not.toContain('черновик');
+  expect(JSON.stringify(completed)).not.toContain('omitted invalid');
+});

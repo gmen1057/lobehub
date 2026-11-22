@@ -1,4 +1,5 @@
 import type { GetTopicContextParams } from '@lobechat/builtin-tool-topic-reference/executor';
+import { rewriteStoredMessageContentForLLM } from '@lobechat/context-engine';
 import type { LobeChatDatabase } from '@lobechat/database';
 import { readFilePage } from '@lobechat/prompts';
 
@@ -9,6 +10,14 @@ import { messagePlugins } from '@/database/schemas';
 import { readCodeArtifacts } from './codeArtifacts';
 
 export type TopicContextParams = GetTopicContextParams;
+
+const SANITIZED_HISTORY_ROLES = new Set(['assistant', 'compressedGroup', 'supervisor']);
+
+const sanitizeHistoryContent = (role: string, content: string | null | undefined): string => {
+  if (!content) return '';
+  if (!SANITIZED_HISTORY_ROLES.has(role)) return content;
+  return String(rewriteStoredMessageContentForLLM(content) ?? '');
+};
 
 /** Same owner-scoped source access for browser tools and background agents. */
 export async function getTopicContext(
@@ -58,7 +67,15 @@ export async function getTopicContext(
       orderBy: (fields, { asc }) => [asc(fields.createdAt), asc(fields.id)],
     });
     const page = readFilePage(
-      originals.map((message) => JSON.stringify(message)).join('\n'),
+      originals
+        .map((message) =>
+          JSON.stringify(
+            SANITIZED_HISTORY_ROLES.has(message.role) && typeof message.content === 'string'
+              ? { ...message, content: sanitizeHistoryContent(message.role, message.content) }
+              : message,
+          ),
+        )
+        .join('\n'),
       params,
     );
     return {
@@ -71,7 +88,9 @@ export async function getTopicContext(
   }
 
   const source =
-    topic.historySummary ||
+    (topic.historySummary
+      ? String(rewriteStoredMessageContentForLLM(topic.historySummary) ?? '')
+      : '') ||
     (
       await new MessageModel(db, userId).query({
         agentId: topic.agentId ?? undefined,
@@ -80,7 +99,7 @@ export async function getTopicContext(
       })
     )
       .slice(-30)
-      .map((message) => `${message.role}: ${message.content || ''}`)
+      .map((message) => `${message.role}: ${sanitizeHistoryContent(message.role, message.content)}`)
       .join('\n\n');
   const page = readFilePage(source);
   return {

@@ -503,8 +503,13 @@ export class GeneralChatAgent implements Agent {
 
       case 'llm_result': {
         // LLM response received, check if it contains tool calls
-        const { hasToolsCalling, htmlArtifactSyntaxError, toolsCalling, parentMessageId } =
-          context.payload as GeneralAgentCallLLMResultPayload;
+        const {
+          codeArtifactRepairError,
+          hasToolsCalling,
+          htmlArtifactSyntaxError,
+          toolsCalling,
+          parentMessageId,
+        } = context.payload as GeneralAgentCallLLMResultPayload;
 
         if (hasToolsCalling && toolsCalling && toolsCalling.length > 0) {
           // Check which tools need human intervention
@@ -550,7 +555,7 @@ export class GeneralChatAgent implements Agent {
           return instructions;
         }
 
-        if (htmlArtifactSyntaxError && !state.forceFinish) {
+        if ((htmlArtifactSyntaxError || codeArtifactRepairError) && !state.forceFinish) {
           if (context.stepContext?.hasQueuedMessages) {
             return { reason: 'queued_message_interrupt', type: 'finish' };
           }

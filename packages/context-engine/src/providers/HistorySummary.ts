@@ -2,6 +2,7 @@ import debug from 'debug';
 
 import { BaseSystemRoleProvider } from '../base/BaseSystemRoleProvider';
 import type { PipelineContext, ProcessorOptions } from '../types';
+import { rewriteSavedCodeArtifactTagsForLLM } from '../utils/codeArtifactTags';
 
 declare module '../types' {
   interface PipelineContextMetadataOverrides {
@@ -54,7 +55,7 @@ export class HistorySummaryProvider extends BaseSystemRoleProvider {
     }
 
     const formatter = this.config.formatHistorySummary || defaultHistorySummaryFormatter;
-    return formatter(this.config.historySummary);
+    return formatter(rewriteSavedCodeArtifactTagsForLLM(this.config.historySummary));
   }
 
   protected onInjected(context: PipelineContext, content: string): void {

@@ -849,7 +849,7 @@ export class AiAgentService {
     }
     if (studioWebChat) {
       const filenameRule =
-        'When delivering inline fenced source instead of using a file writer, put the filename after the language in the Markdown code fence (for example: vba Module1.bas). Keep the filename when revising the same file.';
+        'When delivering inline fenced source instead of using a file writer, put the filename after the language in the Markdown code fence (for example: vba Module1.bas). Keep the filename when revising the same file. Never emit <lobeArtifact> tags with /chat/code-artifact/ links — the server saves long fenced code blocks automatically.';
       agentConfig.systemRole = [agentConfig.systemRole, filenameRule].filter(Boolean).join('\n\n');
     }
 
