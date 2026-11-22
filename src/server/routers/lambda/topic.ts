@@ -46,6 +46,8 @@ export const topicRouter = router({
         mode: z.enum(['summary', 'archive', 'code_artifacts']).optional(),
         fileId: z.string().max(64).optional(),
         offset: z.number().int().min(0).optional(),
+        startLine: z.number().int().min(1).optional(),
+        maxLines: z.number().int().min(1).max(500).optional(),
         query: z.string().max(500).optional(),
         snapshotAt: z.string().datetime().optional(),
       }),

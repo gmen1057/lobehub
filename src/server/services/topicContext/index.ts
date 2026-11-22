@@ -78,10 +78,14 @@ export async function getTopicContext(
         .join('\n'),
       params,
     );
+    const continueHint =
+      page.startLine !== undefined
+        ? 'Continue with getTopicContext(mode="archive", startLine=nextStartLine, snapshotAt=snapshotAt from this page). Keep this snapshot for all pages so new tool results do not enter the archive. Search hits are not exhaustive.\n'
+        : 'Continue with getTopicContext(mode="archive", offset=nextOffset, snapshotAt=snapshotAt from this page). Keep this snapshot for all pages so new tool results do not enter the archive. Search hits are not exhaustive.\n';
     return {
       content:
         `Original conversation archive. ${JSON.stringify({ ...page, content: undefined, snapshotAt })}\n` +
-        'Continue with getTopicContext(mode="archive", offset=nextOffset, snapshotAt=snapshotAt from this page). Keep this snapshot for all pages so new tool results do not enter the archive. Search hits are not exhaustive.\n' +
+        continueHint +
         page.content,
       success: true,
     };

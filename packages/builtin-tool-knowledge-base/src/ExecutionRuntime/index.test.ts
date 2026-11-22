@@ -50,6 +50,43 @@ describe('automatic original-file retrieval', () => {
       'File not found',
     );
   });
+
+  it('forwards startLine/maxLines for line-numbered reading and returns match index for query', async () => {
+    const codeLines = Array.from({ length: 30 }, (_, i) => `Sub Proc_${i + 1}()\r\nEnd Sub`);
+    const codeRuntime = new KnowledgeBaseExecutionRuntime({
+      getFileContents: async () => [
+        {
+          content: codeLines.join('\r\n') + '\r\n',
+          fileId: 'vba-1',
+          filename: 'Module1.bas',
+        },
+      ],
+      semanticSearchForChat,
+    });
+
+    const lineRes = await codeRuntime.readKnowledge({
+      fileIds: ['vba-1'],
+      maxLines: 6,
+      startLine: 5,
+    });
+    expect(lineRes.success).toBe(true);
+    expect(lineRes.content).toContain('"startLine":5');
+    expect(lineRes.content).toContain('"endLine":10');
+    expect(lineRes.content).toContain('"nextStartLine":11');
+    expect(lineRes.content).toContain('"totalLines":60');
+    expect(lineRes.content).toContain('"lineEnding":"CRLF"');
+    expect(lineRes.content).toContain('L5: Sub Proc_3()');
+    expect(lineRes.content).toContain('L10: End Sub');
+
+    const queryRes = await codeRuntime.readKnowledge({
+      fileIds: ['vba-1'],
+      query: 'Sub Proc_',
+    });
+    expect(queryRes.success).toBe(true);
+    expect(queryRes.content).toContain('"totalMatches":30');
+    expect(queryRes.content).toContain('"line":1');
+    expect(queryRes.content).toContain('"line":3');
+  });
 });
 
 describe('search query runtime validation', () => {

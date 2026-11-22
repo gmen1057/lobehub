@@ -64,17 +64,15 @@ beforeAll(async () => {
     { id: 'topic_1', userId: 'owner' },
     { id: 'topic_2', userId: 'owner' },
   ]);
-  await db
-    .insert(files)
-    .values([
-      versionFile('other-topic', 'owner', 'topic_2', 'other topic', 3),
-      versionFile('foreign', 'foreign', 'topic_1', 'foreign source', 3),
-      versionFile('unpublished', 'owner', 'topic_1', 'cancelled source', 5),
-      {
-        ...versionFile('invalid-path', 'owner', 'topic_1', 'wrong namespace', 4),
-        url: 'files/owner/upload.bas',
-      },
-    ]);
+  await db.insert(files).values([
+    versionFile('other-topic', 'owner', 'topic_2', 'other topic', 3),
+    versionFile('foreign', 'foreign', 'topic_1', 'foreign source', 3),
+    versionFile('unpublished', 'owner', 'topic_1', 'cancelled source', 5),
+    {
+      ...versionFile('invalid-path', 'owner', 'topic_1', 'wrong namespace', 4),
+      url: 'files/owner/upload.bas',
+    },
+  ]);
   const fileService = new FileService(db, 'owner');
   const messageIds: string[] = [];
   for (const [index, source] of [oldCode, newCode].entries()) {
@@ -102,8 +100,15 @@ beforeAll(async () => {
 });
 
 describe('saved code source', () => {
-  const context = (params: { fileId?: string; offset?: number } = {}) =>
-    getTopicContext(db, 'owner', { ...params, mode: 'code_artifacts', topicId: 'topic_1' });
+  const context = (
+    params: {
+      fileId?: string;
+      maxLines?: number;
+      offset?: number;
+      query?: string;
+      startLine?: number;
+    } = {},
+  ) => getTopicContext(db, 'owner', { ...params, mode: 'code_artifacts', topicId: 'topic_1' });
 
   it('lists durable versions in order even without any original messages in the active context', async () => {
     expect(await topicHasCodeArtifacts(db, 'owner', 'topic_1')).toBe(true);
@@ -145,5 +150,72 @@ describe('saved code source', () => {
       expect((await context({ fileId })).success).toBe(false);
     }
     expect(read).not.toHaveBeenCalled();
+  });
+
+  it('supports startLine/maxLines pagination and query match indexing in code_artifacts mode', async () => {
+    const fileId = versionIds[0];
+    const page1 = await context({ fileId, maxLines: 5, startLine: 2 });
+    expect(page1.success).toBe(true);
+    const boundary1 = page1.content.indexOf('\n');
+    const header1 = JSON.parse(page1.content.slice(0, boundary1));
+    const body1 = page1.content.slice(boundary1 + 1);
+    expect(header1).toMatchObject({
+      endLine: 6,
+      fileId,
+      lineEnding: 'CRLF',
+      nextStartLine: 7,
+      startLine: 2,
+      totalLines: 27,
+    });
+    expect(body1.split('\n')[0]).toBe('L2: Sub Run()');
+    expect(body1.split('\n')[1]).toBe("L3:  ' исходный модуль");
+
+    const queryResult = await context({ fileId, query: 'исходный модуль' });
+    expect(queryResult.success).toBe(true);
+    const boundaryQ = queryResult.content.indexOf('\n');
+    const headerQ = JSON.parse(queryResult.content.slice(0, boundaryQ));
+    expect(headerQ.totalMatches).toBe(24);
+    expect(headerQ.matches).toHaveLength(24);
+    expect(headerQ.matches[0].line).toBe(3);
+  });
+
+  it('decodes Windows-1251 Russian code artifacts cleanly without throwing', async () => {
+    const cp1251FileId = 'cp1251-artifact';
+    const url = `files/owner/code-artifacts/topic_1/${cp1251FileId}/Module_CP1251.bas`;
+    // "Sub Тест()\r\n' Привет\r\nEnd Sub\r\n" in Windows-1251
+    const cp1251Bytes = Buffer.from([
+      0x53, 0x75, 0x62, 0x20, 0xd2, 0xe5, 0xf1, 0xf2, 0x28, 0x29, 0x0d, 0x0a, 0x27, 0x20, 0xcf,
+      0xf0, 0xe8, 0xe2, 0xe5, 0xf2, 0x0d, 0x0a, 0x45, 0x6e, 0x64, 0x20, 0x53, 0x75, 0x62, 0x0d,
+      0x0a,
+    ]);
+    sources.set(url, cp1251Bytes);
+    await db.insert(files).values({
+      clientId: 'arckep-text-file/v1/topic_1/doc-cp1251/1',
+      createdAt: new Date(Date.UTC(2026, 10, 10)),
+      fileType: 'text/plain',
+      id: cp1251FileId,
+      metadata: {
+        textFile: {
+          documentId: 'doc-cp1251',
+          fileName: 'Module_CP1251.bas',
+          part: 1,
+          status: 'ready',
+          topicId: 'topic_1',
+        },
+      },
+      name: 'Module_CP1251.bas',
+      size: cp1251Bytes.byteLength,
+      url,
+      userId: 'owner',
+    });
+
+    const result = await context({ fileId: cp1251FileId, startLine: 1 });
+    expect(result.success).toBe(true);
+    const boundary = result.content.indexOf('\n');
+    const header = JSON.parse(result.content.slice(0, boundary));
+    const body = result.content.slice(boundary + 1);
+    expect(header.lineEnding).toBe('CRLF');
+    expect(header.totalLines).toBe(3);
+    expect(body).toBe("L1: Sub Тест()\nL2: ' Привет\nL3: End Sub");
   });
 });

@@ -423,8 +423,21 @@ const normalizeNonNegativeInt = (value: unknown, fallback = 0): number => {
   return fallback;
 };
 
+const normalizeOptionalInt = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.floor(value);
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return Math.floor(parsed);
+  }
+  return null;
+};
+
 const extractFirstLineJson = (content: string): Record<string, unknown> | null => {
-  const firstLine = content.slice(0, 2500).split('\n')[0] ?? '';
+  const nl = content.indexOf('\n');
+  const firstLine = nl === -1 ? content : content.slice(0, nl);
+  if (firstLine.length > 24_000) return null;
   const jsonStart = firstLine.indexOf('{');
   if (jsonStart < 0) return null;
   return safeParseJsonObject(firstLine.slice(jsonStart));
@@ -444,7 +457,18 @@ const extractReadKnowledgeKey = (args: Record<string, unknown> | null): string |
   if (fileIds.length === 0) return undefined;
   const offset = normalizeNonNegativeInt(args.offset, 0);
   const query = typeof args.query === 'string' ? args.query.trim() : '';
-  return JSON.stringify({ fileIds, offset, query });
+  const rawStartLine = normalizeOptionalInt(args.startLine);
+  const rawMaxLines = normalizeOptionalInt(args.maxLines);
+  const isLineMode = rawStartLine !== null || rawMaxLines !== null;
+  const startLine = isLineMode ? Math.max(1, rawStartLine ?? 1) : null;
+  const maxLines = isLineMode ? Math.min(500, Math.max(1, rawMaxLines ?? 250)) : null;
+  return JSON.stringify({
+    fileIds,
+    ...(maxLines !== null ? { maxLines } : {}),
+    offset,
+    query,
+    ...(startLine !== null ? { startLine } : {}),
+  });
 };
 
 const buildReadKnowledgeStub = (content: string, args: Record<string, unknown> | null): string => {
@@ -472,6 +496,12 @@ const buildReadKnowledgeStub = (content: string, args: Record<string, unknown> |
             ...(typeof cov.totalCharCount === 'number'
               ? { totalCharCount: cov.totalCharCount }
               : {}),
+            ...(typeof cov.startLine === 'number' ? { startLine: cov.startLine } : {}),
+            ...(typeof cov.endLine === 'number' ? { endLine: cov.endLine } : {}),
+            ...(cov.nextStartLine === null || typeof cov.nextStartLine === 'number'
+              ? { nextStartLine: cov.nextStartLine }
+              : {}),
+            ...(typeof cov.totalLines === 'number' ? { totalLines: cov.totalLines } : {}),
           });
           continue;
         }
@@ -526,10 +556,19 @@ const buildReadKnowledgeStub = (content: string, args: Record<string, unknown> |
       nextOffset,
       startOffset,
       totalCharCount,
+      ...(typeof headerJson?.startLine === 'number' ? { startLine: headerJson.startLine } : {}),
+      ...(typeof headerJson?.endLine === 'number' ? { endLine: headerJson.endLine } : {}),
+      ...(headerJson &&
+      (headerJson.nextStartLine === null || typeof headerJson.nextStartLine === 'number')
+        ? { nextStartLine: headerJson.nextStartLine }
+        : {}),
+      ...(typeof headerJson?.totalLines === 'number' ? { totalLines: headerJson.totalLines } : {}),
     };
   }
 
-  return `Original knowledge page retained (${content.length} chars). Repeat readKnowledge with fileIds and offset to retrieve the exact page. ${JSON.stringify(cursor)}`;
+  const repeatHint =
+    typeof cursor.startLine === 'number' ? 'fileIds and startLine' : 'fileIds and offset';
+  return `Original knowledge page retained (${content.length} chars). Repeat readKnowledge with ${repeatHint} to retrieve the exact page. ${JSON.stringify(cursor)}`;
 };
 
 const buildPagedHeadTailTrim = (content: string): string => {
@@ -542,6 +581,10 @@ const buildPagedHeadTailTrim = (content: string): string => {
       'endOffset',
       'nextOffset',
       'totalCharCount',
+      'startLine',
+      'endLine',
+      'nextStartLine',
+      'totalLines',
       'snapshotAt',
     ]) {
       const val = headerJson[key];

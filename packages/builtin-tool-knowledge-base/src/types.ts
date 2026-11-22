@@ -20,8 +20,10 @@ export interface SearchKnowledgeBaseState {
 
 export interface ReadKnowledgeArgs {
   fileIds: string[];
+  maxLines?: number;
   offset?: number;
   query?: string;
+  startLine?: number;
 }
 
 export interface FileContentDetail {
