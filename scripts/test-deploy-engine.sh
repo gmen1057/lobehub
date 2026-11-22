@@ -68,6 +68,7 @@ while [[ $# -gt 0 && "$1" == -* ]]; do
 done
 
 unit="${1:-}"
+units=("$@")
 unit_key="${unit//\//_}"
 
 read_active() {
@@ -78,6 +79,8 @@ read_active() {
         echo "inactive"
     fi
 }
+
+echo "${cmd} ${units[*]:-}" >> "$STATE_ROOT/ops.log"
 
 case "$cmd" in
     daemon-reload|reset-failed)
@@ -98,41 +101,65 @@ case "$cmd" in
         [[ "$(read_active "$unit_key")" == "active" ]] && exit 0 || exit 3
         ;;
     start)
-        if [[ "${MOCK_FAIL_START_UNIT:-}" == "$unit" ]]; then
-            exit 1
-        fi
-        echo "active" > "$STATE_ROOT/${unit_key}.active"
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            if [[ "${MOCK_FAIL_START_UNIT:-}" == "$u" ]]; then
+                exit 1
+            fi
+            echo "active" > "$STATE_ROOT/${u//\//_}.active"
+        done
         exit 0
         ;;
     stop)
-        if [[ "${MOCK_FAIL_STOP_UNIT:-}" == "$unit" ]]; then
-            echo "Simulated systemctl stop failure for $unit" >&2
-            exit 1
-        fi
-        if [[ "${MOCK_KEEP_ACTIVE_AFTER_STOP:-}" == "$unit" ]]; then
-            exit 0
-        fi
-        echo "inactive" > "$STATE_ROOT/${unit_key}.active"
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            if [[ "${MOCK_FAIL_STOP_UNIT:-}" == "$u" ]]; then
+                echo "Simulated systemctl stop failure for $u" >&2
+                exit 1
+            fi
+            if [[ "${MOCK_KEEP_ACTIVE_AFTER_STOP:-}" == "$u" ]]; then
+                continue
+            fi
+            echo "inactive" > "$STATE_ROOT/${u//\//_}.active"
+        done
         exit 0
         ;;
     restart)
-        echo "active" > "$STATE_ROOT/${unit_key}.active"
-        echo "${unit}" >> "$STATE_ROOT/restarted.log"
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            echo "active" > "$STATE_ROOT/${u//\//_}.active"
+            echo "${u}" >> "$STATE_ROOT/restarted.log"
+        done
         exit 0
         ;;
     reload|kill)
-        echo "${unit}" >> "$STATE_ROOT/reloaded.log"
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            echo "${u}" >> "$STATE_ROOT/reloaded.log"
+            if [[ "$u" == "image-studio-lobechat-router" && "${MOCK_FREEZE_ROUTER_HASH:-0}" != "1" ]]; then
+                if [[ -n "${MOCK_ROUTER_CORE_FILE:-}" && -f "${MOCK_ROUTER_CORE_FILE}" && -n "${MOCK_HTTP_CTRL_DIR:-}" ]]; then
+                    sha256sum "${MOCK_ROUTER_CORE_FILE}" | awk '{print $1}' > "${MOCK_HTTP_CTRL_DIR}/router_hash"
+                fi
+            fi
+        done
         exit 0
         ;;
     enable)
-        echo "enabled" > "$STATE_ROOT/${unit_key}.enabled"
-        if [[ "$now_flag" == "1" ]]; then
-            echo "active" > "$STATE_ROOT/${unit_key}.active"
-        fi
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            uk="${u//\//_}"
+            echo "enabled" > "$STATE_ROOT/${uk}.enabled"
+            if [[ "$now_flag" == "1" ]]; then
+                echo "active" > "$STATE_ROOT/${uk}.active"
+            fi
+        done
         exit 0
         ;;
     disable)
-        echo "disabled" > "$STATE_ROOT/${unit_key}.enabled"
+        for u in "${units[@]}"; do
+            [[ -n "$u" ]] || continue
+            echo "disabled" > "$STATE_ROOT/${u//\//_}.enabled"
+        done
         exit 0
         ;;
     *)
@@ -162,6 +189,7 @@ FAKE_SRC="$SANDBOX/src"
 mkdir -p "$FAKE_SRC/scripts" "$FAKE_SRC/deploy/systemd" "$FAKE_SRC/.next/standalone" "$FAKE_SRC/.next/static" "$FAKE_SRC/public/_spa" "$FAKE_SRC/src/app/spa/[variants]/[[...path]]" "$FAKE_SRC/node_modules/next" "$FAKE_SRC/node_modules/sharp" "$FAKE_SRC/node_modules/@napi-rs/canvas"
 cp -pf "$REPO_ROOT/deploy-engine.sh" "$FAKE_SRC/deploy-engine.sh"
 cp -pf "$REPO_ROOT/scripts/engine-router.mjs" "$FAKE_SRC/scripts/engine-router.mjs"
+cp -pf "$REPO_ROOT/scripts/engine-router-core.mjs" "$FAKE_SRC/scripts/engine-router-core.mjs"
 cp -pf "$REPO_ROOT/deploy/systemd/"* "$FAKE_SRC/deploy/systemd/"
 echo "build-test-123" > "$FAKE_SRC/.next/BUILD_ID"
 mkdir -p "$FAKE_SRC/.next/standalone/.next"
@@ -316,13 +344,16 @@ source "$PORT_INFO"
 SVC_KEY="test-shell-arckep-engine-service-key-min-32-chars!!"
 echo "$SVC_KEY" > "$HTTP_CTRL_DIR/blue_key"
 echo "$SVC_KEY" > "$HTTP_CTRL_DIR/green_key"
-sha256sum "$FAKE_SRC/scripts/engine-router.mjs" | awk '{print $1}' > "$HTTP_CTRL_DIR/router_hash"
+sha256sum "$FAKE_SRC/scripts/engine-router-core.mjs" | awk '{print $1}' > "$HTTP_CTRL_DIR/router_hash"
 
 # Mock Node wrapper for #4 quietness check while delegating everything else to real /usr/bin/node
 MOCK_NODE="$MOCK_BIN/mock-node"
 cat > "$MOCK_NODE" <<'EOF'
 #!/usr/bin/env bash
 if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+    if [[ -n "${MOCK_BG_COUNTER_FILE:-}" ]]; then
+        echo "quiet_check" >> "$MOCK_BG_COUNTER_FILE"
+    fi
     if [[ "${MOCK_BG_CHECK_RESULT:-QUIET}" != "QUIET" ]]; then
         printf '%s' "${MOCK_BG_CHECK_RESULT}"
         exit 2
@@ -337,6 +368,8 @@ chmod +x "$MOCK_NODE"
 COMMON_ENV=(
     "PATH=$MOCK_BIN:$PATH"
     "MOCK_SYSTEMD_DIR=$SANDBOX/systemd-state"
+    "MOCK_ROUTER_CORE_FILE=$SANDBOX/opt/lobechat-next-router/engine-router-core.mjs"
+    "MOCK_HTTP_CTRL_DIR=$HTTP_CTRL_DIR"
     "ENGINE_SRC=$FAKE_SRC"
     "ENGINE_PROD=$SANDBOX/opt/lobechat-next"
     "ENGINE_SLOT_BLUE_DIR=$SANDBOX/opt/lobechat-next-blue"
@@ -407,11 +440,32 @@ env "${COMMON_ENV[@]}" MOCK_BG_CHECK_RESULT="BUSY_PG:1" bash "$FAKE_SRC/deploy-e
 
 echo "blue" > "$HTTP_CTRL_DIR/router_active_slot"
 echo "true" > "$HTTP_CTRL_DIR/blue_draining"
-env "${COMMON_ENV[@]}" MOCK_BG_CHECK_RESULT="QUIET" bash "$FAKE_SRC/deploy-engine.sh" --init >/dev/null
+rm -f "$SANDBOX/systemd-state/ops.log" "$SANDBOX/bg-checks.log" "$SANDBOX/pre-stop-hook.ran"
+env "${COMMON_ENV[@]}" \
+    MOCK_BG_CHECK_RESULT="QUIET" \
+    MOCK_BG_COUNTER_FILE="$SANDBOX/bg-checks.log" \
+    ENGINE_INIT_PRE_STOP_HOOK="echo ok > '$SANDBOX/pre-stop-hook.ran'" \
+    bash "$FAKE_SRC/deploy-engine.sh" --init >/dev/null
 [[ "$(cat "$HTTP_CTRL_DIR/blue_draining")" == "false" ]] || fail "#8: --init did not undrain blue slot!"
 [[ -L "$SANDBOX/opt/lobechat-next" ]] || fail "#5: --init did not create $PROD symlink!"
 [[ -f "$SANDBOX/etc/systemd/system/image-studio-lobechat-router.socket" ]] || fail "#13: --init did not install router .socket unit!"
-pass "#4 + #5 --init enforces Redis/PG quietness and exits 0 cleanly under set -u"
+[[ -f "$SANDBOX/opt/lobechat-next-router/engine-router-core.mjs" ]] || fail "v3 #2: --init did not install engine-router-core.mjs!"
+[[ -f "$SANDBOX/pre-stop-hook.ran" ]] || fail "v3 #1: --init did not run ENGINE_INIT_PRE_STOP_HOOK!"
+[[ "$(wc -l < "$SANDBOX/bg-checks.log")" -eq 3 ]] || fail "v3 #1: expected 3 quiet checks (initial + final double check), got $(wc -l < "$SANDBOX/bg-checks.log")!"
+# Verify v3 #1 ordering: `enable` runs BEFORE `stop image-studio-lobechat-next`, and `start image-studio-lobechat-router.socket image-studio-lobechat-router` is the VERY NEXT systemctl call after `stop image-studio-lobechat-next`!
+python3 - "$SANDBOX/systemd-state/ops.log" <<'PY' || fail "v3 #1: --init systemctl ordering around legacy stop violated!"
+import sys
+ops = [line.strip() for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
+stop_idx = ops.index("stop image-studio-lobechat-next")
+enable_router_idx = ops.index("enable image-studio-lobechat-router.socket image-studio-lobechat-router")
+enable_blue_idx = ops.index("enable image-studio-lobechat@blue")
+assert enable_blue_idx < stop_idx, f"enable blue ({enable_blue_idx}) must precede legacy stop ({stop_idx}): {ops}"
+assert enable_router_idx < stop_idx, f"enable router ({enable_router_idx}) must precede legacy stop ({stop_idx}): {ops}"
+assert ops[stop_idx + 1] == "start image-studio-lobechat-router.socket image-studio-lobechat-router", (
+    f"Expected immediate router socket+service start right after legacy stop, got: {ops[stop_idx:stop_idx+3]}"
+)
+PY
+pass "#4 + #5 + v3 #1 --init enforces double quietness, compressed cutover window, and exits 0 cleanly under set -u"
 
 # =============================================================================
 # TEST 4 (#13): `--status` exits 0 when routerHash matches, and NON-ZERO on routerHash MISMATCH!
@@ -421,7 +475,7 @@ echo "0000000000000000000000000000000000000000000000000000000000000000" > "$HTTP
 mismatch_rc=0
 env "${COMMON_ENV[@]}" bash "$FAKE_SRC/deploy-engine.sh" --status >/dev/null 2>&1 || mismatch_rc=$?
 [[ "$mismatch_rc" -ne 0 ]] || fail "#13: --status exited 0 despite routerHash MISMATCH!"
-sha256sum "$FAKE_SRC/scripts/engine-router.mjs" | awk '{print $1}' > "$HTTP_CTRL_DIR/router_hash"
+sha256sum "$FAKE_SRC/scripts/engine-router-core.mjs" | awk '{print $1}' > "$HTTP_CTRL_DIR/router_hash"
 pass "#13 --status returns non-zero ($mismatch_rc) on routerHash mismatch"
 
 # =============================================================================
@@ -485,5 +539,32 @@ env "${COMMON_ENV[@]}" bash "$FAKE_SRC/deploy-engine.sh" --rollback >/dev/null
 ACTIVE_AFTER_RB=$(python3 -c "import json; print(json.load(open('$SANDBOX/var/lib/lobechat-engine/state.json'))['activeSlot'])")
 [[ "$ACTIVE_AFTER_RB" == "blue" ]] || fail "#7: --rollback after emergency revert failed (activeSlot=$ACTIVE_AFTER_RB)!"
 pass "#6 + #7 retainedTopicIds replay window respected & .rollback-bak restored so --rollback works"
+
+# =============================================================================
+# TEST 7 (v3 #2): Updating `scripts/engine-router-core.mjs` hot-reloads via `SIGHUP` ONLY (ZERO `systemctl restart`!)
+# =============================================================================
+rm -f "$SANDBOX/systemd-state/restarted.log" "$SANDBOX/systemd-state/reloaded.log"
+echo '[]' > "$HTTP_CTRL_DIR/green_retained"
+echo "0" > "$HTTP_CTRL_DIR/green_active"
+(
+    cd "$FAKE_SRC"
+    echo "// hot-reload router core v2" >> "$FAKE_SRC/scripts/engine-router-core.mjs"
+    git commit -qam "update engine-router-core.mjs"
+)
+NEW_CORE_HASH=$(sha256sum "$FAKE_SRC/scripts/engine-router-core.mjs" | awk '{print $1}')
+
+# 7a. If router refuses to update routerHash on SIGHUP (simulating syntax error), deploy aborts cleanly before switching!
+frozen_rc=0
+env "${COMMON_ENV[@]}" MOCK_FREEZE_ROUTER_HASH=1 bash "$FAKE_SRC/deploy-engine.sh" >/dev/null 2>&1 || frozen_rc=$?
+[[ "$frozen_rc" -ne 0 ]] || fail "v3 #2: deploy succeeded even when routerHash failed to update on SIGHUP!"
+[[ ! -s "$SANDBOX/systemd-state/restarted.log" ]] || fail "v3 #2: deploy called systemctl restart on router!"
+
+# 7b. Normal SIGHUP hot-reload updates routerHash in /__router/health with ZERO `systemctl restart`!
+echo "green" > "$HTTP_CTRL_DIR/router_active_slot"
+env "${COMMON_ENV[@]}" bash "$FAKE_SRC/deploy-engine.sh" >/dev/null
+[[ ! -s "$SANDBOX/systemd-state/restarted.log" ]] || fail "v3 #2: cmd_deploy invoked systemctl restart: $(cat "$SANDBOX/systemd-state/restarted.log")!"
+grep -q "image-studio-lobechat-router" "$SANDBOX/systemd-state/reloaded.log" || fail "v3 #2: router did not receive SIGHUP reload!"
+[[ "$(cat "$HTTP_CTRL_DIR/router_hash")" == "$NEW_CORE_HASH" ]] || fail "v3 #2: routerHash did not update to $NEW_CORE_HASH!"
+pass "v3 #2 router code update hot-reloads via SIGHUP with ZERO systemctl restart and verifies routerHash"
 
 echo "[shell-test] ALL DEPLOY-ENGINE SHELL INVARIANTS PASSED!"

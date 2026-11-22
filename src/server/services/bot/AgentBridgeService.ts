@@ -19,6 +19,7 @@ import {
   clearRedisBotThreadRecord,
   consumeCrossSlotBotStopRequest,
   isBotThreadActiveAcrossSlots,
+  registerBotWork,
 } from './botSlotActivity';
 import { formatPrompt as formatPromptUtil } from './formatPrompt';
 import type { PlatformClient } from './platforms';
@@ -855,17 +856,55 @@ export class AgentBridgeService {
     let operationStartTime = 0;
 
     return new Promise<{ reply: string; topicId: string }>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error(`Agent execution timed out`));
-      }, EXECUTION_TIMEOUT);
-
       let resolvedTopicId = topicId ?? '';
+      let startedOperationId: string | undefined;
+      let timedOut = false;
 
       const scope = {
         applicationId: botContext?.applicationId,
         platform: botContext?.platform ?? client?.id,
       };
       const threadKey = AgentBridgeService.resolveThreadKey(thread.id, scope);
+
+      // Hold a dedicated slot-activity work token on the actual AgentRuntime operation lifecycle
+      // until `onComplete` finishes delivering messages/media (or startup fails), so an old slot
+      // is NEVER stopped mid-delivery even if the 30-minute caller wait timer rejects early!
+      const localOperationWork = registerBotWork({
+        applicationId: scope.applicationId,
+        platform: scope.platform,
+        threadId: thread.id,
+        topicId,
+      });
+
+      const finishLocalOperationLifecycle = () => {
+        if (
+          startedOperationId &&
+          AgentBridgeService.activeOperations.get(threadKey) === startedOperationId
+        ) {
+          AgentBridgeService.activeOperations.delete(threadKey);
+        }
+        localOperationWork.finish();
+      };
+
+      const timeout = setTimeout(() => {
+        timedOut = true;
+        const startupController = AgentBridgeService.startupControllers.get(threadKey);
+        if (startupController && !startupController.signal.aborted) {
+          startupController.abort(createAbortError('Agent execution timed out'));
+        }
+        if (startedOperationId && typeof aiAgentService.interruptTask === 'function') {
+          void aiAgentService
+            .interruptTask({ operationId: startedOperationId })
+            .catch((interruptError) => {
+              log(
+                'executeWithCallback[local]: failed to interrupt timed-out operation=%s: %O',
+                startedOperationId,
+                interruptError,
+              );
+            });
+        }
+        reject(new Error(`Agent execution timed out`));
+      }, EXECUTION_TIMEOUT);
 
       const getElapsedMs = () => (operationStartTime > 0 ? Date.now() - operationStartTime : 0);
 
@@ -933,35 +972,37 @@ export class AgentBridgeService {
                 const reason = event.reason;
                 log('onComplete: reason=%s', reason);
 
-                if (reason === 'error') {
-                  const errorMsg = event.errorMessage || 'Agent execution failed';
-                  try {
-                    const errorText = renderError(errorMsg);
-                    if (progressMessage) {
-                      await progressMessage.edit(errorText);
-                    } else {
-                      await thread.post(errorText);
-                    }
-                  } catch {
-                    // ignore send failure
-                  }
-                  reject(new Error(errorMsg));
-                  return;
-                }
-
-                if (reason === 'interrupted') {
-                  if (progressMessage) {
-                    try {
-                      await progressMessage.edit(renderStopped());
-                    } catch {
-                      // ignore edit failure
-                    }
-                  }
-                  resolve({ reply: '', topicId: resolvedTopicId });
-                  return;
-                }
-
                 try {
+                  if (reason === 'error') {
+                    const errorMsg = event.errorMessage || 'Agent execution failed';
+                    try {
+                      const errorText = renderError(errorMsg);
+                      if (progressMessage) {
+                        await progressMessage.edit(errorText);
+                      } else {
+                        await thread.post(errorText);
+                      }
+                    } catch {
+                      // ignore send failure
+                    }
+                    finishLocalOperationLifecycle();
+                    reject(new Error(errorMsg));
+                    return;
+                  }
+
+                  if (reason === 'interrupted') {
+                    if (progressMessage) {
+                      try {
+                        await progressMessage.edit(renderStopped());
+                      } catch {
+                        // ignore edit failure
+                      }
+                    }
+                    finishLocalOperationLifecycle();
+                    resolve({ reply: '', topicId: resolvedTopicId });
+                    return;
+                  }
+
                   const lastAssistantContent = event.lastAssistantContent;
 
                   if (lastAssistantContent) {
@@ -1025,6 +1066,7 @@ export class AgentBridgeService {
                       lastAssistantContent.length,
                       chunks.length,
                     );
+                    finishLocalOperationLifecycle();
                     resolve({ reply: lastAssistantContent, topicId: resolvedTopicId });
 
                     // Fire-and-forget: summarize topic title in DB
@@ -1055,8 +1097,10 @@ export class AgentBridgeService {
                     return;
                   }
 
+                  finishLocalOperationLifecycle();
                   reject(new Error('Agent completed but no response content found'));
                 } catch (error) {
+                  finishLocalOperationLifecycle();
                   reject(error);
                 }
               },
@@ -1093,11 +1137,30 @@ export class AgentBridgeService {
               }
             }
 
+            finishLocalOperationLifecycle();
             resolve({ reply: '', topicId: result.topicId });
             return;
           }
 
+          localOperationWork.setOperation(result.operationId, result.topicId);
+
           if (result.operationId) {
+            startedOperationId = result.operationId;
+            if (timedOut) {
+              if (typeof aiAgentService.interruptTask === 'function') {
+                void aiAgentService
+                  .interruptTask({ operationId: result.operationId })
+                  .catch((error) => {
+                    log(
+                      'executeWithCallback[local]: post-timeout interrupt failed for operation=%s: %O',
+                      result.operationId,
+                      error,
+                    );
+                  });
+              }
+              return;
+            }
+
             AgentBridgeService.activeOperations.set(threadKey, result.operationId);
             await runTracker?.setOperation(result.operationId, result.topicId);
 
@@ -1137,6 +1200,7 @@ export class AgentBridgeService {
               }
             }
 
+            finishLocalOperationLifecycle();
             resolve({ reply: '', topicId: topicId ?? '' });
             return;
           }
@@ -1149,6 +1213,7 @@ export class AgentBridgeService {
             }
           }
 
+          finishLocalOperationLifecycle();
           resolve({ reply: '', topicId: topicId ?? '' });
         });
     });

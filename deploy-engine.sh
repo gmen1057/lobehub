@@ -145,6 +145,7 @@ SWITCH_GUARD="$STATE_DIR/.switch-pending"
 
 LEGACY_SERVICE="${ENGINE_SERVICE:-${LOBECHAT_SERVICE:-image-studio-lobechat-next}}"
 ROUTER_SERVICE="${ENGINE_ROUTER_SERVICE:-image-studio-lobechat-router}"
+ROUTER_SOCKET="${ROUTER_SERVICE}.socket"
 SLOT_UNIT_PREFIX="${ENGINE_SLOT_UNIT_PREFIX:-image-studio-lobechat@}"
 SYSTEMD_DIR="${ENGINE_SYSTEMD_DIR:-/etc/systemd/system}"
 LOG_FILE="${ENGINE_LOG_FILE:-/var/log/image-studio-lobechat-next.log}"
@@ -167,6 +168,9 @@ INIT_CUTOVER_COMMITTED=0
 INIT_BLUE_SVC=""
 INIT_HAD_BLUE_DIR=0
 INIT_ENV_DIR=""
+INIT_READY_STATE=""
+INIT_TMP_SYMLINK=""
+ROUTER_CORE_PREV_BACKUP=""
 DEPLOY_TARGET_DIR=""
 DEPLOY_TARGET_SVC=""
 DEPLOY_TARGET_SLOT=""
@@ -391,13 +395,13 @@ clear_switch_guard() {
     rm -f -- "$SWITCH_GUARD"
 }
 
-write_state_json_unlocked() {
-    local active_slot="$1" active_port="$2" draining_slot="${3:-}" draining_port="${4:-}" epoch="$5"
-    local active_commit="${6:-__KEEP__}" prev_confirmed_slot="${7:-__KEEP__}" prev_confirmed_commit="${8:-__KEEP__}"
+build_state_json_file() {
+    local dst_file="$1"
+    local active_slot="$2" active_port="$3" draining_slot="${4:-}" draining_port="${5:-}" epoch="$6"
+    local active_commit="${7:-__KEEP__}" prev_confirmed_slot="${8:-__KEEP__}" prev_confirmed_commit="${9:-__KEEP__}"
     mkdir -p "$STATE_DIR"
     chmod 0755 "$STATE_DIR"
-    local tmp_file="${STATE_FILE}.tmp.$$"
-    python3 - "$STATE_FILE" "$tmp_file" "$active_slot" "$active_port" "$draining_slot" "$draining_port" "$epoch" \
+    python3 - "$STATE_FILE" "$dst_file" "$active_slot" "$active_port" "$draining_slot" "$draining_port" "$epoch" \
         "$active_commit" "$prev_confirmed_slot" "$prev_confirmed_commit" <<'PY'
 import json, os, sys
 
@@ -447,9 +451,12 @@ with open(dst_path, "w", encoding="utf-8") as fh:
     os.fsync(fh.fileno())
 os.chmod(dst_path, 0o644)
 PY
-    if [[ ! -f "$tmp_file" ]]; then
-        return 1
-    fi
+    [[ -f "$dst_file" ]]
+}
+
+write_state_json_unlocked() {
+    local tmp_file="${STATE_FILE}.tmp.$$"
+    build_state_json_file "$tmp_file" "$@" || return 1
     mv -Tf "$tmp_file" "$STATE_FILE" || {
         rm -f "$tmp_file"
         return 1
@@ -1343,13 +1350,14 @@ start_slot_drain() {
     log "Запущен фоновый доводчик nohup (${drain_entry%%:*})"
 }
 
-install_router_and_units() {
-    local mode="${1:-if-changed}"
+install_router_files() {
     mkdir -p "$ROUTER_DIR"
     if [[ "$(id -u)" -eq 0 ]]; then
         chown root:root "$ROUTER_DIR"
     fi
     chmod 0755 "$ROUTER_DIR"
+
+    ROUTER_CORE_PREV_BACKUP=""
     if [[ ! -f "$ROUTER_DIR/engine-router.mjs" ]] || ! cmp -s "$SRC/scripts/engine-router.mjs" "$ROUTER_DIR/engine-router.mjs"; then
         cp -pf "$SRC/scripts/engine-router.mjs" "$ROUTER_DIR/engine-router.mjs.tmp.$$"
         if [[ "$(id -u)" -eq 0 ]]; then
@@ -1360,6 +1368,23 @@ install_router_and_units() {
         log "Обновлён $ROUTER_DIR/engine-router.mjs"
     fi
 
+    if [[ ! -f "$ROUTER_DIR/engine-router-core.mjs" ]] || ! cmp -s "$SRC/scripts/engine-router-core.mjs" "$ROUTER_DIR/engine-router-core.mjs"; then
+        if [[ -f "$ROUTER_DIR/engine-router-core.mjs" ]]; then
+            ROUTER_CORE_PREV_BACKUP="$ROUTER_DIR/.engine-router-core.mjs.prev.$$"
+            cp -pf "$ROUTER_DIR/engine-router-core.mjs" "$ROUTER_CORE_PREV_BACKUP"
+        fi
+        cp -pf "$SRC/scripts/engine-router-core.mjs" "$ROUTER_DIR/engine-router-core.mjs.tmp.$$"
+        if [[ "$(id -u)" -eq 0 ]]; then
+            chown root:root "$ROUTER_DIR/engine-router-core.mjs.tmp.$$"
+        fi
+        chmod 0644 "$ROUTER_DIR/engine-router-core.mjs.tmp.$$"
+        mv -Tf "$ROUTER_DIR/engine-router-core.mjs.tmp.$$" "$ROUTER_DIR/engine-router-core.mjs"
+        log "Обновлён $ROUTER_DIR/engine-router-core.mjs"
+    fi
+}
+
+install_systemd_units() {
+    local mode="${1:-if-changed}"
     local reload_needed=0
     mkdir -p "$SYSTEMD_DIR"
     for unit_name in \
@@ -1387,108 +1412,68 @@ install_router_and_units() {
     fi
 }
 
-# #13: Zero-drop router code update behind `image-studio-lobechat-router.socket`.
-# Restarts router process immediately when `inFlightRequests == 0` (0ms port gap via systemd socket),
-# or schedules a background zero-drop restart as soon as active SSE streams settle!
+install_router_and_units() {
+    local mode="${1:-if-changed}"
+    install_router_files
+    install_systemd_units "$mode"
+}
+
+# v3 #2: Hot-reload router logic (`engine-router-core.mjs`) via `SIGHUP` ONLY (<2ms, ZERO `systemctl restart`!).
+# `systemctl restart` on a socket-activated service with `TimeoutStopSec=1800` would block new socket
+# accepts for up to 30 minutes while any SSE stream is open. Instead, `engine-router.mjs` dynamically
+# imports the new `engine-router-core.mjs` on `SIGHUP`, preserving `routerRuntime` in-memory state
+# and updating `routerHash` in `/__router/health` immediately.
 ensure_router_code_current() {
-    [[ -f "$ROUTER_DIR/engine-router.mjs" ]] || return 0
+    [[ -f "$ROUTER_DIR/engine-router.mjs" && -f "$ROUTER_DIR/engine-router-core.mjs" ]] || return 1
     if [[ "$(get_systemd_unit_state "$ROUTER_SERVICE")" != "active" ]]; then
+        rm -f -- "${ROUTER_CORE_PREV_BACKUP:-}"
+        ROUTER_CORE_PREV_BACKUP=""
         return 0
     fi
 
-    local disk_hash r_health parsed r_hash r_inflight r_sock
-    disk_hash=$(sha256sum "$ROUTER_DIR/engine-router.mjs" | awk '{print $1}')
+    local disk_hash r_health r_hash="" sent_hup=0 attempt
+    disk_hash=$(sha256sum "$ROUTER_DIR/engine-router-core.mjs" | awk '{print $1}')
 
-    local attempt
-    for attempt in 1 2 3 4 5; do
+    for attempt in $(seq 1 25); do
         r_health=$(curl -sS --max-time 2 "http://127.0.0.1:${PORT}/__router/health" 2>/dev/null || echo "")
-        [[ -n "$r_health" ]] || return 0
-        parsed=$(python3 - "$r_health" <<'PY'
+        if [[ -n "$r_health" ]]; then
+            r_hash=$(python3 - "$r_health" <<'PY'
 import json, sys
 try:
     d = json.loads(sys.argv[1])
-    h = d.get("routerHash") or "unknown"
-    inf = int(d.get("inFlightRequests") or 0)
-    sa = "1" if d.get("socketActivated") else "0"
-    print(f"{h} {inf} {sa}")
+    print(d.get("routerHash") or "unknown")
 except Exception:
-    print("unknown -1 0")
+    print("unknown")
 PY
 )
-        read -r r_hash r_inflight r_sock <<<"$parsed"
-        if [[ "$r_hash" == "$disk_hash" ]]; then
-            return 0
-        fi
-        if (( r_inflight == 0 )); then
-            log "Код роутера изменился (${r_hash:0:12} -> ${disk_hash:0:12}) при inFlightRequests=0 — выполняю бесшовный перезапуск за сокетом :$PORT..."
-            if [[ "$r_sock" != "1" && -f "$SYSTEMD_DIR/${ROUTER_SERVICE}.socket" ]]; then
-                systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
-                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-                systemctl start "$ROUTER_SERVICE"
-            else
-                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-                systemctl restart "$ROUTER_SERVICE"
+            if [[ "$r_hash" == "$disk_hash" ]]; then
+                if [[ "$sent_hup" == "1" ]]; then
+                    log "Горячая перезагрузка обработчика роутера по SIGHUP подтверждена (routerHash=${disk_hash:0:12})"
+                fi
+                rm -f -- "${ROUTER_CORE_PREV_BACKUP:-}"
+                ROUTER_CORE_PREV_BACKUP=""
+                return 0
             fi
-            return 0
         fi
-        sleep 1
+
+        if [[ "$sent_hup" == "0" ]]; then
+            log "Отправляю SIGHUP роутеру $ROUTER_SERVICE для горячей перезагрузки engine-router-core.mjs (${r_hash:0:12} -> ${disk_hash:0:12})..."
+            notify_router_reload
+            sent_hup=1
+        elif (( attempt % 5 == 0 )); then
+            notify_router_reload
+        fi
+        sleep 0.2
     done
 
-    warn "Код $ROUTER_DIR/engine-router.mjs обновлён на диске (${disk_hash:0:12}), но роутер ведёт активные запросы (inFlightRequests=$r_inflight). Перезапуск за сокетом выполнится автоматически при inFlightRequests=0!"
-    local restarter="$ROUTER_DIR/router-restarter.sh"
-    cat > "${restarter}.tmp.$$" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ -d "/proc/$$/fd" ]]; then
-    for _fd_entry in "/proc/$$/fd/"*; do
-        _fd_num="${_fd_entry##*/}"
-        if [[ "$_fd_num" =~ ^[0-9]+$ ]] && (( _fd_num > 2 )); then
-            eval "exec ${_fd_num}>&-" 2>/dev/null || true
-        fi
-    done
-fi
-PORT="$1"
-ROUTER_DIR="$2"
-ROUTER_SERVICE="$3"
-SYSTEMD_DIR="$4"
-for _w in $(seq 1 900); do
-    [[ -f "$ROUTER_DIR/engine-router.mjs" ]] || exit 0
-    disk_hash=$(sha256sum "$ROUTER_DIR/engine-router.mjs" | awk '{print $1}')
-    r_health=$(curl -sS --max-time 2 "http://127.0.0.1:${PORT}/__router/health" 2>/dev/null || echo "")
-    if [[ -n "$r_health" ]]; then
-        read -r r_hash r_inflight r_sock < <(python3 - "$r_health" <<'PY'
-import json, sys
-try:
-    d = json.loads(sys.argv[1])
-    print(f"{d.get('routerHash') or 'unknown'} {int(d.get('inFlightRequests') or 0)} {'1' if d.get('socketActivated') else '0'}")
-except Exception:
-    print("unknown -1 0")
-PY
-)
-        if [[ "$r_hash" == "$disk_hash" ]]; then
-            exit 0
-        fi
-        if (( r_inflight == 0 )); then
-            if [[ "$r_sock" != "1" && -f "$SYSTEMD_DIR/${ROUTER_SERVICE}.socket" ]]; then
-                systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
-                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-                systemctl start "$ROUTER_SERVICE"
-            else
-                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-                systemctl restart "$ROUTER_SERVICE"
-            fi
-            exit 0
-        fi
+    err "CRITICAL: роутер на :$PORT не подтвердил обновление routerHash после SIGHUP (live=${r_hash:-none}, disk=${disk_hash})!"
+    if [[ -n "${ROUTER_CORE_PREV_BACKUP:-}" && -f "$ROUTER_CORE_PREV_BACKUP" ]]; then
+        mv -Tf "$ROUTER_CORE_PREV_BACKUP" "$ROUTER_DIR/engine-router-core.mjs"
+        ROUTER_CORE_PREV_BACKUP=""
+        notify_router_reload
+        warn "Восстановлен предыдущий $ROUTER_DIR/engine-router-core.mjs на диске после отказа горячей перезагрузки."
     fi
-    sleep 2
-done
-EOF
-    chmod 0755 "${restarter}.tmp.$$"
-    mv -Tf "${restarter}.tmp.$$" "$restarter"
-    (
-        exec 6>&- 7>&- 8>&- 9>&- 2>/dev/null || true
-        nohup /bin/bash "$restarter" "$PORT" "$ROUTER_DIR" "$ROUTER_SERVICE" "$SYSTEMD_DIR" >>"$LOG_FILE" 2>&1 </dev/null &
-    )
+    return 1
 }
 
 # P1 #8: .slot.env is owned root:root 0600 (read by systemd as root before dropping to User=lobechat)
@@ -1740,6 +1725,10 @@ const fs = require("node:fs");
     return 0
 }
 
+check_legacy_engine_quiet() {
+    check_legacy_port_quiet "$@"
+}
+
 # =============================================================================
 # STATUS (P2 #15 routerHash + P2 #17 non-zero exit when stopped/unhealthy/mismatched)
 # =============================================================================
@@ -1766,8 +1755,8 @@ cmd_status() {
     fi
 
     local disk_router_hash="missing"
-    if [[ -f "$ROUTER_DIR/engine-router.mjs" ]]; then
-        disk_router_hash=$(sha256sum "$ROUTER_DIR/engine-router.mjs" | awk '{print $1}')
+    if [[ -f "$ROUTER_DIR/engine-router.mjs" && -f "$ROUTER_DIR/engine-router-core.mjs" ]]; then
+        disk_router_hash=$(sha256sum "$ROUTER_DIR/engine-router-core.mjs" | awk '{print $1}')
     fi
 
     printf "  Router (127.0.0.1:%s): " "$PORT"
@@ -2275,10 +2264,21 @@ populate_slot_from_stage() {
 # =============================================================================
 # INIT: one-time cutover from legacy image-studio-lobechat-next -> blue + router
 # =============================================================================
+# NOTE (--init, v3 #1): Как и однократный `backend-init` у основного API студии, самый первый
+# перенос уже занятого порта :$PORT со старой одиночной службы ($LEGACY_SERVICE) на постоянный
+# systemd-сокет ($ROUTER_SOCKET + $ROUTER_SERVICE) выполняется ровно один раз в тихую минуту.
+# Все подготовительные операции (установка файлов роутера и unit-файлов, `systemctl enable`,
+# прогрев `blue` на :$BLUE_PORT, `/undrain`, подготовка `state.json.init-ready` и симлинка)
+# выполняются ДО финальной двойной проверки тишины (`check_legacy_engine_quiet` -> 0.3s -> повтор),
+# после которой буквально следующей строкой идут `systemctl stop "$LEGACY_SERVICE"`, `mv -Tf` state
+# и `systemctl start "$ROUTER_SOCKET" "$ROUTER_SERVICE"`. Для полного ограждения микроокна на
+# уровне внешнего прокси при желании можно передать `ENGINE_INIT_PRE_STOP_HOOK`.
 cleanup_init_stage() {
     release_build_lock
     rm -rf -- "${STAGE_DIR:-}"
+    rm -f -- "${INIT_READY_STATE:-}" "${INIT_TMP_SYMLINK:-}" "${ROUTER_CORE_PREV_BACKUP:-}"
     if [[ "${INIT_CUTOVER_COMMITTED:-0}" != "1" ]]; then
+        systemctl disable "$ROUTER_SOCKET" "$ROUTER_SERVICE" 2>/dev/null || true
         if [[ -n "${INIT_BLUE_SVC:-}" ]]; then
             systemctl stop "$INIT_BLUE_SVC" 2>/dev/null || true
             systemctl disable "$INIT_BLUE_SVC" 2>/dev/null || true
@@ -2317,7 +2317,7 @@ cmd_init() {
     fi
 
     if [[ "$force_flag" != "--force" ]]; then
-        check_legacy_port_quiet "$INIT_ENV_DIR/.env"
+        check_legacy_engine_quiet "$INIT_ENV_DIR/.env"
     fi
 
     local green_svc
@@ -2326,6 +2326,8 @@ cmd_init() {
     INIT_HAD_BLUE_DIR=0
     [[ -d "$SLOT_BLUE_DIR" ]] && INIT_HAD_BLUE_DIR=1
     INIT_CUTOVER_COMMITTED=0
+    INIT_READY_STATE=""
+    INIT_TMP_SYMLINK=""
 
     STAGE_DIR="$(dirname "$SLOT_BLUE_DIR")/.lobechat-engine.stage.$$"
     trap cleanup_init_stage EXIT
@@ -2334,7 +2336,10 @@ cmd_init() {
     acquire_build_lock
     build_into_stage_dir_locked "$STAGE_DIR" "0" "$INIT_ENV_DIR"
 
-    install_router_and_units "force-reload"
+    install_router_files
+    install_systemd_units "force-reload"
+    rm -f -- "${ROUTER_CORE_PREV_BACKUP:-}"
+    ROUTER_CORE_PREV_BACKUP=""
     sync_router_service_key_file "$INIT_ENV_DIR/.env" "blue"
 
     stop_background_drainer "blue"
@@ -2361,8 +2366,10 @@ cmd_init() {
         exit 1
     fi
 
-    if [[ "$force_flag" != "--force" ]]; then
-        check_legacy_port_quiet "$SLOT_BLUE_DIR/.env"
+    # v3 #1: Complete ALL slow preparation BEFORE the final double quietness check!
+    if ! slot_api_call POST "$BLUE_PORT" "undrain" "$SLOT_BLUE_DIR/.env" >/dev/null; then
+        err "Не удалось активировать воркеры (/undrain) на blue (:$BLUE_PORT) — старый $LEGACY_SERVICE не затронут!"
+        exit 1
     fi
 
     local legacy_backup="${PROD}.legacy-pre-bg"
@@ -2370,33 +2377,60 @@ cmd_init() {
         legacy_backup="${PROD}.legacy-pre-bg.$(date +%s)"
     fi
 
-    log "Выполняю переключение со старой службы $LEGACY_SERVICE на blue (:$BLUE_PORT) + роутер (:$PORT)..."
-    systemctl enable "$INIT_BLUE_SVC" 2>/dev/null || true
-    write_state_json "blue" "$BLUE_PORT" "" "" 1 "$HEAD_COMMIT" "null" "null"
-    if ! slot_api_call POST "$BLUE_PORT" "undrain" "$SLOT_BLUE_DIR/.env" >/dev/null; then
-        rm -f "$STATE_FILE"
-        err "Не удалось активировать воркеры (/undrain) на blue (:$BLUE_PORT) — старый $LEGACY_SERVICE не затронут!"
+    INIT_READY_STATE="${STATE_FILE}.init-ready"
+    rm -f -- "$INIT_READY_STATE"
+    if ! build_state_json_file "$INIT_READY_STATE" "blue" "$BLUE_PORT" "" "" 1 "$HEAD_COMMIT" "null" "null"; then
+        err "Не удалось подготовить $INIT_READY_STATE — старый $LEGACY_SERVICE не затронут!"
         exit 1
     fi
 
+    INIT_TMP_SYMLINK="${PROD}.symlink.$$"
+    rm -f -- "$INIT_TMP_SYMLINK"
+    ln -sfn "$SLOT_BLUE_DIR" "$INIT_TMP_SYMLINK"
+    # If recovering via --init --force when $PROD was missing, restore symlink now so EnvironmentFile=$PROD/.env exists
+    if [[ ! -e "$PROD" && ! -L "$PROD" ]]; then
+        mv -Tf "$INIT_TMP_SYMLINK" "$PROD"
+        ln -sfn "$SLOT_BLUE_DIR" "$INIT_TMP_SYMLINK"
+    fi
+
+    systemctl enable "$INIT_BLUE_SVC" 2>/dev/null || true
+    systemctl enable "$ROUTER_SOCKET" "$ROUTER_SERVICE" 2>/dev/null || true
+
+    log "Готов к переключению со старой службы $LEGACY_SERVICE на blue (:$BLUE_PORT) + роутер (:$PORT)..."
+    if [[ -n "${ENGINE_INIT_PRE_STOP_HOOK:-}" ]]; then
+        log "Выполняю ENGINE_INIT_PRE_STOP_HOOK перед финальной проверкой тишины..."
+        /bin/bash -c "$ENGINE_INIT_PRE_STOP_HOOK"
+    fi
+
+    if [[ "$force_flag" != "--force" ]]; then
+        check_legacy_engine_quiet "$SLOT_BLUE_DIR/.env"
+        sleep 0.3
+        check_legacy_engine_quiet "$SLOT_BLUE_DIR/.env"
+    fi
     systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
-    systemctl disable "$LEGACY_SERVICE" 2>/dev/null || true
+    mv -Tf "$INIT_READY_STATE" "$STATE_FILE"
+    local router_start_ok=1
+    systemctl start "$ROUTER_SOCKET" "$ROUTER_SERVICE" || router_start_ok=0
+    INIT_READY_STATE=""
 
     if [[ -L "$PROD" ]]; then
-        rm -f "$PROD"
+        mv -Tf "$INIT_TMP_SYMLINK" "$PROD"
     elif [[ -d "$PROD" ]]; then
         mv "$PROD" "$legacy_backup"
+        mv -Tf "$INIT_TMP_SYMLINK" "$PROD"
+    else
+        mv -Tf "$INIT_TMP_SYMLINK" "$PROD"
     fi
-    atomic_symlink "$SLOT_BLUE_DIR" "$PROD"
+    INIT_TMP_SYMLINK=""
+    systemctl disable "$LEGACY_SERVICE" 2>/dev/null || true
 
-    systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-    if ! systemctl enable --now "$ROUTER_SERVICE" || ! check_port_health "$PORT" "blue" 15; then
+    if [[ "$router_start_ok" != "1" ]] || ! check_port_health "$PORT" "blue" 15 || ! ensure_router_code_current; then
         err "CRITICAL: роутер на :$PORT не прошёл проверку здоровья — откатываю к старой службе $LEGACY_SERVICE!"
         slot_api_call POST "$BLUE_PORT" "drain" "$SLOT_BLUE_DIR/.env" >/dev/null 2>&1 || true
         systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
         systemctl disable "$ROUTER_SERVICE" 2>/dev/null || true
-        systemctl stop "${ROUTER_SERVICE}.socket" 2>/dev/null || true
-        systemctl disable "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+        systemctl stop "$ROUTER_SOCKET" 2>/dev/null || true
+        systemctl disable "$ROUTER_SOCKET" 2>/dev/null || true
         stop_slot_service_verified "$INIT_BLUE_SVC" || true
         systemctl disable "$INIT_BLUE_SVC" 2>/dev/null || true
         rm -f "$PROD" "$STATE_FILE"
@@ -2440,6 +2474,7 @@ restore_target_slot_backup() {
 cleanup_deploy_stage() {
     release_build_lock
     rm -rf -- "${STAGE_DIR:-}"
+    rm -f -- "${ROUTER_CORE_PREV_BACKUP:-}"
     # #7: NEVER delete $BACKUP_TARGET_DIR inside EXIT trap! Only restore it if target slot dir is incomplete.
     if [[ -n "${BACKUP_TARGET_DIR:-}" && -d "$BACKUP_TARGET_DIR" && -n "${DEPLOY_TARGET_DIR:-}" ]]; then
         if [[ ! -f "$DEPLOY_TARGET_DIR/server.js" ]]; then
@@ -2562,11 +2597,15 @@ cmd_deploy() {
         exit 1
     fi
 
-    ensure_router_code_current
     if [[ "$(get_systemd_unit_state "$ROUTER_SERVICE")" != "active" ]]; then
         log "Роутер $ROUTER_SERVICE не активен — запускаю сокет и службу..."
-        systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+        systemctl enable --now "$ROUTER_SOCKET" 2>/dev/null || true
         systemctl enable --now "$ROUTER_SERVICE"
+    fi
+    if ! ensure_router_code_current; then
+        err "Не удалось применить обновлённый код роутера по SIGHUP — активный $active и резервный $target сохранены!"
+        restore_target_slot_backup
+        exit 1
     fi
 
     # Enable target slot for boot right before switching; keep previousConfirmedSlot unchanged until :$PORT passes!

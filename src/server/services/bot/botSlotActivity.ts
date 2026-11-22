@@ -10,6 +10,7 @@ const BOT_ACTIVE_THREAD_PREFIX = 'arckep:bot:active_thread:';
 const BOT_STOP_REQUEST_PREFIX = 'arckep:bot:stop_requested:';
 const BOT_ACTIVE_THREAD_TTL_SEC = 2100;
 const BOT_STOP_REQUEST_TTL_SEC = 120;
+const LOCAL_BOT_WORK_SAFETY_TTL_MS = 2 * 60 * 60 * 1000; // 2h safety cap against leaked orphan tokens
 const TERMINAL_STATUSES = new Set(['done', 'error', 'interrupted']);
 
 export interface BotThreadScope {
@@ -56,8 +57,17 @@ interface PersistedBotThreadRecord {
   userId: string;
 }
 
+interface LocalBotOperationWorkEntry {
+  id: number;
+  operationId?: string;
+  scopedKey?: string;
+  startedAt: number;
+  topicId?: string;
+}
+
 interface BotSlotActivityState {
   als: AsyncLocalStorage<BotWebhookStore>;
+  localWorks: Map<number, LocalBotOperationWorkEntry>;
   seq: number;
   threadRuns: Map<string, BotThreadRunEntry>;
   webhooks: Map<number, BotWebhookStore>;
@@ -73,10 +83,13 @@ const getState = (): BotSlotActivityState => {
   if (!globalForBotSlot.__arckepBotSlotActivity) {
     globalForBotSlot.__arckepBotSlotActivity = {
       als: new AsyncLocalStorage<BotWebhookStore>(),
+      localWorks: new Map(),
       seq: 0,
       threadRuns: new Map(),
       webhooks: new Map(),
     };
+  } else if (!globalForBotSlot.__arckepBotSlotActivity.localWorks) {
+    globalForBotSlot.__arckepBotSlotActivity.localWorks = new Map();
   }
   return globalForBotSlot.__arckepBotSlotActivity;
 };
@@ -228,6 +241,54 @@ export const runWithBotWebhookTracking = async <T>(
   }
 };
 
+export interface BotWorkHandle {
+  finish: () => void;
+  setOperation: (operationId?: string | null, topicId?: string | null) => void;
+}
+
+/**
+ * Registers an in-process local bot operation lifecycle token (`executeWithHooksLocalMode`)
+ * that stays active from `execAgent()` until `onComplete` finishes delivering messages/media
+ * (or startup fails), even if the outer 30-minute `EXECUTION_TIMEOUT` rejects the caller early!
+ */
+export const registerBotWork = (params?: {
+  applicationId?: string | null;
+  platform?: string | null;
+  threadId?: string | null;
+  topicId?: string | null;
+}): BotWorkHandle => {
+  const state = getState();
+  const id = ++state.seq;
+  const scopedKey = params?.threadId
+    ? buildScopedBotThreadKey({
+        applicationId: params.applicationId,
+        platform: params.platform,
+        threadId: params.threadId,
+      })
+    : undefined;
+  const entry: LocalBotOperationWorkEntry = {
+    id,
+    scopedKey,
+    startedAt: Date.now(),
+    topicId: params?.topicId || undefined,
+  };
+  state.localWorks.set(id, entry);
+
+  let finished = false;
+  return {
+    finish: () => {
+      if (finished) return;
+      finished = true;
+      state.localWorks.delete(id);
+    },
+    setOperation: (operationId?: string | null, topicId?: string | null) => {
+      if (finished) return;
+      if (operationId) entry.operationId = operationId;
+      if (topicId) entry.topicId = topicId;
+    },
+  };
+};
+
 export interface BotThreadRunTracker {
   finish: () => Promise<void>;
   markQueueHandoff: () => void;
@@ -360,6 +421,11 @@ export const clearRedisBotThreadRecord = async (
  */
 export const refreshActiveBotSlotRuns = async (now = Date.now()): Promise<void> => {
   const state = getState();
+  for (const [workId, work] of state.localWorks.entries()) {
+    if (now - work.startedAt > LOCAL_BOT_WORK_SAFETY_TTL_MS) {
+      state.localWorks.delete(workId);
+    }
+  }
   if (state.threadRuns.size === 0) return;
 
   const redis = await tryGetRedis();
@@ -425,6 +491,11 @@ export const isBotThreadActiveAcrossSlots = async (
   };
   const scopedKey = buildScopedBotThreadKey(scope);
   const state = getState();
+  for (const work of state.localWorks.values()) {
+    if (work.scopedKey === scopedKey) {
+      return true;
+    }
+  }
   const localEntry = state.threadRuns.get(scopedKey);
   if (localEntry) {
     if (localEntry.queueMode) {
@@ -582,15 +653,24 @@ export const getActiveBotSlotSnapshot = (): {
     }
   }
 
+  let extraLocalWorks = 0;
   const topics = new Set<string>();
   for (const run of state.threadRuns.values()) {
     if (run.topicId) {
       topics.add(run.topicId);
     }
   }
+  for (const work of state.localWorks.values()) {
+    if (work.topicId) {
+      topics.add(work.topicId);
+    }
+    if (!work.scopedKey || !state.threadRuns.has(work.scopedKey)) {
+      extraLocalWorks += 1;
+    }
+  }
 
   return {
-    activeCount: state.threadRuns.size + unlinkedWebhooks,
+    activeCount: state.threadRuns.size + extraLocalWorks + unlinkedWebhooks,
     activeTopicIds: [...topics],
   };
 };
@@ -599,4 +679,5 @@ export const resetBotSlotActivityForTests = (): void => {
   const state = getState();
   state.webhooks.clear();
   state.threadRuns.clear();
+  state.localWorks.clear();
 };

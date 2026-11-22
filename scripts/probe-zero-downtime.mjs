@@ -43,9 +43,10 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROUTER_SCRIPT = path.resolve(__dirname, 'engine-router.mjs');
+const ROUTER_CORE_SCRIPT = path.resolve(__dirname, 'engine-router-core.mjs');
 const EXPECTED_ROUTER_HASH = crypto
   .createHash('sha256')
-  .update(fs.readFileSync(ROUTER_SCRIPT))
+  .update(fs.readFileSync(ROUTER_CORE_SCRIPT))
   .digest('hex');
 
 const SERVICE_KEY_1 = 'probe-arckep-engine-service-key-minimum-32-chars!!';
@@ -572,6 +573,13 @@ async function httpJson(port, method, reqPath, bodyObj = null, serviceKey = SERV
 
 async function runProbe() {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lc-zd-probe-'));
+  const routerRuntimeDir = path.join(tmpDir, 'router');
+  const runtimeRouterScript = path.join(routerRuntimeDir, 'engine-router.mjs');
+  const runtimeRouterCoreScript = path.join(routerRuntimeDir, 'engine-router-core.mjs');
+  fs.mkdirSync(routerRuntimeDir, { recursive: true });
+  fs.copyFileSync(ROUTER_SCRIPT, runtimeRouterScript);
+  fs.copyFileSync(ROUTER_CORE_SCRIPT, runtimeRouterCoreScript);
+
   const stateFile = path.join(tmpDir, 'state.json');
   const envFile = path.join(tmpDir, 'router.env');
   const readyFile = path.join(tmpDir, 'router-ready.json');
@@ -609,7 +617,7 @@ async function runProbe() {
       switchEpoch: 1,
     });
 
-    routerProc = spawn(process.execPath, ['--expose-gc', ROUTER_SCRIPT], {
+    routerProc = spawn(process.execPath, ['--expose-gc', runtimeRouterScript], {
       env: {
         ...process.env,
         ARCKEP_ENGINE_SERVICE_KEY: SERVICE_KEY_1,
@@ -1062,6 +1070,149 @@ async function runProbe() {
     assert.equal(runningMerged.statusCode, 200);
     assert.equal(runningMerged.headers['x-lobechat-slot'], 'merged');
     assert.deepEqual(runningMerged.json.topics.sort(), ['tpc_live', 'tpc_new']);
+
+    // 4l. v3 #3: When `drainingPort` (`blue`) holds a topic ONLY in `retainedTopicIds` (`!drainingHasActive`)
+    // and `activePort` (`green`) status returns `unknown` (HTTP 500 OR timeout), `GET /responses/:id` and
+    // `GET /responses/:id/stream` MUST return 503 Service Unavailable (NEVER 200 stale turn from `blue`!)!
+    blue.startStreamedTopic('tpc_retained_only_v3', [], 2_000);
+    blue.completeTopic('tpc_retained_only_v3', 'stale-completed-on-blue');
+    green.setStatusBehavior('http500');
+    try {
+      const staleGet500 = await httpJson(
+        routerPort,
+        'GET',
+        '/chat/api/v1/responses/tpc_retained_only_v3/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(
+        staleGet500.statusCode,
+        503,
+        'v3 #3 FAILED: GET /responses/:id served stale retained turn when activePort status returned 500!',
+      );
+
+      const staleStream500 = await httpJson(
+        routerPort,
+        'GET',
+        '/chat/api/v1/responses/tpc_retained_only_v3/stream/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(
+        staleStream500.statusCode,
+        503,
+        'v3 #3 FAILED: GET /responses/:id/stream served stale retained turn when activePort status returned 500!',
+      );
+    } finally {
+      green.setStatusBehavior('normal');
+    }
+
+    green.setStatusBehavior('delay', 550); // > ROUTER_STATUS_TIMEOUT_MS (400ms) -> TIMEOUT -> unknown
+    try {
+      const staleGetTimeout = await httpJson(
+        routerPort,
+        'GET',
+        '/chat/api/v1/responses/tpc_retained_only_v3/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(
+        staleGetTimeout.statusCode,
+        503,
+        'v3 #3 FAILED: GET /responses/:id served stale retained turn when activePort status timed out!',
+      );
+    } finally {
+      green.setStatusBehavior('normal');
+    }
+
+    // Once activePort status recovers (`ok` and does not own `tpc_retained_only_v3`), replay from blue returns 200!
+    const retainedReplayRecovered = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_retained_only_v3/',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(retainedReplayRecovered.statusCode, 200);
+    assert.equal(retainedReplayRecovered.headers['x-lobechat-slot'], 'blue');
+
+    // 4m. v3 #2: Hot-reload `engine-router-core.mjs` via `SIGHUP` DURING open SSE streams (`tpc_live` + `tpc_new`)
+    // with ZERO socket restarts, preserving `routerRuntime` (`inFlightRequests` & `topicsStartedOnActive`),
+    // rejecting invalid syntax safely, and updating `routerHash` in <2ms on valid code!
+    // Seed `topicsStartedOnActive` before SIGHUP to prove `routerRuntime` state survives core module replacement:
+    const seedActiveTopicRes = await httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Seed topicsStartedOnActive before hot reload',
+        model: 'agt_1',
+        previous_response_id: 'tpc_hot_reload_state',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    assert.equal(seedActiveTopicRes.statusCode, 200);
+
+    // Step A: Broken syntax in `engine-router-core.mjs` -> SIGHUP MUST keep previous `currentHandler` & `routerHash`!
+    writeAtomic(runtimeRouterCoreScript, 'export function brokenSyntax( {{{{\n');
+    routerProc.kill('SIGHUP');
+    await sleep(60);
+    const healthAfterBrokenCore = await httpJson(
+      routerPort,
+      'GET',
+      '/__router/health',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(healthAfterBrokenCore.statusCode, 200);
+    assert.equal(healthAfterBrokenCore.json.routerHash, EXPECTED_ROUTER_HASH);
+    assert.match(routerLogs, /ERROR: failed to hot-reload engine-router-core\.mjs/);
+
+    // Step B: Valid updated `engine-router-core.mjs` -> SIGHUP hot-swaps handler in <2ms while `tpc_live` SSE stays open!
+    const origCoreSource = fs.readFileSync(ROUTER_CORE_SCRIPT, 'utf8');
+    const hotSwappedCoreSource = `${origCoreSource}\n// hot-reload-probe-marker-v2\n`;
+    const expectedHotSwappedHash = crypto
+      .createHash('sha256')
+      .update(Buffer.from(hotSwappedCoreSource, 'utf8'))
+      .digest('hex');
+    assert.notEqual(expectedHotSwappedHash, EXPECTED_ROUTER_HASH);
+
+    writeAtomic(runtimeRouterCoreScript, hotSwappedCoreSource);
+    const routerPidBeforeHotReload = routerProc.pid;
+    routerProc.kill('SIGHUP');
+
+    let healthAfterValidHotReload = null;
+    const hotReloadDeadline = Date.now() + 1_000;
+    while (Date.now() < hotReloadDeadline) {
+      const h = await httpJson(routerPort, 'GET', '/__router/health', null, activeServiceKey);
+      if (h.json?.routerHash === expectedHotSwappedHash) {
+        healthAfterValidHotReload = h.json;
+        break;
+      }
+      await sleep(15);
+    }
+    assert.ok(
+      healthAfterValidHotReload,
+      'v3 #2 FAILED: routerHash did not update after SIGHUP hot-reload of engine-router-core.mjs!',
+    );
+    assert.equal(routerProc.pid, routerPidBeforeHotReload);
+    assert.equal(healthAfterValidHotReload.reloadCount, 2);
+    assert.ok(
+      healthAfterValidHotReload.inFlightRequests >= 2,
+      `Expected >=2 open SSE streams preserved across SIGHUP hot-reload, got ${healthAfterValidHotReload.inFlightRequests}`,
+    );
+    assert.ok(
+      healthAfterValidHotReload.topicsStartedOnActiveCount >= 1,
+      'Expected routerRuntime.topicsStartedOnActive preserved across SIGHUP hot-reload!',
+    );
+
+    // Emit chunk on `tpc_live` right AFTER hot-reload of `engine-router-core.mjs` — open SSE stream receives it seamlessly!
+    blue.emitSseEvent('tpc_live', 'response.output_text.delta', {
+      delta: 'Chunk-after-core-hot-reload ',
+    });
+    await sleep(30);
+    assert.match(liveStream.getRawText(), /Chunk-after-core-hot-reload/);
 
     // 5. Complete `tpc_live` on `blue` -> verify every single chunk + `response.completed` arrived!
     blue.emitSseEvent('tpc_live', 'response.output_text.delta', {
