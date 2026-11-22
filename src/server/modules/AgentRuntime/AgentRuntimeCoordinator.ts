@@ -197,6 +197,29 @@ export class AgentRuntimeCoordinator {
     return this.stateManager.getActiveOperations();
   }
 
+  async getActiveOperationsForTopic(topicId: string): Promise<string[]> {
+    if (!topicId) return [];
+    if (this.stateManager.getActiveOperationsForTopic) {
+      return this.stateManager.getActiveOperationsForTopic(topicId);
+    }
+    const marker = `_${topicId}_`;
+    const all = await this.stateManager.getActiveOperations();
+    return all.filter((opId) => opId.includes(marker));
+  }
+
+  async touchOperationHeartbeat(operationId: string, ttlSeconds?: number): Promise<void> {
+    await this.stateManager.touchOperationHeartbeat?.(operationId, ttlSeconds);
+  }
+
+  async clearOperationHeartbeat(operationId: string): Promise<void> {
+    await this.stateManager.clearOperationHeartbeat?.(operationId);
+  }
+
+  async hasOperationHeartbeat(operationId: string): Promise<boolean | null> {
+    if (!this.stateManager.hasOperationHeartbeat) return null;
+    return this.stateManager.hasOperationHeartbeat(operationId);
+  }
+
   /**
    * Get statistics
    */

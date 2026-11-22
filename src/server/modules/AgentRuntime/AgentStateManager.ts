@@ -17,6 +17,7 @@ const log = debug('lobe-server:agent-runtime:agent-state-manager');
  * plus transient retries; normal completion/error releases the lock immediately in finally.
  */
 export const DEFAULT_STEP_LOCK_TTL_SECONDS = 35 * 60;
+export const OPERATION_HEARTBEAT_TTL_SECONDS = 90;
 
 export interface StepResult {
   events?: AgentEvent[];
@@ -29,6 +30,7 @@ export interface StepResult {
 export interface AgentOperationMetadata {
   agentConfig?: any;
   createdAt: string;
+  heartbeatSupported?: boolean;
   lastActiveAt: string;
   modelRuntimeConfig?: any;
   status: AgentState['status'];
@@ -43,6 +45,7 @@ export class AgentStateManager {
   private readonly STEPS_PREFIX = 'agent_runtime_steps';
   private readonly METADATA_PREFIX = 'agent_runtime_meta';
   private readonly EVENTS_PREFIX = 'agent_runtime_events';
+  private readonly LIVE_OP_PREFIX = 'agent_runtime_live_op';
   private readonly DEFAULT_TTL = 2 * 3600; // 2h
 
   constructor() {
@@ -189,6 +192,7 @@ export class AgentStateManager {
       return {
         agentConfig: metadata.agentConfig ? JSON.parse(metadata.agentConfig) : undefined,
         createdAt: metadata.createdAt,
+        heartbeatSupported: metadata.heartbeatSupported === '1',
         lastActiveAt: metadata.lastActiveAt,
         modelRuntimeConfig: metadata.modelRuntimeConfig
           ? JSON.parse(metadata.modelRuntimeConfig)
@@ -221,6 +225,7 @@ export class AgentStateManager {
       const metadata: AgentOperationMetadata = {
         agentConfig: data.agentConfig,
         createdAt: new Date().toISOString(),
+        heartbeatSupported: true,
         lastActiveAt: new Date().toISOString(),
         modelRuntimeConfig: data.modelRuntimeConfig,
         status: 'idle',
@@ -232,6 +237,7 @@ export class AgentStateManager {
       // Serialize complex objects
       const redisData: Record<string, string> = {
         createdAt: metadata.createdAt,
+        heartbeatSupported: '1',
         lastActiveAt: metadata.lastActiveAt,
         status: metadata.status,
         totalCost: metadata.totalCost.toString(),
@@ -245,6 +251,7 @@ export class AgentStateManager {
 
       await this.redis.hmset(metaKey, redisData);
       await this.redis.expire(metaKey, this.DEFAULT_TTL);
+      await this.touchOperationHeartbeat(operationId, OPERATION_HEARTBEAT_TTL_SECONDS);
 
       log('[%s] Created operation metadata', operationId);
     } catch (error) {
@@ -262,6 +269,7 @@ export class AgentStateManager {
       `${this.STEPS_PREFIX}:${operationId}`,
       `${this.METADATA_PREFIX}:${operationId}`,
       `${this.EVENTS_PREFIX}:${operationId}`,
+      this.liveHeartbeatKey(operationId),
     ];
 
     try {
@@ -284,6 +292,81 @@ export class AgentStateManager {
     } catch (error) {
       console.error('Failed to get active operations:', error);
       return [];
+    }
+  }
+
+  /**
+   * Non-blocking Redis SCAN for operations belonging to a single topicId.
+   * Propagates Redis errors so callers (`hasLiveTopicOperation`) fail closed instead of
+   * mistaking a transient Redis hiccup for "0 active operations".
+   */
+  async getActiveOperationsForTopic(topicId: string): Promise<string[]> {
+    if (!topicId) return [];
+    const escapedTopicId = topicId.replaceAll(/[*?[\\\]]/g, '\\$&');
+    const pattern = `${this.STATE_PREFIX}:*_${escapedTopicId}_*`;
+    const prefix = `${this.STATE_PREFIX}:`;
+
+    if (typeof (this.redis as any).scan !== 'function') {
+      const prefixPattern = `${this.STATE_PREFIX}:*`;
+      const keys = await this.redis.keys(prefixPattern);
+      const marker = `_${topicId}_`;
+      return keys.map((key) => key.replace(prefix, '')).filter((opId) => opId.includes(marker));
+    }
+
+    const found = new Set<string>();
+    let cursor = '0';
+    do {
+      const [nextCursor, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 200);
+      for (const key of batch) {
+        if (key.startsWith(prefix)) {
+          found.add(key.slice(prefix.length));
+        }
+      }
+      cursor = nextCursor;
+    } while (cursor !== '0');
+
+    return [...found];
+  }
+
+  private liveHeartbeatKey(operationId: string): string {
+    return `${this.LIVE_OP_PREFIX}:${operationId}`;
+  }
+
+  async touchOperationHeartbeat(
+    operationId: string,
+    ttlSeconds: number = OPERATION_HEARTBEAT_TTL_SECONDS,
+  ): Promise<void> {
+    try {
+      const nowIso = new Date().toISOString();
+      await Promise.all([
+        this.redis.set(this.liveHeartbeatKey(operationId), nowIso, 'EX', ttlSeconds),
+        this.redis.hset(`${this.METADATA_PREFIX}:${operationId}`, 'lastActiveAt', nowIso),
+      ]);
+    } catch (error) {
+      console.error('Failed to touch operation heartbeat:', error);
+    }
+  }
+
+  async clearOperationHeartbeat(operationId: string): Promise<void> {
+    try {
+      await this.redis.del(this.liveHeartbeatKey(operationId));
+    } catch (error) {
+      console.error('Failed to clear operation heartbeat:', error);
+    }
+  }
+
+  async hasOperationHeartbeat(operationId: string): Promise<boolean | null> {
+    try {
+      const supported = await this.redis.hget(
+        `${this.METADATA_PREFIX}:${operationId}`,
+        'heartbeatSupported',
+      );
+      if (supported !== '1') return null;
+      return (await this.redis.exists(this.liveHeartbeatKey(operationId))) === 1;
+    } catch (error) {
+      console.error('Failed to check operation heartbeat:', error);
+      // Fail-safe: on transient Redis read failure, assume alive so we never clobber a running turn
+      return true;
     }
   }
 

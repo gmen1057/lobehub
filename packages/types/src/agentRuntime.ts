@@ -32,6 +32,7 @@ export const AgentRuntimeErrorType = {
 
   InvalidBedrockCredentials: 'InvalidBedrockCredentials',
   InvalidVertexCredentials: 'InvalidVertexCredentials',
+  ProviderStreamInterrupted: 'ProviderStreamInterrupted',
   StreamChunkError: 'StreamChunkError',
 
   InvalidGithubToken: 'InvalidGithubToken',

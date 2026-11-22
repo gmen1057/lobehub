@@ -3,6 +3,11 @@ import { and, asc, count, desc, eq, ilike, inArray, isNull } from 'drizzle-orm';
 import { messages, messagesFiles } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { idGenerator } from '@/database/utils/idGenerator';
+import { AgentRuntimeService } from '@/server/services/agentRuntime';
+import {
+  isStaleOrphanLoadingCandidate,
+  ORPHAN_PLACEHOLDER_ERROR,
+} from '@/server/services/agentRuntime/orphanPlaceholders';
 import { FileService as CoreFileService } from '@/server/services/file';
 
 import { BaseService } from '../common/base.service';
@@ -323,6 +328,48 @@ export class MessageService extends BaseService {
       const messageListWithFiles = await this.formatMessages(
         messageList as MessageResponseFromDatabase[],
       );
+
+      // Reap stale (> 2 min) orphaned LOADING_FLAT placeholders only when no slot owns a live turn
+      if (request.topicId && this.userId && messageListWithFiles.length > 0) {
+        const nowMs = Date.now();
+        const orphanCandidateIds = messageListWithFiles
+          .filter((msg) => isStaleOrphanLoadingCandidate(msg, { nowMs }))
+          .map((msg) => msg.id);
+
+        if (
+          orphanCandidateIds.length > 0 &&
+          !responsesStreamHub.hasTopic(request.topicId, { activeOnly: true }) &&
+          !hasInFlightResponseTopic(this.userId, request.topicId)
+        ) {
+          try {
+            const runtimeService = new AgentRuntimeService(this.db, this.userId, {
+              queueService: null,
+            });
+            const reapedIds = await runtimeService.reapOrphanTopicPlaceholders(request.topicId, {
+              candidateIds: orphanCandidateIds,
+              isTopicActiveLocally: () =>
+                responsesStreamHub.hasTopic(request.topicId!, { activeOnly: true }) ||
+                hasInFlightResponseTopic(this.userId!, request.topicId!),
+              nowMs,
+            });
+
+            if (reapedIds.length > 0) {
+              const reapedSet = new Set(reapedIds);
+              for (const msg of messageListWithFiles) {
+                if (reapedSet.has(msg.id)) {
+                  msg.content = '';
+                  (msg as any).error = ORPHAN_PLACEHOLDER_ERROR;
+                }
+              }
+            }
+          } catch (reapError) {
+            this.log('warn', 'Failed to reap orphan LOADING_FLAT messages on read', {
+              error: reapError instanceof Error ? reapError.message : String(reapError),
+              topicId: request.topicId,
+            });
+          }
+        }
+      }
 
       this.log('info', '获取消息列表完成', { count: messageListWithFiles.length });
 

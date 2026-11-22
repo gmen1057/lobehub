@@ -5,6 +5,7 @@ import type {
   StreamEvent,
 } from '@/server/modules/AgentRuntime/StreamEventManager';
 import type { IStreamEventManager } from '@/server/modules/AgentRuntime/types';
+import { setEngineSlotDraining } from '@/server/services/sandboxJobs/slotState';
 
 import type { CreateResponseRequest } from '../types/responses.type';
 
@@ -33,6 +34,11 @@ export interface HubOperation {
   finalState?: AgentState;
   /** Миллисекунды — когда ответ закончился (для чистки). */
   finishedAt?: number;
+  onShutdownFinalize?: (
+    reason: string,
+    op: HubOperation,
+  ) => Promise<AgentState | undefined> | AgentState | undefined;
+  onShutdownInterrupt?: (reason: string) => Promise<void> | void;
   operationId: string;
   params: CreateResponseRequest;
   responseId: string;
@@ -45,6 +51,12 @@ export interface HubOperation {
   /** История переполнилась (очень длинный ответ): переподключение невозможно, живой поток идёт дальше. */
   truncated: boolean;
   userId: string;
+}
+
+export interface HubShutdownSummary {
+  finalized: number;
+  forced: number;
+  interrupted: number;
 }
 
 export interface HubAttachment {
@@ -65,6 +77,8 @@ export interface HubDrainSnapshot {
 export const FINISHED_TTL_MS = 10 * 60 * 1000;
 /** Потолок истории одной операции (символы текста событий). */
 export const MAX_HISTORY_CHARS = 4 * 1024 * 1024;
+/** Окно финализации активных стримов при SIGTERM (до systemd TimeoutStopSec=30). */
+export const DEFAULT_GRACEFUL_SHUTDOWN_MS = 6000;
 
 const isToolsCallingChunk = (event: StreamEvent | undefined): boolean =>
   event?.type === 'stream_chunk' &&
@@ -93,6 +107,8 @@ export class ResponsesStreamHub implements IStreamEventManager {
   private readonly now: () => number;
   private readonly finishedTtlMs: number;
   private readonly maxHistoryChars: number;
+  private shutdownPromise: Promise<HubShutdownSummary> | null = null;
+  private doneWaiters = new Set<() => void>();
 
   constructor(options?: { finishedTtlMs?: number; maxHistoryChars?: number; now?: () => number }) {
     this.now = options?.now ?? Date.now;
@@ -103,6 +119,8 @@ export class ResponsesStreamHub implements IStreamEventManager {
   // ==================== реестр ====================
 
   register(input: {
+    onShutdownFinalize?: HubOperation['onShutdownFinalize'];
+    onShutdownInterrupt?: HubOperation['onShutdownInterrupt'];
     operationId: string;
     params: CreateResponseRequest;
     responseId: string;
@@ -143,6 +161,133 @@ export class ResponsesStreamHub implements IStreamEventManager {
         console.error('[ResponsesStreamHub] onDone error:', error);
       }
     }
+    if (this.doneWaiters.size > 0) {
+      for (const notify of this.doneWaiters) {
+        try {
+          notify();
+        } catch {
+          // ignore waiter errors
+        }
+      }
+    }
+  }
+
+  isShuttingDown(): boolean {
+    return this.shutdownPromise !== null;
+  }
+
+  /**
+   * Graceful drain при получении SIGTERM:
+   * 1. Переводит слот в draining (`setEngineSlotDraining(true)`).
+   * 2. Сигналит активным операциям (`operation_interrupted` + `onShutdownInterrupt`), чтобы
+   *    `RuntimeExecutors` сохранил уже полученный платный частичный ответ (`preservePartialResponse`).
+   * 3. Ждёт до `graceWindowMs` (по умолчанию 6 с, строго меньше systemd TimeoutStopSec=30).
+   * 4. Для операций, где ответ остался пустым (`LOADING_FLAT` без текста/инструментов), вызывает
+   *    `onShutdownFinalize` для записи явной причины перезапуска сервера в `messages.error`,
+   *    и принудительно закрывает оставшихся подписчиков через `markDone` (без обрыва чанков HTTP).
+   */
+  async gracefulShutdown(
+    reason: string = 'SIGTERM',
+    options?: { graceWindowMs?: number },
+  ): Promise<HubShutdownSummary> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+
+    const graceWindowMs = options?.graceWindowMs ?? DEFAULT_GRACEFUL_SHUTDOWN_MS;
+    this.shutdownPromise = (async (): Promise<HubShutdownSummary> => {
+      try {
+        setEngineSlotDraining(true);
+      } catch {
+        // non-fatal in isolated test environments
+      }
+
+      const activeOps = [...this.operations.values()].filter((op) => !op.done);
+      if (activeOps.length === 0) {
+        return { finalized: 0, forced: 0, interrupted: 0 };
+      }
+
+      await Promise.allSettled(
+        activeOps.map(async (op) => {
+          await this.publishStreamEvent(op.operationId, {
+            data: { reason },
+            stepIndex: 0,
+            type: 'operation_interrupted',
+          });
+          await op.onShutdownInterrupt?.(reason);
+        }),
+      );
+
+      if (activeOps.some((op) => !op.done) && graceWindowMs > 0) {
+        await new Promise<void>((resolve) => {
+          const checkAllDone = () => {
+            if (activeOps.every((op) => op.done)) {
+              cleanup();
+              resolve();
+            }
+          };
+          const timer = setTimeout(() => {
+            cleanup();
+            resolve();
+          }, graceWindowMs);
+          timer.unref?.();
+          const cleanup = () => {
+            clearTimeout(timer);
+            this.doneWaiters.delete(checkAllDone);
+          };
+          this.doneWaiters.add(checkAllDone);
+          checkAllDone();
+        });
+      }
+
+      let finalized = 0;
+      let forced = 0;
+
+      await Promise.allSettled(
+        activeOps.map(async (op) => {
+          let fallbackState: AgentState | undefined;
+          if (op.onShutdownFinalize) {
+            try {
+              fallbackState = await Promise.race([
+                Promise.resolve(op.onShutdownFinalize(reason, op)),
+                new Promise<undefined>((resolve) => {
+                  const t = setTimeout(() => resolve(undefined), 1500);
+                  t.unref?.();
+                }),
+              ]);
+              finalized += 1;
+            } catch (finalizeError) {
+              console.error('[ResponsesStreamHub] onShutdownFinalize error:', finalizeError);
+            }
+          }
+
+          if (!op.done) {
+            forced += 1;
+            this.markDone(
+              op.operationId,
+              fallbackState ??
+                ({
+                  error: {
+                    body: { code: 'provider_unavailable', reason: 'server_shutdown', status: 503 },
+                    message:
+                      'Модель временно недоступна из-за перезапуска сервера. Попробуйте ещё раз.',
+                    type: 503,
+                  },
+                  status: 'error',
+                } as unknown as AgentState),
+            );
+          } else if (fallbackState) {
+            op.finalState = fallbackState;
+          }
+        }),
+      );
+
+      return {
+        finalized,
+        forced,
+        interrupted: activeOps.length,
+      };
+    })();
+
+    return this.shutdownPromise;
   }
 
   get(operationId: string): HubOperation | undefined {
@@ -266,6 +411,8 @@ export class ResponsesStreamHub implements IStreamEventManager {
   clear(): void {
     this.operations.clear();
     this.counter = 0;
+    this.shutdownPromise = null;
+    this.doneWaiters.clear();
   }
 
   // ==================== IStreamEventManager ====================
@@ -411,6 +558,7 @@ export class ResponsesStreamHub implements IStreamEventManager {
 
 interface ResponsesStreamHubGlobal {
   __arckepResponsesStreamHub?: ResponsesStreamHub;
+  __arckepResponsesStreamHubSigtermCleanup?: (() => void) | null;
 }
 
 const globalForHub = globalThis as unknown as ResponsesStreamHubGlobal;
@@ -419,3 +567,92 @@ const globalForHub = globalThis as unknown as ResponsesStreamHubGlobal;
 export const responsesStreamHub =
   globalForHub.__arckepResponsesStreamHub ??
   (globalForHub.__arckepResponsesStreamHub = new ResponsesStreamHub());
+
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
+type SigtermListenerFn = Function;
+
+export interface SigtermTargetLike {
+  listeners?: (event: 'SIGTERM') => SigtermListenerFn[];
+  off?: (event: 'SIGTERM', listener: (...args: any[]) => any) => any;
+  on?: (event: 'SIGTERM', listener: (...args: any[]) => any) => any;
+  once: (event: 'SIGTERM', listener: (...args: any[]) => any) => any;
+  removeListener?: (event: 'SIGTERM', listener: (...args: any[]) => any) => any;
+}
+
+/**
+ * Registers a single idempotent SIGTERM listener (safe across HMR and test reloads).
+ * If Next.js standalone's `start-server` `cleanup` listener is already registered on `target`,
+ * awaits `hub.gracefulShutdown('SIGTERM')` BEFORE invoking Next's `cleanup('SIGTERM')` so even
+ * detached background streams (`0` open HTTP connections) persist partial responses before exit.
+ */
+export const registerResponsesStreamHubSigtermHandler = (
+  hub: ResponsesStreamHub = responsesStreamHub,
+  target: SigtermTargetLike | undefined = typeof process !== 'undefined' ? process : undefined,
+): (() => void) => {
+  if (!target || typeof target.once !== 'function') {
+    return () => undefined;
+  }
+
+  const isGlobalProcess = typeof process !== 'undefined' && target === process;
+  if (isGlobalProcess && globalForHub.__arckepResponsesStreamHubSigtermCleanup) {
+    return globalForHub.__arckepResponsesStreamHubSigtermCleanup;
+  }
+
+  const removeFn = target.off?.bind(target) ?? target.removeListener?.bind(target);
+  const existingListeners = target.listeners ? [...target.listeners('SIGTERM')] : [];
+  const nextJsCleanupListeners = existingListeners.filter(
+    (fn) => typeof fn === 'function' && fn.name === 'cleanup',
+  );
+
+  if (removeFn && nextJsCleanupListeners.length > 0) {
+    for (const fn of nextJsCleanupListeners) {
+      removeFn('SIGTERM', fn as (...args: any[]) => any);
+    }
+  }
+
+  let handled = false;
+  const onSigterm = () => {
+    if (handled) return;
+    handled = true;
+    void hub
+      .gracefulShutdown('SIGTERM')
+      .catch((error) => {
+        console.error('[ResponsesStreamHub] SIGTERM gracefulShutdown error:', error);
+      })
+      .finally(() => {
+        for (const fn of nextJsCleanupListeners) {
+          try {
+            (fn as (signal: 'SIGTERM') => unknown)('SIGTERM');
+          } catch (error) {
+            console.error('[ResponsesStreamHub] Delegated SIGTERM cleanup error:', error);
+          }
+        }
+      });
+  };
+
+  target.once('SIGTERM', onSigterm);
+
+  const unregister = () => {
+    if (removeFn) {
+      removeFn('SIGTERM', onSigterm);
+      if (!handled && target.on && nextJsCleanupListeners.length > 0) {
+        for (const fn of nextJsCleanupListeners) {
+          target.on('SIGTERM', fn as (...args: any[]) => any);
+        }
+      }
+    }
+    if (isGlobalProcess && globalForHub.__arckepResponsesStreamHubSigtermCleanup === unregister) {
+      globalForHub.__arckepResponsesStreamHubSigtermCleanup = null;
+    }
+  };
+
+  if (isGlobalProcess) {
+    globalForHub.__arckepResponsesStreamHubSigtermCleanup = unregister;
+  }
+
+  return unregister;
+};
+
+if (typeof process !== 'undefined' && !process.env.VITEST) {
+  registerResponsesStreamHubSigtermHandler(responsesStreamHub, process);
+}

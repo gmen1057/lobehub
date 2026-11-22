@@ -1,6 +1,9 @@
 import type { AgentState } from '@lobechat/agent-runtime';
+import { LOADING_FLAT } from '@lobechat/const';
+import { and, desc, eq, isNull, or } from 'drizzle-orm';
 
 import { FileModel } from '@/database/models/file';
+import { messages } from '@/database/schemas';
 import {
   STUDIO_CHAT_HOURLY_LIMIT,
   studioChatHourlyLimitError,
@@ -15,6 +18,11 @@ import type {
   StreamEvent,
 } from '@/server/modules/AgentRuntime/StreamEventManager';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
+import {
+  extractStreamedPartialFromEvents,
+  hasPaidOrMeaningfulAssistantPayload,
+  SERVER_SHUTDOWN_PLACEHOLDER_ERROR,
+} from '@/server/services/agentRuntime/orphanPlaceholders';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { FileService } from '@/server/services/file';
 
@@ -498,6 +506,19 @@ export class ResponsesService extends BaseService {
     });
 
     try {
+      if (previousTopicId && !responsesStreamHub.hasTopic(previousTopicId, { activeOnly: true })) {
+        try {
+          await new AgentRuntimeService(this.db, this.userId, {
+            queueService: null,
+          }).reapOrphanTopicPlaceholders(previousTopicId);
+        } catch (reapError) {
+          this.log('warn', 'Failed to reap orphan placeholders before createResponse', {
+            error: reapError,
+            previousTopicId,
+          });
+        }
+      }
+
       const model = params.model;
       const instructions = this.buildInstructions(params);
 
@@ -617,6 +638,19 @@ export class ResponsesService extends BaseService {
     let backgroundExecutionStarted = false;
 
     try {
+      if (previousTopicId && !responsesStreamHub.hasTopic(previousTopicId, { activeOnly: true })) {
+        try {
+          await new AgentRuntimeService(this.db, this.userId, {
+            queueService: null,
+          }).reapOrphanTopicPlaceholders(previousTopicId);
+        } catch (reapError) {
+          this.log('warn', 'Failed to reap orphan placeholders before createResponse', {
+            error: reapError,
+            previousTopicId,
+          });
+        }
+      }
+
       const model = params.model;
       const instructions = this.buildInstructions(params);
 
@@ -659,9 +693,35 @@ export class ResponsesService extends BaseService {
       const resolvedTopicId = execResult.topicId ?? responseId;
       execTracker.setOperation(operationId, resolvedTopicId);
 
+      const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
+        queueService: null,
+        streamEventManager: responsesStreamHub,
+      });
+
+      let shutdownFinalizedPromise: Promise<AgentState | undefined> | null = null;
+      const finalizeOnServerShutdown = (
+        _reason: string,
+        hubOp: HubOperation,
+        completedState?: AgentState,
+      ) => {
+        if (!shutdownFinalizedPromise) {
+          shutdownFinalizedPromise = this.finalizeTopicTurnOnServerShutdown({
+            completedState,
+            createdAtSec: createdAt,
+            hubOp,
+            topicId: resolvedTopicId,
+          });
+        }
+        return shutdownFinalizedPromise;
+      };
+
       // Register in hub BEFORE first yield so even if client aborts on chunk 1 or consumer
       // pauses generator before reading chunk 2, the operation is already tracked in hub.
       const op = responsesStreamHub.register({
+        onShutdownFinalize: (reason, hubOp) => finalizeOnServerShutdown(reason, hubOp),
+        onShutdownInterrupt: async () => {
+          await agentRuntimeService.interruptOperation(operationId);
+        },
         operationId,
         params,
         responseId,
@@ -678,18 +738,26 @@ export class ResponsesService extends BaseService {
         status: 'in_progress',
       });
 
-      const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
-        queueService: null,
-        streamEventManager: responsesStreamHub,
-      });
       backgroundExecutionStarted = true;
       void agentRuntimeService
         .executeSync(operationId)
         .then(
-          (state) => responsesStreamHub.markDone(operationId, state),
-          (err) => {
+          async (state) => {
+            let effectiveState = state;
+            if (responsesStreamHub.isShuttingDown()) {
+              const overrideState = await finalizeOnServerShutdown('SIGTERM', op, state);
+              if (overrideState) effectiveState = overrideState;
+            }
+            responsesStreamHub.markDone(operationId, effectiveState);
+          },
+          async (err) => {
             this.log('error', 'Streaming execution failed', { error: err, responseId });
-            responsesStreamHub.markDone(operationId, { status: 'error' } as AgentState);
+            let effectiveState = { status: 'error' } as AgentState;
+            if (responsesStreamHub.isShuttingDown()) {
+              const overrideState = await finalizeOnServerShutdown('SIGTERM', op, effectiveState);
+              if (overrideState) effectiveState = overrideState;
+            }
+            responsesStreamHub.markDone(operationId, effectiveState);
           },
         )
         .finally(() => {
@@ -1277,6 +1345,209 @@ export class ResponsesService extends BaseService {
       sequence_number: sequenceNumber,
       type: 'response.completed' as const,
     };
+  }
+
+  /**
+   * Finalize an in-flight topic turn during SIGTERM graceful shutdown:
+   * - Preserves any already-saved paid partial output/reasoning/tools/images and full multi-step
+   *   `completedState` (`messages`, `usage`, `cost`) without overwriting or duplicating text across steps.
+   * - If the current step's DB row is still `LOADING_FLAT` (`'...'`) while `ResponsesStreamHub` already
+   *   streamed text/reasoning for THIS step's assistant message, persists that partial content onto the DB row.
+   * - Only when the ENTIRE turn produced zero output/tools/reasoning/media before SIGTERM, replaces
+   *   `LOADING_FLAT` with an explicit server-shutdown error (`SERVER_SHUTDOWN_PLACEHOLDER_ERROR`).
+   */
+  private async finalizeTopicTurnOnServerShutdown(params: {
+    completedState?: AgentState;
+    createdAtSec: number;
+    hubOp: HubOperation;
+    topicId: string;
+  }): Promise<AgentState | undefined> {
+    const { completedState, createdAtSec, hubOp, topicId } = params;
+    const baseState = completedState ?? hubOp.finalState;
+    const streamed = extractStreamedPartialFromEvents(hubOp.events);
+
+    const hasPriorStateWork = Boolean(
+      baseState?.messages?.some((msg) => {
+        if (msg.role === 'tool') return true;
+        if (msg.role !== 'assistant') return false;
+        if ((msg as any).metadata?.internalRepairAttempt === true) return false;
+        const text = typeof msg.content === 'string' ? msg.content.trim() : '';
+        if (text.length > 0 && text !== LOADING_FLAT) return true;
+        return Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+      }),
+    );
+
+    const buildInterruptedState = (appendText?: string): AgentState => {
+      const existingMessages = [...(baseState?.messages ?? [])];
+      while (
+        existingMessages.length > 0 &&
+        existingMessages.at(-1)?.role === 'assistant' &&
+        (!existingMessages.at(-1)?.content || existingMessages.at(-1)?.content === LOADING_FLAT) &&
+        !existingMessages.at(-1)?.tool_calls?.length
+      ) {
+        existingMessages.pop();
+      }
+      if (appendText) {
+        const last = existingMessages.at(-1);
+        if (!(
+          last?.role === 'assistant' &&
+          last.content === appendText &&
+          !last.tool_calls?.length
+        )) {
+          existingMessages.push({ content: appendText, role: 'assistant' });
+        }
+      }
+      return {
+        ...baseState,
+        interruption: baseState?.interruption ?? {
+          canResume: false,
+          interruptedAt: new Date().toISOString(),
+          reason: 'user_cancelled',
+        },
+        messages: existingMessages,
+        status: 'interrupted',
+      } as unknown as AgentState;
+    };
+
+    const buildShutdownErrorState = (): AgentState =>
+      ({
+        ...baseState,
+        error: SERVER_SHUTDOWN_PLACEHOLDER_ERROR,
+        messages: baseState?.messages ?? [],
+        status: 'error',
+      }) as unknown as AgentState;
+
+    if (this.db && typeof (this.db as any).select === 'function' && this.userId && topicId) {
+      try {
+        const recentRows = await this.db
+          .select({
+            content: messages.content,
+            createdAt: messages.createdAt,
+            error: messages.error,
+            id: messages.id,
+            metadata: messages.metadata,
+            reasoning: messages.reasoning,
+            role: messages.role,
+            tools: messages.tools,
+            updatedAt: messages.updatedAt,
+          })
+          .from(messages)
+          .where(
+            and(
+              eq(messages.userId, this.userId),
+              eq(messages.topicId, topicId),
+              eq(messages.role, 'assistant'),
+            ),
+          )
+          .orderBy(desc(messages.createdAt))
+          .limit(5);
+
+        const turnFloorMs = (createdAtSec - 5) * 1000;
+        const turnRows = recentRows.filter((row) => {
+          const ts = row.createdAt ? new Date(row.createdAt).getTime() : Number.NaN;
+          return !Number.isFinite(ts) || ts >= turnFloorMs;
+        });
+        const turnRow = turnRows[0];
+        const priorDbWork = turnRows
+          .slice(1)
+          .some((row) => hasPaidOrMeaningfulAssistantPayload(row));
+        const hasAnyPriorTurnWork = priorDbWork || hasPriorStateWork;
+
+        if (turnRow) {
+          if (hasPaidOrMeaningfulAssistantPayload(turnRow)) {
+            return undefined;
+          }
+
+          const canApplyStreamedToRow =
+            !streamed.assistantMessageId || streamed.assistantMessageId === turnRow.id;
+
+          if (canApplyStreamedToRow && (streamed.text || streamed.reasoning)) {
+            await this.db
+              .update(messages)
+              .set({
+                content: streamed.text,
+                metadata: {
+                  ...(turnRow.metadata && typeof turnRow.metadata === 'object'
+                    ? (turnRow.metadata as Record<string, unknown>)
+                    : {}),
+                  finishReason: 'interrupted',
+                },
+                ...(streamed.reasoning ? { reasoning: { content: streamed.reasoning } } : {}),
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(messages.id, turnRow.id),
+                  eq(messages.userId, this.userId),
+                  or(eq(messages.content, LOADING_FLAT), eq(messages.content, '')),
+                ),
+              );
+
+            return buildInterruptedState(streamed.text);
+          }
+
+          if (hasAnyPriorTurnWork) {
+            if (turnRow.content === LOADING_FLAT) {
+              await this.db
+                .update(messages)
+                .set({
+                  content: '',
+                  metadata: {
+                    ...(turnRow.metadata && typeof turnRow.metadata === 'object'
+                      ? (turnRow.metadata as Record<string, unknown>)
+                      : {}),
+                    finishReason: 'interrupted',
+                  },
+                  updatedAt: new Date(),
+                })
+                .where(
+                  and(
+                    eq(messages.id, turnRow.id),
+                    eq(messages.userId, this.userId),
+                    eq(messages.content, LOADING_FLAT),
+                  ),
+                );
+            }
+            return buildInterruptedState();
+          }
+
+          if (!turnRow.error) {
+            await this.db
+              .update(messages)
+              .set({
+                content: '',
+                error: SERVER_SHUTDOWN_PLACEHOLDER_ERROR,
+                updatedAt: new Date(),
+              })
+              .where(
+                and(
+                  eq(messages.id, turnRow.id),
+                  eq(messages.userId, this.userId),
+                  or(eq(messages.content, LOADING_FLAT), eq(messages.content, '')),
+                  isNull(messages.error),
+                ),
+              );
+          }
+
+          return buildShutdownErrorState();
+        }
+      } catch (dbError) {
+        this.log('warn', 'Failed to finalize assistant row on server shutdown', {
+          error: dbError,
+          topicId,
+        });
+      }
+    }
+
+    if (streamed.text || streamed.reasoning) {
+      return buildInterruptedState(streamed.text);
+    }
+
+    if (hasPriorStateWork) {
+      return buildInterruptedState();
+    }
+
+    return buildShutdownErrorState();
   }
 
   /**
