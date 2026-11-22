@@ -60,6 +60,7 @@ export const responsesAPIModels = new Set([
  */
 export const contextCachingModelPatterns: RegExp[] = [
   /^claude-sonnet-5-5(?:-|$)/,
+  /^claude-haiku-5-5(?:-|$)/,
   // Claude 4.5 series - Anthropic API
   /^claude-(opus|sonnet|haiku)-4-5-/,
   // Claude 4 series - Anthropic API
@@ -84,6 +85,7 @@ export const isContextCachingModel = (model: string): boolean => {
  */
 export const thinkingWithToolClaudeModelPatterns: RegExp[] = [
   /^claude-sonnet-5-5(?:-|$)/,
+  /^claude-haiku-5-5(?:-|$)/,
   // Claude 4.5 series - Anthropic API
   /^claude-(opus|sonnet|haiku)-4-5-/,
   // Claude 4 series - Anthropic API
@@ -126,6 +128,7 @@ export const hasTemperatureTopPConflict = (model: string): boolean => {
  */
 export const temperatureDeprecatedModelPatterns: RegExp[] = [
   /^claude-sonnet-5-5(?:-|$)/,
+  /^claude-haiku-5-5(?:-|$)/,
   // Claude Opus 4.7+ — Anthropic API
   /^claude-opus-4-7/,
   // OpenRouter format

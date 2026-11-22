@@ -41,6 +41,24 @@ type ConstructorOptions<T extends Record<string, any> = any> = ClientOptions & T
 
 type AnthropicTools = Anthropic.Tool | Anthropic.WebSearchTool20250305;
 
+const HAIKU_5_5_MODEL_PATTERN = /^claude-haiku-5-5(?:-|$)/;
+
+// Haiku 5.5 rejects thinking={disabled} together with these effort levels (400).
+const HAIKU_5_5_DISABLE_THINKING_EFFORTS = new Set(['low', 'medium', 'high']);
+
+// Chat default for Haiku 5.5 when the user has not picked an effort (API default would be medium).
+const HAIKU_5_5_DEFAULT_EFFORT = 'low';
+
+/**
+ * Haiku 5.5 rejects assistant prefill (400): the conversation must end with a user turn.
+ * Never empties the list.
+ */
+const dropTrailingAssistantMessages = <T extends { role: string }>(messages: T[]): T[] => {
+  let end = messages.length;
+  while (end > 1 && messages[end - 1].role === 'assistant') end -= 1;
+  return end === messages.length ? messages : messages.slice(0, end);
+};
+
 export const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com';
 
 export interface CustomClientOptions<T extends Record<string, any> = any> {
@@ -138,9 +156,15 @@ export const buildDefaultAnthropicPayload = async (
     thinking,
   });
 
+  const isHaiku55 = HAIKU_5_5_MODEL_PATTERN.test(model);
+
   // Filter out empty/whitespace-only system prompts — Anthropic API rejects them
   const systemMessage = messages.find((message) => message.role === 'system');
-  const userMessages = messages.filter((message) => message.role !== 'system');
+  const nonSystemMessages = messages.filter((message) => message.role !== 'system');
+  // Dropped before building so the cache breakpoint stays on the last user turn.
+  const userMessages = isHaiku55
+    ? dropTrailingAssistantMessages(nonSystemMessages)
+    : nonSystemMessages;
   const systemPromptText =
     typeof systemMessage?.content === 'string' && systemMessage.content.trim()
       ? systemMessage.content
@@ -191,6 +215,27 @@ export const buildDefaultAnthropicPayload = async (
       ...(effort ? { output_config: { effort } } : {}),
       system: systemPrompts,
       thinking: { type: 'adaptive' },
+      tools: postTools as Anthropic.MessageCreateParams['tools'],
+    } as Anthropic.MessageCreateParams;
+  }
+
+  // Haiku 5.5: adaptive thinking only (budget_tokens, temperature, top_p, top_k are rejected).
+  // Unlike Sonnet 5.5, thinking may be disabled, but only while effort <= high.
+  // Thinking blocks come back empty unless display is "summarized".
+  if (isHaiku55) {
+    const resolvedEffort = effort ?? HAIKU_5_5_DEFAULT_EFFORT;
+    const resolvedThinking =
+      thinking?.type === 'disabled' && HAIKU_5_5_DISABLE_THINKING_EFFORTS.has(resolvedEffort)
+        ? { type: 'disabled' }
+        : { display: 'summarized', type: 'adaptive' };
+
+    return {
+      max_tokens: resolvedMaxTokens,
+      messages: postMessages,
+      model,
+      output_config: { effort: resolvedEffort },
+      system: systemPrompts,
+      thinking: resolvedThinking,
       tools: postTools as Anthropic.MessageCreateParams['tools'],
     } as Anthropic.MessageCreateParams;
   }

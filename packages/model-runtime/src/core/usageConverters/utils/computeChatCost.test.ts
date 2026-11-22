@@ -598,6 +598,68 @@ describe('computeChatPricing', () => {
       expect(totalCredits).toBe(49_916); // 30 + 42615 + 907 + 6364 = 49916
       expect(totalCost).toBeCloseTo(0.049916, 6); // 49916 credits = $0.049916
     });
+
+    describe('Claude Haiku 5.5 (whole request moves to the x5 tier above 100K prompt tokens)', () => {
+      const pricing = anthropicChatModels.find(
+        (model: { id: string }) => model.id === 'claude-haiku-5-5',
+      )?.pricing;
+
+      it('bills the short tier at exactly 100K prompt tokens', () => {
+        const usage: ModelTokensUsage = {
+          inputCacheMissTokens: 100_000,
+          outputTextTokens: 1_000,
+          totalInputTokens: 100_000,
+          totalOutputTokens: 1_000,
+        };
+
+        const result = computeChatCost(pricing, usage);
+        expect(result?.issues).toHaveLength(0);
+        // 100000 * 0.1 + 1000 * 0.5
+        expect(result?.totalCredits).toBe(10_500);
+      });
+
+      it('bills input and output at the long tier above 100K prompt tokens', () => {
+        const usage: ModelTokensUsage = {
+          inputCacheMissTokens: 100_001,
+          outputTextTokens: 1_000,
+          totalInputTokens: 100_001,
+          totalOutputTokens: 1_000,
+        };
+
+        const result = computeChatCost(pricing, usage);
+        expect(result?.issues).toHaveLength(0);
+        // ceil(100001 * 0.5) + 1000 * 2.5
+        expect(result?.totalCredits).toBe(52_501);
+      });
+
+      it('counts cached tokens towards the 100K threshold and prices cache read at the long tier', () => {
+        const usage: ModelTokensUsage = {
+          inputCacheMissTokens: 1_000,
+          inputCachedTokens: 100_000,
+          totalInputTokens: 101_000,
+        };
+
+        const result = computeChatCost(pricing, usage);
+        expect(result?.issues).toHaveLength(0);
+        // 1000 * 0.5 + 100000 * 0.05
+        expect(result?.totalCredits).toBe(5_500);
+      });
+
+      it('prices cache writes by TTL at the short tier (not expressible together with tiers)', () => {
+        const usage: ModelTokensUsage = {
+          inputCacheMissTokens: 0,
+          inputWriteCacheTokens: 1_000,
+          totalInputTokens: 1_000,
+        };
+
+        expect(computeChatCost(pricing, usage, { lookupParams: { ttl: '5m' } })?.totalCredits).toBe(
+          125,
+        );
+        expect(computeChatCost(pricing, usage, { lookupParams: { ttl: '1h' } })?.totalCredits).toBe(
+          200,
+        );
+      });
+    });
   });
 
   describe('Edge Cases', () => {
