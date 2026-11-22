@@ -357,7 +357,11 @@ export const skillsRuntime: ServerRuntimeRegistration = {
         const arckepUserId = String(await resolveArckepUserId(context.serverDB, context.userId));
         // Номер темы приходит от клиента: чужая тема не должна вести в чужую песочницу.
         if (await userOwnsTopic(context.serverDB, context.userId, context.topicId)) {
-          sandbox = new SkillSandbox({ arckepUserId, topicId: context.topicId });
+          sandbox = new SkillSandbox({
+            allowInternet: context.sandboxAllowInternet === true,
+            arckepUserId,
+            topicId: context.topicId,
+          });
         } else {
           sandboxUnavailable = 'The sandbox is available only inside your own chat.';
         }

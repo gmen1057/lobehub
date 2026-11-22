@@ -40,6 +40,11 @@ export const ARCKEP_WEB_SEARCH_CONNECTOR = 'mcp-arckep-studio-web';
 
 type SearchChatConfig = { searchMode?: string; useModelBuiltinSearch?: boolean } | undefined;
 
+const isSearchOff = (chatConfig: SearchChatConfig): boolean => {
+  const mode = chatConfig?.searchMode ?? 'auto';
+  return mode === 'off' || mode === 'disabled';
+};
+
 /** Есть ли у модели встроенный поиск провайдера (без учёта выключателей помощника). */
 export const modelHasBuiltinSearch = async (
   model: string | undefined,
@@ -64,7 +69,7 @@ export const modelHasBuiltinSearch = async (
 
 /**
  * arckep (17.10.2026): встроенный поиск провайдера для серверных прогонов (REST-движок студии,
- * боты, cron): searchMode агента не 'off', useModelBuiltinSearch ?? true и у модели он есть.
+ * боты, cron): searchMode агента не 'off'/'disabled', useModelBuiltinSearch ?? true и у модели он есть.
  * Раньше серверный контур поиск не включал вовсе, и модель уходила в «skills/runCommand» (curl), который
  * ждёт подтверждения человеком.
  */
@@ -75,7 +80,7 @@ export const resolveServerEnabledSearch = async (
 ): Promise<boolean> => {
   if (!model || !provider) return false;
   const chatConfig = agentConfig?.chatConfig;
-  if ((chatConfig?.searchMode ?? 'auto') === 'off') return false;
+  if (isSearchOff(chatConfig)) return false;
   if (!(chatConfig?.useModelBuiltinSearch ?? true)) return false;
   return modelHasBuiltinSearch(model, provider);
 };
@@ -92,7 +97,7 @@ export const resolveArckepSearchPluginIds = async (
   provider: string | undefined,
 ): Promise<string[]> => {
   if (!model || !provider) return [];
-  if ((agentConfig?.chatConfig?.searchMode ?? 'auto') === 'off') return [];
+  if (isSearchOff(agentConfig?.chatConfig)) return [];
   if (await resolveServerEnabledSearch(agentConfig, model, provider)) return [];
   return [ARCKEP_WEB_SEARCH_CONNECTOR];
 };
@@ -109,7 +114,7 @@ export const prefersArckepSearchOnSchedule = (
 ): boolean => {
   if (!provider || !ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS.has(provider)) return false;
   const chatConfig = agentConfig?.chatConfig;
-  if ((chatConfig?.searchMode ?? 'auto') === 'off') return false;
+  if (isSearchOff(chatConfig)) return false;
   return chatConfig?.useModelBuiltinSearch ?? true;
 };
 
@@ -126,4 +131,21 @@ export const offersArckepSearchChoice = async (
 ): Promise<boolean> => {
   if (!provider || !ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS.has(provider)) return false;
   return resolveServerEnabledSearch(agentConfig, model, provider);
+};
+
+export const resolveSandboxAllowInternet = async (params: {
+  agentConfig?: { chatConfig?: SearchChatConfig };
+  disabledToolIds?: readonly string[];
+  model?: string;
+  provider?: string;
+}): Promise<boolean> => {
+  const { agentConfig, disabledToolIds, model, provider } = params;
+  // Явно выключенный тумблер «Поиск в интернете» (searchMode === 'off' | 'disabled') всегда закрывает сеть E2B
+  // на всех моделях, даже если mcp-arckep-studio-web установлен у пользователя в БД.
+  if (isSearchOff(agentConfig?.chatConfig)) return false;
+  // Встроенный поиск модели включён (Claude, Gemini, OpenAI, Qwen, xAI, DeepSeek Flash).
+  if (await resolveServerEnabledSearch(agentConfig, model, provider)) return true;
+  // Модели без встроенного поиска (DeepSeek Pro, OpenRouter) и cron с useModelBuiltinSearch: false
+  // работают через mcp-arckep-studio-web: сеть разрешена, если этот инструмент не выключен явно.
+  return !(disabledToolIds ?? []).includes(ARCKEP_WEB_SEARCH_CONNECTOR);
 };

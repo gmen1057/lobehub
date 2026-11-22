@@ -21,8 +21,13 @@ vi.mock('@/database/models/user', () => ({
 
 const GATEWAY_REPLY = `\u0001ARCKEP_RESULT\u0001${JSON.stringify({ exit: 0, stderr: '', stdout: 'ok' })}`;
 
-const makeRuntime = (topicId = 'tpc_1') =>
-  skillsRuntime.factory({ serverDB: {} as any, topicId, userId: 'user_1' } as any) as Promise<any>;
+const makeRuntime = (topicId = 'tpc_1', extra: Record<string, unknown> = {}) =>
+  skillsRuntime.factory({
+    serverDB: {} as any,
+    topicId,
+    userId: 'user_1',
+    ...extra,
+  } as any) as Promise<any>;
 
 describe('runtime lobe-skills в движке без интерфейса: песочница только своей темы', () => {
   const fetchMock = vi.fn();
@@ -46,14 +51,44 @@ describe('runtime lobe-skills в движке без интерфейса: пе�
     vi.unstubAllGlobals();
   });
 
-  it('своя тема: команда идёт в шлюз с темой и номером человека', async () => {
+  it('своя тема: команда идёт в шлюз с темой, номером человека и X-Arckep-Allow-Internet: 0 по умолчанию', async () => {
     const runtime = await makeRuntime();
     const result = await runtime.runCommand({ command: 'echo ok' });
 
     expect(result.success).toBe(true);
     const init = fetchMock.mock.calls[0][1] as RequestInit;
-    expect(init.headers).toMatchObject({ 'X-Arckep-Topic': 'tpc_1', 'X-Arckep-User': '15' });
+    expect(init.headers).toMatchObject({
+      'X-Arckep-Allow-Internet': '0',
+      'X-Arckep-Topic': 'tpc_1',
+      'X-Arckep-User': '15',
+    });
     expect(mockFindTopic).toHaveBeenCalledWith('tpc_1');
+  });
+
+  it('sandboxAllowInternet=true пробрасывает X-Arckep-Allow-Internet: 1 в шлюз', async () => {
+    const runtime = await makeRuntime('tpc_1', { sandboxAllowInternet: true });
+    const result = await runtime.runCommand({ command: 'echo ok' });
+
+    expect(result.success).toBe(true);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.headers).toMatchObject({
+      'X-Arckep-Allow-Internet': '1',
+      'X-Arckep-Topic': 'tpc_1',
+      'X-Arckep-User': '15',
+    });
+  });
+
+  it('sandboxAllowInternet=false пробрасывает X-Arckep-Allow-Internet: 0 в шлюз', async () => {
+    const runtime = await makeRuntime('tpc_1', { sandboxAllowInternet: false });
+    const result = await runtime.runCommand({ command: 'echo ok' });
+
+    expect(result.success).toBe(true);
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.headers).toMatchObject({
+      'X-Arckep-Allow-Internet': '0',
+      'X-Arckep-Topic': 'tpc_1',
+      'X-Arckep-User': '15',
+    });
   });
 
   it('чужая тема: шлюз не вызывается, модель получает понятный отказ', async () => {

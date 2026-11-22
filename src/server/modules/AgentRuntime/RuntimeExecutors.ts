@@ -77,7 +77,7 @@ import {
 import { shouldAutoAttachSpreadsheet } from '@/utils/spreadsheet';
 import { nanoid } from '@/utils/uuid';
 
-import { resolveServerEnabledSearch } from './arckepSearch';
+import { resolveSandboxAllowInternet, resolveServerEnabledSearch } from './arckepSearch';
 import {
   DATA_GUARD_COMPRESSION_MODEL,
   isDeepSeekDataGuardProtected,
@@ -523,6 +523,22 @@ const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
 
 // Встроенный поиск моделей и «Поиск Arckep» — в ./arckepSearch (здесь остаётся реэкспорт для тестов и вызовов).
 export { resolveServerEnabledSearch };
+
+const resolveToolSandboxAllowInternet = async (
+  state: AgentState,
+  agentConfig: any,
+): Promise<boolean> => {
+  try {
+    return await resolveSandboxAllowInternet({
+      agentConfig,
+      disabledToolIds: state.operationToolSet?.disabledToolIds,
+      model: state.modelRuntimeConfig?.model ?? agentConfig?.model,
+      provider: state.modelRuntimeConfig?.provider ?? agentConfig?.provider,
+    });
+  } catch {
+    return false;
+  }
+};
 
 const executeToolWithRetry = async (
   execute: () => Promise<ToolExecutionResultResponse>,
@@ -1029,11 +1045,25 @@ export const createRuntimeExecutors = (
           output: processedMessages,
           type: 'context_engine_result',
         } as any);
+      } else if (state.forceFinish && forceFinishPrompt) {
+        const systemMsgIndex = llmPayload.messages.findIndex((m: any) => m.role === 'system');
+        if (systemMsgIndex >= 0) {
+          processedMessages = llmPayload.messages.map((m: any, index: number) => {
+            if (index !== systemMsgIndex) return m;
+            const existingContent = typeof m.content === 'string' ? m.content : '';
+            return {
+              ...m,
+              content: [existingContent, forceFinishPrompt].filter(Boolean).join('\n\n'),
+            };
+          });
+        } else {
+          processedMessages = [
+            ...llmPayload.messages,
+            { content: forceFinishPrompt, role: 'system' },
+          ];
+        }
       } else {
-        processedMessages =
-          state.forceFinish && forceFinishPrompt
-            ? [...llmPayload.messages, { content: forceFinishPrompt, role: 'system' }]
-            : llmPayload.messages;
+        processedMessages = llmPayload.messages;
       }
 
       // Initialize ModelRuntime (read user's keyVaults from database).
@@ -1346,8 +1376,8 @@ export const createRuntimeExecutors = (
               },
               onToolsCalling: async ({ toolsCalling: raw }) => {
                 // Suppress phantom tool calls and avoid streaming orphaned tools_calling cards
-                // during the final tool-free turn after the tool-error circuit breaker trips.
-                if (circuitBreakerTripped) return;
+                // during the final tool-free turn (circuit breaker or max-steps forceFinish).
+                if (circuitBreakerTripped || state.forceFinish) return;
 
                 const passthroughIdentifiers = Object.entries(resolved.sourceMap)
                   .filter(([, source]) => source === 'client')
@@ -1696,6 +1726,21 @@ export const createRuntimeExecutors = (
             }
           }
 
+          const isMaxStepsForceFinish = Boolean(
+            state.forceFinish &&
+            !circuitBreakerTripped &&
+            !blockedRepeatedToolCall &&
+            !blockedUnresolvedToolCall,
+          );
+          if (isMaxStepsForceFinish && !(await isOperationInterrupted(ctx))) {
+            // Never allow another tool call on the max-steps forceFinish turn,
+            // while preserving paid assistant content / multimodal output as-is.
+            toolsCalling = [];
+            tool_calls = [];
+            resolvedToolCalls = [];
+            unresolvedToolCalls = [];
+          }
+
           const htmlSyntaxRepairAttempts =
             htmlGateDiagnostics.length > 0
               ? ((state.metadata?.htmlSyntaxRepairAttempts as number | undefined) ?? 0) + 1
@@ -1821,7 +1866,9 @@ export const createRuntimeExecutors = (
                   ? { finishReason: 'unresolved_tool_call_limit' }
                   : circuitBreakerTripped
                     ? { finishReason: 'tool_error_limit' }
-                    : {}),
+                    : isMaxStepsForceFinish
+                      ? { finishReason: 'max_steps_completed' }
+                      : {}),
               reasoning: thinkingContent,
               tool_calls,
               usage: currentStepUsage,
@@ -1897,6 +1944,9 @@ export const createRuntimeExecutors = (
               originalCodeArtifactContent !== finalContent
             ) {
               metadata.codeArtifactFallback = originalCodeArtifactContent;
+            }
+            if (isMaxStepsForceFinish) {
+              metadata.finishReason = 'max_steps_completed';
             }
 
             await ctx.messageModel.update(assistantMessageItem.id, {
@@ -3024,6 +3074,7 @@ export const createRuntimeExecutors = (
       };
 
       // Execute tool using ToolExecutionService
+      const sandboxAllowInternet = await resolveToolSandboxAllowInternet(state, agentConfig);
       log(`[${operationLogId}] Executing tool ${toolName} ...`);
       const execution = await executeToolWithRetry(
         () => {
@@ -3033,6 +3084,7 @@ export const createRuntimeExecutors = (
             agentId: state.metadata?.agentId,
             memoryToolPermission: agentConfig?.chatConfig?.memory?.toolPermission,
             parentMessageId: payload.parentMessageId,
+            sandboxAllowInternet,
             serverDB: ctx.serverDB,
             taskId: state.metadata?.taskId,
             toolManifestMap: effectiveManifestMap,
@@ -3374,6 +3426,10 @@ export const createRuntimeExecutors = (
           };
 
           const batchAgentConfig = state.metadata?.agentConfig;
+          const sandboxAllowInternet = await resolveToolSandboxAllowInternet(
+            state,
+            batchAgentConfig,
+          );
 
           const execution = await executeToolWithRetry(
             () => {
@@ -3383,6 +3439,7 @@ export const createRuntimeExecutors = (
                 agentId: state.metadata?.agentId,
                 memoryToolPermission: batchAgentConfig?.chatConfig?.memory?.toolPermission,
                 parentMessageId,
+                sandboxAllowInternet,
                 serverDB: ctx.serverDB,
                 taskId: state.metadata?.taskId,
                 toolManifestMap: batchManifestMap,

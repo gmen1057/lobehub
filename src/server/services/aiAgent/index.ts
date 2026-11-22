@@ -124,6 +124,8 @@ import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
 
+export const DEFAULT_CHAT_MAX_STEPS = 60;
+
 interface FileAttachmentContentLike {
   content?: string | null;
 }
@@ -2122,7 +2124,7 @@ export class AiAgentService {
         initialContext,
         initialMessages: allMessages,
         initialStepCount,
-        maxSteps,
+        maxSteps: maxSteps ?? DEFAULT_CHAT_MAX_STEPS,
         modelRuntimeConfig: {
           compressionModel: resolveCompressionModelConfig({ agentConfig }),
           model,

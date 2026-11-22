@@ -20,6 +20,8 @@ export interface ToolExecutionContext {
    * сверки с макетом (`arckep-layout`) находит последнюю версию письма и зовёт ту же модель со списанием в эту тему.
    */
   parentMessageId?: string;
+  /** Server-resolved internet access policy for E2B sandboxes (derived from web search toggle). */
+  sandboxAllowInternet?: boolean;
   /** Server database for LobeHub Skills execution */
   serverDB?: LobeChatDatabase;
   studioTextFileContinueId?: string;

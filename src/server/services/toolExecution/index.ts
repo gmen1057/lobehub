@@ -45,6 +45,9 @@ const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-mcp-topic-id']);
 // image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения: `getStudioMcpUrl()` (./mcpPolicy,
 // ARCKEP_STUDIO_MCP_URL) — он же в белом списке адресов `mcp-arckep-*`.
 
+/** Заголовок доступа песочницы E2B к интернету: выставляет только сервер по настройкам поиска. */
+const SANDBOX_INTERNET_HEADERS = new Set(['x-arckep-allow-internet']);
+
 interface ToolExecutionServiceDeps {
   builtinToolsExecutor: BuiltinToolsExecutor;
   mcpService: MCPService;
@@ -265,6 +268,7 @@ export class ToolExecutionService {
           if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
           // Номер темы (песочница E2B) задаёт только сервер, см. ниже.
           if (TOPIC_HEADERS.has(key.toLowerCase())) continue;
+          if (SANDBOX_INTERNET_HEADERS.has(key.toLowerCase())) continue;
           if (value === undefined || value === null || value === '') continue;
           const text = String(value)
             .replaceAll(/[\r\n\0]/g, '')
@@ -320,6 +324,7 @@ export class ToolExecutionService {
     // Заголовки темы из манифеста и настроек человека отбрасываются у всех подключений.
     for (const key of Object.keys(headers)) {
       if (TOPIC_HEADERS.has(key.toLowerCase())) delete headers[key];
+      if (SANDBOX_INTERNET_HEADERS.has(key.toLowerCase())) delete headers[key];
     }
     // Песочница E2B: тема отдаётся шлюзу только вместе с номером человека в студии и только если тема его
     // (номер приходит от клиента, шлюз ему доверяет: заголовок сильнее session_id из аргументов модели).
@@ -334,6 +339,7 @@ export class ToolExecutionService {
         throw new Error('Песочница доступна только в своём чате аккаунта студии Arckep.');
       }
       headers['X-Arckep-Topic'] = context.topicId;
+      headers['X-Arckep-Allow-Internet'] = context.sandboxAllowInternet ? '1' : '0';
     }
 
     return { ...mcpParams, headers };

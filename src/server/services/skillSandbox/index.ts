@@ -81,6 +81,8 @@ export type SandboxFileRead =
   { base64: string; filename: string; ok: true; size: number } | { message: string; ok: false };
 
 export interface SkillSandboxOptions {
+  /** Доступ песочницы к интернету (выводится сервером из настройки веб-поиска). */
+  allowInternet?: boolean;
   /**
    * Номер человека в студии (X-Arckep-User): по нему шлюз считает деньги и квоты. Обязателен: без него
    * песочница работала бы неучтённо, поэтому вызывающий не создаёт SkillSandbox для чужих аккаунтов.
@@ -209,6 +211,7 @@ export class SkillSandbox {
     const timeoutMs = isRemotion ? GATEWAY_REMOTION_TIMEOUT_MS : GATEWAY_TIMEOUT_MS;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      'X-Arckep-Allow-Internet': this.options.allowInternet ? '1' : '0',
       'X-Arckep-Topic': this.options.topicId,
       'X-Arckep-User': this.options.arckepUserId,
     };
