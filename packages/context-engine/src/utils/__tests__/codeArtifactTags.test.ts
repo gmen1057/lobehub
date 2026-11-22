@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifySavedCodeArtifactNotePrefix,
+  isSavedCodeArtifactNote,
+  messageContentContainsMarker,
   rewriteMessageContentCodeArtifactTags,
   rewriteSavedCodeArtifactTagsForLLM,
   rewriteStoredMessageContentForLLM,
+  SAVED_CODE_ARTIFACT_NOTE_RE,
 } from '../codeArtifactTags';
 
 const FILE_ID = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
@@ -207,5 +211,71 @@ describe('H1 linear scanner edge cases & serialized multimodal JSON', () => {
     expect(rewriteStoredMessageContentForLLM(plainBracket)).toBe(
       `[Note] [Saved "Mod1.bas" (vb), fileId=${FILE_ID} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${FILE_ID}") if you need to inspect it.]`,
     );
+  });
+});
+
+describe('SAVED_CODE_ARTIFACT_NOTE_RE & classifySavedCodeArtifactNotePrefix', () => {
+  const validVariants = [
+    `[Saved "Module1.bas" (vb), fileId=${FILE_ID} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${FILE_ID}") if you need to inspect it.]`,
+    `[Saved code file, fileId=${FILE_ID} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${FILE_ID}") if you need to inspect it.]`,
+    `[Saved "empty.py" — previous code block stored by server.]`,
+    `[Saved "C# helper.cs" (c#), fileId=abc_123-XYZ — previous code block stored by server.]`,
+    `[Saved "${'a'.repeat(260)}" (${'x'.repeat(40)}), fileId=${'f'.repeat(80)} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${'f'.repeat(80)}") if you need to inspect it.]`,
+  ];
+
+  it('matches all canonical server-generated saved-note variants and classifies prefixes incrementally', () => {
+    for (const note of validVariants) {
+      expect(SAVED_CODE_ARTIFACT_NOTE_RE.test(note)).toBe(true);
+      expect(isSavedCodeArtifactNote(note)).toBe(true);
+      expect(classifySavedCodeArtifactNotePrefix(note)).toEqual({
+        end: note.length,
+        kind: 'match',
+      });
+      expect(classifySavedCodeArtifactNotePrefix(`${note} trailing`)).toEqual({
+        end: note.length,
+        kind: 'match',
+      });
+
+      // Every strict prefix must remain pending
+      for (let len = 7; len < note.length; len += 1) {
+        expect(classifySavedCodeArtifactNotePrefix(note.slice(0, len))).toEqual({
+          kind: 'pending',
+        });
+      }
+    }
+  });
+
+  it('rejects ordinary text and out-of-bounds fields immediately', () => {
+    const nonNotes = [
+      '[Saved changes]',
+      '[Saved ch',
+      '[Saved 3 files]',
+      '[Saved "report" ok]',
+      '[Saved "" — previous code block stored by server.]',
+      `[Saved "${'a'.repeat(261)}" — previous code block stored by server.]`,
+      `[Saved "a.ts" (${'x'.repeat(41)}) — previous code block stored by server.]`,
+      `[Saved "a.ts", fileId=${'f'.repeat(81)} — previous code block stored by server.]`,
+      '[Saved "a.ts"\n — previous code block stored by server.]',
+      '[Saved "a.ts", fileId=abc]',
+    ];
+
+    for (const sample of nonNotes) {
+      expect(isSavedCodeArtifactNote(sample)).toBe(false);
+      expect(classifySavedCodeArtifactNotePrefix(sample)).toEqual({ kind: 'mismatch' });
+    }
+  });
+
+  it('detects marker in plain string and multimodal content arrays', () => {
+    expect(
+      messageContentContainsMarker('Why does it say previous code block stored by server?'),
+    ).toBe(true);
+    expect(
+      messageContentContainsMarker([
+        { image_url: { url: 'https://example.com/1.png' }, type: 'image_url' },
+        { text: 'Check previous code block stored by server please', type: 'text' },
+      ]),
+    ).toBe(true);
+    expect(messageContentContainsMarker('Regular prompt asking for VBA code')).toBe(false);
+    expect(messageContentContainsMarker(null)).toBe(false);
   });
 });

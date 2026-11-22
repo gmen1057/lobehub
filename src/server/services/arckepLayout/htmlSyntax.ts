@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { Script } from 'node:vm';
 
+import {
+  classifySavedCodeArtifactNotePrefix,
+  messageContentContainsMarker,
+  SAVED_CODE_ARTIFACT_NOTE_MARKER,
+  SAVED_CODE_ARTIFACT_NOTE_PREFIX,
+} from '@lobechat/context-engine';
 import ts from 'typescript';
 
 import { artifactTag, escapeAttr, parseChatFileId } from './artifacts';
@@ -351,14 +357,57 @@ export const formatHtmlSyntaxDiagnostics = (
 const OPEN_TAG_PREFIX = '<lobeartifact';
 
 const findPartialPrefixIndex = (text: string): number => {
-  const maxLen = Math.min(text.length, OPEN_TAG_PREFIX.length - 1);
-  for (let len = maxLen; len >= 1; len -= 1) {
+  let earliest = -1;
+
+  const maxTagLen = Math.min(text.length, OPEN_TAG_PREFIX.length - 1);
+  for (let len = maxTagLen; len >= 1; len -= 1) {
     const suffix = text.slice(text.length - len).toLowerCase();
     if (OPEN_TAG_PREFIX.startsWith(suffix)) {
-      return text.length - len;
+      earliest = text.length - len;
+      break;
     }
   }
-  return -1;
+
+  const maxSavedLen = Math.min(text.length, SAVED_CODE_ARTIFACT_NOTE_PREFIX.length - 1);
+  for (let len = maxSavedLen; len >= 1; len -= 1) {
+    const suffix = text.slice(text.length - len);
+    if (SAVED_CODE_ARTIFACT_NOTE_PREFIX.startsWith(suffix)) {
+      const idx = text.length - len;
+      if (earliest === -1 || idx < earliest) earliest = idx;
+      break;
+    }
+  }
+
+  return earliest;
+};
+
+/**
+ * Returns true if the active user message literally quotes `previous code block stored by server`
+ * (meaning the user is asking about the server placeholder and the model should be allowed to
+ * quote it inside inline or fenced backticks).
+ */
+export const hasUserQuotedSavedCodeArtifactNote = (
+  messages: ReadonlyArray<{ content?: unknown; id?: string; role?: string }> | undefined,
+  activeTurnStartIndex?: number,
+): boolean => {
+  if (!messages || messages.length === 0) return false;
+  if (
+    activeTurnStartIndex !== undefined &&
+    activeTurnStartIndex >= 0 &&
+    activeTurnStartIndex < messages.length
+  ) {
+    const msg = messages[activeTurnStartIndex];
+    return msg?.role === 'user'
+      ? messageContentContainsMarker(msg.content, SAVED_CODE_ARTIFACT_NOTE_MARKER)
+      : false;
+  }
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const msg = messages[i];
+    if (msg?.role === 'user') {
+      return messageContentContainsMarker(msg.content, SAVED_CODE_ARTIFACT_NOTE_MARKER);
+    }
+  }
+  return false;
 };
 
 const cleanArtifactBody = (raw: string): string => {
@@ -416,7 +465,23 @@ interface StreamSegmentHtmlArtifact {
   selfClosing: boolean;
 }
 
-type StreamSegment = StreamSegmentHtmlArtifact | StreamSegmentText;
+interface StreamSegmentSavedCodeArtifactNote {
+  kind: 'saved_code_artifact_note';
+  rawNote: string;
+}
+
+type StreamSegment =
+  StreamSegmentHtmlArtifact | StreamSegmentSavedCodeArtifactNote | StreamSegmentText;
+
+export interface HtmlArtifactStreamGateOptions {
+  /**
+   * When true, `[Saved ... — previous code block stored by server.]` placeholders wrapped
+   * in inline backticks or fenced backtick code blocks are allowed through (used when the
+   * active user message literally quotes `previous code block stored by server`).
+   */
+  allowQuotedSavedNote?: boolean;
+  verifyPrivateFile?: (fileId: string) => Promise<boolean>;
+}
 
 export interface StreamGateFinalizeOptions {
   /**
@@ -466,14 +531,162 @@ export class HtmlArtifactStreamGate {
   private segments: StreamSegment[] = [];
   // From the first private reference onward the suffix must keep its original order on SSE.
   private heldSuffixAt: number | undefined;
-  constructor(verifyPrivateFile?: (fileId: string) => Promise<boolean>) {
-    void verifyPrivateFile;
+  private readonly allowQuotedSavedNote: boolean;
+
+  constructor(
+    optionsOrVerify?: HtmlArtifactStreamGateOptions | ((fileId: string) => Promise<boolean>),
+  ) {
+    if (typeof optionsOrVerify === 'object' && optionsOrVerify !== null) {
+      this.allowQuotedSavedNote = Boolean(optionsOrVerify.allowQuotedSavedNote);
+      void optionsOrVerify.verifyPrivateFile;
+    } else {
+      this.allowQuotedSavedNote = false;
+      void optionsOrVerify;
+    }
   }
 
-  private mode: 'artifact_body' | 'opening_tag' | 'text' = 'text';
+  private mode:
+    'artifact_body' | 'opening_tag' | 'saved_note' | 'saved_note_closing_tick' | 'text' = 'text';
   private buffer = '';
   private currentOpenTag = '';
   private currentAttrsRaw = '';
+
+  // Streaming Markdown backtick tracker (used when allowQuotedSavedNote is true)
+  private fenceLength = 0;
+  private lineState:
+    'body' | 'closing_ticks' | 'closing_ws' | 'fence_info' | 'opening_ticks' | 'start' = 'start';
+  private lineIndent = 0;
+  private lineTickCount = 0;
+  private inlineBacktickLen = 0;
+  private inlineTickRun = 0;
+  private justOpenedInlineTicks = false;
+
+  // Pending quoted saved-note verification state
+  private savedNoteInlineBacktickLen = 0;
+  private pendingQuotedSavedNote = '';
+  private pendingQuotedAfter = '';
+  private pendingClosingTickRun = 0;
+
+  shouldFinalize(): boolean {
+    return (
+      this.buffer.length > 0 ||
+      this.mode !== 'text' ||
+      this.heldSuffixAt !== undefined ||
+      this.segments.some((seg) => seg.kind !== 'text')
+    );
+  }
+
+  private resetPendingQuotedSavedNote() {
+    this.savedNoteInlineBacktickLen = 0;
+    this.pendingQuotedSavedNote = '';
+    this.pendingQuotedAfter = '';
+    this.pendingClosingTickRun = 0;
+  }
+
+  private isInsideInlineBackticks(): boolean {
+    if (this.inlineBacktickLen === 0) return false;
+    if (!this.justOpenedInlineTicks && this.inlineTickRun === this.inlineBacktickLen) {
+      return false;
+    }
+    return true;
+  }
+
+  private trackMarkdownText(text: string) {
+    if (!this.allowQuotedSavedNote || !text) return;
+    for (let i = 0; i < text.length; i += 1) {
+      this.trackMarkdownChar(text[i]);
+    }
+  }
+
+  private trackMarkdownChar(ch: string) {
+    if (ch === '\n' || ch === '\r') {
+      if (this.fenceLength === 0) {
+        if (
+          (this.lineState === 'opening_ticks' && this.lineTickCount >= 3) ||
+          this.lineState === 'fence_info'
+        ) {
+          this.fenceLength = this.lineTickCount;
+        }
+      } else if (
+        (this.lineState === 'closing_ticks' || this.lineState === 'closing_ws') &&
+        this.lineTickCount >= this.fenceLength
+      ) {
+        this.fenceLength = 0;
+      }
+      this.lineState = 'start';
+      this.lineIndent = 0;
+      this.lineTickCount = 0;
+      this.inlineBacktickLen = 0;
+      this.inlineTickRun = 0;
+      this.justOpenedInlineTicks = false;
+      return;
+    }
+
+    if (this.fenceLength > 0) {
+      if (this.lineState === 'start') {
+        if (ch === ' ' && this.lineIndent < 3) {
+          this.lineIndent += 1;
+        } else if (ch === '`') {
+          this.lineState = 'closing_ticks';
+          this.lineTickCount = 1;
+        } else {
+          this.lineState = 'body';
+        }
+      } else if (this.lineState === 'closing_ticks') {
+        if (ch === '`') {
+          this.lineTickCount += 1;
+        } else if (ch === ' ' || ch === '\t') {
+          this.lineState = 'closing_ws';
+        } else {
+          this.lineState = 'body';
+        }
+      } else if (this.lineState === 'closing_ws' && ch !== ' ' && ch !== '\t') {
+        this.lineState = 'body';
+      }
+      return;
+    }
+
+    if (this.lineState === 'start') {
+      if (ch === ' ' && this.lineIndent < 3) {
+        this.lineIndent += 1;
+      } else if (ch === '`') {
+        this.lineState = 'opening_ticks';
+        this.lineTickCount = 1;
+      } else {
+        this.lineState = 'body';
+      }
+    } else if (this.lineState === 'opening_ticks') {
+      if (ch === '`') {
+        this.lineTickCount += 1;
+      } else if (this.lineTickCount >= 3) {
+        this.lineState = 'fence_info';
+      } else {
+        this.lineState = 'body';
+      }
+    } else if (this.lineState === 'fence_info' && ch === '`') {
+      // CommonMark: backtick fence info string cannot contain backticks
+      this.lineState = 'body';
+    }
+
+    if (ch === '`') {
+      if (this.inlineBacktickLen === 0) {
+        this.inlineBacktickLen = 1;
+        this.justOpenedInlineTicks = true;
+        this.inlineTickRun = 0;
+      } else if (this.justOpenedInlineTicks) {
+        this.inlineBacktickLen += 1;
+      } else {
+        this.inlineTickRun += 1;
+      }
+    } else if (this.justOpenedInlineTicks) {
+      this.justOpenedInlineTicks = false;
+    } else if (this.inlineBacktickLen > 0) {
+      if (this.inlineTickRun === this.inlineBacktickLen) {
+        this.inlineBacktickLen = 0;
+      }
+      this.inlineTickRun = 0;
+    }
+  }
 
   private appendTextSegment(text: string) {
     if (!text) return;
@@ -494,14 +707,44 @@ export class HtmlArtifactStreamGate {
     while (this.buffer.length > 0) {
       if (this.mode === 'text') {
         const openMatch = /<lobeArtifact(?![\w-])/i.exec(this.buffer);
-        if (openMatch) {
+        const savedNoteIdx = this.buffer.indexOf(SAVED_CODE_ARTIFACT_NOTE_PREFIX);
+        const hasOpen = openMatch !== null;
+        const hasSavedNote = savedNoteIdx !== -1;
+
+        if (hasOpen && (!hasSavedNote || openMatch.index < savedNoteIdx)) {
           const before = this.buffer.slice(0, openMatch.index);
           if (before) {
             emitted += before;
             this.appendTextSegment(before);
+            this.trackMarkdownText(before);
           }
           this.buffer = this.buffer.slice(openMatch.index);
           this.mode = 'opening_tag';
+          continue;
+        }
+
+        if (hasSavedNote) {
+          const before = this.buffer.slice(0, savedNoteIdx);
+          if (before) {
+            emitted += before;
+            this.appendTextSegment(before);
+            this.trackMarkdownText(before);
+          }
+          this.buffer = this.buffer.slice(savedNoteIdx);
+
+          if (this.allowQuotedSavedNote && this.fenceLength > 0) {
+            emitted += SAVED_CODE_ARTIFACT_NOTE_PREFIX;
+            this.appendTextSegment(SAVED_CODE_ARTIFACT_NOTE_PREFIX);
+            this.trackMarkdownText(SAVED_CODE_ARTIFACT_NOTE_PREFIX);
+            this.buffer = this.buffer.slice(SAVED_CODE_ARTIFACT_NOTE_PREFIX.length);
+            continue;
+          }
+
+          this.savedNoteInlineBacktickLen =
+            this.allowQuotedSavedNote && this.isInsideInlineBackticks()
+              ? this.inlineBacktickLen
+              : 0;
+          this.mode = 'saved_note';
           continue;
         }
 
@@ -511,13 +754,130 @@ export class HtmlArtifactStreamGate {
           if (safe) {
             emitted += safe;
             this.appendTextSegment(safe);
+            this.trackMarkdownText(safe);
           }
           this.buffer = this.buffer.slice(prefixIdx);
         } else {
           emitted += this.buffer;
           this.appendTextSegment(this.buffer);
+          this.trackMarkdownText(this.buffer);
           this.buffer = '';
         }
+        break;
+      }
+
+      if (this.mode === 'saved_note') {
+        const classified = classifySavedCodeArtifactNotePrefix(this.buffer);
+        if (classified.kind === 'pending') {
+          break;
+        }
+
+        if (classified.kind === 'mismatch') {
+          // Release only the 7-char `[Saved ` prefix so any nested `[Saved ` or `<lobeArtifact`
+          // later in `this.buffer` is still inspected in the next loop iteration.
+          emitted += SAVED_CODE_ARTIFACT_NOTE_PREFIX;
+          this.appendTextSegment(SAVED_CODE_ARTIFACT_NOTE_PREFIX);
+          this.trackMarkdownText(SAVED_CODE_ARTIFACT_NOTE_PREFIX);
+          this.buffer = this.buffer.slice(SAVED_CODE_ARTIFACT_NOTE_PREFIX.length);
+          this.savedNoteInlineBacktickLen = 0;
+          this.mode = 'text';
+          continue;
+        }
+
+        const matchedNote = this.buffer.slice(0, classified.end);
+        this.buffer = this.buffer.slice(classified.end);
+
+        if (this.savedNoteInlineBacktickLen > 0) {
+          this.pendingQuotedSavedNote = matchedNote;
+          this.pendingQuotedAfter = '';
+          this.pendingClosingTickRun = 0;
+          this.mode = 'saved_note_closing_tick';
+          continue;
+        }
+
+        if (this.heldSuffixAt === undefined) {
+          this.heldSuffixAt = this.segments.length;
+          deliverUntil = emitted.length;
+        }
+        this.segments.push({
+          kind: 'saved_code_artifact_note',
+          rawNote: matchedNote,
+        });
+        this.mode = 'text';
+        continue;
+      }
+
+      if (this.mode === 'saved_note_closing_tick') {
+        const MAX_INLINE_CLOSING_LOOKAHEAD = 120;
+        let idx = 0;
+        let resolved = false;
+
+        while (idx < this.buffer.length) {
+          const ch = this.buffer[idx];
+          if (ch === '\n' || ch === '\r') {
+            if (this.heldSuffixAt === undefined) {
+              this.heldSuffixAt = this.segments.length;
+              deliverUntil = emitted.length;
+            }
+            this.segments.push({
+              kind: 'saved_code_artifact_note',
+              rawNote: this.pendingQuotedSavedNote,
+            });
+            const trailing = this.pendingQuotedAfter + this.buffer.slice(idx);
+            this.inlineBacktickLen = 0;
+            this.inlineTickRun = 0;
+            this.justOpenedInlineTicks = false;
+            this.resetPendingQuotedSavedNote();
+            this.buffer = trailing;
+            this.mode = 'text';
+            resolved = true;
+            break;
+          }
+
+          this.pendingQuotedAfter += ch;
+          if (ch === '`') {
+            this.pendingClosingTickRun += 1;
+            if (this.pendingClosingTickRun === this.savedNoteInlineBacktickLen) {
+              const full = this.pendingQuotedSavedNote + this.pendingQuotedAfter;
+              this.buffer = this.buffer.slice(idx + 1);
+              emitted += full;
+              this.appendTextSegment(full);
+              this.trackMarkdownText(full);
+              this.inlineBacktickLen = 0;
+              this.inlineTickRun = 0;
+              this.justOpenedInlineTicks = false;
+              this.resetPendingQuotedSavedNote();
+              this.mode = 'text';
+              resolved = true;
+              break;
+            }
+          } else {
+            this.pendingClosingTickRun = 0;
+            if (this.pendingQuotedAfter.length > MAX_INLINE_CLOSING_LOOKAHEAD) {
+              if (this.heldSuffixAt === undefined) {
+                this.heldSuffixAt = this.segments.length;
+                deliverUntil = emitted.length;
+              }
+              this.segments.push({
+                kind: 'saved_code_artifact_note',
+                rawNote: this.pendingQuotedSavedNote,
+              });
+              const trailing = this.pendingQuotedAfter + this.buffer.slice(idx + 1);
+              this.inlineBacktickLen = 0;
+              this.inlineTickRun = 0;
+              this.justOpenedInlineTicks = false;
+              this.resetPendingQuotedSavedNote();
+              this.buffer = trailing;
+              this.mode = 'text';
+              resolved = true;
+              break;
+            }
+          }
+          idx += 1;
+        }
+
+        if (resolved) continue;
+        this.buffer = '';
         break;
       }
 
@@ -547,6 +907,7 @@ export class HtmlArtifactStreamGate {
         if (!isHtmlType && !privateSource) {
           emitted += openTag;
           this.appendTextSegment(openTag);
+          this.trackMarkdownText(openTag);
           this.mode = 'text';
           continue;
         }
@@ -603,10 +964,31 @@ export class HtmlArtifactStreamGate {
   async finalize(options: StreamGateFinalizeOptions = {}): Promise<StreamGateFinalizeResult> {
     let postStreamDelta = '';
 
-    if (this.mode === 'text' && this.buffer) {
+    while (this.mode === 'saved_note_closing_tick') {
+      if (this.heldSuffixAt === undefined) {
+        this.heldSuffixAt = this.segments.length;
+      }
+      this.segments.push({
+        kind: 'saved_code_artifact_note',
+        rawNote: this.pendingQuotedSavedNote,
+      });
+      const trailing = this.pendingQuotedAfter + this.buffer;
+      this.inlineBacktickLen = 0;
+      this.inlineTickRun = 0;
+      this.justOpenedInlineTicks = false;
+      this.resetPendingQuotedSavedNote();
+      this.buffer = '';
+      this.mode = 'text';
+      if (trailing) {
+        this.push(trailing);
+      }
+    }
+
+    if ((this.mode === 'text' || this.mode === 'saved_note') && this.buffer) {
       postStreamDelta += this.buffer;
       this.appendTextSegment(this.buffer);
       this.buffer = '';
+      this.mode = 'text';
     } else if (this.mode === 'opening_tag' && this.buffer) {
       const parsed = parseLooseAttrs(this.buffer);
       if (parsed.type === 'text/html' || /text\/html|\/chat\/code-artifact\//i.test(this.buffer)) {
@@ -644,9 +1026,12 @@ export class HtmlArtifactStreamGate {
     const htmlSegments = this.segments.filter(
       (seg): seg is StreamSegmentHtmlArtifact => seg.kind === 'html_artifact',
     );
-    if (htmlSegments.length === 0) {
+    const savedNoteSegments = this.segments.filter(
+      (seg): seg is StreamSegmentSavedCodeArtifactNote => seg.kind === 'saved_code_artifact_note',
+    );
+    if (htmlSegments.length === 0 && savedNoteSegments.length === 0) {
       const finalContent = this.segments
-        .map((seg) => (seg.kind === 'text' ? seg.text : seg.rawTag))
+        .map((seg) => (seg.kind === 'text' ? seg.text : ''))
         .join('');
       return {
         codeArtifactDiagnostics: [],
@@ -659,16 +1044,18 @@ export class HtmlArtifactStreamGate {
       };
     }
 
-    const hasInvalidCodeArtifact = this.segments.some((seg) => {
-      if (seg.kind !== 'html_artifact') return false;
-      const parsed = parseLooseAttrs(seg.attrsRaw);
-      const isPrivateCode =
-        parsed.type !== 'text/html' &&
-        (parsed.src?.trim().startsWith('/chat/code-artifact/') ||
-          (!seg.closed && seg.rawTag.includes('/chat/code-artifact/')));
-      if (!isPrivateCode) return false;
-      return !(Boolean(seg.bodyRaw.trim()) && parsed.type === 'application/lobe.artifacts.code');
-    });
+    const hasInvalidCodeArtifact =
+      savedNoteSegments.length > 0 ||
+      this.segments.some((seg) => {
+        if (seg.kind !== 'html_artifact') return false;
+        const parsed = parseLooseAttrs(seg.attrsRaw);
+        const isPrivateCode =
+          parsed.type !== 'text/html' &&
+          (parsed.src?.trim().startsWith('/chat/code-artifact/') ||
+            (!seg.closed && seg.rawTag.includes('/chat/code-artifact/')));
+        if (!isPrivateCode) return false;
+        return !(Boolean(seg.bodyRaw.trim()) && parsed.type === 'application/lobe.artifacts.code');
+      });
     const suppress = Boolean(options.suppressCodeArtifactFallback) && hasInvalidCodeArtifact;
 
     const diagnostics: string[] = [];
@@ -696,6 +1083,18 @@ export class HtmlArtifactStreamGate {
         }
         fallbackParts.push(seg.text);
         sanitizedAttemptParts.push(seg.text);
+        continue;
+      }
+
+      if (seg.kind === 'saved_code_artifact_note') {
+        sawInvalidCodeArtifact = true;
+        codeArtifactDiagnostics.push(
+          `Model emitted a hallucinated saved code-artifact placeholder (${seg.rawNote.slice(0, 160)}) instead of writing actual code.`,
+        );
+        fallbackParts.push('Файл не сохранён.');
+        fallbackDelta += 'Файл не сохранён.';
+        unsentFallbackDelta += 'Файл не сохранён.';
+        sanitizedAttemptParts.push('[omitted invalid saved code placeholder]');
         continue;
       }
 
@@ -866,7 +1265,7 @@ export class HtmlArtifactStreamGate {
         : {}),
       diagnostics,
       finalContent,
-      hasHtmlArtifacts: true,
+      hasHtmlArtifacts: htmlSegments.length > 0,
       postStreamDelta: finalPostStreamDelta,
       publishedArtifacts,
       valid: diagnostics.length === 0 && codeArtifactDiagnostics.length === 0,

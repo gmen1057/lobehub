@@ -47,7 +47,14 @@ export {
   ToolResultImagesProcessor,
 } from './processors';
 export {
+  classifySavedCodeArtifactNotePrefix,
+  isSavedCodeArtifactNote,
+  messageContentContainsMarker,
   rewriteMessageContentCodeArtifactTags,
   rewriteSavedCodeArtifactTagsForLLM,
   rewriteStoredMessageContentForLLM,
+  SAVED_CODE_ARTIFACT_NOTE_MARKER,
+  SAVED_CODE_ARTIFACT_NOTE_PREFIX,
+  SAVED_CODE_ARTIFACT_NOTE_RE,
+  type SavedCodeArtifactNotePrefixResult,
 } from './utils/codeArtifactTags';

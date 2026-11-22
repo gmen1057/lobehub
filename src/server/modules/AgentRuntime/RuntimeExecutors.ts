@@ -66,7 +66,10 @@ import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { AgentDocumentsService } from '@/server/services/agentDocuments';
 import { throwIfAborted, waitForRetry } from '@/server/services/agentRuntime/abort';
 import { saveLongCodeArtifacts } from '@/server/services/aiAgent/codeArtifacts';
-import { HtmlArtifactStreamGate } from '@/server/services/arckepLayout/htmlSyntax';
+import {
+  hasUserQuotedSavedCodeArtifactNote,
+  HtmlArtifactStreamGate,
+} from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import { compactWriterContext } from '@/server/services/textFiles/context';
@@ -1187,7 +1190,14 @@ export const createRuntimeExecutors = (
         const reasoningParts: ContentPart[] = [];
         let hasContentImages = false;
         let hasReasoningImages = false;
-        const htmlStreamGate = new HtmlArtifactStreamGate();
+        const activeTurnMessages =
+          (llmPayload.messages?.length ? llmPayload.messages : state.messages) ?? [];
+        const htmlStreamGate = new HtmlArtifactStreamGate({
+          allowQuotedSavedNote: hasUserQuotedSavedCodeArtifactNote(
+            activeTurnMessages,
+            findActiveTurnStartIndex(activeTurnMessages),
+          ),
+        });
         textBuffer = '';
         reasoningBuffer = '';
 
@@ -1392,12 +1402,19 @@ export const createRuntimeExecutors = (
                   passthroughIdentifiers,
                 });
 
-                for (const tc of raw) {
+                const repairedRaw = raw.map((tc) => {
                   const repaired = diagnostics.repairedNames[tc.id];
                   if (repaired && tc.function) {
-                    tc.function.name = repaired;
+                    return {
+                      ...tc,
+                      function: {
+                        ...tc.function,
+                        name: repaired,
+                      },
+                    };
                   }
-                }
+                  return tc;
+                });
 
                 // Add source field from resolved sourceMap for routing tool execution
                 const resolvedPayload = diagnostics.resolved.map((p) => ({
@@ -1407,7 +1424,7 @@ export const createRuntimeExecutors = (
                 resolvedToolCalls = resolvedPayload;
                 unresolvedToolCalls = diagnostics.unresolved;
                 toolsCalling = resolvedPayload;
-                tool_calls = raw;
+                tool_calls = repairedRaw;
 
                 // If textBuffer exists, flush it first
                 if (!!textBuffer) {
@@ -1566,7 +1583,11 @@ export const createRuntimeExecutors = (
           let codeArtifactFallbackContent: string | undefined;
           let codeArtifactFallbackDelta: string | undefined;
           let suppressedCodeArtifactFallback = false;
-          if (rawContent.includes('<lobeArtifact') || rawContent !== content) {
+          if (
+            rawContent.includes('<lobeArtifact') ||
+            rawContent !== content ||
+            htmlStreamGate.shouldFinalize()
+          ) {
             const gateResult = await htmlStreamGate.finalize({
               suppressCodeArtifactFallback: canTentativelyRepairCodeArtifact,
             });
@@ -1686,16 +1707,14 @@ export const createRuntimeExecutors = (
               } else {
                 const resolver = new ToolNameResolver();
                 const syntheticById = new Map<string, ChatToolPayload>();
+                const wireNameById = new Map<string, string>();
                 for (const u of unresolvedToolCalls) {
                   const safeApiName = (u.rawName.replaceAll(/[^\w-]/g, '_') || 'unknown').slice(
                     0,
                     32,
                   );
                   const safeWireName = resolver.generate(UNRESOLVED_TOOL_IDENTIFIER, safeApiName);
-                  const matchingRaw = tool_calls.find((tc) => tc.id === u.toolCall.id);
-                  if (matchingRaw?.function) {
-                    matchingRaw.function.name = safeWireName;
-                  }
+                  wireNameById.set(u.toolCall.id, safeWireName);
                   const errorMessage = buildUnresolvedToolErrorMessage(
                     u,
                     toolDiscoveryConfig,
@@ -1718,6 +1737,19 @@ export const createRuntimeExecutors = (
                     parameters: { properties: {}, type: 'object' },
                   });
                 }
+                tool_calls = tool_calls.map((tc) => {
+                  const safeWireName = wireNameById.get(tc.id);
+                  if (safeWireName && tc.function) {
+                    return {
+                      ...tc,
+                      function: {
+                        ...tc.function,
+                        name: safeWireName,
+                      },
+                    };
+                  }
+                  return tc;
+                });
                 const resolvedById = new Map(resolvedToolCalls.map((c) => [c.id, c]));
                 toolsCalling = tool_calls
                   .map((tc) => resolvedById.get(tc.id) ?? syntheticById.get(tc.id))
@@ -2090,7 +2122,7 @@ export const createRuntimeExecutors = (
                 role: 'assistant',
               },
               {
-                content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...). Такие теги создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart.`,
+                content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...) или текстовая заглушка [Saved ... — previous code block stored by server.]. Такие теги и заглушки создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/ и не имитируй [Saved ... — previous code block stored by server.]. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart.`,
                 role: 'user',
               },
             );
