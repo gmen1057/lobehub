@@ -23,6 +23,7 @@ const log = debug('lobe-server:arckep-cron');
 
 export interface CronRunResult {
   error?: string;
+  httpStatus?: 409 | 503;
   operationId: string | null;
   success: boolean;
   topicId: string | null;
@@ -98,7 +99,7 @@ interface ActiveCronEntry {
 interface RedisCronRunRecord {
   jobId: string;
   operationId: string | null;
-  status: 'running' | 'starting';
+  status: 'running' | 'started' | 'starting';
   topicId: string | null;
   userId: string;
 }
@@ -206,12 +207,90 @@ export const clearCronRunCache = () => {
   activeCronRuns.clear();
 };
 
+const DEFAULT_STARTING_POLL_TIMEOUT_MS = 15_000;
+const DEFAULT_STARTING_POLL_STEP_MS = 200;
+
+let startingPollTimeoutMs = DEFAULT_STARTING_POLL_TIMEOUT_MS;
+let startingPollStepMs = DEFAULT_STARTING_POLL_STEP_MS;
+
+export const setCronStartingPollConfigForTests = (opts?: {
+  stepMs?: number;
+  timeoutMs?: number;
+}) => {
+  startingPollTimeoutMs = opts?.timeoutMs ?? DEFAULT_STARTING_POLL_TIMEOUT_MS;
+  startingPollStepMs = opts?.stepMs ?? DEFAULT_STARTING_POLL_STEP_MS;
+};
+
 const waitBriefly = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const resolveRedisDedupeKeys = (userId: string, jobId: string, runId: string) => ({
   primaryKey: `arckep:cron:run:${runId}`,
   scopedKey: `arckep:cron:run:${userId}:${jobId}:${runId}`,
 });
+
+const tryClaimOrJoinSingleRedisKey = async (
+  redis: NonNullable<ReturnType<typeof tryGetRedis>>,
+  key: string,
+  startingPayload: string,
+  matchesOwner: (rec: Partial<RedisCronRunRecord>) => boolean,
+): Promise<
+  | { claimedKey: string; kind: 'claimed' }
+  | { duplicateResult: CronRunResult; kind: 'duplicate' }
+  | { kind: 'foreign_collision' }
+> => {
+  const claimed = await redis.set(key, startingPayload, 'EX', REDIS_RUN_TTL_SEC, 'NX');
+  if (claimed === 'OK') {
+    return { claimedKey: key, kind: 'claimed' };
+  }
+
+  let elapsedMs = 0;
+  while (true) {
+    const raw = await redis.get(key);
+    if (!raw) {
+      // Other slot failed startup and deleted key — claim and execute normally!
+      const reclaimed = await redis.set(key, startingPayload, 'EX', REDIS_RUN_TTL_SEC, 'NX');
+      if (reclaimed === 'OK') {
+        return { claimedKey: key, kind: 'claimed' };
+      }
+    } else {
+      const parsed = JSON.parse(raw) as Partial<RedisCronRunRecord>;
+      if (!matchesOwner(parsed)) {
+        return { kind: 'foreign_collision' };
+      }
+      if (
+        (parsed.status === 'started' || parsed.status === 'running') &&
+        typeof parsed.topicId === 'string' &&
+        parsed.topicId.length > 0
+      ) {
+        return {
+          duplicateResult: {
+            operationId: parsed.operationId ?? null,
+            success: true,
+            topicId: parsed.topicId,
+          },
+          kind: 'duplicate',
+        };
+      }
+    }
+
+    if (elapsedMs >= startingPollTimeoutMs) {
+      return {
+        duplicateResult: {
+          error: 'Cron run is still starting on another engine slot; retry shortly',
+          httpStatus: 503,
+          operationId: null,
+          success: false,
+          topicId: null,
+        },
+        kind: 'duplicate',
+      };
+    }
+
+    const step = Math.min(startingPollStepMs, Math.max(1, startingPollTimeoutMs - elapsedMs));
+    await waitBriefly(step);
+    elapsedMs += step;
+  }
+};
 
 const tryClaimCronRunInRedis = async (
   redis: NonNullable<ReturnType<typeof tryGetRedis>>,
@@ -229,87 +308,31 @@ const tryClaimCronRunInRedis = async (
   } satisfies RedisCronRunRecord);
 
   try {
-    const claimedPrimary = await redis.set(
+    const primaryRes = await tryClaimOrJoinSingleRedisKey(
+      redis,
       primaryKey,
       startingPayload,
-      'EX',
-      REDIS_RUN_TTL_SEC,
-      'NX',
+      (rec) => rec.userId === userId && rec.jobId === jobId,
     );
-    if (claimedPrimary === 'OK') {
-      return { claimedKey: primaryKey, duplicateResult: null };
+    if (primaryRes.kind === 'claimed') {
+      return { claimedKey: primaryRes.claimedKey, duplicateResult: null };
     }
-
-    const rawExisting = await redis.get(primaryKey);
-    if (rawExisting) {
-      const parsed = JSON.parse(rawExisting) as Partial<RedisCronRunRecord>;
-      if (parsed.userId === userId && parsed.jobId === jobId) {
-        // Same (userId, jobId, runId) already started on another slot!
-        if (parsed.status === 'starting') {
-          for (let i = 0; i < 10; i++) {
-            await waitBriefly(50);
-            const updatedRaw = await redis.get(primaryKey);
-            if (!updatedRaw) {
-              // Other slot failed startup and deleted key — try claiming now
-              const retryClaim = await redis.set(
-                primaryKey,
-                startingPayload,
-                'EX',
-                REDIS_RUN_TTL_SEC,
-                'NX',
-              );
-              if (retryClaim === 'OK') {
-                return { claimedKey: primaryKey, duplicateResult: null };
-              }
-              break;
-            }
-            const updated = JSON.parse(updatedRaw) as Partial<RedisCronRunRecord>;
-            if (updated.status === 'running') {
-              return {
-                claimedKey: null,
-                duplicateResult: {
-                  operationId: updated.operationId ?? null,
-                  success: true,
-                  topicId: updated.topicId ?? null,
-                },
-              };
-            }
-          }
-        }
-        return {
-          claimedKey: null,
-          duplicateResult: {
-            operationId: parsed.operationId ?? null,
-            success: true,
-            topicId: parsed.topicId ?? null,
-          },
-        };
-      }
+    if (primaryRes.kind === 'duplicate') {
+      return { claimedKey: null, duplicateResult: primaryRes.duplicateResult };
     }
 
     // Fallback scoped key when synthetic runId is reused across distinct (userId, jobId) pairs
-    const claimedScoped = await redis.set(
+    const scopedRes = await tryClaimOrJoinSingleRedisKey(
+      redis,
       scopedKey,
       startingPayload,
-      'EX',
-      REDIS_RUN_TTL_SEC,
-      'NX',
+      () => true,
     );
-    if (claimedScoped === 'OK') {
-      return { claimedKey: scopedKey, duplicateResult: null };
+    if (scopedRes.kind === 'claimed') {
+      return { claimedKey: scopedRes.claimedKey, duplicateResult: null };
     }
-
-    const rawScoped = await redis.get(scopedKey);
-    if (rawScoped) {
-      const parsedScoped = JSON.parse(rawScoped) as Partial<RedisCronRunRecord>;
-      return {
-        claimedKey: null,
-        duplicateResult: {
-          operationId: parsedScoped.operationId ?? null,
-          success: true,
-          topicId: parsedScoped.topicId ?? null,
-        },
-      };
+    if (scopedRes.kind === 'duplicate') {
+      return { claimedKey: null, duplicateResult: scopedRes.duplicateResult };
     }
   } catch (error) {
     log('Redis cron runId dedupe check failed for %s: %O', runId, error);
@@ -438,7 +461,7 @@ const startRun = async (
   ref.operationId = result.operationId;
   ref.topicId = result.topicId;
 
-  if (!result.success) {
+  if (!result.success || !result.topicId) {
     activeCronRuns.delete(ref.pendingKey);
     if (result.operationId) activeCronRuns.delete(result.operationId);
     await releaseCronRunInRedis(claimedKey);
@@ -463,8 +486,8 @@ const startRun = async (
   await updateCronRunInRedis(claimedKey, {
     jobId: job.id,
     operationId: result.operationId ?? null,
-    status: 'running',
-    topicId: result.topicId ?? null,
+    status: 'started',
+    topicId: result.topicId,
     userId,
   });
 

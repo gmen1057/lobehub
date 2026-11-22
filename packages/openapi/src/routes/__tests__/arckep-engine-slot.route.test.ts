@@ -217,6 +217,11 @@ describe('arckep-engine-slot routes & Telegram webhook preservation', () => {
       draining: false,
       retainedTopicIds: ['tpc_resp_live', 'tpc_resp_done'],
       sandboxWorkerRunning: true,
+      topicSeqs: {
+        tpc_resp_done: expect.any(Number),
+        tpc_resp_live: expect.any(Number),
+        tpc_sync_live: expect.any(Number),
+      },
     });
 
     // POST /drain включает draining и вызывает startDrain()

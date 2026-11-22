@@ -212,15 +212,25 @@ describe('ResponsesStreamHub (arckep F8)', () => {
     const now = { t: 50_000 };
     const hub = makeHub(now, 1000);
 
-    register(hub, 'op_active_1', 'tpc_active', 'u1');
-    register(hub, 'op_active_2', 'tpc_active', 'u1'); // вторая операция в той же теме
-    register(hub, 'op_done_recent', 'tpc_recent', 'u2');
+    const opActive1 = register(hub, 'op_active_1', 'tpc_active', 'u1');
+    now.t += 10;
+    const opActive2 = register(hub, 'op_active_2', 'tpc_active', 'u1'); // вторая операция в той же теме
+    now.t += 15;
+    const opDoneRecent = register(hub, 'op_done_recent', 'tpc_recent', 'u2');
     hub.markDone('op_done_recent');
+
+    expect(opActive1.startedAtMs).toBe(50_000);
+    expect(opActive2.startedAtMs).toBe(50_010);
+    expect(opDoneRecent.startedAtMs).toBe(50_025);
 
     expect(hub.getDrainSnapshot()).toEqual({
       activeCount: 2,
       activeTopicIds: ['tpc_active'],
       retainedTopicIds: ['tpc_active', 'tpc_recent'],
+      topicSeqs: {
+        tpc_active: 50_010,
+        tpc_recent: 50_025,
+      },
     });
 
     expect(hub.hasTopic('tpc_active')).toBe(true);
@@ -237,6 +247,9 @@ describe('ResponsesStreamHub (arckep F8)', () => {
       activeCount: 2,
       activeTopicIds: ['tpc_active'],
       retainedTopicIds: ['tpc_active'],
+      topicSeqs: {
+        tpc_active: 50_010,
+      },
     });
 
     hub.markDone('op_active_1');
@@ -245,6 +258,9 @@ describe('ResponsesStreamHub (arckep F8)', () => {
       activeCount: 0,
       activeTopicIds: [],
       retainedTopicIds: ['tpc_active'],
+      topicSeqs: {
+        tpc_active: 50_010,
+      },
     });
     expect(hub.hasTopic('tpc_active', { activeOnly: true })).toBe(false);
     expect(hub.hasTopic('tpc_active')).toBe(true);

@@ -170,15 +170,21 @@ export const getEngineSlotHttpAndResponseSnapshot = (
   activeHttpRequests: number;
   extraActiveResponses: number;
   extraActiveTopicIds: string[];
+  extraTopicSeqs: Record<string, number>;
 } => {
   const state = getState();
 
   let extraActiveResponses = 0;
   const extraTopics = new Set<string>();
+  const extraTopicSeqs: Record<string, number> = {};
 
   for (const exec of state.responseExecutions.values()) {
     if (exec.topicId) {
       extraTopics.add(exec.topicId);
+      const prev = extraTopicSeqs[exec.topicId];
+      if (prev === undefined || exec.startedAt >= prev) {
+        extraTopicSeqs[exec.topicId] = exec.startedAt;
+      }
     }
     if (!exec.operationId || !hubActiveOperationIds.has(exec.operationId)) {
       extraActiveResponses += 1;
@@ -196,6 +202,7 @@ export const getEngineSlotHttpAndResponseSnapshot = (
     activeHttpRequests,
     extraActiveResponses,
     extraActiveTopicIds: [...extraTopics],
+    extraTopicSeqs,
   };
 };
 

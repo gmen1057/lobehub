@@ -2,8 +2,8 @@
 /**
  * Smart zero-downtime HTTP/SSE Blue-Green router for headless LobeChat engine.
  *
- * Pure Node.js (`node:crypto`, `node:fs`, `node:http`, `node:url`) — zero external dependencies.
- * Listens on 127.0.0.1:3403 (configurable via ROUTER_HOST / ROUTER_PORT) and routes
+ * Pure Node.js (`node:crypto`, `node:fs`, `node:http`, `node:path`, `node:url`) — zero external dependencies.
+ * Listens on 127.0.0.1:3403 (or systemd socket-activated `LISTEN_FDS=1` fd=3) and routes
  * traffic between `blue` (:3411) and `green` (:3412) according to `ROUTER_STATE_FILE`
  * (`/var/lib/lobechat-engine/state.json`), keeping in-flight responses, `_chat_wait`,
  * cron runs, and replay buffers pinned to `drainingPort` until natural completion.
@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
@@ -30,6 +31,9 @@ const ROUTER_UPSTREAM_HOST = process.env.ROUTER_UPSTREAM_HOST || '127.0.0.1';
 const ROUTER_STATE_FILE = process.env.ROUTER_STATE_FILE || '/var/lib/lobechat-engine/state.json';
 const ROUTER_ENV_FILE = process.env.ROUTER_ENV_FILE || '/opt/lobechat-next/.env';
 const ROUTER_FALLBACK_KEY_FILE = '/opt/lobechat-next-router/.service-key.env';
+const ROUTER_SLOT_ENV_DIR_PREFIX = process.env.ROUTER_SLOT_ENV_DIR_PREFIX || '/opt/lobechat-next-';
+const ROUTER_KEY_DIR =
+  process.env.ROUTER_KEY_DIR || path.dirname(ROUTER_ENV_FILE || ROUTER_FALLBACK_KEY_FILE);
 const ROUTER_READY_FILE = process.env.ROUTER_READY_FILE || '';
 const STATUS_TIMEOUT_MS = Number.parseInt(process.env.ROUTER_STATUS_TIMEOUT_MS ?? '1500', 10);
 const SHUTDOWN_TIMEOUT_MS = Number.parseInt(
@@ -53,6 +57,11 @@ const OWNS_MESSAGES_CHUNK_SIZE = 1000;
 const MIN_SERVICE_KEY_LENGTH = 32;
 const STAT_CHECK_INTERVAL_MS = 100;
 const MAX_TRACKED_ACTIVE_TOPICS = 50_000;
+const IN_FLIGHT_TOPIC_GRACE_MS = Number.parseInt(
+  process.env.ROUTER_IN_FLIGHT_TOPIC_GRACE_MS ?? '2000',
+  10,
+);
+const SD_LISTEN_FDS_START = 3;
 
 const upstreamAgent = new http.Agent({
   keepAlive: true,
@@ -75,11 +84,22 @@ let lastMtimeMs = -1;
 let lastIno = -1;
 let lastSize = -1;
 
-let currentServiceKey = (process.env.ARCKEP_ENGINE_SERVICE_KEY || '').trim();
+let defaultServiceKey = (process.env.ARCKEP_ENGINE_SERVICE_KEY || '').trim();
+/** @type {Map<string, string[]>} slotName -> ordered candidate keys */
+const slotServiceKeys = new Map();
 let totalBufferedBytes = 0;
 
 /** Topics that already received a 2xx response on `activeSlot` during the current drain epoch. */
 const topicsStartedOnActive = new Set();
+
+/**
+ * In-flight `POST /responses` topic pin map (#10):
+ * Prevents two concurrent client `POST /responses` for the same `previous_response_id` across
+ * a Blue-Green switch from executing on both slots simultaneously.
+ *
+ * @type {Map<string, { count: number; port: number; slot: string; untilMs: number }>}
+ */
+const inFlightTopicPosts = new Map();
 
 function rememberTopicOnActive(topicId) {
   if (!topicId) return;
@@ -88,6 +108,66 @@ function rememberTopicOnActive(topicId) {
     if (oldest !== undefined) topicsStartedOnActive.delete(oldest);
   }
   topicsStartedOnActive.add(topicId);
+}
+
+function pruneInFlightTopicPosts(now = Date.now()) {
+  if (inFlightTopicPosts.size === 0) return;
+  for (const [topicId, entry] of inFlightTopicPosts) {
+    if (entry.count <= 0 && now >= entry.untilMs) {
+      inFlightTopicPosts.delete(topicId);
+    }
+  }
+}
+
+function getPinnedInFlightTopicPost(topicId) {
+  if (!topicId) return null;
+  const entry = inFlightTopicPosts.get(topicId);
+  if (!entry) return null;
+  if (entry.count <= 0 && Date.now() >= entry.untilMs) {
+    inFlightTopicPosts.delete(topicId);
+    return null;
+  }
+  return entry;
+}
+
+function acquireInFlightTopicPost(topicId, port, slot) {
+  if (!topicId) return () => undefined;
+  const now = Date.now();
+  if (inFlightTopicPosts.size > 4096) {
+    pruneInFlightTopicPosts(now);
+  }
+
+  let entry = inFlightTopicPosts.get(topicId);
+  if (entry && entry.port === port) {
+    entry.count += 1;
+    entry.slot = slot;
+    entry.untilMs = Math.max(entry.untilMs, now + IN_FLIGHT_TOPIC_GRACE_MS);
+  } else {
+    entry = {
+      count: 1,
+      port,
+      slot,
+      untilMs: now + IN_FLIGHT_TOPIC_GRACE_MS,
+    };
+    inFlightTopicPosts.set(topicId, entry);
+  }
+
+  let released = false;
+  return (statusCode = 0) => {
+    if (released) return;
+    released = true;
+    const current = inFlightTopicPosts.get(topicId);
+    if (!current || current !== entry) return;
+    current.count = Math.max(0, current.count - 1);
+    if (statusCode >= 200 && statusCode < 300) {
+      current.untilMs = Math.max(current.untilMs, Date.now() + IN_FLIGHT_TOPIC_GRACE_MS);
+    } else if (current.count === 0 && Date.now() >= current.untilMs) {
+      inFlightTopicPosts.delete(topicId);
+    } else if (current.count === 0 && statusCode !== 409) {
+      // Non-2xx / non-409 rejection (e.g. 400 validation error or socket failure) with 0 in-flight
+      inFlightTopicPosts.delete(topicId);
+    }
+  };
 }
 
 function parseServiceKeyFromEnvText(rawText) {
@@ -107,37 +187,75 @@ function parseServiceKeyFromEnvText(rawText) {
   return found;
 }
 
+function readServiceKeyFileSafe(filePath) {
+  if (!filePath) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    const parsedKey = parseServiceKeyFromEnvText(raw);
+    if (parsedKey !== null && parsedKey.length > 0) {
+      return parsedKey;
+    }
+  } catch {
+    // File missing or unreadable (e.g. 0600 root:root .env under User=lobechat)
+  }
+  return null;
+}
+
+/**
+ * Reloads global fallback key AND per-slot keys (#11):
+ *   1. `${ROUTER_SLOT_ENV_DIR_PREFIX}${slot}/.env` (`/opt/lobechat-next-${slot}/.env`)
+ *   2. `${ROUTER_KEY_DIR}/.service-key-${slot}.env` (`0640 root:lobechat` per-slot key mirror)
+ *   3. `ROUTER_ENV_FILE` / `ROUTER_FALLBACK_KEY_FILE` / `/opt/lobechat-next/.env`
+ *   4. `process.env.ARCKEP_ENGINE_SERVICE_KEY`
+ */
 function reloadServiceKey() {
-  const candidates = [ROUTER_ENV_FILE];
+  const globalCandidates = [ROUTER_ENV_FILE];
   if (ROUTER_ENV_FILE !== ROUTER_FALLBACK_KEY_FILE) {
-    candidates.push(ROUTER_FALLBACK_KEY_FILE);
+    globalCandidates.push(ROUTER_FALLBACK_KEY_FILE);
   }
   if (ROUTER_ENV_FILE !== '/opt/lobechat-next/.env') {
-    candidates.push('/opt/lobechat-next/.env');
+    globalCandidates.push('/opt/lobechat-next/.env');
   }
 
-  for (const filePath of candidates) {
-    if (!filePath) continue;
-    try {
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const parsedKey = parseServiceKeyFromEnvText(raw);
-      if (parsedKey !== null && parsedKey.length > 0) {
-        currentServiceKey = parsedKey;
-        return;
-      }
-    } catch {
-      // File missing or unreadable (e.g. 0600 root:root .env under User=lobechat) — try next fallback
+  let loadedGlobal = '';
+  for (const filePath of globalCandidates) {
+    const k = readServiceKeyFileSafe(filePath);
+    if (k) {
+      loadedGlobal = k;
+      break;
     }
   }
 
-  const envKey = (process.env.ARCKEP_ENGINE_SERVICE_KEY || '').trim();
-  if (envKey && !currentServiceKey) {
-    currentServiceKey = envKey;
+  const envFallback = (process.env.ARCKEP_ENGINE_SERVICE_KEY || '').trim();
+  if (loadedGlobal) {
+    defaultServiceKey = loadedGlobal;
+  } else if (envFallback && !defaultServiceKey) {
+    defaultServiceKey = envFallback;
+  }
+
+  for (const slotName of ['blue', 'green']) {
+    const ordered = [];
+    const pushUnique = (k) => {
+      if (k && !ordered.includes(k)) ordered.push(k);
+    };
+    pushUnique(readServiceKeyFileSafe(`${ROUTER_SLOT_ENV_DIR_PREFIX}${slotName}/.env`));
+    pushUnique(readServiceKeyFileSafe(path.join(ROUTER_KEY_DIR, `.service-key-${slotName}.env`)));
+    pushUnique(defaultServiceKey);
+    pushUnique(envFallback);
+    slotServiceKeys.set(slotName, ordered);
   }
 }
 
-function getServiceKey() {
-  return currentServiceKey;
+function getServiceKeysForSlot(slotName) {
+  if (slotName && slotServiceKeys.has(slotName)) {
+    const keys = slotServiceKeys.get(slotName);
+    if (keys && keys.length > 0) return keys;
+  }
+  return defaultServiceKey ? [defaultServiceKey] : [];
+}
+
+function getPrimaryServiceKeyForSlot(slotName) {
+  return getServiceKeysForSlot(slotName)[0] || '';
 }
 
 function normalizeLoadedState(raw) {
@@ -209,6 +327,9 @@ function reloadState(force = false) {
     if (switchedActive) {
       topicsStartedOnActive.clear();
     }
+    if (changed || force) {
+      reloadServiceKey();
+    }
 
     if (changed) {
       console.log(
@@ -255,7 +376,7 @@ function safeDecodeParam(raw) {
 function requestSlotJson({
   port,
   method,
-  path,
+  path: reqPath,
   headers = {},
   body = null,
   timeoutMs = STATUS_TIMEOUT_MS,
@@ -291,7 +412,7 @@ function requestSlotJson({
         headers: reqHeaders,
         host: ROUTER_UPSTREAM_HOST,
         method,
-        path,
+        path: reqPath,
         port,
       },
       (res) => {
@@ -386,34 +507,71 @@ function requestSlotJson({
   });
 }
 
+async function requestSlotControlJson({ port, slotName, method, path: reqPath, body = null }) {
+  const candidateKeys = getServiceKeysForSlot(slotName).filter(
+    (k) => k && k.length >= MIN_SERVICE_KEY_LENGTH,
+  );
+  if (candidateKeys.length === 0) {
+    const rawKey = getPrimaryServiceKeyForSlot(slotName);
+    return requestSlotJson({
+      body,
+      headers: {
+        ...(rawKey ? { Authorization: `Bearer ${rawKey}` } : {}),
+        ...(body !== null ? { 'Content-Type': 'application/json' } : {}),
+        Host: 'arckep.ru',
+      },
+      method,
+      path: reqPath,
+      port,
+      timeoutMs: STATUS_TIMEOUT_MS,
+    });
+  }
+
+  let lastRes = null;
+  for (const key of candidateKeys) {
+    const res = await requestSlotJson({
+      body,
+      headers: {
+        Authorization: `Bearer ${key}`,
+        ...(body !== null ? { 'Content-Type': 'application/json' } : {}),
+        Host: 'arckep.ru',
+      },
+      method,
+      path: reqPath,
+      port,
+      timeoutMs: STATUS_TIMEOUT_MS,
+    });
+    lastRes = res;
+    if (!res.ok || res.statusCode !== 401) {
+      return res;
+    }
+  }
+  return lastRes;
+}
+
 /**
  * Tri-state slot status check:
  *   - `state: 'unreachable'` — process is stopped (`ECONNREFUSED`), 0 in-memory operations;
- *   - `state: 'ok'`          — HTTP 200 with valid JSON arrays `activeTopicIds` & `retainedTopicIds`;
+ *   - `state: 'ok'`          — HTTP 200 with valid JSON arrays `activeTopicIds`, `retainedTopicIds`, & `topicSeqs`;
  *   - `state: 'unknown'`     — timeout, `5xx`, `401`/`503`, malformed JSON, or socket reset while alive.
  */
-async function fetchSlotStatus(port) {
+async function fetchSlotStatus(port, slotName) {
   if (!port) {
-    return { activeTopicIds: [], retainedTopicIds: [], state: 'unreachable' };
+    return { activeTopicIds: [], retainedTopicIds: [], state: 'unreachable', topicSeqs: {} };
   }
 
-  const serviceKey = getServiceKey();
-  const res = await requestSlotJson({
-    headers: {
-      ...(serviceKey ? { Authorization: `Bearer ${serviceKey}` } : {}),
-      Host: 'arckep.ru',
-    },
+  const res = await requestSlotControlJson({
     method: 'GET',
     path: '/chat/api/v1/arckep/engine-slot/status/',
     port,
-    timeoutMs: STATUS_TIMEOUT_MS,
+    slotName,
   });
 
-  if (!res.ok) {
-    if (res.errorCode === 'ECONNREFUSED') {
-      return { activeTopicIds: [], retainedTopicIds: [], state: 'unreachable' };
+  if (!res || !res.ok) {
+    if (res?.errorCode === 'ECONNREFUSED') {
+      return { activeTopicIds: [], retainedTopicIds: [], state: 'unreachable', topicSeqs: {} };
     }
-    return { activeTopicIds: [], retainedTopicIds: [], state: 'unknown' };
+    return { activeTopicIds: [], retainedTopicIds: [], state: 'unknown', topicSeqs: {} };
   }
 
   if (
@@ -424,13 +582,21 @@ async function fetchSlotStatus(port) {
     !Array.isArray(res.json.activeTopicIds) ||
     !Array.isArray(res.json.retainedTopicIds)
   ) {
-    return { activeTopicIds: [], retainedTopicIds: [], state: 'unknown' };
+    return { activeTopicIds: [], retainedTopicIds: [], state: 'unknown', topicSeqs: {} };
   }
+
+  const topicSeqs =
+    res.json.topicSeqs &&
+    typeof res.json.topicSeqs === 'object' &&
+    !Array.isArray(res.json.topicSeqs)
+      ? res.json.topicSeqs
+      : {};
 
   return {
     activeTopicIds: res.json.activeTopicIds,
     retainedTopicIds: res.json.retainedTopicIds,
     state: 'ok',
+    topicSeqs,
   };
 }
 
@@ -440,32 +606,27 @@ async function fetchSlotStatus(port) {
  *   - `{ state: 'unreachable', ownsActiveTopic: false }` (`ECONNREFUSED`)
  *   - `{ state: 'unknown', ownsActiveTopic: false }` (timeout / `5xx` / auth / bad JSON)
  */
-async function checkDrainingOwnsMessages(drainingPort, messageIds) {
+async function checkDrainingOwnsMessages(drainingPort, drainingSlot, messageIds) {
   if (!drainingPort || !Array.isArray(messageIds) || messageIds.length === 0) {
     return { ownsActiveTopic: false, state: 'ok' };
   }
-  const serviceKey = getServiceKey();
-  if (!serviceKey || serviceKey.length < MIN_SERVICE_KEY_LENGTH) {
+  const primaryKey = getPrimaryServiceKeyForSlot(drainingSlot);
+  if (!primaryKey || primaryKey.length < MIN_SERVICE_KEY_LENGTH) {
     return { ownsActiveTopic: false, state: 'unknown' };
   }
 
   for (let offset = 0; offset < messageIds.length; offset += OWNS_MESSAGES_CHUNK_SIZE) {
     const chunk = messageIds.slice(offset, offset + OWNS_MESSAGES_CHUNK_SIZE);
-    const res = await requestSlotJson({
+    const res = await requestSlotControlJson({
       body: JSON.stringify({ messageIds: chunk }),
-      headers: {
-        'Authorization': `Bearer ${serviceKey}`,
-        'Content-Type': 'application/json',
-        'Host': 'arckep.ru',
-      },
       method: 'POST',
       path: '/chat/api/v1/arckep/engine-slot/owns-messages/',
       port: drainingPort,
-      timeoutMs: STATUS_TIMEOUT_MS,
+      slotName: drainingSlot,
     });
 
-    if (!res.ok) {
-      if (res.errorCode === 'ECONNREFUSED') {
+    if (!res || !res.ok) {
+      if (res?.errorCode === 'ECONNREFUSED') {
         return { ownsActiveTopic: false, state: 'unreachable' };
       }
       return { ownsActiveTopic: false, state: 'unknown' };
@@ -489,9 +650,31 @@ async function checkDrainingOwnsMessages(drainingPort, messageIds) {
 }
 
 /**
+ * Standalone byte-reservation tracker (#12): lives in its own top-level lexical scope so V8
+ * NEVER retains `req` or `chunks` in a shared closure context while long SSE streams stay open!
+ */
+function createByteReservation() {
+  let reserved = 0;
+  let released = false;
+  return {
+    add(bytes) {
+      if (released || bytes <= 0) return;
+      reserved += bytes;
+      totalBufferedBytes += bytes;
+    },
+    release() {
+      if (released) return;
+      released = true;
+      totalBufferedBytes = Math.max(0, totalBufferedBytes - reserved);
+      reserved = 0;
+    },
+  };
+}
+
+/**
  * Buffered request body reader with per-request size limit, global memory cap,
- * and read timeout. Always returns `{ buffer, release }` on success and frees
- * reserved bytes automatically on failure.
+ * and read timeout. Returns a mutable `{ buffer, release }` handle so `buffer`
+ * can be nulled out for GC immediately after `upstreamReq.end(buf)` (#12).
  */
 function readRequestBody(req, requestCtx, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
@@ -520,24 +703,20 @@ function readRequestBody(req, requestCtx, maxBytes = MAX_BODY_BYTES) {
       return;
     }
 
-    const chunks = [];
+    let chunks = [];
     let total = 0;
-    let reservedBytes = 0;
     let finished = false;
-    let released = false;
-
-    const releaseReserved = () => {
-      if (released) return;
-      released = true;
-      totalBufferedBytes = Math.max(0, totalBufferedBytes - reservedBytes);
-      reservedBytes = 0;
-    };
+    const reservation = createByteReservation();
 
     const fail = (err) => {
       if (finished) return;
       finished = true;
       cleanup();
-      releaseReserved();
+      if (chunks) {
+        chunks.length = 0;
+        chunks = null;
+      }
+      reservation.release();
       reject(err);
     };
 
@@ -562,8 +741,7 @@ function readRequestBody(req, requestCtx, maxBytes = MAX_BODY_BYTES) {
         return;
       }
       total += chunk.length;
-      reservedBytes += chunk.length;
-      totalBufferedBytes += chunk.length;
+      reservation.add(chunk.length);
       chunks.push(chunk);
     };
 
@@ -577,9 +755,17 @@ function readRequestBody(req, requestCtx, maxBytes = MAX_BODY_BYTES) {
       }
       finished = true;
       cleanup();
+      const fullBuffer =
+        chunks.length === 0
+          ? Buffer.alloc(0)
+          : chunks.length === 1
+            ? chunks[0]
+            : Buffer.concat(chunks, total);
+      chunks.length = 0;
+      chunks = null;
       resolve({
-        buffer: Buffer.concat(chunks),
-        release: releaseReserved,
+        buffer: fullBuffer,
+        release: reservation.release,
       });
     };
 
@@ -609,19 +795,19 @@ function readRequestBody(req, requestCtx, maxBytes = MAX_BODY_BYTES) {
   });
 }
 
-function buildForwardHeaders(incomingHeaders, bodyBuffer = null) {
+function buildForwardHeaders(incomingHeaders, contentLength = null) {
   const out = {};
   for (const [key, value] of Object.entries(incomingHeaders)) {
     if (value === undefined) continue;
     const lower = key.toLowerCase();
     if (lower === 'connection' || lower === 'keep-alive' || lower === 'upgrade') continue;
-    if (bodyBuffer !== null && (lower === 'transfer-encoding' || lower === 'content-length')) {
+    if (contentLength !== null && (lower === 'transfer-encoding' || lower === 'content-length')) {
       continue;
     }
     out[key] = value;
   }
-  if (bodyBuffer !== null) {
-    out['content-length'] = String(bodyBuffer.length);
+  if (contentLength !== null) {
+    out['content-length'] = String(contentLength);
   }
   return out;
 }
@@ -641,19 +827,42 @@ function sendJson(res, statusCode, payload, slotHeader = null, extraHeaders = nu
   res.end(body);
 }
 
-function handleBodyReadError(res, err, slotHeader) {
+function handleBodyReadError(req, res, err, slotHeader) {
+  const respondAfterBriefDrain = (statusCode, message) => {
+    if (req.complete || req.destroyed) {
+      sendJson(res, statusCode, { error: message }, slotHeader, { Connection: 'close' });
+      return;
+    }
+    let responded = false;
+    const finishResponse = () => {
+      if (responded) return;
+      responded = true;
+      clearTimeout(drainTimer);
+      req.off('end', finishResponse);
+      req.off('error', finishResponse);
+      sendJson(res, statusCode, { error: message }, slotHeader, { Connection: 'close' });
+      if (!req.complete && !req.destroyed) {
+        setImmediate(() => {
+          if (!req.destroyed) req.destroy();
+        });
+      }
+    };
+    const drainTimer = setTimeout(finishResponse, 150);
+    drainTimer.unref();
+    req.once('end', finishResponse);
+    req.once('error', finishResponse);
+    req.resume();
+  };
+
   if (err?.code === 'PAYLOAD_TOO_LARGE') {
-    sendJson(res, 413, { error: 'Request entity too large' }, slotHeader, { Connection: 'close' });
+    respondAfterBriefDrain(413, 'Request entity too large');
   } else if (err?.code === 'BODY_READ_TIMEOUT') {
     sendJson(res, 408, { error: 'Request body read timeout' }, slotHeader, { Connection: 'close' });
+    setTimeout(() => {
+      if (!req.destroyed) req.destroy();
+    }, 50).unref();
   } else if (err?.code === 'BUFFER_LIMIT_EXCEEDED') {
-    sendJson(
-      res,
-      503,
-      { error: 'Router request buffer limit exceeded; retry shortly' },
-      slotHeader,
-      { Connection: 'close' },
-    );
+    respondAfterBriefDrain(503, 'Router request buffer limit exceeded; retry shortly');
   } else if (!res.writableEnded && !res.destroyed) {
     res.destroy();
   }
@@ -830,34 +1039,55 @@ function proxyStreamRequest(req, res, requestCtx, targetPort, slotName, fallback
 }
 
 /**
- * Proxy an already-buffered mutating request (`bodyBuffer`) to `targetPort`.
+ * Proxy an already-buffered mutating request (`bodyHandle`) to `targetPort`.
+ * Detaches `bodyHandle.buffer` immediately upon writing to `upstreamReq` (#12) so the
+ * `Buffer` is eligible for V8 GC throughout 20-minute SSE responses!
  * NEVER retries mutations on another slot (prevents duplicate POST/DELETE execution).
- * Always calls `onSettled()` once the buffer has been written/released and upstream settles.
  */
 function proxyBufferedRequest(
   req,
   res,
   requestCtx,
-  bodyBuffer,
+  bodyHandle,
   targetPort,
   slotName,
-  { onResponseStatus = null, onSettled = null } = {},
+  { onBeforeHeadersClose = null, onResponseStatus = null } = {},
 ) {
-  let settled = false;
+  let payload = bodyHandle.buffer;
+  bodyHandle.buffer = null;
+  let releaseFn = bodyHandle.release;
+  bodyHandle.release = () => undefined;
+
+  let responseStatusReported = false;
+  let onBeforeHeadersCloseFn = onBeforeHeadersClose;
+  let onResponseStatusFn = onResponseStatus;
+
   const finishBuffer = () => {
-    if (settled) return;
-    settled = true;
-    onSettled?.();
+    payload = null;
+    const fn = releaseFn;
+    releaseFn = null;
+    fn?.();
+  };
+
+  const notifyEndedBeforeHeaders = () => {
+    if (responseStatusReported) return;
+    responseStatusReported = true;
+    const fn = onBeforeHeadersCloseFn;
+    onBeforeHeadersCloseFn = null;
+    onResponseStatusFn = null;
+    fn?.();
   };
 
   if (requestCtx.isDisconnected()) {
     finishBuffer();
+    notifyEndedBeforeHeaders();
     return;
   }
 
   let upstreamFinished = false;
   let currentUpstreamRes = null;
-  const forwardHeaders = buildForwardHeaders(req.headers, bodyBuffer);
+  const contentLength = payload ? payload.length : 0;
+  const forwardHeaders = buildForwardHeaders(req.headers, contentLength);
 
   const upstreamReq = http.request(
     {
@@ -870,6 +1100,14 @@ function proxyBufferedRequest(
     },
     (upstreamRes) => {
       finishBuffer();
+      const statusCode = upstreamRes.statusCode || 502;
+      if (!responseStatusReported) {
+        responseStatusReported = true;
+        const statusCb = onResponseStatusFn;
+        onResponseStatusFn = null;
+        onBeforeHeadersCloseFn = null;
+        statusCb?.(statusCode);
+      }
       if (requestCtx.isDisconnected()) {
         upstreamRes.destroy();
         upstreamReq.destroy();
@@ -877,8 +1115,6 @@ function proxyBufferedRequest(
         return;
       }
       currentUpstreamRes = upstreamRes;
-      const statusCode = upstreamRes.statusCode || 502;
-      onResponseStatus?.(statusCode);
       pipeUpstreamResponse(req, res, upstreamReq, upstreamRes, slotName, () => {
         upstreamFinished = true;
         offDisconnect();
@@ -895,6 +1131,7 @@ function proxyBufferedRequest(
       upstreamFinished = true;
       offDisconnect();
       finishBuffer();
+      notifyEndedBeforeHeaders();
       if (currentUpstreamRes) {
         currentUpstreamRes.unpipe(res);
         currentUpstreamRes.destroy();
@@ -908,6 +1145,7 @@ function proxyBufferedRequest(
   upstreamReq.on('error', (err) => {
     offDisconnect();
     finishBuffer();
+    notifyEndedBeforeHeaders();
     upstreamFinished = true;
 
     if (requestCtx.isDisconnected()) {
@@ -929,12 +1167,13 @@ function proxyBufferedRequest(
   if (requestCtx.isDisconnected()) {
     offDisconnect();
     finishBuffer();
+    notifyEndedBeforeHeaders();
     upstreamReq.destroy();
     return;
   }
 
-  upstreamReq.end(bodyBuffer, () => {
-    // Request payload has left Node's userland buffer into kernel socket buffer
+  upstreamReq.end(payload, () => {
+    // Request payload has left Node's userland buffer into kernel socket buffer (#12)
     finishBuffer();
   });
 }
@@ -1009,32 +1248,69 @@ async function handleMergedRunning(req, res, requestCtx, currentState) {
   );
 }
 
+function dispatchResponsesPostToSlot(
+  req,
+  res,
+  requestCtx,
+  bodyHandle,
+  targetPort,
+  targetSlot,
+  prevId,
+  sentEpoch,
+  isActiveSlot,
+) {
+  const releaseTopicPin = prevId ? acquireInFlightTopicPost(prevId, targetPort, targetSlot) : null;
+  proxyBufferedRequest(req, res, requestCtx, bodyHandle, targetPort, targetSlot, {
+    onBeforeHeadersClose: () => {
+      releaseTopicPin?.(0);
+    },
+    onResponseStatus: (code) => {
+      releaseTopicPin?.(code);
+      if (isActiveSlot && prevId && code >= 200 && code < 300) {
+        // #9: Verify epoch & activePort STILL match at header arrival time!
+        const latest = reloadState(false);
+        if (latest.switchEpoch === sentEpoch && latest.activePort === targetPort) {
+          rememberTopicOnActive(prevId);
+        }
+      }
+    },
+  });
+}
+
 /**
- * Resolve routing decision for a buffered POST /responses across epoch transitions.
+ * Resolve routing decision for a buffered POST /responses across epoch transitions (#9 + #10).
  */
-async function routeBufferedResponsesPost(req, res, requestCtx, bodyBuf, releaseBody, prevId) {
+async function routeBufferedResponsesPost(req, res, requestCtx, bodyHandle, prevId) {
+  const discardBody = () => {
+    bodyHandle.buffer = null;
+    bodyHandle.release();
+  };
+
   for (let attempt = 0; attempt < 3; attempt++) {
     if (requestCtx.isDisconnected()) {
-      releaseBody();
+      discardBody();
       return;
     }
 
     const cur = reloadState(false);
     if (!cur.drainingPort || !cur.drainingSlot || !prevId) {
-      proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.activePort, cur.activeSlot, {
-        onResponseStatus: prevId
-          ? (code) => {
-              if (code >= 200 && code < 300) rememberTopicOnActive(prevId);
-            }
-          : null,
-        onSettled: releaseBody,
-      });
+      dispatchResponsesPostToSlot(
+        req,
+        res,
+        requestCtx,
+        bodyHandle,
+        cur.activePort,
+        cur.activeSlot,
+        prevId,
+        cur.switchEpoch,
+        true,
+      );
       return;
     }
 
-    const drainStatus = await fetchSlotStatus(cur.drainingPort);
+    const drainStatus = await fetchSlotStatus(cur.drainingPort, cur.drainingSlot);
     if (requestCtx.isDisconnected()) {
-      releaseBody();
+      discardBody();
       return;
     }
 
@@ -1048,7 +1324,7 @@ async function routeBufferedResponsesPost(req, res, requestCtx, bodyBuf, release
     }
 
     if (drainStatus.state === 'unknown') {
-      releaseBody();
+      discardBody();
       sendJson(
         res,
         503,
@@ -1058,24 +1334,60 @@ async function routeBufferedResponsesPost(req, res, requestCtx, bodyBuf, release
       return;
     }
 
-    if (drainStatus.state === 'ok' && drainStatus.activeTopicIds.includes(prevId)) {
-      proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.drainingPort, cur.drainingSlot, {
-        onSettled: releaseBody,
-      });
+    if (drainStatus.state === 'unreachable') {
+      const stalePin = getPinnedInFlightTopicPost(prevId);
+      if (stalePin && stalePin.port === cur.drainingPort) {
+        inFlightTopicPosts.delete(prevId);
+      }
+      dispatchResponsesPostToSlot(
+        req,
+        res,
+        requestCtx,
+        bodyHandle,
+        cur.activePort,
+        cur.activeSlot,
+        prevId,
+        cur.switchEpoch,
+        true,
+      );
       return;
     }
 
-    proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.activePort, cur.activeSlot, {
-      onResponseStatus: (code) => {
-        if (code >= 200 && code < 300) rememberTopicOnActive(prevId);
-      },
-      onSettled: releaseBody,
-    });
+    // #10: Route to drainingPort if topic is active there OR has an in-flight / recent POST pinned to drainingPort!
+    const pinned = getPinnedInFlightTopicPost(prevId);
+    const pinnedToDraining = Boolean(pinned && pinned.port === cur.drainingPort);
+
+    if (drainStatus.activeTopicIds.includes(prevId) || pinnedToDraining) {
+      dispatchResponsesPostToSlot(
+        req,
+        res,
+        requestCtx,
+        bodyHandle,
+        cur.drainingPort,
+        cur.drainingSlot,
+        prevId,
+        cur.switchEpoch,
+        false,
+      );
+      return;
+    }
+
+    dispatchResponsesPostToSlot(
+      req,
+      res,
+      requestCtx,
+      bodyHandle,
+      cur.activePort,
+      cur.activeSlot,
+      prevId,
+      cur.switchEpoch,
+      true,
+    );
     return;
   }
 
   const finalState = reloadState(false);
-  releaseBody();
+  discardBody();
   sendJson(
     res,
     503,
@@ -1087,24 +1399,27 @@ async function routeBufferedResponsesPost(req, res, requestCtx, bodyBuf, release
 /**
  * Resolve routing decision for a buffered DELETE /messages* across epoch transitions.
  */
-async function routeBufferedMessagesDelete(req, res, requestCtx, bodyBuf, releaseBody, messageIds) {
+async function routeBufferedMessagesDelete(req, res, requestCtx, bodyHandle, messageIds) {
+  const discardBody = () => {
+    bodyHandle.buffer = null;
+    bodyHandle.release();
+  };
+
   for (let attempt = 0; attempt < 3; attempt++) {
     if (requestCtx.isDisconnected()) {
-      releaseBody();
+      discardBody();
       return;
     }
 
     const cur = reloadState(false);
     if (!cur.drainingPort || !cur.drainingSlot || messageIds.length === 0) {
-      proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.activePort, cur.activeSlot, {
-        onSettled: releaseBody,
-      });
+      proxyBufferedRequest(req, res, requestCtx, bodyHandle, cur.activePort, cur.activeSlot);
       return;
     }
 
-    const drainStatus = await fetchSlotStatus(cur.drainingPort);
+    const drainStatus = await fetchSlotStatus(cur.drainingPort, cur.drainingSlot);
     if (requestCtx.isDisconnected()) {
-      releaseBody();
+      discardBody();
       return;
     }
 
@@ -1113,7 +1428,7 @@ async function routeBufferedMessagesDelete(req, res, requestCtx, bodyBuf, releas
       if (recheck.switchEpoch !== cur.switchEpoch || recheck.drainingPort !== cur.drainingPort) {
         continue;
       }
-      releaseBody();
+      discardBody();
       sendJson(
         res,
         503,
@@ -1125,9 +1440,13 @@ async function routeBufferedMessagesDelete(req, res, requestCtx, bodyBuf, releas
 
     let routeToDraining = false;
     if (drainStatus.state === 'ok' && drainStatus.activeTopicIds.length > 0) {
-      const ownsResult = await checkDrainingOwnsMessages(cur.drainingPort, messageIds);
+      const ownsResult = await checkDrainingOwnsMessages(
+        cur.drainingPort,
+        cur.drainingSlot,
+        messageIds,
+      );
       if (requestCtx.isDisconnected()) {
-        releaseBody();
+        discardBody();
         return;
       }
       if (ownsResult.state === 'unknown') {
@@ -1135,7 +1454,7 @@ async function routeBufferedMessagesDelete(req, res, requestCtx, bodyBuf, releas
         if (recheck.switchEpoch !== cur.switchEpoch || recheck.drainingPort !== cur.drainingPort) {
           continue;
         }
-        releaseBody();
+        discardBody();
         sendJson(
           res,
           503,
@@ -1156,19 +1475,15 @@ async function routeBufferedMessagesDelete(req, res, requestCtx, bodyBuf, releas
     }
 
     if (routeToDraining) {
-      proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.drainingPort, cur.drainingSlot, {
-        onSettled: releaseBody,
-      });
+      proxyBufferedRequest(req, res, requestCtx, bodyHandle, cur.drainingPort, cur.drainingSlot);
     } else {
-      proxyBufferedRequest(req, res, requestCtx, bodyBuf, cur.activePort, cur.activeSlot, {
-        onSettled: releaseBody,
-      });
+      proxyBufferedRequest(req, res, requestCtx, bodyHandle, cur.activePort, cur.activeSlot);
     }
     return;
   }
 
   const finalState = reloadState(false);
-  releaseBody();
+  discardBody();
   sendJson(
     res,
     503,
@@ -1218,8 +1533,10 @@ async function handleRequest(req, res) {
 
   const method = (req.method || 'GET').toUpperCase();
   let pathname;
+  let parsedUrl = null;
   try {
-    pathname = new URL(req.url || '/', 'http://127.0.0.1').pathname;
+    parsedUrl = new URL(req.url || '/', 'http://127.0.0.1');
+    pathname = parsedUrl.pathname;
   } catch {
     pathname = '/';
   }
@@ -1230,20 +1547,68 @@ async function handleRequest(req, res) {
       sendJson(res, 403, { error: 'Forbidden' });
       return;
     }
+    if (parsedUrl?.searchParams.get('gc') === '1' && typeof globalThis.gc === 'function') {
+      globalThis.gc();
+    }
     const cur = reloadState(false);
+    const activeKeyOk =
+      getPrimaryServiceKeyForSlot(cur.activeSlot).length >= MIN_SERVICE_KEY_LENGTH;
+    const drainingKeyOk = cur.drainingSlot
+      ? getPrimaryServiceKeyForSlot(cur.drainingSlot).length >= MIN_SERVICE_KEY_LENGTH
+      : true;
     sendJson(res, 200, {
       activePort: cur.activePort,
       activeSlot: cur.activeSlot,
+      arrayBuffersBytes: process.memoryUsage().arrayBuffers,
       drainingPort: cur.drainingPort,
       drainingSlot: cur.drainingSlot,
-      inFlightRequests,
+      inFlightRequests: Math.max(0, inFlightRequests - 1),
+      inFlightTopicPostsCount: inFlightTopicPosts.size,
       routerHash: ROUTER_SCRIPT_HASH,
-      serviceKeyConfigured: getServiceKey().length >= MIN_SERVICE_KEY_LENGTH,
+      serviceKeyConfigured: activeKeyOk && drainingKeyOk,
+      socketActivated: USE_SOCKET_ACTIVATION,
       status: 'ok',
       switchEpoch: cur.switchEpoch,
       topicsStartedOnActiveCount: topicsStartedOnActive.size,
       totalBufferedBytes,
     });
+    return;
+  }
+
+  const normPath = normalizeApiV1Path(pathname);
+
+  // #10: ALWAYS handle POST /api/v1/responses through buffered topic tracker (even before a switch
+  // when drainingPort is null!) so in-flight topic POSTs are tracked across slot switches!
+  if (method === 'POST' && normPath === '/api/v1/responses') {
+    let bodyHandle;
+    try {
+      bodyHandle = await readRequestBody(req, requestCtx, MAX_BODY_BYTES);
+    } catch (err) {
+      handleBodyReadError(req, res, err, reloadState(false).activeSlot);
+      return;
+    }
+
+    const prevId = (() => {
+      const headerPrevId =
+        typeof req.headers['x-arckep-previous-response-id'] === 'string'
+          ? req.headers['x-arckep-previous-response-id'].trim()
+          : '';
+      try {
+        const parsed =
+          bodyHandle.buffer && bodyHandle.buffer.length > 0
+            ? JSON.parse(bodyHandle.buffer.toString('utf8'))
+            : null;
+        return parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.previous_response_id === 'string'
+          ? parsed.previous_response_id.trim()
+          : headerPrevId;
+      } catch {
+        return headerPrevId;
+      }
+    })();
+
+    await routeBufferedResponsesPost(req, res, requestCtx, bodyHandle, prevId);
     return;
   }
 
@@ -1254,8 +1619,6 @@ async function handleRequest(req, res) {
     proxyStreamRequest(req, res, requestCtx, cur.activePort, cur.activeSlot);
     return;
   }
-
-  const normPath = normalizeApiV1Path(pathname);
 
   // 1. GET /chat/api/v1/responses/running(/)
   if (method === 'GET' && normPath === '/api/v1/responses/running') {
@@ -1274,7 +1637,7 @@ async function handleRequest(req, res) {
         proxyStreamRequest(req, res, requestCtx, snap.activePort, snap.activeSlot);
         return;
       }
-      const drainStatus = await fetchSlotStatus(snap.drainingPort);
+      const drainStatus = await fetchSlotStatus(snap.drainingPort, snap.drainingSlot);
       if (requestCtx.isDisconnected()) return;
 
       const latest = reloadState(false);
@@ -1290,7 +1653,12 @@ async function handleRequest(req, res) {
         );
         return;
       }
-      if (drainStatus.state === 'ok' && drainStatus.activeTopicIds.includes(id)) {
+      const pinned = getPinnedInFlightTopicPost(id);
+      if (
+        drainStatus.state === 'ok' &&
+        (drainStatus.activeTopicIds.includes(id) ||
+          Boolean(pinned && pinned.port === snap.drainingPort))
+      ) {
         // NEVER fallback POST /cancel onto activePort
         proxyStreamRequest(req, res, requestCtx, snap.drainingPort, snap.drainingSlot);
       } else {
@@ -1315,7 +1683,7 @@ async function handleRequest(req, res) {
           return;
         }
         const getFallback = { fallbackPort: snap.activePort, fallbackSlot: snap.activeSlot };
-        const drainStatus = await fetchSlotStatus(snap.drainingPort);
+        const drainStatus = await fetchSlotStatus(snap.drainingPort, snap.drainingSlot);
         if (requestCtx.isDisconnected()) return;
 
         let targetDraining = false;
@@ -1326,28 +1694,52 @@ async function handleRequest(req, res) {
             if (topicsStartedOnActive.has(id)) {
               targetDraining = false;
             } else {
-              // Check activePort as ground truth (survives router restarts & ignores 4xx failed POSTs)
-              const activeStatus = await fetchSlotStatus(snap.activePort);
+              // #9: Check activePort as ground truth and compare `topicSeqs[id]` (`startedAtMs`)
+              // when BOTH slots hold retained completed turns (e.g. after fast `--rollback`)!
+              const activeStatus = await fetchSlotStatus(snap.activePort, snap.activeSlot);
               if (requestCtx.isDisconnected()) return;
-              if (
-                activeStatus.state === 'ok' &&
-                (activeStatus.activeTopicIds.includes(id) ||
-                  activeStatus.retainedTopicIds.includes(id))
-              ) {
-                rememberTopicOnActive(id);
-                targetDraining = false;
+              if (activeStatus.state === 'ok') {
+                if (activeStatus.activeTopicIds.includes(id)) {
+                  const latest = reloadState(false);
+                  if (
+                    latest.switchEpoch === snap.switchEpoch &&
+                    latest.activePort === snap.activePort
+                  ) {
+                    rememberTopicOnActive(id);
+                  }
+                  targetDraining = false;
+                } else if (activeStatus.retainedTopicIds.includes(id)) {
+                  const drainTs = Number(drainStatus.topicSeqs?.[id] ?? 0);
+                  const activeTs = Number(activeStatus.topicSeqs?.[id] ?? 0);
+                  if (drainTs > activeTs) {
+                    targetDraining = true;
+                  } else {
+                    const latest = reloadState(false);
+                    if (
+                      latest.switchEpoch === snap.switchEpoch &&
+                      latest.activePort === snap.activePort
+                    ) {
+                      rememberTopicOnActive(id);
+                    }
+                    targetDraining = false;
+                  }
+                } else {
+                  targetDraining = true;
+                }
               } else {
                 targetDraining = true;
               }
             }
           }
         } else if (drainStatus.state === 'unknown') {
-          // Serve from activePort if topic is confirmed there; otherwise 503 rather than false 404
-          const activeStatus = await fetchSlotStatus(snap.activePort);
+          // Serve from activePort ONLY if topic is actively running there (unambiguously newest);
+          // otherwise fail-closed 503 rather than risking a stale turn or false 404!
+          const activeStatus = await fetchSlotStatus(snap.activePort, snap.activeSlot);
           if (requestCtx.isDisconnected()) return;
           if (
             activeStatus.state === 'ok' &&
-            (activeStatus.activeTopicIds.includes(id) || activeStatus.retainedTopicIds.includes(id))
+            (activeStatus.activeTopicIds.includes(id) ||
+              (topicsStartedOnActive.has(id) && activeStatus.retainedTopicIds.includes(id)))
           ) {
             targetDraining = false;
           } else {
@@ -1397,43 +1789,6 @@ async function handleRequest(req, res) {
     }
   }
 
-  // 4. POST /chat/api/v1/responses(/)
-  if (method === 'POST' && normPath === '/api/v1/responses') {
-    let bodyHandle;
-    try {
-      bodyHandle = await readRequestBody(req, requestCtx, MAX_BODY_BYTES);
-    } catch (err) {
-      handleBodyReadError(res, err, reloadState(false).activeSlot);
-      return;
-    }
-
-    let parsed;
-    try {
-      parsed = bodyHandle.buffer.length > 0 ? JSON.parse(bodyHandle.buffer.toString('utf8')) : null;
-    } catch {
-      parsed = null;
-    }
-
-    const headerPrevId =
-      typeof req.headers['x-arckep-previous-response-id'] === 'string'
-        ? req.headers['x-arckep-previous-response-id'].trim()
-        : '';
-    const prevId =
-      parsed && typeof parsed === 'object' && typeof parsed.previous_response_id === 'string'
-        ? parsed.previous_response_id.trim()
-        : headerPrevId;
-
-    await routeBufferedResponsesPost(
-      req,
-      res,
-      requestCtx,
-      bodyHandle.buffer,
-      bodyHandle.release,
-      prevId,
-    );
-    return;
-  }
-
   // 5. DELETE /chat/api/v1/messages(/) and DELETE /chat/api/v1/messages/:id(/)
   const singleDeleteMatch =
     method === 'DELETE' ? /^\/api\/v1\/messages\/([^/]+)$/.exec(normPath) : null;
@@ -1442,7 +1797,7 @@ async function handleRequest(req, res) {
     try {
       bodyHandle = await readRequestBody(req, requestCtx, MAX_BODY_BYTES);
     } catch (err) {
-      handleBodyReadError(res, err, reloadState(false).activeSlot);
+      handleBodyReadError(req, res, err, reloadState(false).activeSlot);
       return;
     }
 
@@ -1450,7 +1805,7 @@ async function handleRequest(req, res) {
     if (singleDeleteMatch) {
       const singleId = safeDecodeParam(singleDeleteMatch[1]);
       if (singleId) messageIds = [singleId];
-    } else if (bodyHandle.buffer.length > 0) {
+    } else if (bodyHandle.buffer && bodyHandle.buffer.length > 0) {
       try {
         const parsed = JSON.parse(bodyHandle.buffer.toString('utf8'));
         if (Array.isArray(parsed?.messageIds)) {
@@ -1462,6 +1817,7 @@ async function handleRequest(req, res) {
     }
 
     if (messageIds.length > OWNS_MESSAGES_MAX_IDS) {
+      bodyHandle.buffer = null;
       bodyHandle.release();
       sendJson(
         res,
@@ -1472,14 +1828,7 @@ async function handleRequest(req, res) {
       return;
     }
 
-    await routeBufferedMessagesDelete(
-      req,
-      res,
-      requestCtx,
-      bodyHandle.buffer,
-      bodyHandle.release,
-      messageIds,
-    );
+    await routeBufferedMessagesDelete(req, res, requestCtx, bodyHandle, messageIds);
     return;
   }
 
@@ -1545,7 +1894,11 @@ server.on('clientError', (_err, socket) => {
   }
 });
 
-server.listen(ROUTER_PORT, ROUTER_HOST, () => {
+// #13: Support systemd socket activation (`LISTEN_FDS=1` + `LISTEN_PID=<pid>` on fd=3)
+const USE_SOCKET_ACTIVATION =
+  process.env.LISTEN_FDS === '1' && Number(process.env.LISTEN_PID) === process.pid;
+
+const onServerListening = () => {
   const addr = server.address();
   const boundPort = typeof addr === 'object' && addr ? addr.port : ROUTER_PORT;
   if (ROUTER_READY_FILE) {
@@ -1557,6 +1910,7 @@ server.listen(ROUTER_PORT, ROUTER_HOST, () => {
           pid: process.pid,
           port: boundPort,
           routerHash: ROUTER_SCRIPT_HASH,
+          socketActivated: USE_SOCKET_ACTIVATION,
         }),
         'utf8',
       );
@@ -1565,9 +1919,15 @@ server.listen(ROUTER_PORT, ROUTER_HOST, () => {
     }
   }
   console.log(
-    `[engine-router] listening on http://${ROUTER_HOST}:${boundPort} (active=${state.activeSlot}:${state.activePort}, state=${ROUTER_STATE_FILE}, hash=${ROUTER_SCRIPT_HASH.slice(0, 12)})`,
+    `[engine-router] listening on http://${ROUTER_HOST}:${boundPort} (socketActivated=${USE_SOCKET_ACTIVATION}, active=${state.activeSlot}:${state.activePort}, state=${ROUTER_STATE_FILE}, hash=${ROUTER_SCRIPT_HASH.slice(0, 12)})`,
   );
-});
+};
+
+if (USE_SOCKET_ACTIVATION) {
+  server.listen({ fd: SD_LISTEN_FDS_START }, onServerListening);
+} else {
+  server.listen(ROUTER_PORT, ROUTER_HOST, onServerListening);
+}
 
 const shutdown = () => {
   if (isShuttingDown) return;

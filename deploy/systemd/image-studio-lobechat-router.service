@@ -1,6 +1,7 @@
 [Unit]
 Description=Image Studio LobeChat HTTP/SSE router (port 3403, Blue-Green zero-downtime)
-After=network.target
+Requires=image-studio-lobechat-router.socket
+After=network.target image-studio-lobechat-router.socket
 
 [Service]
 Type=simple
@@ -36,3 +37,4 @@ AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target
+Also=image-studio-lobechat-router.socket

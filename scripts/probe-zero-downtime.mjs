@@ -63,6 +63,8 @@ function writeStateAtomic(stateFile, payload) {
   writeAtomic(stateFile, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
+let globalProbeSeq = 0;
+
 function createMockSlotServer(slotName, getExpectedServiceKey) {
   let draining = false;
   let statusBehavior = 'normal'; // 'normal' | 'http500' | 'delay'
@@ -72,15 +74,19 @@ function createMockSlotServer(slotName, getExpectedServiceKey) {
   let postResponsesCount = 0;
   const ownsMessagesChunkSizes = [];
 
-  /** @type {Map<string, { status: 'in_progress' | 'completed'; chunks: string[]; subscribers: Set<(line: string | null) => void> }>} */
+  let postDelayMs = 0;
+
+  /** @type {Map<string, { status: 'in_progress' | 'completed'; chunks: string[]; startedAtMs: number; subscribers: Set<(line: string | null) => void> }>} */
   const operations = new Map();
   /** @type {Map<string, string>} messageId -> topicId */
   const messageToTopic = new Map();
   const cancelCalls = [];
 
-  function startStreamedTopic(topicId, initialChunks = []) {
+  function startStreamedTopic(topicId, initialChunks = [], explicitStartedAtMs = null) {
+    globalProbeSeq += 1;
     const op = {
       chunks: [],
+      startedAtMs: explicitStartedAtMs ?? Date.now() * 1000 + globalProbeSeq,
       status: 'in_progress',
       subscribers: new Set(),
     };
@@ -118,8 +124,10 @@ function createMockSlotServer(slotName, getExpectedServiceKey) {
   function getStatusSnapshot() {
     const activeTopicIds = [];
     const retainedTopicIds = [];
+    const topicSeqs = {};
     for (const [topicId, op] of operations.entries()) {
       retainedTopicIds.push(topicId);
+      topicSeqs[topicId] = op.startedAtMs;
       if (op.status === 'in_progress') {
         activeTopicIds.push(topicId);
       }
@@ -135,6 +143,7 @@ function createMockSlotServer(slotName, getExpectedServiceKey) {
       draining,
       retainedTopicIds,
       sandboxWorkerRunning: !draining,
+      topicSeqs,
     };
   }
 
@@ -306,6 +315,9 @@ function createMockSlotServer(slotName, getExpectedServiceKey) {
     if (method === 'POST' && p === '/api/v1/responses') {
       postResponsesCount += 1;
       const body = await readBody();
+      if (postDelayMs > 0 || body.metadata?.delayBeforeRegisterMs > 0) {
+        await sleep(body.metadata?.delayBeforeRegisterMs || postDelayMs);
+      }
       if (resetNextPostSocket) {
         resetNextPostSocket = false;
         req.socket?.destroy();
@@ -424,6 +436,9 @@ function createMockSlotServer(slotName, getExpectedServiceKey) {
     messageToTopic,
     operations,
     ownsMessagesChunkSizes,
+    setPostDelayMs: (ms) => {
+      postDelayMs = ms;
+    },
     setResetNextPostSocket: (v) => {
       resetNextPostSocket = v;
     },
@@ -475,6 +490,8 @@ function openStreamingRequest(
           res.on('end', () => resEnd(rawText));
           res.on('error', rejEnd);
         });
+        // Prevent UnhandledPromiseRejection if an assertion earlier in runProbe aborts before `await stream.finished`
+        finished.catch(() => undefined);
         resolve({
           finished,
           frames,
@@ -508,21 +525,46 @@ async function httpJson(port, method, reqPath, bodyObj = null, serviceKey = SERV
   }
 
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let gotResponseStatus = null;
+    let gotResponseHeaders = null;
+    const chunks = [];
+
+    const resolveFromCollected = () => {
+      if (settled) return;
+      settled = true;
+      const text = Buffer.concat(chunks).toString('utf8');
+      let json;
+      try {
+        json = text ? JSON.parse(text) : null;
+      } catch {
+        json = null;
+      }
+      resolve({ headers: gotResponseHeaders, json, statusCode: gotResponseStatus, text });
+    };
+
+    const failOnce = (err) => {
+      if (settled) return;
+      if (
+        gotResponseStatus !== null &&
+        gotResponseStatus >= 400 &&
+        (err?.code === 'ECONNRESET' || err?.code === 'EPIPE')
+      ) {
+        resolveFromCollected();
+        return;
+      }
+      settled = true;
+      reject(err);
+    };
+
     const req = http.request({ headers, host: '127.0.0.1', method, path: reqPath, port }, (res) => {
-      const chunks = [];
+      gotResponseStatus = res.statusCode ?? 0;
+      gotResponseHeaders = res.headers;
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        let json;
-        try {
-          json = text ? JSON.parse(text) : null;
-        } catch {
-          json = null;
-        }
-        resolve({ headers: res.headers, json, statusCode: res.statusCode, text });
-      });
+      res.on('end', resolveFromCollected);
+      res.on('error', failOnce);
     });
-    req.on('error', reject);
+    req.on('error', failOnce);
     if (bodyBuf) req.end(bodyBuf);
     else req.end();
   });
@@ -533,12 +575,22 @@ async function runProbe() {
   const stateFile = path.join(tmpDir, 'state.json');
   const envFile = path.join(tmpDir, 'router.env');
   const readyFile = path.join(tmpDir, 'router-ready.json');
+  const slotDirPrefix = path.join(tmpDir, 'lobechat-next-');
+  const blueSlotDir = `${slotDirPrefix}blue`;
+  const greenSlotDir = `${slotDirPrefix}green`;
+  fs.mkdirSync(blueSlotDir, { recursive: true });
+  fs.mkdirSync(greenSlotDir, { recursive: true });
 
+  // #11: Separate per-slot keys! Blue keeps SERVICE_KEY_1 even after green rotates to SERVICE_KEY_2!
+  let blueServiceKey = SERVICE_KEY_1;
+  let greenServiceKey = SERVICE_KEY_1;
   let activeServiceKey = SERVICE_KEY_1;
+  writeAtomic(path.join(blueSlotDir, '.env'), `ARCKEP_ENGINE_SERVICE_KEY=${blueServiceKey}\n`);
+  writeAtomic(path.join(greenSlotDir, '.env'), `ARCKEP_ENGINE_SERVICE_KEY=${greenServiceKey}\n`);
   writeAtomic(envFile, `ARCKEP_ENGINE_SERVICE_KEY=${activeServiceKey}\n`);
 
-  let blue = createMockSlotServer('blue', () => activeServiceKey);
-  const green = createMockSlotServer('green', () => activeServiceKey);
+  let blue = createMockSlotServer('blue', () => blueServiceKey);
+  const green = createMockSlotServer('green', () => greenServiceKey);
   let routerProc = null;
   let stopHealthPoller = false;
   let healthPollerPromise = null;
@@ -557,17 +609,19 @@ async function runProbe() {
       switchEpoch: 1,
     });
 
-    routerProc = spawn(process.execPath, [ROUTER_SCRIPT], {
+    routerProc = spawn(process.execPath, ['--expose-gc', ROUTER_SCRIPT], {
       env: {
         ...process.env,
         ARCKEP_ENGINE_SERVICE_KEY: SERVICE_KEY_1,
         ROUTER_BODY_READ_TIMEOUT_MS: '350',
         ROUTER_ENV_FILE: envFile,
         ROUTER_HOST: '127.0.0.1',
-        ROUTER_MAX_TOTAL_BUFFERED_BYTES: String(256 * 1024),
+        ROUTER_KEY_DIR: tmpDir,
+        ROUTER_MAX_TOTAL_BUFFERED_BYTES: String(10 * 1024 * 1024),
         ROUTER_PORT: '0',
         ROUTER_READY_FILE: readyFile,
         ROUTER_SHUTDOWN_TIMEOUT_MS: '2000',
+        ROUTER_SLOT_ENV_DIR_PREFIX: slotDirPrefix,
         ROUTER_STATE_FILE: stateFile,
         ROUTER_STATUS_TIMEOUT_MS: '400',
       },
@@ -642,15 +696,38 @@ async function runProbe() {
     await sleep(40);
     assert.match(liveStream.getRawText(), /Chunk-before-switch-1/);
 
-    // 3. Switch router from `blue` -> `green` (`blue` becomes `draining`) mid-stream + rotate service key (P2 #15)!
+    // 2b. #10: Concurrent POST /responses for the SAME topic `tpc_race` across Blue-Green switch!
+    // First POST starts on `blue` (delayed 140ms BEFORE registering in `operations`, simulating slow auth/DB),
+    // router switches to `green` after 35ms, and second POST arrives while `blue` status STILL lacks `tpc_race`!
+    // `inFlightTopicPosts` MUST pin second POST to `blue` (returning 409/same-slot, ZERO posts on `green`)!
+    const greenPostsBeforeRace = green.getPostCount();
+    const firstRacePostPromise = httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'First concurrent POST before switch',
+        metadata: { delayBeforeRegisterMs: 140 },
+        model: 'agt_1',
+        previous_response_id: 'tpc_race',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    await sleep(35);
+
+    // 3. Switch router from `blue` -> `green` (`blue` becomes `draining`) mid-stream + rotate ONLY green's service key (#11)!
+    // NOTE: `blue` STILL requires `SERVICE_KEY_1` (real key rotation: old running slot keeps old env in RAM)!
     await httpJson(
       bluePort,
       'POST',
       '/chat/api/v1/arckep/engine-slot/drain/',
       null,
-      activeServiceKey,
+      blueServiceKey,
     );
+    greenServiceKey = SERVICE_KEY_2;
     activeServiceKey = SERVICE_KEY_2;
+    writeAtomic(path.join(greenSlotDir, '.env'), `ARCKEP_ENGINE_SERVICE_KEY=${greenServiceKey}\n`);
     writeAtomic(envFile, `ARCKEP_ENGINE_SERVICE_KEY=${activeServiceKey}\n`);
     writeStateAtomic(stateFile, {
       activePort: greenPort,
@@ -660,7 +737,29 @@ async function runProbe() {
       switchEpoch: 2,
     });
     routerProc.kill('SIGHUP');
-    await sleep(40);
+    await sleep(25);
+
+    // Immediately fire second POST for `tpc_race` right after switch while first POST is STILL in its 140ms pre-register delay on blue!
+    const secondRacePostPromise = httpJson(
+      routerPort,
+      'POST',
+      '/chat/api/v1/responses/',
+      {
+        input: 'Second concurrent POST right after switch',
+        model: 'agt_1',
+        previous_response_id: 'tpc_race',
+        stream: false,
+      },
+      activeServiceKey,
+    );
+    const [raceRes1, raceRes2] = await Promise.all([firstRacePostPromise, secondRacePostPromise]);
+    assert.equal(raceRes1.headers['x-lobechat-slot'], 'blue');
+    assert.equal(
+      raceRes2.headers['x-lobechat-slot'],
+      'blue',
+      'Second POST for in-flight topic MUST be pinned to blue, never split-brained onto green!',
+    );
+    assert.equal(green.getPostCount(), greenPostsBeforeRace);
 
     // Verify router diagnostics endpoint reflects switch + routerHash + rotated key!
     const rHealth = await httpJson(routerPort, 'GET', '/__router/health', null, activeServiceKey);
@@ -877,7 +976,7 @@ async function runProbe() {
       'POST',
       '/chat/api/v1/responses/',
       {
-        input: 'x'.repeat(300 * 1024), // > ROUTER_MAX_TOTAL_BUFFERED_BYTES (256 KiB)
+        input: 'x'.repeat(11 * 1024 * 1024), // > ROUTER_MAX_TOTAL_BUFFERED_BYTES (10 MiB)
         model: 'agt_1',
         stream: false,
       },
@@ -888,11 +987,42 @@ async function runProbe() {
     const healthAfterBufferTests = await httpJson(
       routerPort,
       'GET',
-      '/__router/health',
+      '/__router/health?gc=1',
       null,
       activeServiceKey,
     );
     assert.equal(healthAfterBufferTests.json.totalBufferedBytes, 0);
+
+    // 4h-2. #12: Verify 8 MiB buffered POST body is IMMEDIATELY eligible for V8 GC while long SSE stream stays open!
+    const baselineArrayBuffers = healthAfterBufferTests.json.arrayBuffersBytes;
+    const big8MbStream = await openStreamingPost(
+      routerPort,
+      {
+        attachment_pad: 'B'.repeat(8 * 1024 * 1024),
+        input: 'Long SSE stream with 8 MiB payload',
+        metadata: { holdOpen: true, requestedTopicId: 'tpc_gc_8mb' },
+        model: 'agt_1',
+        stream: true,
+      },
+      activeServiceKey,
+    );
+    assert.equal(big8MbStream.statusCode, 200);
+    await sleep(40);
+    const healthDuring8MbStream = await httpJson(
+      routerPort,
+      'GET',
+      '/__router/health?gc=1',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(healthDuring8MbStream.json.totalBufferedBytes, 0);
+    const retainedDeltaBytes = healthDuring8MbStream.json.arrayBuffersBytes - baselineArrayBuffers;
+    assert.ok(
+      retainedDeltaBytes < 2 * 1024 * 1024,
+      `#12 FAILED: 8 MiB request body stayed reachable in RAM during open SSE stream (delta=${retainedDeltaBytes} bytes)!`,
+    );
+    green.completeTopic('tpc_gc_8mb', 'done-8mb');
+    await big8MbStream.finished;
 
     // 4i. POST /responses/tpc_cancel_probe/cancel/ -> routed to blue
     const cancelRes = await httpJson(
@@ -1055,10 +1185,21 @@ async function runProbe() {
     assert.equal(postWhenBlueDead.statusCode, 200);
     assert.equal(postWhenBlueDead.headers['x-lobechat-slot'], 'green');
 
-    // 9. Bring `blue` back up and test P2 #11: epoch switch DURING chunked POST body upload!
-    blue = createMockSlotServer('blue', () => activeServiceKey);
+    // 9. Bring `blue` back up and test P2 #11 + #9:
+    //    - epoch switch DURING chunked POST body upload;
+    //    - #9: when BOTH `blue` (older turn) and `green` (newer turn) hold retained completed turns for the SAME topic,
+    //      after `--rollback` (`green -> blue`), GET /responses/:id and /stream MUST pick `green` (the newer `startedAtMs`)!
+    blueServiceKey = SERVICE_KEY_1;
+    writeAtomic(path.join(blueSlotDir, '.env'), `ARCKEP_ENGINE_SERVICE_KEY=${blueServiceKey}\n`);
+    blue = createMockSlotServer('blue', () => blueServiceKey);
     const revivedBluePort = await blue.listen(bluePort);
     assert.equal(revivedBluePort, bluePort);
+
+    // Seed older turn on `blue` (startedAtMs=1000) and newer turn on `green` (startedAtMs=5000)
+    blue.startStreamedTopic('tpc_rollback_newest', [], 1_000);
+    blue.completeTopic('tpc_rollback_newest', 'stale-turn-from-blue');
+    green.startStreamedTopic('tpc_rollback_newest', [], 5_000);
+    green.completeTopic('tpc_rollback_newest', 'latest-turn-from-green');
 
     const midUploadSwitchPromise = new Promise((resolve, reject) => {
       const payloadStr = JSON.stringify({
@@ -1114,6 +1255,32 @@ async function runProbe() {
     const switchedUploadRes = await midUploadSwitchPromise;
     assert.equal(switchedUploadRes.statusCode, 200);
     assert.equal(switchedUploadRes.headers['x-lobechat-slot'], 'blue');
+
+    // #9: Verify after rollback to `blue`, `tpc_rollback_newest` serves the NEWER completed turn from `green` (not stale `blue`)!
+    const newestStatusAfterRollback = await httpJson(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_rollback_newest/',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(newestStatusAfterRollback.statusCode, 200);
+    assert.equal(
+      newestStatusAfterRollback.headers['x-lobechat-slot'],
+      'green',
+      '#9 FAILED: GET /responses/:id after rollback chose stale blue instead of newer green!',
+    );
+
+    const newestStreamAfterRollback = await openStreamingRequest(
+      routerPort,
+      'GET',
+      '/chat/api/v1/responses/tpc_rollback_newest/stream/',
+      null,
+      activeServiceKey,
+    );
+    assert.equal(newestStreamAfterRollback.statusCode, 200);
+    assert.equal(newestStreamAfterRollback.headers['x-lobechat-slot'], 'green');
+    assert.match(await newestStreamAfterRollback.finished, /latest-turn-from-green/);
 
     // Complete `tpc_new` that was still streaming on `green` (now draining)
     green.emitSseEvent('tpc_new', 'response.output_text.delta', {
@@ -1172,8 +1339,88 @@ async function runProbe() {
     );
     assert.ok(shutdownMs < 1_500, `Expected clean SIGTERM shutdown (<1500ms), got ${shutdownMs}ms`);
 
+    // 11. #13: Verify systemd socket activation (`LISTEN_FDS=1` + `LISTEN_PID=<pid>` on fd=3) works with 0ms gap!
+    const sockReadyFile = path.join(tmpDir, 'router-sock-ready.json');
+    const sockPortFile = path.join(tmpDir, 'router-sock-port.txt');
+    const sockActivatedProc = spawn(
+      'python3',
+      [
+        '-c',
+        `
+import os, socket, sys
+node_bin, router_script, port_file = sys.argv[1:4]
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind(('127.0.0.1', 0))
+s.listen(1024)
+bound_port = s.getsockname()[1]
+with open(port_file, 'w', encoding='utf-8') as fh:
+    fh.write(str(bound_port))
+os.dup2(s.fileno(), 3)
+if s.fileno() != 3:
+    s.close()
+os.set_inheritable(3, True)
+os.environ['LISTEN_FDS'] = '1'
+os.environ['LISTEN_PID'] = str(os.getpid())
+os.execv(node_bin, [node_bin, router_script])
+`,
+        process.execPath,
+        ROUTER_SCRIPT,
+        sockPortFile,
+      ],
+      {
+        env: {
+          ...process.env,
+          ARCKEP_ENGINE_SERVICE_KEY: SERVICE_KEY_1,
+          ROUTER_ENV_FILE: envFile,
+          ROUTER_KEY_DIR: tmpDir,
+          ROUTER_READY_FILE: sockReadyFile,
+          ROUTER_SHUTDOWN_TIMEOUT_MS: '1000',
+          ROUTER_SLOT_ENV_DIR_PREFIX: slotDirPrefix,
+          ROUTER_STATE_FILE: stateFile,
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    try {
+      const sockDeadline = Date.now() + 5_000;
+      while (!fs.existsSync(sockReadyFile)) {
+        if (Date.now() > sockDeadline) {
+          throw new Error('Socket-activated router failed to start within 5s');
+        }
+        await sleep(20);
+      }
+      const sockPort = Number(fs.readFileSync(sockPortFile, 'utf8').trim());
+      const sockHealth = await httpJson(
+        sockPort,
+        'GET',
+        '/__router/health',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(sockHealth.statusCode, 200);
+      assert.equal(sockHealth.json.socketActivated, true);
+      assert.equal(sockHealth.json.routerHash, EXPECTED_ROUTER_HASH);
+
+      const sockProxy = await httpJson(
+        sockPort,
+        'GET',
+        '/chat/api/v1/health/',
+        null,
+        activeServiceKey,
+      );
+      assert.equal(sockProxy.statusCode, 200);
+      assert.equal(sockProxy.headers['x-lobechat-slot'], 'blue');
+    } finally {
+      sockActivatedProc.kill('SIGTERM');
+      await Promise.race([
+        new Promise((resolve) => sockActivatedProc.once('exit', resolve)),
+        sleep(1_500).then(() => sockActivatedProc.kill('SIGKILL')),
+      ]);
+    }
+
     console.log(
-      `[probe] PASS: all zero-downtime Blue-Green & Codex P1/P2 invariants verified (${healthChecks} continuous 30ms health checks, 0 errors, SIGTERM=${shutdownMs}ms).`,
+      `[probe] PASS: all zero-downtime Blue-Green & Codex v2 (#9-#13) invariants verified (${healthChecks} continuous 30ms health checks, 0 errors, SIGTERM=${shutdownMs}ms).`,
     );
   } finally {
     stopHealthPoller = true;

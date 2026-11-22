@@ -172,4 +172,75 @@ describe('AgentBridgeService', () => {
       }),
     );
   });
+
+  it('#15: cleans up activeCount and activeThreads when thread.subscribe() or startTyping() throws, and reconciles queue-mode runs via AgentStateManager', async () => {
+    const { getActiveBotSlotSnapshot, refreshActiveBotSlotRuns, resetBotSlotActivityForTests } =
+      await import('../botSlotActivity');
+    const { inMemoryAgentStateManager } =
+      await import('@/server/modules/AgentRuntime/InMemoryAgentStateManager');
+
+    resetBotSlotActivityForTests();
+    inMemoryAgentStateManager.clear();
+
+    const service = new AgentBridgeService(FAKE_DB, USER_ID);
+    const client = createClient();
+
+    // 1. thread.subscribe() throws in handleMention -> activeCount MUST return to 0!
+    const badSubscribeThread = createThread();
+    badSubscribeThread.subscribe.mockRejectedValueOnce(new Error('subscribe boom'));
+    await service.handleMention(badSubscribeThread, createMessage(), {
+      agentId: 'agent-1',
+      botContext: { applicationId: 'app-1', platform: 'discord', platformThreadId: THREAD_ID },
+      client,
+    });
+    expect(getActiveBotSlotSnapshot().activeCount).toBe(0);
+    expect(
+      AgentBridgeService.isThreadActive(THREAD_ID, { applicationId: 'app-1', platform: 'discord' }),
+    ).toBe(false);
+
+    // 2. thread.startTyping() throws in handleSubscribedMessage -> activeCount MUST return to 0!
+    const badTypingThread = createThread({ topicId: 'topic-1' });
+    badTypingThread.startTyping.mockRejectedValueOnce(new Error('typing boom'));
+    await service.handleSubscribedMessage(badTypingThread, createMessage(), {
+      agentId: 'agent-1',
+      botContext: { applicationId: 'app-1', platform: 'discord', platformThreadId: THREAD_ID },
+      client,
+    });
+    expect(getActiveBotSlotSnapshot().activeCount).toBe(0);
+
+    // 3. Queue-mode run completes on another slot -> refreshActiveBotSlotRuns clears local entry via AgentStateManager!
+    await inMemoryAgentStateManager.createOperationMetadata('op-queue-1', { userId: USER_ID });
+    await inMemoryAgentStateManager.saveAgentState('op-queue-1', {
+      status: 'running',
+      stepCount: 1,
+    } as any);
+    mockExecAgent.mockResolvedValueOnce({
+      assistantMessageId: 'assistant-msg-q1',
+      createdAt: new Date().toISOString(),
+      operationId: 'op-queue-1',
+      success: true,
+      topicId: 'topic-q1',
+    });
+
+    await service.handleMention(createThread(), createMessage(), {
+      agentId: 'agent-1',
+      botContext: { applicationId: 'app-1', platform: 'discord', platformThreadId: THREAD_ID },
+      client,
+    });
+    expect(getActiveBotSlotSnapshot().activeCount).toBe(1);
+
+    await refreshActiveBotSlotRuns();
+    expect(getActiveBotSlotSnapshot().activeCount).toBe(1);
+
+    // Mark terminal in AgentStateManager -> draining slot releases stale local queue tracker!
+    await inMemoryAgentStateManager.saveAgentState('op-queue-1', {
+      status: 'done',
+      stepCount: 2,
+    } as any);
+    await refreshActiveBotSlotRuns();
+    expect(getActiveBotSlotSnapshot().activeCount).toBe(0);
+
+    inMemoryAgentStateManager.clear();
+    resetBotSlotActivityForTests();
+  });
 });

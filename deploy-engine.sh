@@ -41,7 +41,9 @@ EOF
 # =============================================================================
 MODE=""
 INIT_FORCE=""
-STAGE_OUT="/var/tmp/lc-engine-stage-check"
+RAW_STAGE_OUT="/var/tmp/lc-engine-stage-check"
+STAGE_TARGET=""
+STAGE_OUT=""
 
 if [[ $# -eq 0 ]]; then
     MODE="deploy"
@@ -97,7 +99,7 @@ else
                 MODE="--stage-only"
             elif [[ $# -eq 2 && -n "$2" && "$2" != -* ]]; then
                 MODE="--stage-only"
-                STAGE_OUT="$2"
+                RAW_STAGE_OUT="$2"
             else
                 err "Недопустимые аргументы для '--stage-only': ${*:2} (ожидался максимум один путь каталога)"
                 usage >&2
@@ -110,6 +112,21 @@ else
             exit 1
             ;;
     esac
+fi
+
+# #2: Resolve canonical absolute STAGE_TARGET BEFORE any `cd "$SRC"` so relative paths
+# can NEVER be validated against caller CWD and later wiped relative to $SRC!
+if [[ "$MODE" == "--stage-only" ]]; then
+    if [[ -z "$RAW_STAGE_OUT" ]]; then
+        err "Пустой путь для --stage-only."
+        exit 1
+    fi
+    if [[ -L "${RAW_STAGE_OUT%/}" || -L "$RAW_STAGE_OUT" ]]; then
+        err "Путь --stage-only '$RAW_STAGE_OUT' является симлинком — отказ!"
+        exit 1
+    fi
+    STAGE_TARGET="$(realpath -m -- "$RAW_STAGE_OUT")"
+    STAGE_OUT="$STAGE_TARGET"
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -136,12 +153,26 @@ DEPLOY_LOCK_FILE="${ENGINE_DEPLOY_LOCK:-/run/lock/lobechat-engine-deploy.lock}"
 STATE_LOCK_FILE="${ENGINE_STATE_LOCK:-/run/lock/lobechat-engine-state.lock}"
 BUILD_LOCK_FILE="${ENGINE_BUILD_LOCK:-/var/tmp/wt/.lobechat-build.lock}"
 DRAIN_GRACE_SEC="${ENGINE_DRAIN_GRACE_SEC:-15}"
-REPLAY_GRACE_SEC="${ENGINE_REPLAY_GRACE_SEC:-605}"
+REPLAY_GRACE_SEC="${ENGINE_REPLAY_GRACE_SEC:-610}"
 DRAIN_MAX_WAIT_SEC="${ENGINE_DRAIN_MAX_WAIT_SEC:-2100}"
+NODE_BIN="${ENGINE_NODE_BIN:-/usr/bin/node}"
 
+# Top-level globals read by EXIT traps (#5: NEVER declare trap variables `local` inside functions!)
 HEAD_COMMIT=""
 LOCK_HASH=""
 STAGED_NEXT_VER=""
+BUILD_LOCK_ACQUIRED_HERE=0
+STAGE_DIR=""
+INIT_CUTOVER_COMMITTED=0
+INIT_BLUE_SVC=""
+INIT_HAD_BLUE_DIR=0
+INIT_ENV_DIR=""
+DEPLOY_TARGET_DIR=""
+DEPLOY_TARGET_SVC=""
+DEPLOY_TARGET_SLOT=""
+BACKUP_TARGET_DIR=""
+HAD_PREVIOUS_TARGET_DIR=0
+CANDIDATE_INSTALLED=0
 
 command -v bun >/dev/null 2>&1 || export PATH="$HOME/.bun/bin:$PATH"
 
@@ -297,23 +328,27 @@ sys.exit(1)
 PY
 }
 
-run_with_build_lock() {
+acquire_build_lock() {
     mkdir -p "$(dirname "$BUILD_LOCK_FILE")"
     if already_holds_build_lock; then
         log "Замок сборки $BUILD_LOCK_FILE уже удерживается внешним flock — продолжаю без повторного захвата."
-        "$@"
-        return $?
+        BUILD_LOCK_ACQUIRED_HERE=0
+        return 0
     fi
-    exec 8>>"$BUILD_LOCK_FILE"
-    if ! flock -n 8; then
+    exec 8>"$BUILD_LOCK_FILE"
+    if ! flock -n -x 8; then
         log "Ожидание замка сборки $BUILD_LOCK_FILE..."
-        flock 8
+        flock -x 8
     fi
-    local rc=0
-    "$@" || rc=$?
-    flock -u 8 || true
-    exec 8>&-
-    return $rc
+    BUILD_LOCK_ACQUIRED_HERE=1
+}
+
+release_build_lock() {
+    if [[ "${BUILD_LOCK_ACQUIRED_HERE:-0}" == "1" ]]; then
+        flock -u 8 2>/dev/null || true
+        exec 8>&- 2>/dev/null || true
+        BUILD_LOCK_ACQUIRED_HERE=0
+    fi
 }
 
 reload_auditd_watches() {
@@ -412,7 +447,13 @@ with open(dst_path, "w", encoding="utf-8") as fh:
     os.fsync(fh.fileno())
 os.chmod(dst_path, 0o644)
 PY
-    mv -Tf "$tmp_file" "$STATE_FILE"
+    if [[ ! -f "$tmp_file" ]]; then
+        return 1
+    fi
+    mv -Tf "$tmp_file" "$STATE_FILE" || {
+        rm -f "$tmp_file"
+        return 1
+    }
 }
 
 write_state_json() {
@@ -481,20 +522,12 @@ resolve_live_env_file() {
     fi
 }
 
-# Write minimal router service-key file ($ROUTER_DIR/.service-key.env, root:lobechat 0640)
-# so router SIGHUP reloads rotated ARCKEP_ENGINE_SERVICE_KEY without needing access to 0600 .env
-sync_router_service_key_file() {
-    local env_path="$1"
-    [[ -f "$env_path" ]] || return 1
-    local svc_key
-    svc_key=$(read_service_key_from_env "$env_path" || true)
-    if [[ -z "$svc_key" || "${#svc_key}" -lt 32 ]]; then
-        err "ARCKEP_ENGINE_SERVICE_KEY в $env_path отсутствует или короче 32 символов!"
-        return 1
-    fi
+# Write minimal router service-key file(s) ($ROUTER_DIR/.service-key[-<slot>].env, root:lobechat 0640)
+# so router SIGHUP reloads per-slot ARCKEP_ENGINE_SERVICE_KEY (#11) without needing access to 0600 .env
+write_single_router_key_file() {
+    local dst_key_file="$1" svc_key="$2"
     mkdir -p "$ROUTER_DIR"
     chmod 0755 "$ROUTER_DIR"
-    local dst_key_file="$ROUTER_DIR/.service-key.env"
     local tmp_key_file="${dst_key_file}.tmp.$$"
     install -m 0600 /dev/null "$tmp_key_file"
     printf 'ARCKEP_ENGINE_SERVICE_KEY=%s\n' "$svc_key" > "$tmp_key_file"
@@ -510,74 +543,212 @@ sync_router_service_key_file() {
     mv -Tf "$tmp_key_file" "$dst_key_file"
 }
 
-# Call engine-slot endpoint via stdin curl config so the service key never appears in argv/ps
-slot_api_call() {
-    local method="$1" port="$2" endpoint="$3" env_path="${4:-}"
-    if [[ -z "$env_path" ]]; then
-        env_path=$(resolve_live_env_file 2>/dev/null || true)
-    fi
-    [[ -n "$env_path" && -f "$env_path" ]] || return 1
+sync_slot_router_service_key_file() {
+    local env_path="$1" slot_name="$2"
+    [[ -f "$env_path" && -n "$slot_name" ]] || return 1
     local svc_key
     svc_key=$(read_service_key_from_env "$env_path" || true)
-    [[ -n "$svc_key" && "${#svc_key}" -ge 32 ]] || return 1
-    printf 'header = "Authorization: Bearer %s"\nheader = "Host: arckep.ru"\n' "$svc_key" | \
-        curl -sS --fail --max-time 3 -X "$method" -K - \
-        "http://127.0.0.1:${port}/chat/api/v1/arckep/engine-slot/${endpoint}/" 2>/dev/null
+    if [[ -z "$svc_key" || "${#svc_key}" -lt 32 ]]; then
+        err "ARCKEP_ENGINE_SERVICE_KEY в $env_path отсутствует или короче 32 символов!"
+        return 1
+    fi
+    write_single_router_key_file "$ROUTER_DIR/.service-key-${slot_name}.env" "$svc_key"
+}
+
+sync_router_service_key_file() {
+    local env_path="$1" slot_name="${2:-}"
+    [[ -f "$env_path" ]] || return 1
+    local svc_key
+    svc_key=$(read_service_key_from_env "$env_path" || true)
+    if [[ -z "$svc_key" || "${#svc_key}" -lt 32 ]]; then
+        err "ARCKEP_ENGINE_SERVICE_KEY в $env_path отсутствует или короче 32 символов!"
+        return 1
+    fi
+    write_single_router_key_file "$ROUTER_DIR/.service-key.env" "$svc_key"
+    if [[ -n "$slot_name" ]]; then
+        write_single_router_key_file "$ROUTER_DIR/.service-key-${slot_name}.env" "$svc_key"
+    fi
+}
+
+# #1: Strict systemd unit state query via `systemctl show -p LoadState,ActiveState,SubState`.
+# Outputs ONLY: `stopped` | `active` | `unknown`.
+# Any D-Bus / systemctl error, missing output, or LoadState=error -> `unknown` (NEVER `stopped`!).
+get_systemd_unit_state() {
+    local unit_name="$1"
+    local show_out show_rc=0
+    show_out=$(systemctl show -p LoadState,ActiveState,SubState "$unit_name" 2>/dev/null) || show_rc=$?
+    if [[ $show_rc -ne 0 || -z "$show_out" ]]; then
+        echo "unknown"
+        return 0
+    fi
+
+    python3 - "$show_out" <<'PY'
+import sys
+
+props = {}
+for raw_line in sys.argv[1].splitlines():
+    if "=" in raw_line:
+        k, v = raw_line.split("=", 1)
+        props[k.strip()] = v.strip()
+
+load_st = props.get("LoadState", "")
+active_st = props.get("ActiveState", "")
+sub_st = props.get("SubState", "")
+
+if not load_st or not active_st or not sub_st or load_st in ("error", "bad-setting"):
+    print("unknown")
+elif active_st == "inactive" and sub_st == "dead":
+    print("stopped")
+elif active_st == "failed" and sub_st in ("failed", "dead"):
+    print("stopped")
+elif active_st in ("active", "activating", "reloading", "deactivating"):
+    print("active")
+else:
+    print("unknown")
+PY
+}
+
+# #1: Stop a slot service and strictly verify exit code 0 + confirmed `ActiveState=inactive`
+# BEFORE modifying, moving, or deleting any slot directory!
+stop_slot_service_verified() {
+    local svc="$1"
+    local pre_st
+    pre_st=$(get_systemd_unit_state "$svc")
+    if [[ "$pre_st" == "unknown" ]]; then
+        err "Не удалось проверить состояние systemd для '$svc' (state=unknown) — остановка и модификация каталога запрещены!"
+        return 1
+    fi
+    if [[ "$pre_st" == "stopped" ]]; then
+        systemctl reset-failed "$svc" 2>/dev/null || true
+        return 0
+    fi
+
+    if ! systemctl stop "$svc"; then
+        err "Команда 'systemctl stop $svc' завершилась с ошибкой — модификация каталога запрещена!"
+        return 1
+    fi
+
+    local i show_out show_rc active_st sub_st
+    for i in $(seq 1 70); do
+        show_rc=0
+        show_out=$(systemctl show -p LoadState,ActiveState,SubState "$svc" 2>/dev/null) || show_rc=$?
+        if [[ $show_rc -eq 0 && -n "$show_out" ]]; then
+            active_st=$(printf '%s\n' "$show_out" | awk -F= '$1=="ActiveState"{print $2; exit}')
+            sub_st=$(printf '%s\n' "$show_out" | awk -F= '$1=="SubState"{print $2; exit}')
+            if [[ "$active_st" == "inactive" && "$sub_st" == "dead" ]]; then
+                return 0
+            fi
+            if [[ "$active_st" == "failed" && ( "$sub_st" == "failed" || "$sub_st" == "dead" ) ]]; then
+                systemctl reset-failed "$svc" 2>/dev/null || true
+                show_rc=0
+                show_out=$(systemctl show -p ActiveState "$svc" 2>/dev/null) || show_rc=$?
+                active_st=$(printf '%s\n' "$show_out" | awk -F= '$1=="ActiveState"{print $2; exit}')
+                if [[ $show_rc -eq 0 && ( "$active_st" == "inactive" || "$active_st" == "failed" ) ]]; then
+                    return 0
+                fi
+            fi
+        fi
+        sleep 0.5
+    done
+
+    err "Служба '$svc' не подтвердила ActiveState=inactive после systemctl stop — модификация каталога запрещена!"
+    return 1
+}
+
+slot_name_from_port() {
+    local port="$1"
+    if [[ "$port" == "$BLUE_PORT" ]]; then
+        echo "blue"
+    elif [[ "$port" == "$GREEN_PORT" ]]; then
+        echo "green"
+    else
+        echo ""
+    fi
+}
+
+# Call engine-slot endpoint via stdin curl config so the service key never appears in argv/ps (#11)
+slot_api_call() {
+    local method="$1" port="$2" endpoint="$3" env_path="${4:-}"
+    local slot_hint
+    slot_hint=$(slot_name_from_port "$port")
+
+    local -a key_files=()
+    if [[ -n "$env_path" && -f "$env_path" ]]; then
+        key_files+=("$env_path")
+    fi
+    if [[ -n "$slot_hint" ]]; then
+        local s_dir
+        s_dir=$(slot_dir "$slot_hint")
+        [[ -f "$s_dir/.env" ]] && key_files+=("$s_dir/.env")
+        [[ -f "$ROUTER_DIR/.service-key-${slot_hint}.env" ]] && key_files+=("$ROUTER_DIR/.service-key-${slot_hint}.env")
+    fi
+    local fallback_env
+    fallback_env=$(resolve_live_env_file 2>/dev/null || true)
+    [[ -n "$fallback_env" && -f "$fallback_env" ]] && key_files+=("$fallback_env")
+
+    [[ ${#key_files[@]} -gt 0 ]] || return 1
+
+    local tried_keys="|" kf svc_key raw_resp curl_rc body http_code
+    for kf in "${key_files[@]}"; do
+        svc_key=$(read_service_key_from_env "$kf" || true)
+        [[ -n "$svc_key" && "${#svc_key}" -ge 32 ]] || continue
+        [[ "$tried_keys" == *"|${svc_key}|"* ]] && continue
+        tried_keys="${tried_keys}${svc_key}|"
+
+        curl_rc=0
+        raw_resp=$(
+            printf 'header = "Authorization: Bearer %s"\nheader = "Host: arckep.ru"\n' "$svc_key" | \
+                curl -sS -w $'\n%{http_code}' --max-time 3 -X "$method" -K - \
+                "http://127.0.0.1:${port}/chat/api/v1/arckep/engine-slot/${endpoint}/" 2>/dev/null
+        ) || curl_rc=$?
+
+        if [[ $curl_rc -ne 0 || -z "$raw_resp" ]]; then
+            return 1
+        fi
+        http_code="${raw_resp##*$'\n'}"
+        body="${raw_resp%$'\n'*}"
+        if [[ "$http_code" == "200" ]]; then
+            printf '%s' "$body"
+            return 0
+        fi
+        if [[ "$http_code" != "401" ]]; then
+            return 1
+        fi
+    done
+    return 1
 }
 
 # P1 #1: Strict tri-state slot status query (`stopped` | `idle` | `busy` | `unknown`).
 # Outputs: `<state> <activeTotal> <retainedCount> <drainingBool> <sandboxWorkerRunningBool>`
-# NEVER treats HTTP errors, timeouts, missing keys, or malformed JSON as `activeTotal=0`!
+# NEVER treats systemd/D-Bus errors, HTTP errors, timeouts, missing keys, or malformed JSON as `stopped` or `0`!
 query_slot_drain_state() {
     local slot="$1" port="$2" env_path="${3:-}"
-    local svc
+    local svc unit_st
     svc=$(slot_service "$slot")
-    if ! systemctl is-active --quiet "$svc" 2>/dev/null; then
+    unit_st=$(get_systemd_unit_state "$svc")
+    if [[ "$unit_st" == "stopped" ]]; then
         echo "stopped 0 0 false false"
         return 0
     fi
-
-    if [[ -z "$env_path" ]]; then
-        env_path=$(resolve_live_env_file 2>/dev/null || true)
-    fi
-    if [[ -z "$env_path" || ! -f "$env_path" ]]; then
+    if [[ "$unit_st" != "active" ]]; then
         echo "unknown -1 -1 false false"
         return 0
     fi
 
-    local svc_key
-    svc_key=$(read_service_key_from_env "$env_path" || true)
-    if [[ -z "$svc_key" || "${#svc_key}" -lt 32 ]]; then
+    local raw_body
+    if ! raw_body=$(slot_api_call GET "$port" "status" "$env_path"); then
+        echo "unknown -1 -1 false false"
+        return 0
+    fi
+    if [[ -z "$raw_body" ]]; then
         echo "unknown -1 -1 false false"
         return 0
     fi
 
-    local raw_resp curl_rc=0
-    raw_resp=$(
-        printf 'header = "Authorization: Bearer %s"\nheader = "Host: arckep.ru"\n' "$svc_key" | \
-            curl -sS -w $'\n%{http_code}' --max-time 3 -K - \
-            "http://127.0.0.1:${port}/chat/api/v1/arckep/engine-slot/status/" 2>/dev/null
-    ) || curl_rc=$?
-
-    if [[ $curl_rc -ne 0 || -z "$raw_resp" ]]; then
-        echo "unknown -1 -1 false false"
-        return 0
-    fi
-
-    python3 - "$raw_resp" <<'PY'
+    python3 - "$raw_body" <<'PY'
 import json, sys
 
-raw = sys.argv[1]
-lines = raw.rsplit("\n", 1)
-if len(lines) != 2:
-    print("unknown -1 -1 false false")
-    sys.exit(0)
-
-body, http_code = lines[0], lines[1].strip()
-if http_code != "200":
-    print("unknown -1 -1 false false")
-    sys.exit(0)
-
+body = sys.argv[1]
 try:
     d = json.loads(body)
 except Exception:
@@ -693,21 +864,45 @@ PY
     fi
 }
 
-# P1 #1: Wait until target slot is confirmed stopped or idle (activeTotal===0).
+# P1 #1 + #6: Wait until target slot is confirmed stopped OR completely idle (`activeTotal===0` AND
+# `retainedTopicIds.length===0`, bounded by `REPLAY_GRACE_SEC` = 610s while `activeTotal===0` so
+# rapid back-to-back deploys NEVER destroy the 10-minute reconnect replay window!).
 # If status is `busy` or `unknown`, NEVER stop the slot; abort deploy if DRAIN_MAX_WAIT_SEC expires!
 wait_slot_idle_before_overwrite() {
     local slot="$1" port="$2" env_path="$3"
-    local waited=0 st="" active_total=0 retained_cnt=0 draining_flag="" sbx_flag=""
+    local waited=0 retained_waited=0 st="" active_total=0 retained_cnt=0 draining_flag="" sbx_flag=""
     while (( waited < DRAIN_MAX_WAIT_SEC )); do
         read -r st active_total retained_cnt draining_flag sbx_flag < <(query_slot_drain_state "$slot" "$port" "$env_path")
         case "$st" in
-            stopped|idle)
+            stopped)
                 return 0
                 ;;
+            idle)
+                if (( retained_cnt == 0 )); then
+                    return 0
+                fi
+                if (( retained_waited >= REPLAY_GRACE_SEC )); then
+                    log "Окно реплея (${REPLAY_GRACE_SEC}s) на слоте $slot (:$port) при activeTotal=0 выдержано (retained=$retained_cnt) — разрешаю перезапись."
+                    return 0
+                fi
+                local step_sec=5
+                local rem=$((REPLAY_GRACE_SEC - retained_waited))
+                if (( rem < step_sec )); then
+                    step_sec=$rem
+                fi
+                (( step_sec < 1 )) && step_sec=1
+                log "Целевой слот $slot (:$port) сохраняет окно реплея (activeTotal=0, retained=$retained_cnt, ждём ${retained_waited}/${REPLAY_GRACE_SEC}s)..."
+                sleep "$step_sec"
+                waited=$((waited + step_sec))
+                retained_waited=$((retained_waited + step_sec))
+                continue
+                ;;
             busy)
+                retained_waited=0
                 log "Целевой слот $slot (:$port) ещё дорабатывает прошлую выкладку (activeTotal=$active_total, ждём ${waited}s)..."
                 ;;
             *)
+                retained_waited=0
                 warn "Статус целевого слота $slot (:$port) неизвестен (state=$st) — останавливать живой слот нельзя, повтор через 5s (${waited}s)..."
                 ;;
         esac
@@ -716,10 +911,10 @@ wait_slot_idle_before_overwrite() {
     done
 
     read -r st active_total retained_cnt draining_flag sbx_flag < <(query_slot_drain_state "$slot" "$port" "$env_path")
-    if [[ "$st" == "stopped" || "$st" == "idle" ]]; then
+    if [[ "$st" == "stopped" ]] || { [[ "$st" == "idle" ]] && (( retained_cnt == 0 || retained_waited >= REPLAY_GRACE_SEC )); }; then
         return 0
     fi
-    err "CRITICAL: целевой слот $slot (:$port) не подтвердил освобождение за ${DRAIN_MAX_WAIT_SEC}s (state=$st, activeTotal=$active_total) — остановка запрещена!"
+    err "CRITICAL: целевой слот $slot (:$port) не подтвердил освобождение за ${DRAIN_MAX_WAIT_SEC}s (state=$st, activeTotal=$active_total, retained=$retained_cnt) — остановка запрещена!"
     exit 1
 }
 
@@ -750,9 +945,11 @@ SLOT_SERVICE="$6"
 ENV_FILE="$7"
 GRACE_SEC="${8:-15}"
 MAX_WAIT_SEC="${9:-2100}"
-REPLAY_GRACE_SEC="${10:-605}"
+REPLAY_GRACE_SEC="${10:-610}"
 STATE_LOCK_FILE="${11:-/run/lock/lobechat-engine-state.lock}"
 DRAIN_TOKEN="${12:-}"
+RESTORE_BACKUP_DIR="${13:-}"
+TARGET_SLOT_DIR="${14:-}"
 
 PID_FILE="$(dirname "$STATE_FILE")/drain-${SLOT}.pid"
 
@@ -785,16 +982,40 @@ sys.exit(0 if ok else 1)
 PY
 }
 
-# P1 #1: Tri-state check (`stopped` | `idle` | `busy` | `unknown`) + retainedTopicIds count.
-query_drain_status() {
-    if ! systemctl is-active --quiet "$SLOT_SERVICE" 2>/dev/null; then
-        echo "stopped 0 0"
+get_unit_state() {
+    local show_out show_rc=0
+    show_out=$(systemctl show -p LoadState,ActiveState,SubState "$SLOT_SERVICE" 2>/dev/null) || show_rc=$?
+    if [[ $show_rc -ne 0 || -z "$show_out" ]]; then
+        echo "unknown"
         return 0
     fi
+    python3 - "$show_out" <<'PY'
+import sys
+props = {}
+for raw_line in sys.argv[1].splitlines():
+    if "=" in raw_line:
+        k, v = raw_line.split("=", 1)
+        props[k.strip()] = v.strip()
+load_st = props.get("LoadState", "")
+active_st = props.get("ActiveState", "")
+sub_st = props.get("SubState", "")
+if not load_st or not active_st or not sub_st or load_st in ("error", "bad-setting"):
+    print("unknown")
+elif active_st == "inactive" and sub_st == "dead":
+    print("stopped")
+elif active_st == "failed" and sub_st in ("failed", "dead"):
+    print("stopped")
+elif active_st in ("active", "activating", "reloading", "deactivating"):
+    print("active")
+else:
+    print("unknown")
+PY
+}
 
-    [[ -f "$ENV_FILE" ]] || { echo "unknown -1 -1"; return 0; }
-    local key
-    key=$(python3 - "$ENV_FILE" <<'PY'
+read_service_key() {
+    local path="$1"
+    [[ -f "$path" ]] || return 1
+    python3 - "$path" <<'PY'
 import sys
 key = ""
 with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as fh:
@@ -809,11 +1030,37 @@ with open(sys.argv[1], "r", encoding="utf-8", errors="replace") as fh:
             if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
                 v = v[1:-1]
             key = v.strip()
-sys.stdout.write(key)
+if key:
+    sys.stdout.write(key)
 PY
-)
+}
+
+send_drain_command() {
+    local key
+    key=$(read_service_key "$ENV_FILE" || true)
+    [[ -n "$key" && "${#key}" -ge 32 ]] || return 1
+    printf 'header = "Authorization: Bearer %s"\nheader = "Host: arckep.ru"\n' "$key" | \
+        curl -sS --fail --max-time 3 -X POST -K - \
+        "http://127.0.0.1:${PORT}/chat/api/v1/arckep/engine-slot/drain/" >/dev/null 2>&1
+}
+
+# #1 + #8: Strict check (`stopped` | `idle` | `busy` | `unknown`) + retained count + draining + sandboxWorkerRunning
+query_drain_status() {
+    local unit_st
+    unit_st=$(get_unit_state)
+    if [[ "$unit_st" == "stopped" ]]; then
+        echo "stopped 0 0 false false"
+        return 0
+    fi
+    if [[ "$unit_st" != "active" ]]; then
+        echo "unknown -1 -1 false false"
+        return 0
+    fi
+
+    local key
+    key=$(read_service_key "$ENV_FILE" || true)
     if [[ -z "$key" || "${#key}" -lt 32 ]]; then
-        echo "unknown -1 -1"
+        echo "unknown -1 -1 false false"
         return 0
     fi
 
@@ -825,7 +1072,7 @@ PY
     ) || curl_rc=$?
 
     if [[ $curl_rc -ne 0 || -z "$raw_resp" ]]; then
-        echo "unknown -1 -1"
+        echo "unknown -1 -1 false false"
         return 0
     fi
 
@@ -835,27 +1082,37 @@ import json, sys
 raw = sys.argv[1]
 parts = raw.rsplit("\n", 1)
 if len(parts) != 2 or parts[1].strip() != "200":
-    print("unknown -1 -1")
+    print("unknown -1 -1 false false")
     sys.exit(0)
 
 try:
     d = json.loads(parts[0])
 except Exception:
-    print("unknown -1 -1")
+    print("unknown -1 -1 false false")
     sys.exit(0)
 
 if not isinstance(d, dict):
-    print("unknown -1 -1")
+    print("unknown -1 -1 false false")
     sys.exit(0)
 
 active_total = d.get("activeTotal")
 retained = d.get("retainedTopicIds")
-if type(active_total) is not int or active_total < 0 or not isinstance(retained, list):
-    print("unknown -1 -1")
+draining = d.get("draining")
+sbx_running = d.get("sandboxWorkerRunning", True)
+if (
+    type(active_total) is not int
+    or active_total < 0
+    or not isinstance(retained, list)
+    or not isinstance(draining, bool)
+):
+    print("unknown -1 -1 false false")
     sys.exit(0)
 
 state = "idle" if active_total == 0 else "busy"
-print(f"{state} {active_total} {len(retained)}")
+print(
+    f"{state} {active_total} {len(retained)} "
+    f"{'true' if draining else 'false'} {'true' if sbx_running else 'false'}"
+)
 PY
 }
 
@@ -863,8 +1120,6 @@ log "Начат drain слота ${SLOT} (:${PORT}, epoch=${EXPECTED_EPOCH}, gra
 elapsed=0
 retained_waited=0
 confirmed_ready_to_stop=0
-last_state="unknown"
-last_active=-1
 
 while (( elapsed < MAX_WAIT_SEC )); do
     if ! state_matches; then
@@ -872,14 +1127,21 @@ while (( elapsed < MAX_WAIT_SEC )); do
         exit 0
     fi
 
-    read -r st active_total retained_cnt < <(query_drain_status)
-    last_state="$st"
-    last_active="$active_total"
+    read -r st active_total retained_cnt draining_flag sbx_flag < <(query_drain_status)
 
     if [[ "$st" == "stopped" ]]; then
         log "Служба ${SLOT_SERVICE} уже остановлена."
         confirmed_ready_to_stop=1
         break
+    fi
+
+    # #8: If slot restarted via systemd Restart=always or initial POST /drain failed, re-assert drain BEFORE checking 0!
+    if [[ ( "$st" == "idle" || "$st" == "busy" ) && ( "$draining_flag" != "true" || "$sbx_flag" == "true" ) ]]; then
+        log "У дренируемого слота ${SLOT} draining=${draining_flag}, sandboxWorkerRunning=${sbx_flag} — повторно вызываю POST /drain..."
+        send_drain_command || true
+        sleep 2
+        elapsed=$((elapsed + 2))
+        continue
     fi
 
     if [[ "$st" == "idle" ]]; then
@@ -907,18 +1169,16 @@ while (( elapsed < MAX_WAIT_SEC )); do
             exit 0
         fi
 
-        read -r st_after active_after retained_after < <(query_drain_status)
-        last_state="$st_after"
-        last_active="$active_after"
+        read -r st_after active_after retained_after drain_after sbx_after < <(query_drain_status)
         if [[ "$st_after" == "stopped" ]]; then
             confirmed_ready_to_stop=1
             break
         fi
-        if [[ "$st_after" == "idle" ]] && (( retained_after == 0 || retained_waited >= REPLAY_GRACE_SEC )); then
+        if [[ "$st_after" == "idle" && "$drain_after" == "true" && "$sbx_after" == "false" ]] && (( retained_after == 0 || retained_waited >= REPLAY_GRACE_SEC )); then
             confirmed_ready_to_stop=1
             break
         fi
-        log "После паузы слот ещё не пуст (state=${st_after}, activeTotal=${active_after}, retained=${retained_after}) — продолжаю ожидание."
+        log "После паузы слот ещё не готов к остановке (state=${st_after}, activeTotal=${active_after}, retained=${retained_after}, draining=${drain_after}, sbx=${sbx_after}) — продолжаю ожидание."
         continue
     fi
 
@@ -929,16 +1189,16 @@ while (( elapsed < MAX_WAIT_SEC )); do
 done
 
 if [[ "$confirmed_ready_to_stop" != "1" ]]; then
-    read -r st_final active_final retained_final < <(query_drain_status)
-    if [[ "$st_final" == "stopped" || ( "$st_final" == "idle" && "$retained_final" -eq 0 ) ]]; then
+    read -r st_final active_final retained_final drain_final sbx_final < <(query_drain_status)
+    if [[ "$st_final" == "stopped" || ( "$st_final" == "idle" && "$drain_final" == "true" && "$sbx_final" == "false" && "$retained_final" -eq 0 ) ]]; then
         confirmed_ready_to_stop=1
     else
-        crit "Достигнут потолок ожидания ${MAX_WAIT_SEC}s для ${SLOT}, но слот НЕ подтвердил завершение (state=${st_final}, activeTotal=${active_final}, retained=${retained_final}) — оставляю ${SLOT_SERVICE} ЖИВЫМ!"
+        crit "Достигнут потолок ожидания ${MAX_WAIT_SEC}s для ${SLOT}, но слот НЕ подтвердил завершение (state=${st_final}, activeTotal=${active_final}, retained=${retained_final}, draining=${drain_final}) — оставляю ${SLOT_SERVICE} ЖИВЫМ!"
         exit 1
     fi
 fi
 
-# P2 #13: Hold shared STATE_LOCK_FILE across final epoch verification, state update, and systemctl stop
+# Hold shared STATE_LOCK_FILE across final epoch verification, state update, and verified systemctl stop
 mkdir -p "$(dirname "$STATE_LOCK_FILE")" 2>/dev/null || STATE_LOCK_FILE="/tmp/lobechat-engine-state.lock"
 exec 6>>"$STATE_LOCK_FILE"
 flock -w 15 6
@@ -949,11 +1209,41 @@ if ! state_matches; then
     exit 0
 fi
 
-read -r locked_st locked_active _locked_ret < <(query_drain_status)
-if [[ "$locked_st" != "stopped" && "$locked_st" != "idle" ]]; then
-    log "Перед остановкой обнаружена активность/неизвестность (state=${locked_st}, active=${locked_active}) — оставляю ${SLOT_SERVICE} живым."
+read -r locked_st locked_active _locked_ret locked_drain locked_sbx < <(query_drain_status)
+if [[ "$locked_st" != "stopped" ]] && [[ "$locked_st" != "idle" || "$locked_drain" != "true" || "$locked_sbx" != "false" ]]; then
+    log "Перед остановкой обнаружена активность/неизвестность (state=${locked_st}, active=${locked_active}, draining=${locked_drain}, sbx=${locked_sbx}) — оставляю ${SLOT_SERVICE} живым."
     flock -u 6 || true
     exit 1
+fi
+
+systemctl disable "$SLOT_SERVICE" 2>/dev/null || true
+log "Останавливаю доработавший слот ${SLOT_SERVICE}..."
+if [[ "$locked_st" != "stopped" ]]; then
+    if ! systemctl stop "$SLOT_SERVICE"; then
+        crit "systemctl stop ${SLOT_SERVICE} завершился с ошибкой — сохраняю drainingSlot в state.json!"
+        flock -u 6 || true
+        exit 1
+    fi
+    stop_confirmed=0
+    for _i in $(seq 1 60); do
+        if [[ "$(get_unit_state)" == "stopped" ]]; then
+            stop_confirmed=1
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ "$stop_confirmed" != "1" ]]; then
+        crit "Служба ${SLOT_SERVICE} не перешла в ActiveState=inactive — сохраняю drainingSlot в state.json!"
+        flock -u 6 || true
+        exit 1
+    fi
+fi
+
+# #7: If this drainer was finishing a rejected candidate with a preserved .rollback-bak, restore it now!
+if [[ -n "$RESTORE_BACKUP_DIR" && -d "$RESTORE_BACKUP_DIR" && -n "$TARGET_SLOT_DIR" ]]; then
+    rm -rf -- "$TARGET_SLOT_DIR"
+    mv -Tf "$RESTORE_BACKUP_DIR" "$TARGET_SLOT_DIR"
+    log "Восстановлен подтверждённый резервный слот ${TARGET_SLOT_DIR} из ${RESTORE_BACKUP_DIR}."
 fi
 
 tmp="${STATE_FILE}.drain.tmp.$$"
@@ -977,17 +1267,13 @@ PY
 
 if [[ $rc -ne 0 ]]; then
     rm -f "$tmp"
-    log "Состояние изменилось при очистке drainingSlot — отменяю остановку ${SLOT}."
+    log "Состояние изменилось при очистке drainingSlot — завершаю."
     flock -u 6 || true
     exit 0
 fi
 
 mv -Tf "$tmp" "$STATE_FILE"
 systemctl reload "$ROUTER_SERVICE" 2>/dev/null || systemctl kill -s HUP "$ROUTER_SERVICE" 2>/dev/null || true
-systemctl disable "$SLOT_SERVICE" 2>/dev/null || true
-
-log "Останавливаю доработавший слот ${SLOT_SERVICE}..."
-systemctl stop "$SLOT_SERVICE" 2>/dev/null || true
 flock -u 6 || true
 exec 6>&-
 log "Слот ${SLOT} штатно погашен."
@@ -1001,13 +1287,14 @@ EOF
 
 start_slot_drain() {
     local draining_slot="$1" draining_port="$2" epoch="$3" env_path="$4"
+    local restore_bak_dir="${5:-}" target_slot_dir="${6:-}"
     local draining_svc
     draining_svc=$(slot_service "$draining_slot")
 
     if slot_api_call POST "$draining_port" "drain" "$env_path" >/dev/null 2>&1; then
         log "Слот $draining_slot (:$draining_port) переведён в режим drain"
     else
-        warn "Не удалось вызвать /arckep/engine-slot/drain на :$draining_port (возможно, слот уже остановлен или старый релиз)"
+        warn "Не удалось вызвать /arckep/engine-slot/drain на :$draining_port (slot-drainer повторит попытку при проверке)"
     fi
 
     write_slot_drainer_helper
@@ -1024,7 +1311,8 @@ start_slot_drain() {
             /bin/bash "$helper" \
             "$draining_slot" "$draining_port" "$epoch" "$STATE_FILE" \
             "$ROUTER_SERVICE" "$draining_svc" "$env_path" \
-            "$DRAIN_GRACE_SEC" "$DRAIN_MAX_WAIT_SEC" "$REPLAY_GRACE_SEC" "$STATE_LOCK_FILE" "$drain_token"; then
+            "$DRAIN_GRACE_SEC" "$DRAIN_MAX_WAIT_SEC" "$REPLAY_GRACE_SEC" "$STATE_LOCK_FILE" "$drain_token" \
+            "$restore_bak_dir" "$target_slot_dir"; then
             log "Запущен фоновый доводчик systemd ($unit.service)"
             return 0
         fi
@@ -1046,6 +1334,7 @@ start_slot_drain() {
             "$draining_slot" "$draining_port" "$epoch" "$STATE_FILE" \
             "$ROUTER_SERVICE" "$draining_svc" "$env_path" \
             "$DRAIN_GRACE_SEC" "$DRAIN_MAX_WAIT_SEC" "$REPLAY_GRACE_SEC" "$STATE_LOCK_FILE" "$drain_token" \
+            "$restore_bak_dir" "$target_slot_dir" \
             >>"$LOG_FILE" 2>&1 </dev/null &
         printf '%s:%s\n' "$!" "$drain_token" > "$STATE_DIR/drain-${draining_slot}.pid"
     )
@@ -1073,9 +1362,13 @@ install_router_and_units() {
 
     local reload_needed=0
     mkdir -p "$SYSTEMD_DIR"
-    for unit_name in image-studio-lobechat-router.service image-studio-lobechat@.service; do
+    for unit_name in \
+        image-studio-lobechat-router.socket \
+        image-studio-lobechat-router.service \
+        image-studio-lobechat@.service; do
         local src_unit="$SRC/deploy/systemd/$unit_name"
         local dst_unit="$SYSTEMD_DIR/$unit_name"
+        [[ -f "$src_unit" ]] || continue
         if [[ ! -f "$dst_unit" ]] || ! cmp -s "$src_unit" "$dst_unit"; then
             cp -pf "$src_unit" "${dst_unit}.tmp.$$"
             if [[ "$(id -u)" -eq 0 ]]; then
@@ -1094,6 +1387,110 @@ install_router_and_units() {
     fi
 }
 
+# #13: Zero-drop router code update behind `image-studio-lobechat-router.socket`.
+# Restarts router process immediately when `inFlightRequests == 0` (0ms port gap via systemd socket),
+# or schedules a background zero-drop restart as soon as active SSE streams settle!
+ensure_router_code_current() {
+    [[ -f "$ROUTER_DIR/engine-router.mjs" ]] || return 0
+    if [[ "$(get_systemd_unit_state "$ROUTER_SERVICE")" != "active" ]]; then
+        return 0
+    fi
+
+    local disk_hash r_health parsed r_hash r_inflight r_sock
+    disk_hash=$(sha256sum "$ROUTER_DIR/engine-router.mjs" | awk '{print $1}')
+
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        r_health=$(curl -sS --max-time 2 "http://127.0.0.1:${PORT}/__router/health" 2>/dev/null || echo "")
+        [[ -n "$r_health" ]] || return 0
+        parsed=$(python3 - "$r_health" <<'PY'
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    h = d.get("routerHash") or "unknown"
+    inf = int(d.get("inFlightRequests") or 0)
+    sa = "1" if d.get("socketActivated") else "0"
+    print(f"{h} {inf} {sa}")
+except Exception:
+    print("unknown -1 0")
+PY
+)
+        read -r r_hash r_inflight r_sock <<<"$parsed"
+        if [[ "$r_hash" == "$disk_hash" ]]; then
+            return 0
+        fi
+        if (( r_inflight == 0 )); then
+            log "Код роутера изменился (${r_hash:0:12} -> ${disk_hash:0:12}) при inFlightRequests=0 — выполняю бесшовный перезапуск за сокетом :$PORT..."
+            if [[ "$r_sock" != "1" && -f "$SYSTEMD_DIR/${ROUTER_SERVICE}.socket" ]]; then
+                systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
+                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+                systemctl start "$ROUTER_SERVICE"
+            else
+                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+                systemctl restart "$ROUTER_SERVICE"
+            fi
+            return 0
+        fi
+        sleep 1
+    done
+
+    warn "Код $ROUTER_DIR/engine-router.mjs обновлён на диске (${disk_hash:0:12}), но роутер ведёт активные запросы (inFlightRequests=$r_inflight). Перезапуск за сокетом выполнится автоматически при inFlightRequests=0!"
+    local restarter="$ROUTER_DIR/router-restarter.sh"
+    cat > "${restarter}.tmp.$$" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -d "/proc/$$/fd" ]]; then
+    for _fd_entry in "/proc/$$/fd/"*; do
+        _fd_num="${_fd_entry##*/}"
+        if [[ "$_fd_num" =~ ^[0-9]+$ ]] && (( _fd_num > 2 )); then
+            eval "exec ${_fd_num}>&-" 2>/dev/null || true
+        fi
+    done
+fi
+PORT="$1"
+ROUTER_DIR="$2"
+ROUTER_SERVICE="$3"
+SYSTEMD_DIR="$4"
+for _w in $(seq 1 900); do
+    [[ -f "$ROUTER_DIR/engine-router.mjs" ]] || exit 0
+    disk_hash=$(sha256sum "$ROUTER_DIR/engine-router.mjs" | awk '{print $1}')
+    r_health=$(curl -sS --max-time 2 "http://127.0.0.1:${PORT}/__router/health" 2>/dev/null || echo "")
+    if [[ -n "$r_health" ]]; then
+        read -r r_hash r_inflight r_sock < <(python3 - "$r_health" <<'PY'
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+    print(f"{d.get('routerHash') or 'unknown'} {int(d.get('inFlightRequests') or 0)} {'1' if d.get('socketActivated') else '0'}")
+except Exception:
+    print("unknown -1 0")
+PY
+)
+        if [[ "$r_hash" == "$disk_hash" ]]; then
+            exit 0
+        fi
+        if (( r_inflight == 0 )); then
+            if [[ "$r_sock" != "1" && -f "$SYSTEMD_DIR/${ROUTER_SERVICE}.socket" ]]; then
+                systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
+                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+                systemctl start "$ROUTER_SERVICE"
+            else
+                systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+                systemctl restart "$ROUTER_SERVICE"
+            fi
+            exit 0
+        fi
+    fi
+    sleep 2
+done
+EOF
+    chmod 0755 "${restarter}.tmp.$$"
+    mv -Tf "${restarter}.tmp.$$" "$restarter"
+    (
+        exec 6>&- 7>&- 8>&- 9>&- 2>/dev/null || true
+        nohup /bin/bash "$restarter" "$PORT" "$ROUTER_DIR" "$ROUTER_SERVICE" "$SYSTEMD_DIR" >>"$LOG_FILE" 2>&1 </dev/null &
+    )
+}
+
 # P1 #8: .slot.env is owned root:root 0600 (read by systemd as root before dropping to User=lobechat)
 write_slot_env_file() {
     local target_dir="$1" slot_name="$2" port="$3"
@@ -1104,6 +1501,7 @@ write_slot_env_file() {
 # Auto-generated by deploy-engine.sh — overrides PORT=3403 from .env while keeping INTERNAL_APP_URL on :3403
 PORT=${port}
 HOSTNAME=127.0.0.1
+SLOT_NAME=${slot_name}
 LOBECHAT_SLOT=${slot_name}
 EOF
     if [[ "$(id -u)" -eq 0 ]]; then
@@ -1160,12 +1558,19 @@ copy_verified_env_to_slot() {
     fi
 }
 
-# P1 #7: Fail-closed quietness check on legacy :$PORT before one-time --init cutover
+# P1 #7 + #4: Fail-closed quietness check on legacy :$PORT before one-time --init cutover.
+# Verifies TCP sockets, `/engine-slot/status` (if present), Redis `agent_runtime_step_lock:*`,
+# AND Postgres `messages` (`role='assistant' AND content='...' AND error IS NULL` in last 35m).
 check_legacy_port_quiet() {
     local env_path="$1"
 
-    # If legacy service is not active and nothing listens on :$PORT, it is quiet
-    if ! systemctl is-active --quiet "$LEGACY_SERVICE" 2>/dev/null; then
+    local leg_unit_st
+    leg_unit_st=$(get_systemd_unit_state "$LEGACY_SERVICE")
+    if [[ "$leg_unit_st" == "unknown" ]]; then
+        err "Не удалось проверить состояние старой службы '$LEGACY_SERVICE' через systemd (fail-closed). Дождись восстановления или передай '--init --force'."
+        return 1
+    fi
+    if [[ "$leg_unit_st" == "stopped" ]]; then
         if ! curl -sS --max-time 1 "http://127.0.0.1:${PORT}/chat/api/v1/health/" >/dev/null 2>&1; then
             return 0
         fi
@@ -1220,6 +1625,118 @@ PY
         return 1
     fi
 
+    # 3. #4: Background generation check in Redis (`agent_runtime_step_lock:*`) & Postgres (`messages`)
+    # Reads $env_path inside Node WITHOUT printing any secrets/URLs to stdout or stderr!
+    local bg_out bg_rc=0
+    bg_out=$(
+        ENV_FILE_PATH="$env_path" NODE_PATH="$SRC/node_modules" "$NODE_BIN" -e '
+const fs = require("node:fs");
+(async () => {
+  const envMap = {};
+  const raw = fs.readFileSync(process.env.ENV_FILE_PATH, "utf8");
+  for (const lineRaw of raw.split(/\r?\n/)) {
+    let line = lineRaw.trim();
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("export ")) line = line.slice(7).trim();
+    const idx = line.indexOf("=");
+    if (idx <= 0) continue;
+    const k = line.slice(0, idx).trim();
+    let v = line.slice(idx + 1).trim();
+    if (v.length >= 2 && v[0] === v[v.length - 1] && (v[0] === "\"" || v[0] === "\x27")) {
+      v = v.slice(1, -1);
+    }
+    envMap[k] = v;
+  }
+
+  const dbUrl = envMap.DATABASE_URL || "";
+  if (!dbUrl) {
+    process.stdout.write("ERR:missing_database_url");
+    process.exit(1);
+  }
+
+  const redisUrl = envMap.REDIS_URL || "";
+  const redisDisabled = envMap.REDIS_DISABLED === "1" || envMap.REDIS_DISABLED === "true";
+  if (redisUrl && !redisDisabled) {
+    const Redis = require("ioredis");
+    const redis = new Redis(redisUrl, {
+      connectTimeout: 3000,
+      commandTimeout: 3000,
+      enableOfflineQueue: false,
+      lazyConnect: true,
+      maxRetriesPerRequest: 1,
+    });
+    redis.on("error", () => {});
+    try {
+      await redis.connect();
+      const patterns = ["agent_runtime_step_lock:*"];
+      if (envMap.REDIS_PREFIX) {
+        patterns.push(`${envMap.REDIS_PREFIX}*agent_runtime_step_lock:*`);
+      }
+      let lockCount = 0;
+      for (const pat of patterns) {
+        let cursor = "0";
+        do {
+          const [nextCursor, keys] = await redis.scan(cursor, "MATCH", pat, "COUNT", 200);
+          cursor = String(nextCursor);
+          if (Array.isArray(keys)) lockCount += keys.length;
+        } while (cursor !== "0" && lockCount === 0);
+        if (lockCount > 0) break;
+      }
+      await redis.quit().catch(() => redis.disconnect());
+      if (lockCount > 0) {
+        process.stdout.write(`BUSY_REDIS:${lockCount}`);
+        process.exit(2);
+      }
+    } catch {
+      redis.disconnect();
+      process.stdout.write("ERR:redis_check_failed");
+      process.exit(1);
+    }
+  }
+
+  const { Client } = require("pg");
+  const pgClient = new Client({
+    connectionString: dbUrl,
+    connectionTimeoutMillis: 3000,
+    statement_timeout: 3000,
+  });
+  try {
+    await pgClient.connect();
+    const res = await pgClient.query(
+      "SELECT COUNT(*)::int AS cnt FROM messages WHERE role = \x27assistant\x27 AND content = \x27...\x27 AND error IS NULL AND created_at > now() - interval \x2735 minutes\x27"
+    );
+    const cnt = Number(res.rows?.[0]?.cnt ?? 0);
+    await pgClient.end().catch(() => {});
+    if (cnt > 0) {
+      process.stdout.write(`BUSY_PG:${cnt}`);
+      process.exit(2);
+    }
+  } catch {
+    await pgClient.end().catch(() => {});
+    process.stdout.write("ERR:pg_check_failed");
+    process.exit(1);
+  }
+
+  process.stdout.write("QUIET");
+  process.exit(0);
+})().catch(() => {
+  process.stdout.write("ERR:unexpected");
+  process.exit(1);
+});
+' 2>/dev/null
+    ) || bg_rc=$?
+
+    if [[ $bg_rc -ne 0 || "$bg_out" != "QUIET" ]]; then
+        if [[ "$bg_out" == BUSY_REDIS:* ]]; then
+            err "В Redis обнаружены активные фоновые шаги агентов (${bg_out#BUSY_REDIS:} шт. agent_runtime_step_lock:*). Дождись завершения или передай '--init --force'."
+        elif [[ "$bg_out" == BUSY_PG:* ]]; then
+            err "В БД lobechat.messages обнаружены незавершённые ответы ассистента за последние 35 мин (${bg_out#BUSY_PG:} шт. content='...'). Дождись завершения или передай '--init --force'."
+        else
+            err "Не удалось подтвердить отсутствие фоновых генераций старого движка (${bg_out:-node_failed}, fail-closed). Дождись завершения или передай '--init --force'."
+        fi
+        return 1
+    fi
+
     return 0
 }
 
@@ -1254,7 +1771,9 @@ cmd_status() {
     fi
 
     printf "  Router (127.0.0.1:%s): " "$PORT"
-    if systemctl is-active --quiet "$ROUTER_SERVICE" 2>/dev/null; then
+    local router_unit_st
+    router_unit_st=$(get_systemd_unit_state "$ROUTER_SERVICE")
+    if [[ "$router_unit_st" == "active" ]]; then
         local r_health
         r_health=$(curl -sS --max-time 2 "http://127.0.0.1:${PORT}/__router/health" 2>/dev/null || echo "")
         if [[ -z "$r_health" ]]; then
@@ -1275,7 +1794,7 @@ r_slot = d.get("activeSlot")
 r_hash = d.get("routerHash") or "unknown"
 key_ok = d.get("serviceKeyConfigured", False)
 hash_note = f"hash=match({r_hash[:12]})" if r_hash == disk_hash else f"hash=MISMATCH(live={r_hash[:12]},disk={disk_hash[:12]})"
-if st != "ok" or r_slot != expected_slot or not key_ok:
+if st != "ok" or r_slot != expected_slot or not key_ok or r_hash != disk_hash:
     print(f"ERR|activeSlot={r_slot} expected={expected_slot} keyConfigured={key_ok} {hash_note}")
 else:
     print(f"OK|activeSlot={r_slot} epoch={d.get('switchEpoch')} {hash_note}")
@@ -1288,6 +1807,9 @@ PY
                 status_rc=1
             fi
         fi
+    elif [[ "$router_unit_st" == "unknown" ]]; then
+        echo "UNKNOWN (systemd/D-Bus query error)"
+        status_rc=1
     else
         echo "stopped"
         status_rc=1
@@ -1305,8 +1827,13 @@ PY
         fi
     fi
 
-    if systemctl is-active --quiet "$LEGACY_SERVICE" 2>/dev/null; then
+    local legacy_unit_st
+    legacy_unit_st=$(get_systemd_unit_state "$LEGACY_SERVICE")
+    if [[ "$legacy_unit_st" == "active" ]]; then
         echo "  WARNING: Legacy ($LEGACY_SERVICE): RUNNING alongside Blue-Green!"
+        status_rc=1
+    elif [[ "$legacy_unit_st" == "unknown" ]]; then
+        echo "  WARNING: Legacy ($LEGACY_SERVICE): UNKNOWN systemd state!"
         status_rc=1
     fi
 
@@ -1327,15 +1854,16 @@ PY
     env_path=$(resolve_live_env_file 2>/dev/null || true)
 
     for color in blue green; do
-        local c_port c_dir c_svc c_commit="none"
+        local c_port c_dir c_svc c_commit="none" slot_status_env="$env_path"
         c_port=$(slot_port "$color")
         c_dir=$(slot_dir "$color")
         c_svc=$(slot_service "$color")
         [[ -f "$c_dir/.deployed-commit" ]] && c_commit=$(head -c 12 "$c_dir/.deployed-commit" 2>/dev/null || echo "unknown")
+        [[ -f "$c_dir/.env" ]] && slot_status_env="$c_dir/.env"
 
         printf "  %-6s (port %s, commit %-12s): " "$color" "$c_port" "$c_commit"
         local st_kind st_active st_retained st_draining st_sbx
-        read -r st_kind st_active st_retained st_draining st_sbx < <(query_slot_drain_state "$color" "$c_port" "$env_path")
+        read -r st_kind st_active st_retained st_draining st_sbx < <(query_slot_drain_state "$color" "$c_port" "$slot_status_env")
         if [[ "$st_kind" == "stopped" ]]; then
             echo "stopped"
             if [[ "$color" == "$active_slot" ]]; then
@@ -1428,11 +1956,11 @@ cmd_rollback() {
     fi
     write_slot_env_file "$prev_dir" "$prev" "$prev_port"
     enforce_slot_permissions "$prev_dir"
-    sync_router_service_key_file "$prev_dir/.env"
+    sync_slot_router_service_key_file "$prev_dir/.env" "$prev"
     sync
 
     local started_prev_here=0
-    if ! systemctl is-active --quiet "$prev_svc" 2>/dev/null; then
+    if [[ "$(get_systemd_unit_state "$prev_svc")" == "stopped" ]]; then
         log "Поднимаю предыдущий подтверждённый слот $prev_svc (:$prev_port)..."
         systemctl start "$prev_svc"
         started_prev_here=1
@@ -1441,16 +1969,16 @@ cmd_rollback() {
     if ! check_port_health "$prev_port" "" 20; then
         err "Предыдущий слот $prev (:$prev_port) не прошёл проверку здоровья — оставляю $current активным!"
         if [[ "$started_prev_here" == "1" ]]; then
-            systemctl stop "$prev_svc" 2>/dev/null || true
+            stop_slot_service_verified "$prev_svc" || true
         fi
         exit 1
     fi
 
-    # P1 #3: Resume SandboxJobWorker and clear draining flag BEFORE switching traffic!
+    # Resume SandboxJobWorker and clear draining flag BEFORE switching traffic!
     if ! slot_api_call POST "$prev_port" "undrain" "$prev_dir/.env" >/dev/null; then
         err "Не удалось выполнить /arckep/engine-slot/undrain на $prev (:$prev_port) — откат отменён!"
         if [[ "$started_prev_here" == "1" ]]; then
-            systemctl stop "$prev_svc" 2>/dev/null || true
+            stop_slot_service_verified "$prev_svc" || true
         fi
         exit 1
     fi
@@ -1460,7 +1988,7 @@ cmd_rollback() {
     if [[ ( "$prev_st" != "idle" && "$prev_st" != "busy" ) || "$prev_draining" != "false" ]]; then
         err "Проверка /arckep/engine-slot/status на $prev (:$prev_port) не подтвердила готовность после undrain (state=$prev_st, draining=$prev_draining) — откат отменён!"
         if [[ "$started_prev_here" == "1" ]]; then
-            systemctl stop "$prev_svc" 2>/dev/null || true
+            stop_slot_service_verified "$prev_svc" || true
         fi
         exit 1
     fi
@@ -1469,6 +1997,7 @@ cmd_rollback() {
     systemctl enable "$prev_svc" 2>/dev/null || true
     begin_switch "$current" "$prev"
     atomic_symlink "$prev_dir" "$PROD"
+    sync_router_service_key_file "$prev_dir/.env" "$prev"
     write_state_json "$prev" "$prev_port" "$current" "$current_port" "$next_epoch"
     notify_router_reload
 
@@ -1476,13 +2005,14 @@ cmd_rollback() {
         err "CRITICAL: проверка :$PORT после отката на $prev не прошла — возвращаю маршрут на $current!"
         slot_api_call POST "$current_port" "undrain" "$current_dir/.env" >/dev/null 2>&1 || true
         atomic_symlink "$current_dir" "$PROD"
+        sync_router_service_key_file "$current_dir/.env" "$current"
         write_state_json "$current" "$current_port" "$prev" "$prev_port" "$((next_epoch + 1))"
         notify_router_reload
         if check_port_health "$PORT" "$current" 10; then
             systemctl enable "$current_svc" 2>/dev/null || true
             systemctl disable "$prev_svc" 2>/dev/null || true
             clear_switch_guard
-            start_slot_drain "$prev" "$prev_port" "$((next_epoch + 1))" "$current_dir/.env"
+            start_slot_drain "$prev" "$prev_port" "$((next_epoch + 1))" "$prev_dir/.env"
         else
             err "CRITICAL: возврат на $current также не прошёл проверку :$PORT! Оставляю оба процесса и $SWITCH_GUARD для ручной проверки!"
         fi
@@ -1495,7 +2025,8 @@ cmd_rollback() {
         "$actual_prev_commit" "$current" "$current_commit"
     systemctl disable "$current_svc" 2>/dev/null || true
     clear_switch_guard
-    start_slot_drain "$current" "$current_port" "$next_epoch" "$prev_dir/.env"
+    # #11: Always pass draining slot's OWN .env ($current_dir/.env) when draining $current!
+    start_slot_drain "$current" "$current_port" "$next_epoch" "$current_dir/.env"
     reload_auditd_watches
 
     log "ROLLBACK OK: активен слот $prev (:$prev_port, commit $actual_prev_commit); $current переведён в drain."
@@ -1511,12 +2042,12 @@ build_into_stage_dir_locked() {
 
     if [[ "$is_stage_only" != "1" && -n "$(git status --porcelain)" ]]; then
         err "Незакоммиченные изменения в $SRC — сначала закоммить (deploy is diff-driven)."
-        git status --porcelain | head >&2
+        { git status --porcelain || true; } | head >&2
         exit 1
     fi
 
     HEAD_COMMIT=$(git rev-parse HEAD)
-    LOCK_HASH=$(cat pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc packages/*/package.json 2>/dev/null | sha256sum | cut -d' ' -f1)
+    LOCK_HASH=$({ cat pnpm-lock.yaml package.json pnpm-workspace.yaml .npmrc packages/*/package.json 2>/dev/null || true; } | sha256sum | cut -d' ' -f1)
     local prev_lock_file="${lock_hash_ref_dir:+$lock_hash_ref_dir/.deployed-lockhash}"
 
     if [[ "$MODE" == "--install" || ( "$is_stage_only" != "1" && ( -z "$prev_lock_file" || ! -f "$prev_lock_file" || "$(cat "$prev_lock_file")" != "$LOCK_HASH" ) ) ]]; then
@@ -1650,15 +2181,21 @@ TS
     fi
 
     local expected_next_ver
-    expected_next_ver=$(node -p "require('$SRC/node_modules/next/package.json').version")
-    STAGED_NEXT_VER=$(node -p "require('$stage_dir/node_modules/next/package.json').version")
+    expected_next_ver=$("$NODE_BIN" -p "require('$SRC/node_modules/next/package.json').version") || {
+        err "Не удалось прочитать версию next из $SRC/node_modules/next/package.json"
+        exit 1
+    }
+    STAGED_NEXT_VER=$("$NODE_BIN" -p "require('$stage_dir/node_modules/next/package.json').version") || {
+        err "Не удалось прочитать версию next из $stage_dir/node_modules/next/package.json"
+        exit 1
+    }
     if [[ "$expected_next_ver" != "$STAGED_NEXT_VER" ]]; then
         err "staged next version ($STAGED_NEXT_VER) != source next version ($expected_next_ver)"
         exit 1
     fi
 
     # Ensure no symlinks point outside $stage_dir (systemd PrivateTmp=true / ProtectHome=true)
-    python3 - "$stage_dir" <<'PY'
+    python3 - "$stage_dir" <<'PY' || exit 1
 import os, sys
 
 root = os.path.realpath(sys.argv[1])
@@ -1686,21 +2223,20 @@ PY
 
     (
         cd "$stage_dir"
-        node -e "
+        "$NODE_BIN" -e "
           const nextVer = require('./node_modules/next/package.json').version;
           require('sharp');
           require('@napi-rs/canvas');
           console.log('[engine] pre-flight OK: next@' + nextVer + ', sharp=ok, @napi-rs/canvas=ok');
         "
-    )
+    ) || {
+        err "Проверка нативных модулей (sharp / @napi-rs/canvas) в $stage_dir завершилась ошибкой!"
+        exit 1
+    }
 
     if [[ "$is_stage_only" == "1" ]]; then
         printf 'created=%s commit=%s\n' "$(date -Iseconds)" "$HEAD_COMMIT" > "$stage_dir/.stage-only-marker"
     fi
-}
-
-build_into_stage_dir() {
-    run_with_build_lock build_into_stage_dir_locked "$@"
 }
 
 prepare_staged_slot_metadata() {
@@ -1739,14 +2275,28 @@ populate_slot_from_stage() {
 # =============================================================================
 # INIT: one-time cutover from legacy image-studio-lobechat-next -> blue + router
 # =============================================================================
+cleanup_init_stage() {
+    release_build_lock
+    rm -rf -- "${STAGE_DIR:-}"
+    if [[ "${INIT_CUTOVER_COMMITTED:-0}" != "1" ]]; then
+        if [[ -n "${INIT_BLUE_SVC:-}" ]]; then
+            systemctl stop "$INIT_BLUE_SVC" 2>/dev/null || true
+            systemctl disable "$INIT_BLUE_SVC" 2>/dev/null || true
+        fi
+        if [[ "${INIT_HAD_BLUE_DIR:-0}" == "0" && "${INIT_ENV_DIR:-}" != "$SLOT_BLUE_DIR" ]]; then
+            rm -rf -- "$SLOT_BLUE_DIR"
+        fi
+    fi
+}
+
 cmd_init() {
     local force_flag="${1:-}"
     acquire_deploy_lock "init"
     check_switch_allowed
 
-    # P1 #7: Align strictly with Studio deploy.sh: refuse whenever STATE_FILE exists unless --init --force recovery
+    # Align strictly with Studio deploy.sh: refuse whenever STATE_FILE exists unless --init --force recovery
     if [[ -f "$STATE_FILE" ]]; then
-        if systemctl is-active --quiet "$ROUTER_SERVICE" 2>/dev/null && [[ -L "$PROD" ]]; then
+        if [[ "$(get_systemd_unit_state "$ROUTER_SERVICE")" == "active" && -L "$PROD" ]]; then
             err "Blue-Green уже инициализирован ($STATE_FILE существует, $ROUTER_SERVICE запущен). Используй обычный 'bash deploy-engine.sh'."
             exit 1
         fi
@@ -1757,54 +2307,47 @@ cmd_init() {
         warn "Восстановление прерванной инициализации (--init --force)..."
     fi
 
-    local init_env_dir="$PROD"
-    if [[ ! -f "$init_env_dir/.env" && -f "$SLOT_BLUE_DIR/.env" && "$force_flag" == "--force" ]]; then
-        init_env_dir="$SLOT_BLUE_DIR"
+    INIT_ENV_DIR="$PROD"
+    if [[ ! -f "$INIT_ENV_DIR/.env" && -f "$SLOT_BLUE_DIR/.env" && "$force_flag" == "--force" ]]; then
+        INIT_ENV_DIR="$SLOT_BLUE_DIR"
     fi
-    if [[ ! -f "$init_env_dir/.env" ]]; then
+    if [[ ! -f "$INIT_ENV_DIR/.env" ]]; then
         err "$PROD/.env не найден — инициализация невозможна."
         exit 1
     fi
 
     if [[ "$force_flag" != "--force" ]]; then
-        check_legacy_port_quiet "$init_env_dir/.env"
+        check_legacy_port_quiet "$INIT_ENV_DIR/.env"
     fi
 
-    local blue_svc green_svc
-    blue_svc=$(slot_service "blue")
+    local green_svc
+    INIT_BLUE_SVC=$(slot_service "blue")
     green_svc=$(slot_service "green")
-    local had_blue_dir=0
-    [[ -d "$SLOT_BLUE_DIR" ]] && had_blue_dir=1
-    local cutover_committed=0
+    INIT_HAD_BLUE_DIR=0
+    [[ -d "$SLOT_BLUE_DIR" ]] && INIT_HAD_BLUE_DIR=1
+    INIT_CUTOVER_COMMITTED=0
 
     STAGE_DIR="$(dirname "$SLOT_BLUE_DIR")/.lobechat-engine.stage.$$"
-    cleanup_init() {
-        rm -rf -- "${STAGE_DIR:-}"
-        if [[ "$cutover_committed" != "1" ]]; then
-            systemctl stop "$blue_svc" 2>/dev/null || true
-            systemctl disable "$blue_svc" 2>/dev/null || true
-            if [[ "$had_blue_dir" == "0" && "$init_env_dir" != "$SLOT_BLUE_DIR" ]]; then
-                rm -rf -- "$SLOT_BLUE_DIR"
-            fi
-        fi
-    }
-    trap cleanup_init EXIT
+    trap cleanup_init_stage EXIT
 
-    build_into_stage_dir "$STAGE_DIR" "0" "$init_env_dir"
+    # #3: Acquire build lock directly in current shell so `set -euo pipefail` stays 100% active!
+    acquire_build_lock
+    build_into_stage_dir_locked "$STAGE_DIR" "0" "$INIT_ENV_DIR"
 
     install_router_and_units "force-reload"
-    sync_router_service_key_file "$init_env_dir/.env"
+    sync_router_service_key_file "$INIT_ENV_DIR/.env" "blue"
 
     stop_background_drainer "blue"
-    systemctl stop "$blue_svc" 2>/dev/null || true
+    stop_slot_service_verified "$INIT_BLUE_SVC"
     systemctl disable "$green_svc" 2>/dev/null || true
 
-    populate_slot_from_stage "$STAGE_DIR" "$SLOT_BLUE_DIR" "blue" "$BLUE_PORT" "$init_env_dir"
+    populate_slot_from_stage "$STAGE_DIR" "$SLOT_BLUE_DIR" "blue" "$BLUE_PORT" "$INIT_ENV_DIR"
     rm -rf -- "${STAGE_DIR:-}"
     STAGE_DIR=""
+    release_build_lock
 
-    log "Запускаю слот $blue_svc на 127.0.0.1:$BLUE_PORT (без автозапуска до подтверждения переключения)..."
-    systemctl start "$blue_svc"
+    log "Запускаю слот $INIT_BLUE_SVC на 127.0.0.1:$BLUE_PORT (в безопасном режиме drain до переключения)..."
+    systemctl start "$INIT_BLUE_SVC"
 
     if ! check_port_health "$BLUE_PORT" "" 25; then
         err "Слот blue (:$BLUE_PORT) не прошёл проверку здоровья — старый $LEGACY_SERVICE на :$PORT не затронут!"
@@ -1828,8 +2371,13 @@ cmd_init() {
     fi
 
     log "Выполняю переключение со старой службы $LEGACY_SERVICE на blue (:$BLUE_PORT) + роутер (:$PORT)..."
-    systemctl enable "$blue_svc" 2>/dev/null || true
+    systemctl enable "$INIT_BLUE_SVC" 2>/dev/null || true
     write_state_json "blue" "$BLUE_PORT" "" "" 1 "$HEAD_COMMIT" "null" "null"
+    if ! slot_api_call POST "$BLUE_PORT" "undrain" "$SLOT_BLUE_DIR/.env" >/dev/null; then
+        rm -f "$STATE_FILE"
+        err "Не удалось активировать воркеры (/undrain) на blue (:$BLUE_PORT) — старый $LEGACY_SERVICE не затронут!"
+        exit 1
+    fi
 
     systemctl stop "$LEGACY_SERVICE" 2>/dev/null || true
     systemctl disable "$LEGACY_SERVICE" 2>/dev/null || true
@@ -1841,12 +2389,16 @@ cmd_init() {
     fi
     atomic_symlink "$SLOT_BLUE_DIR" "$PROD"
 
+    systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
     if ! systemctl enable --now "$ROUTER_SERVICE" || ! check_port_health "$PORT" "blue" 15; then
         err "CRITICAL: роутер на :$PORT не прошёл проверку здоровья — откатываю к старой службе $LEGACY_SERVICE!"
+        slot_api_call POST "$BLUE_PORT" "drain" "$SLOT_BLUE_DIR/.env" >/dev/null 2>&1 || true
         systemctl stop "$ROUTER_SERVICE" 2>/dev/null || true
         systemctl disable "$ROUTER_SERVICE" 2>/dev/null || true
-        systemctl stop "$blue_svc" 2>/dev/null || true
-        systemctl disable "$blue_svc" 2>/dev/null || true
+        systemctl stop "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+        systemctl disable "${ROUTER_SERVICE}.socket" 2>/dev/null || true
+        stop_slot_service_verified "$INIT_BLUE_SVC" || true
+        systemctl disable "$INIT_BLUE_SVC" 2>/dev/null || true
         rm -f "$PROD" "$STATE_FILE"
         if [[ -d "$legacy_backup" ]]; then
             mv "$legacy_backup" "$PROD"
@@ -1857,7 +2409,8 @@ cmd_init() {
         exit 1
     fi
 
-    cutover_committed=1
+    INIT_CUTOVER_COMMITTED=1
+    trap - EXIT
     reload_auditd_watches
     log "INIT OK: роутер слушает :$PORT, активен слот blue (:$BLUE_PORT, commit $HEAD_COMMIT); старый каталог сохранён в $legacy_backup"
 }
@@ -1865,6 +2418,37 @@ cmd_init() {
 # =============================================================================
 # BLUE-GREEN DEPLOY (default & --install)
 # =============================================================================
+# #1 + #7: Restore previous confirmed `.rollback-bak` ONLY AFTER verified service stop!
+# NEVER deletes `.rollback-bak`; deletes `$DEPLOY_TARGET_DIR` ONLY when `.rollback-bak` did not exist.
+restore_target_slot_backup() {
+    systemctl disable "$DEPLOY_TARGET_SVC" 2>/dev/null || true
+    if ! stop_slot_service_verified "$DEPLOY_TARGET_SVC"; then
+        err "CRITICAL: не удалось подтвердить остановку $DEPLOY_TARGET_SVC — сохраняю $BACKUP_TARGET_DIR и не трогаю работающий каталог!"
+        return 1
+    fi
+    if [[ -n "${BACKUP_TARGET_DIR:-}" && -d "$BACKUP_TARGET_DIR" ]]; then
+        rm -rf -- "$DEPLOY_TARGET_DIR"
+        mv -Tf "$BACKUP_TARGET_DIR" "$DEPLOY_TARGET_DIR"
+        BACKUP_TARGET_DIR=""
+        log "Восстановлен предыдущий резервный слот $DEPLOY_TARGET_SLOT ($DEPLOY_TARGET_DIR)."
+    elif [[ "${HAD_PREVIOUS_TARGET_DIR:-0}" == "0" && "${CANDIDATE_INSTALLED:-0}" == "1" ]]; then
+        rm -rf -- "$DEPLOY_TARGET_DIR"
+        log "Удалён каталог неподтверждённого кандидата $DEPLOY_TARGET_SLOT ($DEPLOY_TARGET_DIR)."
+    fi
+}
+
+cleanup_deploy_stage() {
+    release_build_lock
+    rm -rf -- "${STAGE_DIR:-}"
+    # #7: NEVER delete $BACKUP_TARGET_DIR inside EXIT trap! Only restore it if target slot dir is incomplete.
+    if [[ -n "${BACKUP_TARGET_DIR:-}" && -d "$BACKUP_TARGET_DIR" && -n "${DEPLOY_TARGET_DIR:-}" ]]; then
+        if [[ ! -f "$DEPLOY_TARGET_DIR/server.js" ]]; then
+            rm -rf -- "$DEPLOY_TARGET_DIR"
+            mv -Tf "$BACKUP_TARGET_DIR" "$DEPLOY_TARGET_DIR" 2>/dev/null || true
+        fi
+    fi
+}
+
 cmd_deploy() {
     acquire_deploy_lock "$MODE"
     check_switch_allowed
@@ -1876,7 +2460,7 @@ cmd_deploy() {
     fi
 
     local active target active_port target_port active_dir target_dir active_svc target_svc epoch next_epoch
-    local active_commit orig_prev_slot orig_prev_commit
+    local active_commit orig_prev_slot orig_prev_commit target_check_env
     active=$(read_state_field activeSlot || true)
     if [[ "$active" != "blue" && "$active" != "green" ]]; then
         err "Некорректный activeSlot='$active' в $STATE_FILE"
@@ -1891,6 +2475,10 @@ cmd_deploy() {
     target_svc=$(slot_service "$target")
     epoch=$(read_state_field switchEpoch || echo 1)
     next_epoch=$((epoch + 1))
+
+    DEPLOY_TARGET_SLOT="$target"
+    DEPLOY_TARGET_DIR="$target_dir"
+    DEPLOY_TARGET_SVC="$target_svc"
 
     active_commit=$(read_state_field activeCommit || true)
     [[ -z "$active_commit" ]] && active_commit=$(read_slot_commit "$active_dir" || true)
@@ -1908,53 +2496,32 @@ cmd_deploy() {
     BACKUP_TARGET_DIR=""
     HAD_PREVIOUS_TARGET_DIR=0
     CANDIDATE_INSTALLED=0
-
-    # P1 #9: On failure before/after switch, restore previous confirmed backup OR wipe unconfirmed candidate dir!
-    restore_target_slot_backup() {
-        systemctl stop "$target_svc" 2>/dev/null || true
-        systemctl disable "$target_svc" 2>/dev/null || true
-        if [[ -n "${BACKUP_TARGET_DIR:-}" && -d "$BACKUP_TARGET_DIR" ]]; then
-            rm -rf -- "$target_dir"
-            mv -Tf "$BACKUP_TARGET_DIR" "$target_dir"
-            BACKUP_TARGET_DIR=""
-            log "Восстановлен предыдущий резервный слот $target ($target_dir)."
-        elif [[ "$HAD_PREVIOUS_TARGET_DIR" == "0" && "$CANDIDATE_INSTALLED" == "1" ]]; then
-            rm -rf -- "$target_dir"
-            log "Удалён каталог неподтверждённого кандидата $target ($target_dir)."
-        fi
-    }
-
-    cleanup_deploy_stage() {
-        rm -rf -- "${STAGE_DIR:-}"
-        if [[ -n "${BACKUP_TARGET_DIR:-}" && -d "$BACKUP_TARGET_DIR" ]]; then
-            if [[ ! -f "$target_dir/server.js" ]]; then
-                rm -rf -- "$target_dir"
-                mv -Tf "$BACKUP_TARGET_DIR" "$target_dir" 2>/dev/null || true
-            else
-                rm -rf -- "$BACKUP_TARGET_DIR"
-            fi
-        fi
-    }
     trap cleanup_deploy_stage EXIT
 
-    build_into_stage_dir "$STAGE_DIR" "0" "$active_dir"
+    # #3: Acquire build lock directly in current shell so `set -euo pipefail` stays 100% active!
+    acquire_build_lock
+    build_into_stage_dir_locked "$STAGE_DIR" "0" "$active_dir"
     prepare_staged_slot_metadata "$STAGE_DIR" "$target" "$target_port" "$active_dir"
+    release_build_lock
 
-    # P1 #1: Wait until target slot is confirmed stopped or idle (activeTotal===0); never stop on unknown/busy!
-    wait_slot_idle_before_overwrite "$target" "$target_port" "$active_dir/.env"
+    # #1 + #6 + #11: Query target slot with its OWN .env (if present), wait for BOTH activeTotal===0
+    # AND retainedTopicIds.length===0 (up to 610s), then verify ActiveState=inactive before touching files!
+    target_check_env="$active_dir/.env"
+    [[ -f "$target_dir/.env" ]] && target_check_env="$target_dir/.env"
+    wait_slot_idle_before_overwrite "$target" "$target_port" "$target_check_env"
     stop_background_drainer "$target"
     log "Останавливаю неактивный слот $target_svc перед обновлением файлов..."
-    systemctl stop "$target_svc" 2>/dev/null || true
+    stop_slot_service_verified "$target_svc"
     systemctl disable "$target_svc" 2>/dev/null || true
 
     install_router_and_units "if-changed"
-    sync_router_service_key_file "$active_dir/.env"
-    notify_router_reload
+    sync_slot_router_service_key_file "$STAGE_DIR/.env" "$target"
+    [[ -f "$ROUTER_DIR/.service-key-${active}.env" ]] || sync_slot_router_service_key_file "$active_dir/.env" "$active" || true
 
     mkdir -p "$(dirname "$target_dir")"
     if [[ -d "$target_dir" ]]; then
         HAD_PREVIOUS_TARGET_DIR=1
-        BACKUP_TARGET_DIR="${target_dir}.rollback-bak.$$"
+        BACKUP_TARGET_DIR="${target_dir}.rollback-bak"
         rm -rf -- "$BACKUP_TARGET_DIR"
         mv -Tf "$target_dir" "$BACKUP_TARGET_DIR"
     fi
@@ -1973,8 +2540,8 @@ cmd_deploy() {
     enforce_slot_permissions "$target_dir"
     sync
 
-    # P2 #14: Start candidate WITHOUT enabling for boot yet; enable ONLY right before switch!
-    log "Запускаю свежий слот $target_svc (:$target_port)..."
+    # #8: Candidate starts with SLOT_NAME=$target while state.json activeSlot=$active -> boots paused in drain=true!
+    log "Запускаю свежий слот $target_svc (:$target_port, стартует на паузе в режиме drain)..."
     if ! systemctl start "$target_svc"; then
         err "Не удалось запустить $target_svc — восстанавливаю резервный слот $target!"
         restore_target_slot_backup
@@ -1987,16 +2554,18 @@ cmd_deploy() {
         exit 1
     fi
 
-    local cand_st _ca _cr cand_draining _csbx
-    read -r cand_st _ca _cr cand_draining _csbx < <(query_slot_drain_state "$target" "$target_port" "$target_dir/.env")
-    if [[ ( "$cand_st" != "idle" && "$cand_st" != "busy" ) || "$cand_draining" != "false" ]]; then
-        err "Служебная ручка /arckep/engine-slot/status на :$target_port не прошла проверку (state=$cand_st, draining=$cand_draining) — активный $active и резервный $target сохранены!"
+    local cand_st _ca _cr _cd _csbx
+    read -r cand_st _ca _cr _cd _csbx < <(query_slot_drain_state "$target" "$target_port" "$target_dir/.env")
+    if [[ "$cand_st" != "idle" && "$cand_st" != "busy" ]]; then
+        err "Служебная ручка /arckep/engine-slot/status на :$target_port не прошла проверку (state=$cand_st) — активный $active и резервный $target сохранены!"
         restore_target_slot_backup
         exit 1
     fi
 
-    if ! systemctl is-active --quiet "$ROUTER_SERVICE" 2>/dev/null; then
-        log "Роутер $ROUTER_SERVICE был остановлен — запускаю..."
+    ensure_router_code_current
+    if [[ "$(get_systemd_unit_state "$ROUTER_SERVICE")" != "active" ]]; then
+        log "Роутер $ROUTER_SERVICE не активен — запускаю сокет и службу..."
+        systemctl enable --now "${ROUTER_SERVICE}.socket" 2>/dev/null || true
         systemctl enable --now "$ROUTER_SERVICE"
     fi
 
@@ -2005,22 +2574,37 @@ cmd_deploy() {
     log "Переключаю роутер :$PORT на $target (:$target_port), старый $active (:$active_port) уходит в drain..."
     begin_switch "$active" "$target"
     atomic_symlink "$target_dir" "$PROD"
+    sync_router_service_key_file "$target_dir/.env" "$target"
     write_state_json "$target" "$target_port" "$active" "$active_port" "$next_epoch"
     notify_router_reload
 
-    if ! check_port_health "$PORT" "$target" 15; then
-        # P1 #6: Safe emergency revert — restore route to $active first, keep both alive if :$PORT fails,
-        # and drain $target before stopping/restoring if $target accepted any requests!
-        err "CRITICAL: проверка :$PORT после переключения на $target не прошла — возвращаю маршрут на $active!"
+    # #8: Immediately activate SandboxJobWorker on $target via POST /undrain and verify :$PORT!
+    local undrain_ok=1
+    if ! slot_api_call POST "$target_port" "undrain" "$target_dir/.env" >/dev/null; then
+        undrain_ok=0
+    else
+        local post_undrain_st _pua _pur post_undrain_draining _pus
+        read -r post_undrain_st _pua _pur post_undrain_draining _pus < <(query_slot_drain_state "$target" "$target_port" "$target_dir/.env")
+        if [[ ( "$post_undrain_st" != "idle" && "$post_undrain_st" != "busy" ) || "$post_undrain_draining" != "false" ]]; then
+            undrain_ok=0
+        fi
+    fi
+
+    if [[ "$undrain_ok" != "1" ]] || ! check_port_health "$PORT" "$target" 15; then
+        # #6 + #7: Safe emergency revert — restore route to $active first, drain rejected $target
+        # across both activeTotal===0 AND retainedTopicIds.length===0 (up to 610s), and ALWAYS
+        # restore .rollback-bak back onto $target_dir so previousConfirmedCommit stays valid!
+        err "CRITICAL: активация или проверка :$PORT после переключения на $target не прошла — возвращаю маршрут на $active!"
         local revert_epoch=$((next_epoch + 1))
         slot_api_call POST "$active_port" "undrain" "$active_dir/.env" >/dev/null 2>&1 || true
         atomic_symlink "$active_dir" "$PROD"
+        sync_router_service_key_file "$active_dir/.env" "$active"
         write_state_json "$active" "$active_port" "$target" "$target_port" "$revert_epoch" \
             "$active_commit" "${orig_prev_slot:-null}" "${orig_prev_commit:-null}"
         notify_router_reload
 
         if ! check_port_health "$PORT" "$active" 10; then
-            err "CRITICAL: возврат маршрута на $active также не прошёл проверку :$PORT! Оставляю оба слота ($active_svc и $target_svc) и сторож $SWITCH_GUARD живыми для ручной диагностики!"
+            err "CRITICAL: возврат маршрута на $active также не прошёл проверку :$PORT! Оставляю оба слота ($active_svc и $target_svc), резерв $BACKUP_TARGET_DIR и сторож $SWITCH_GUARD живыми для ручной диагностики!"
             reload_auditd_watches
             exit 1
         fi
@@ -2030,32 +2614,55 @@ cmd_deploy() {
         clear_switch_guard
 
         slot_api_call POST "$target_port" "drain" "$target_dir/.env" >/dev/null 2>&1 || true
-        local drain_wait=0 rev_st="" rev_active=0 _rr=0 _rd="" _rs=""
-        while (( drain_wait < 30 )); do
-            read -r rev_st rev_active _rr _rd _rs < <(query_slot_drain_state "$target" "$target_port" "$target_dir/.env")
-            if [[ "$rev_st" == "stopped" || "$rev_st" == "idle" ]]; then
+        local drain_wait=0 rev_ret_wait=0 rev_ready=0 rev_st="" rev_active=0 rev_ret=0 rev_drain="" rev_sbx=""
+        while (( drain_wait < DRAIN_MAX_WAIT_SEC )); do
+            read -r rev_st rev_active rev_ret rev_drain rev_sbx < <(query_slot_drain_state "$target" "$target_port" "$target_dir/.env")
+            if [[ "$rev_st" == "stopped" ]]; then
+                rev_ready=1
                 break
             fi
-            sleep 2
-            drain_wait=$((drain_wait + 2))
+            if [[ ( "$rev_st" == "idle" || "$rev_st" == "busy" ) && ( "$rev_drain" != "true" || "$rev_sbx" == "true" ) ]]; then
+                slot_api_call POST "$target_port" "drain" "$target_dir/.env" >/dev/null 2>&1 || true
+                sleep 2
+                drain_wait=$((drain_wait + 2))
+                continue
+            fi
+            if [[ "$rev_st" == "idle" ]]; then
+                if (( rev_ret == 0 || rev_ret_wait >= REPLAY_GRACE_SEC )); then
+                    rev_ready=1
+                    break
+                fi
+                local r_step=3
+                local r_rem=$((REPLAY_GRACE_SEC - rev_ret_wait))
+                (( r_rem < r_step )) && r_step=$r_rem
+                (( r_step < 1 )) && r_step=1
+                sleep "$r_step"
+                drain_wait=$((drain_wait + r_step))
+                rev_ret_wait=$((rev_ret_wait + r_step))
+                continue
+            fi
+            rev_ret_wait=0
+            sleep 3
+            drain_wait=$((drain_wait + 3))
         done
 
-        if [[ "$rev_st" == "stopped" || "$rev_st" == "idle" ]]; then
-            write_state_json "$active" "$active_port" "" "" "$revert_epoch" \
-                "$active_commit" "${orig_prev_slot:-null}" "${orig_prev_commit:-null}"
-            notify_router_reload
-            restore_target_slot_backup
+        if [[ "$rev_ready" == "1" ]]; then
+            if restore_target_slot_backup; then
+                write_state_json "$active" "$active_port" "" "" "$revert_epoch" \
+                    "$active_commit" "${orig_prev_slot:-null}" "${orig_prev_commit:-null}"
+                notify_router_reload
+            fi
         else
-            warn "Неудачный кандидат $target успел принять работу (state=$rev_st, activeTotal=$rev_active) — передаю фоновому drainer без перезаписи рабочего каталога!"
-            rm -rf -- "${BACKUP_TARGET_DIR:-}"
+            warn "Неудачный кандидат $target всё ещё занят после ожидания (state=$rev_st, activeTotal=$rev_active, retained=$rev_ret) — передаю фоновому drainer с сохранением $BACKUP_TARGET_DIR для автоматического восстановления после остановки!"
+            start_slot_drain "$target" "$target_port" "$revert_epoch" "$target_dir/.env" "$BACKUP_TARGET_DIR" "$target_dir"
             BACKUP_TARGET_DIR=""
-            start_slot_drain "$target" "$target_port" "$revert_epoch" "$active_dir/.env"
         fi
+        trap - EXIT
         reload_auditd_watches
         exit 1
     fi
 
-    # Switch confirmed! Persist previousConfirmedSlot/Commit and disable old slot autostart (P1 #9 + P2 #14)
+    # Switch confirmed! Persist previousConfirmedSlot/Commit and disable old slot autostart
     write_state_json "$target" "$target_port" "$active" "$active_port" "$next_epoch" \
         "$HEAD_COMMIT" "$active" "${active_commit:-null}"
     systemctl disable "$active_svc" 2>/dev/null || true
@@ -2066,7 +2673,9 @@ cmd_deploy() {
         BACKUP_TARGET_DIR=""
     fi
 
-    start_slot_drain "$active" "$active_port" "$next_epoch" "$target_dir/.env"
+    # #11: Always pass old slot's OWN .env ($active_dir/.env) when draining $active!
+    start_slot_drain "$active" "$active_port" "$next_epoch" "$active_dir/.env"
+    trap - EXIT
     reload_auditd_watches
 
     log "OK: next@$STAGED_NEXT_VER, commit $HEAD_COMMIT активен на слоте $target (:$target_port); старый $active переведён в drain."
@@ -2077,9 +2686,13 @@ cmd_deploy() {
 # =============================================================================
 case "$MODE" in
     --stage-only)
-        validate_stage_only_dir "$STAGE_OUT"
-        build_into_stage_dir "$STAGE_OUT" "1" ""
-        log "stage-only complete at $STAGE_OUT (live $PROD untouched)"
+        validate_stage_only_dir "$STAGE_TARGET"
+        trap 'release_build_lock' EXIT
+        acquire_build_lock
+        build_into_stage_dir_locked "$STAGE_TARGET" "1" ""
+        release_build_lock
+        trap - EXIT
+        log "stage-only complete at $STAGE_TARGET (live $PROD untouched)"
         ;;
     --status)
         cmd_status

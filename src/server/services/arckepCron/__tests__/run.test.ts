@@ -8,6 +8,7 @@ import {
   getActiveCronSnapshot,
   refreshActiveCronRuns,
   runCronJob,
+  setCronStartingPollConfigForTests,
 } from '../run';
 
 // arckep (19.10.2026, задачи помощника по расписанию): запуск задачи по просьбе студии.
@@ -101,6 +102,7 @@ describe('runCronJob', () => {
   });
 
   afterEach(() => {
+    setCronStartingPollConfigForTests();
     vi.useRealTimers();
   });
 
@@ -494,6 +496,98 @@ describe('runCronJob', () => {
       const failRes = await runCronJob(db, 'user-1', job(), 'run-redis-fail');
       expect(failRes.success).toBe(false);
       expect(store.has('arckep:cron:run:run-redis-fail')).toBe(false);
+    });
+
+    it('#17: ждёт завершения starting (>500 мс) на другом слоте, перехватывает при падении первого слота, и возвращает httpStatus=503 при зависании >timeout (никогда не возвращает success:true с topicId:null!)', async () => {
+      const store = new Map<string, string>();
+      const fakeRedis = {
+        del: vi.fn(async (key: string) => {
+          store.delete(key);
+          return 1;
+        }),
+        get: vi.fn(async (key: string) => store.get(key) ?? null),
+        set: vi.fn(async (key: string, val: string, _ex?: string, _ttl?: number, nx?: string) => {
+          if (nx === 'NX' && store.has(key)) return null;
+          store.set(key, val);
+          return 'OK';
+        }),
+      };
+      mockGetRedisClient.mockReturnValue(fakeRedis);
+
+      // 1. Первый слот держит status='starting' 650 мс (> старых 500 мс!), затем пишет started с настоящим topicId
+      setCronStartingPollConfigForTests({ stepMs: 40, timeoutMs: 3_000 });
+      store.set(
+        'arckep:cron:run:run-slow-start',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+      setTimeout(() => {
+        store.set(
+          'arckep:cron:run:run-slow-start',
+          JSON.stringify({
+            jobId: 'cron_1',
+            operationId: 'op_slot1_ready',
+            status: 'started',
+            topicId: 'tpc_slot1_ready',
+            userId: 'user-1',
+          }),
+        );
+      }, 650);
+
+      const joined = await runCronJob(db, 'user-1', job(), 'run-slow-start');
+      expect(joined).toEqual({
+        operationId: 'op_slot1_ready',
+        success: true,
+        topicId: 'tpc_slot1_ready',
+      });
+      expect(mockExecAgent).not.toHaveBeenCalled();
+
+      // 2. Если первый слот упал во время 'starting' и очистил ключ — второй слот штатно запускает задачу!
+      store.set(
+        'arckep:cron:run:run-slot1-crashed',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+      setTimeout(() => {
+        store.delete('arckep:cron:run:run-slot1-crashed');
+      }, 80);
+
+      const reclaimed = await runCronJob(db, 'user-1', job(), 'run-slot1-crashed');
+      expect(reclaimed).toEqual({
+        operationId: 'op_1',
+        success: true,
+        topicId: 'tpc_1',
+      });
+      expect(mockExecAgent).toHaveBeenCalledTimes(1);
+
+      // 3. Если ключ завис в 'starting' дольше таймаута — возвращает success:false + httpStatus:503 (НИКОГДА success:true, topicId:null!)
+      setCronStartingPollConfigForTests({ stepMs: 25, timeoutMs: 120 });
+      store.set(
+        'arckep:cron:run:run-stuck-starting',
+        JSON.stringify({
+          jobId: 'cron_1',
+          operationId: null,
+          status: 'starting',
+          topicId: null,
+          userId: 'user-1',
+        }),
+      );
+
+      const timedOut = await runCronJob(db, 'user-1', job(), 'run-stuck-starting');
+      expect(timedOut.success).toBe(false);
+      expect(timedOut.httpStatus).toBe(503);
+      expect(timedOut.topicId).toBeNull();
+      expect(mockExecAgent).toHaveBeenCalledTimes(1);
     });
   });
 });

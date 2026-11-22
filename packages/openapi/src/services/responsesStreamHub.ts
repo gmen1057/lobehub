@@ -38,6 +38,8 @@ export interface HubOperation {
   responseId: string;
   /** Порядок регистрации — чтобы среди ответов одной темы выбрать самый свежий. */
   seq: number;
+  /** Миллисекунды — момент регистрации операции (для межслотового сравнения свежести темы). */
+  startedAtMs: number;
   subscribers: Set<HubSubscriber>;
   topicId: string;
   /** История переполнилась (очень длинный ответ): переподключение невозможно, живой поток идёт дальше. */
@@ -56,6 +58,7 @@ export interface HubDrainSnapshot {
   activeCount: number;
   activeTopicIds: string[];
   retainedTopicIds: string[];
+  topicSeqs: Record<string, number>;
 }
 
 /** Сколько завершённый ответ остаётся доступным для переподключения. */
@@ -108,13 +111,15 @@ export class ResponsesStreamHub implements IStreamEventManager {
   }): HubOperation {
     this.prune();
     this.counter += 1;
+    const nowMs = this.now();
     const op: HubOperation = {
       ...input,
       bytes: 0,
-      createdAt: Math.floor(this.now() / 1000),
+      createdAt: Math.floor(nowMs / 1000),
       done: false,
       events: [],
       seq: this.counter,
+      startedAtMs: nowMs,
       subscribers: new Set(),
       truncated: false,
     };
@@ -178,9 +183,16 @@ export class ResponsesStreamHub implements IStreamEventManager {
     let activeCount = 0;
     const activeTopics = new Set<string>();
     const retainedTopics = new Set<string>();
+    const topicSeqs: Record<string, number> = {};
 
     for (const op of this.operations.values()) {
-      if (op.topicId) retainedTopics.add(op.topicId);
+      if (op.topicId) {
+        retainedTopics.add(op.topicId);
+        const prev = topicSeqs[op.topicId];
+        if (prev === undefined || op.startedAtMs >= prev) {
+          topicSeqs[op.topicId] = op.startedAtMs;
+        }
+      }
       if (!op.done) {
         activeCount += 1;
         if (op.topicId) activeTopics.add(op.topicId);
@@ -191,6 +203,7 @@ export class ResponsesStreamHub implements IStreamEventManager {
       activeCount,
       activeTopicIds: [...activeTopics],
       retainedTopicIds: [...retainedTopics],
+      topicSeqs,
     };
   }
 

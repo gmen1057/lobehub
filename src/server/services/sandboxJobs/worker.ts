@@ -9,6 +9,7 @@ import { SandboxJobModel } from '@/database/server/models/sandboxJob';
 import type { LobeChatDatabase } from '@/database/type';
 
 import { writeChildToolMessage } from './continuation';
+import { isEngineSlotDraining } from './slotState';
 
 const log = debug('lobe-server:service:sandbox-jobs');
 
@@ -162,9 +163,32 @@ export class SandboxJobWorker {
 
     const worker = existing ?? new SandboxJobWorker(db, concurrencyCap);
     globalForSandboxJobWorker.sandboxJobWorker = worker;
+
+    if (isEngineSlotDraining()) {
+      worker.startPausedInDrain();
+      return worker;
+    }
+
     await worker.start();
 
     return worker;
+  }
+
+  /**
+   * Initialize worker in paused drain mode (used when a Blue-Green candidate or
+   * restarted draining slot boots while `state.json` names the other slot active).
+   */
+  startPausedInDrain(): void {
+    if (this.running) {
+      return;
+    }
+    if (!this.workerId) {
+      this.workerId = generateWorkerId();
+    }
+    this.draining = true;
+    this.stopping = false;
+    this.running = false;
+    log('SandboxJobWorker initialized in paused drain mode workerId=%s', this.workerId);
   }
 
   get isRunning(): boolean {

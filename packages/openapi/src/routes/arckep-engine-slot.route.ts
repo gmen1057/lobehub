@@ -5,13 +5,23 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 
 import { getServerDB } from '@/database/core/db-adaptor';
-import { getActiveBotSlotSnapshot } from '@/server/services/bot/botSlotActivity';
+import {
+  getActiveBotSlotSnapshot,
+  refreshActiveBotSlotRuns,
+} from '@/server/services/bot/botSlotActivity';
+import {
+  isEngineSlotDraining,
+  resetEngineSlotStateForTests,
+  setEngineSlotDraining,
+} from '@/server/services/sandboxJobs/slotState';
 import { getSandboxJobWorker } from '@/server/services/sandboxJobs/worker';
 import { extractBearerToken } from '@/utils/server/auth';
 
 import { isArckepServiceBearer, isArckepServiceKeyConfigured } from '../helpers/arckepServiceAuth';
 import { getEngineSlotHttpAndResponseSnapshot } from '../services/engineSlotActivity';
 import { responsesStreamHub } from '../services/responsesStreamHub';
+
+export { isEngineSlotDraining, resetEngineSlotStateForTests };
 
 export const OWNS_MESSAGES_MAX_IDS = 20_000;
 const OWNS_MESSAGES_QUERY_CHUNK_SIZE = 1000;
@@ -27,28 +37,8 @@ export interface EngineSlotStatusResponse {
   draining: boolean;
   retainedTopicIds: string[];
   sandboxWorkerRunning: boolean;
+  topicSeqs: Record<string, number>;
 }
-
-interface EngineSlotGlobalState {
-  __arckepEngineSlotState?: {
-    draining: boolean;
-  };
-}
-
-const globalForEngineSlot = globalThis as unknown as EngineSlotGlobalState;
-
-const getSlotState = () => {
-  if (!globalForEngineSlot.__arckepEngineSlotState) {
-    globalForEngineSlot.__arckepEngineSlotState = { draining: false };
-  }
-  return globalForEngineSlot.__arckepEngineSlotState;
-};
-
-export const isEngineSlotDraining = (): boolean => getSlotState().draining;
-
-export const resetEngineSlotStateForTests = (): void => {
-  getSlotState().draining = false;
-};
 
 /**
  * Dedicated machine-to-machine auth for engine slot control endpoints.
@@ -80,9 +70,12 @@ export const buildEngineSlotStatus = async (): Promise<EngineSlotStatusResponse>
     getActiveCronSnapshot?: () => { activeCount: number; activeTopicIds: string[] };
     refreshActiveCronRuns?: () => Promise<void>;
   };
-  if (typeof cronModule.refreshActiveCronRuns === 'function') {
-    await cronModule.refreshActiveCronRuns();
-  }
+  await Promise.all([
+    typeof cronModule.refreshActiveCronRuns === 'function'
+      ? cronModule.refreshActiveCronRuns()
+      : Promise.resolve(),
+    typeof refreshActiveBotSlotRuns === 'function' ? refreshActiveBotSlotRuns() : Promise.resolve(),
+  ]);
 
   const hubSnap = responsesStreamHub.getDrainSnapshot();
   const inFlightSnap = getEngineSlotHttpAndResponseSnapshot(
@@ -113,6 +106,14 @@ export const buildEngineSlotStatus = async (): Promise<EngineSlotStatusResponse>
     ]),
   ];
 
+  const topicSeqs: Record<string, number> = { ...inFlightSnap.extraTopicSeqs };
+  for (const [topicId, ts] of Object.entries(hubSnap.topicSeqs)) {
+    const prev = topicSeqs[topicId];
+    if (prev === undefined || ts >= prev) {
+      topicSeqs[topicId] = ts;
+    }
+  }
+
   return {
     activeBotRuns,
     activeCronRuns,
@@ -121,9 +122,10 @@ export const buildEngineSlotStatus = async (): Promise<EngineSlotStatusResponse>
     activeSandboxJobs,
     activeTopicIds,
     activeTotal,
-    draining: getSlotState().draining,
+    draining: isEngineSlotDraining(),
     retainedTopicIds: hubSnap.retainedTopicIds,
     sandboxWorkerRunning,
+    topicSeqs,
   };
 };
 
@@ -143,16 +145,16 @@ ArckepEngineSlotRoutes.get('/status', async (c) => {
 // POST /api/v1/arckep/engine-slot/drain
 // NOTE: Intentionally NEVER stops GatewayManager / TelegramWebhookClient (which would call deleteWebhook).
 ArckepEngineSlotRoutes.post('/drain', async (c) => {
-  getSlotState().draining = true;
+  setEngineSlotDraining(true);
   await getSandboxJobWorker()?.startDrain?.();
   return c.json(await buildEngineSlotStatus());
 });
 
 // POST /api/v1/arckep/engine-slot/undrain
-// Re-activates a drained slot during fast `--rollback`, restarting SandboxJobWorker tickLoop
-// and verifying readiness BEFORE the router switches traffic back to this slot.
+// Re-activates a drained/candidate slot, starting or resuming SandboxJobWorker tickLoop
+// and verifying readiness.
 ArckepEngineSlotRoutes.post('/undrain', async (c) => {
-  getSlotState().draining = false;
+  setEngineSlotDraining(false);
 
   const existingWorker = getSandboxJobWorker();
   if (existingWorker) {

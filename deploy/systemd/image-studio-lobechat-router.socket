@@ -1,0 +1,10 @@
+[Unit]
+Description=Image Studio LobeChat HTTP/SSE router socket (port 3403, zero-downtime restart)
+
+[Socket]
+ListenStream=127.0.0.1:3403
+NoDelay=yes
+Backlog=1024
+
+[Install]
+WantedBy=sockets.target

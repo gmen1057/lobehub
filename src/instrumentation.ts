@@ -1,8 +1,11 @@
 export async function register() {
   if (process.env.NEXT_RUNTIME === 'nodejs') {
-    const { ensureServerUndiciDispatcher } =
-      await import('./server/modules/ModelRuntime/undiciDispatcher');
+    const [{ ensureServerUndiciDispatcher }, { initEngineSlotStateFromDisk }] = await Promise.all([
+      import('./server/modules/ModelRuntime/undiciDispatcher'),
+      import('./server/services/sandboxJobs/slotState'),
+    ]);
     ensureServerUndiciDispatcher();
+    initEngineSlotStateFromDisk();
   }
 
   // In local development, write debug logs to logs/server.log
