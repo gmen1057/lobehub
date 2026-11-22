@@ -7,6 +7,7 @@ import { TopicController } from '../controllers';
 import { requireAuth } from '../middleware';
 import { requireAnyPermission } from '../middleware/permission-check';
 import {
+  TopicCompactParamSchema,
   TopicCreateRequestSchema,
   TopicDeleteParamSchema,
   TopicGetParamSchema,
@@ -69,6 +70,21 @@ TopicsRoutes.get(
   requireAnyPermission(getAllScopePermissions('TOPIC_READ'), 'Topic read permission required'),
   zValidator('param', TopicGetParamSchema),
   (c) => new TopicController().handleGetCodeFiles(c),
+);
+
+// POST /api/v1/topics/:id/compact - Manually compact topic conversation history
+TopicsRoutes.post(
+  '/:id/compact',
+  requireAuth,
+  requireAnyPermission(
+    getAllScopePermissions('TOPIC_UPDATE'),
+    'You do not have permission to compact topics',
+  ),
+  zValidator('param', TopicCompactParamSchema),
+  (c) => {
+    const controller = new TopicController();
+    return controller.handleCompactTopic(c);
+  },
 );
 
 // PATCH /api/v1/topics/:id - Update topic

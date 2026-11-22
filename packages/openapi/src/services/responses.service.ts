@@ -25,6 +25,7 @@ import {
 } from '@/server/services/agentRuntime/orphanPlaceholders';
 import { AiAgentService } from '@/server/services/aiAgent';
 import { FileService } from '@/server/services/file';
+import { hasInFlightTopicCompaction } from '@/server/services/topic/compactionRegistry';
 
 import { BaseService } from '../common/base.service';
 import type {
@@ -164,6 +165,9 @@ export class ResponsesService extends BaseService {
     if (!params.previous_response_id) return;
     const previousTopicId = this.extractTopicIdFromResponseId(params.previous_response_id);
     if (!previousTopicId) return;
+    if (hasInFlightTopicCompaction(this.userId, previousTopicId)) {
+      throw conflict('Compaction is already in progress for this topic');
+    }
     if (this.hasFunctionCallOutputs(params.input)) return;
     const op = responsesStreamHub.findByTopic(this.userId, previousTopicId);
     if ((op && !op.done) || hasInFlightResponseTopic(this.userId, previousTopicId)) {
