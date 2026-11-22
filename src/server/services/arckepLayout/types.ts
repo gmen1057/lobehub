@@ -53,6 +53,8 @@ export interface RenderResult {
   height: number;
   images: RenderImage[];
   lines: RenderLine[];
+  render_path?: { browser: string; sanitizer: string };
+  renderer?: 'arckep_render' | 'playwright';
   /** Полный снимок страницы, JPEG в base64 */
   screenshot_jpeg_base64: string;
   scroll_width: number;

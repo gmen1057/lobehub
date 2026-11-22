@@ -1,5 +1,10 @@
-import type { CheckLayoutResult, EditArtifactResult } from '@lobechat/builtin-tool-arckep-layout';
+import type {
+  CheckLayoutResult,
+  EditArtifactResult,
+  RenderArtifactResult,
+} from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepLayoutExecutionRuntime } from '@lobechat/builtin-tool-arckep-layout/executionRuntime';
+import { extractToolResultImages, ToolResultImagesProcessor } from '@lobechat/context-engine';
 import { describe, expect, it, vi } from 'vitest';
 
 // arckep (19.10.2026): текст ответа модели после checkLayout и editArtifact — что сделано, что осталось и готовый
@@ -46,7 +51,8 @@ const runtime = (
   checkLayout: () => Promise<CheckLayoutResult>,
   editArtifact = vi.fn(),
   writeArtifact = vi.fn(),
-) => new ArckepLayoutExecutionRuntime({ checkLayout, editArtifact, writeArtifact });
+  renderArtifact = vi.fn(),
+) => new ArckepLayoutExecutionRuntime({ checkLayout, editArtifact, renderArtifact, writeArtifact });
 
 describe('ответ модели после checkLayout', () => {
   it('итоги до и после, круги, остаток, тег и запрет печатать HTML', async () => {
@@ -260,5 +266,272 @@ describe('ответ модели: приёмы, которые выбросит
     );
     expect(result.content).toContain('Перепиши письмо обычным потоком');
     expect(result.content).toMatch(/checkLayout в этом ответе повторно не вызывай/);
+  });
+});
+
+describe('ответ модели после renderArtifact (vision vs text-only, защита от циклов и скрытия)', () => {
+  const rendered = (extra: Partial<RenderArtifactResult> = {}): RenderArtifactResult => ({
+    attempt: 1,
+    elapsedMs: 12400,
+    failedImages: [],
+    height: 1000,
+    horizontalOverflowPx: 0,
+    identifier: 'landing',
+    images: [{ h: 80, loaded: true, src: 'https://arckep.ru/chat/f/pic1/', w: 120, x: 20, y: 40 }],
+    imagesLoaded: 1,
+    imagesTotal: 1,
+    limit: 3,
+    lines: [
+      { fontSize: 32, fontWeight: '700', found: true, h: 38, text: 'Заголовок', x: 40, y: 60 },
+    ],
+    linesFound: 1,
+    linesTotal: 1,
+    renderPath: { browser: 'arckep_render', sanitizer: 'arckep_render' },
+    renderer: 'arckep_render',
+    screenshot: {
+      address: 'https://arckep.ru/chat/f/file_SHOT/',
+      bytes: 42_000,
+      fileId: 'file_SHOT',
+      height: 1000,
+      scaled: false,
+      width: 1280,
+    },
+    screenshotAttached: true,
+    scrollWidth: 1280,
+    status: 'rendered',
+    title: 'Лендинг',
+    width: 1280,
+    ...extra,
+  });
+
+  it('vision-модель: компактный текст + JSON метрик, state.content несёт ссылку на файл (не base64), ToolResultImagesProcessor подставляет image_url', async () => {
+    const out = await runtime(
+      async () => checked(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(async () => rendered()),
+    ).renderArtifact({ identifier: 'landing', width: 1280 });
+
+    expect(out.success).toBe(true);
+    expect(out.content).toContain(
+      'Визуальный рендер «Лендинг» (landing) выполнен (проверка 1 из 3, 12400 мс).',
+    );
+    expect(out.content).toContain('горизонтального переполнения нет');
+    expect(out.content).toContain('Метрики JSON:');
+    expect(out.content).toContain('Снимок рендера (1280×1000 px) приложен следующим сообщением');
+    expect(out.content).toContain('никогда не скрывай созданный артефакт');
+    expect(out.content).not.toContain('data:image/');
+
+    // extractToolResultImages извлекает ровно 1 http-блок файла, без raw base64
+    expect(extractToolResultImages(out.state)).toEqual([
+      {
+        fileId: 'file_SHOT',
+        mimeType: 'image/jpeg',
+        url: 'https://arckep.ru/chat/f/file_SHOT/',
+      },
+    ]);
+
+    // Сквозная проверка через ToolResultImagesProcessor: vision-модель получает image_url отдельным user-сообщением
+    const processor = new ToolResultImagesProcessor({
+      isCanUseVision: () => true,
+      model: 'claude-opus-5-5',
+      provider: 'anthropic',
+      resolveImageUrl: async (img) => `https://s3.signed/${img.fileId}`,
+    });
+    const processed = await processor.process({
+      initialState: { messages: [] } as any,
+      isAborted: false,
+      messages: [
+        { content: 'Сделай лендинг', role: 'user' },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"identifier":"landing"}',
+                name: 'arckep-layout____renderArtifact',
+              },
+              id: 'call_r1',
+              type: 'function',
+            },
+          ],
+        },
+        {
+          content: out.content,
+          plugin: { apiName: 'renderArtifact', identifier: 'arckep-layout', type: 'builtin' },
+          pluginState: out.state,
+          role: 'tool',
+          tool_call_id: 'call_r1',
+        },
+      ],
+      metadata: { maxTokens: 4096, model: 'claude-opus-5-5' },
+    });
+    expect(processed.messages.map((m: any) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'tool',
+      'user',
+    ]);
+    expect((processed.messages[3] as any).content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          image_url: { detail: 'auto', url: 'https://s3.signed/file_SHOT' },
+          type: 'image_url',
+        }),
+      ]),
+    );
+  });
+
+  it('text-only модель (deepseek-v4-pro и др.): нет блока image в state, ToolResultImagesProcessor не добавляет image_url, но все метрики переполнения/битых картинок на месте', async () => {
+    const out = await runtime(
+      async () => checked(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(async () =>
+        rendered({
+          clampedFromWidth: 200,
+          failedImages: [{ origin: 'external', reason: 'not_https', url: 'http://bad/a.png' }],
+          horizontalOverflowPx: 182,
+          images: [
+            {
+              error: 'not_https',
+              h: 20,
+              loaded: false,
+              origin: 'external',
+              src: 'http://bad/a.png',
+              w: 40,
+              x: 0,
+              y: 50,
+            },
+          ],
+          imagesLoaded: 0,
+          imagesTotal: 1,
+          lines: [{ found: false, text: 'Скрытая строка' }],
+          linesFound: 0,
+          linesTotal: 1,
+          screenshot: undefined,
+          screenshotAttached: false,
+          scrollWidth: 572,
+          width: 390,
+        }),
+      ),
+    ).renderArtifact({ identifier: 'landing', width: 200 });
+
+    expect(out.success).toBe(true);
+    expect(out.content).toContain('ГОРИЗОНТАЛЬНОЕ ПЕРЕПОЛНЕНИЕ +182 px!');
+    expect(out.content).toContain('Запрошенная ширина 200 px была ограничена');
+    expect(out.content).toContain('Не загрузились <img> (1)');
+    expect(out.content).toContain('Не удалось подставить сетевые картинки (1)');
+    expect(out.content).toContain('Не найдены (или скрыты display:none): «Скрытая строка»');
+    expect(out.content).toContain('Снимок экрана не приложен (модель без поддержки зрения');
+    expect(extractToolResultImages(out.state)).toEqual([]);
+    expect((out.state as any).content).toBeUndefined();
+
+    // Даже если бы state имел картинку, ToolResultImagesProcessor для text-only модели ничего не вставит
+    const processor = new ToolResultImagesProcessor({
+      isCanUseVision: () => false,
+      model: 'deepseek-v4-pro',
+      provider: 'deepseek',
+      resolveImageUrl: vi.fn(async () => 'https://s3.signed/should-not-happen'),
+    });
+    const processed = await processor.process({
+      initialState: { messages: [] } as any,
+      isAborted: false,
+      messages: [
+        { content: 'Сделай лендинг', role: 'user' },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: {
+                arguments: '{"identifier":"landing"}',
+                name: 'arckep-layout____renderArtifact',
+              },
+              id: 'call_r2',
+              type: 'function',
+            },
+          ],
+        },
+        {
+          content: out.content,
+          pluginState: out.state,
+          role: 'tool',
+          tool_call_id: 'call_r2',
+        },
+      ],
+      metadata: { maxTokens: 4096, model: 'deepseek-v4-pro' },
+    });
+    expect(processed.messages).toHaveLength(3);
+    expect(processed.messages.every((m: any) => !Array.isArray(m.content))).toBe(true);
+  });
+
+  it('E2B недоступен — мягкий диагностический ответ без падения хода и с запретом скрывать артефакт', async () => {
+    const out = await runtime(
+      async () => checked(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(async () => ({
+        failedImages: [],
+        identifier: 'landing',
+        images: [],
+        lines: [],
+        status: 'unavailable' as const,
+        title: 'Лендинг',
+        unavailableReason: 'отрисовка сейчас недоступна',
+      })),
+    ).renderArtifact({ identifier: 'landing' });
+
+    expect(out.success).toBe(true);
+    expect(out.content).toContain('сейчас недоступен: отрисовка сейчас недоступна');
+    expect(out.content).toContain('покажи пользователю уже созданный артефакт');
+    expect(out.content).toContain('повторно renderArtifact в этом ответе не вызывай');
+    expect(extractToolResultImages(out.state)).toEqual([]);
+  });
+
+  it('достигнут лимит проверок за ход — мягкая остановка без зацикливания, попытка зажата в предел и без скрытия артефакта', async () => {
+    const out = await runtime(
+      async () => checked(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(async () => ({
+        attempt: 5,
+        failedImages: [],
+        identifier: 'landing',
+        images: [],
+        limit: 3,
+        lines: [],
+        status: 'limit_reached' as const,
+        title: 'Лендинг',
+      })),
+    ).renderArtifact({ identifier: 'landing' });
+
+    expect(out.success).toBe(true);
+    expect(out.content).toContain(
+      'Лимит визуальных проверок renderArtifact в этом ответе исчерпан (3 из 3)',
+    );
+    expect(out.content).toContain('никогда не скрывай уже созданный артефакт');
+  });
+
+  it('JSON метрики lines_found совпадают с текстом, даже если optional linesFound не передан', async () => {
+    const out = await runtime(
+      async () => checked(),
+      vi.fn(),
+      vi.fn(),
+      vi.fn(async () =>
+        rendered({
+          lines: [
+            { fontSize: 20, fontWeight: '700', found: true, h: 24, text: 'A', x: 0, y: 0 },
+            { found: false, text: 'B' },
+          ],
+          linesFound: undefined,
+          linesTotal: undefined,
+        }),
+      ),
+    ).renderArtifact({ identifier: 'landing' });
+
+    expect(out.content).toContain('Проверенные строки: найдено 1 из 2.');
+    expect(out.content).toContain('"lines_found":1,"lines_total":2');
   });
 });

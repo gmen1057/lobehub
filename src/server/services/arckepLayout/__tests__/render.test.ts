@@ -10,6 +10,8 @@ const okBody = {
   height: 1200,
   images: [{ h: 50, loaded: true, src: 'https://arckep.ru/chat/f/file_A/', w: 100, x: 0, y: 10 }],
   lines: [{ found: true, font_size: 20, font_weight: '400', h: 24, text: 'Привет', x: 20, y: 40 }],
+  render_path: { browser: 'arckep_render', sanitizer: 'arckep_render' },
+  renderer: 'arckep_render',
   scroll_width: 600,
   screenshot_jpeg_base64: '/9j/AA==',
   width: 600,
@@ -59,6 +61,8 @@ describe('renderLayout: вызов бэкенда студии', () => {
     expect(result.height).toBe(1200);
     expect(result.lines[0].found).toBe(true);
     expect(result.failed_images).toHaveLength(1);
+    expect(result.renderer).toBe('arckep_render');
+    expect(result.render_path).toEqual({ browser: 'arckep_render', sanitizer: 'arckep_render' });
   });
 
   it('429 «слишком часто» и 429 «уже идут две» — разные виды ошибки', async () => {

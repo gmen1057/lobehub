@@ -3,6 +3,7 @@ export const ArckepLayoutIdentifier = 'arckep-layout';
 export enum ArckepLayoutApiName {
   checkLayout = 'checkLayout',
   editArtifact = 'editArtifact',
+  renderArtifact = 'renderArtifact',
   writeArtifact = 'writeArtifact',
 }
 
@@ -32,6 +33,15 @@ export interface WriteArtifactParams {
   identifier: string;
   /** Заголовок артефакта */
   title: string;
+}
+
+export interface RenderArtifactParams {
+  /** identifier HTML-артефакта (последняя версия берётся из темы) */
+  identifier: string;
+  /** Необязательные начала ключевых текстовых строк (до 50, каждая до 60 знаков), чтобы проверить видимость и координаты */
+  lines?: string[];
+  /** Ширина окна просмотра в CSS px (320–1600; по умолчанию 1280; для писем 600, для мобильных 390) */
+  width?: number;
 }
 
 /** Одна строка итогов круга сверки. */
@@ -117,4 +127,76 @@ export interface WriteArtifactResult {
   title: string;
   unverifiedParts: string[];
   verifiedParts: string[];
+}
+
+export interface RenderArtifactLine {
+  fontSize?: number | null;
+  fontWeight?: string | null;
+  found: boolean;
+  h?: number | null;
+  text: string;
+  x?: number | null;
+  y?: number | null;
+}
+
+export interface RenderArtifactImage {
+  error?: string | null;
+  h: number;
+  loaded: boolean;
+  origin?: 'ours' | 'external' | null;
+  src?: string | null;
+  w: number;
+  x: number;
+  y: number;
+}
+
+export interface RenderArtifactFailedImage {
+  origin: 'ours' | 'external';
+  reason: string;
+  url: string;
+}
+
+export interface RenderArtifactScreenshot {
+  /** Адрес файла чата (`https://arckep.ru/chat/f/<id>/`) */
+  address: string;
+  bytes: number;
+  fileId: string;
+  height: number;
+  /** Был ли снимок уменьшен относительно исходной отрисованной страницы */
+  scaled: boolean;
+  width: number;
+}
+
+export interface RenderArtifactResult {
+  /** Номер проверки в текущем ходе (1..limit) */
+  attempt?: number;
+  /** Запрошенная ширина, если она вышла за 320–1600 и была ограничена */
+  clampedFromWidth?: number;
+  elapsedMs?: number;
+  failedImages: RenderArtifactFailedImage[];
+  /** Высота документа scrollHeight, px */
+  height?: number;
+  /** Горизонтальное переполнение в px (`Math.max(0, scrollWidth - width)`) */
+  horizontalOverflowPx?: number;
+  identifier: string;
+  images: RenderArtifactImage[];
+  imagesLoaded?: number;
+  imagesTotal?: number;
+  /** Потолок проверок за один ход */
+  limit?: number;
+  lines: RenderArtifactLine[];
+  linesFound?: number;
+  linesTotal?: number;
+  renderer?: 'arckep_render' | 'playwright';
+  renderPath?: { browser: string; sanitizer: string };
+  /** Сохранённый сжатый превью-снимок (только для vision-моделей; у текстовых моделей undefined) */
+  screenshot?: RenderArtifactScreenshot;
+  /** Приложен ли превью-снимок для визуального осмотра моделью */
+  screenshotAttached?: boolean;
+  scrollWidth?: number;
+  status: 'limit_reached' | 'rendered' | 'unavailable';
+  title: string;
+  unavailableReason?: string;
+  /** Фактическая ширина окна просмотра, px */
+  width?: number;
 }

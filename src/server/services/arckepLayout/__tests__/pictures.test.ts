@@ -7,6 +7,10 @@ import {
   buildEditorPictures,
   decodePicture,
   MAX_STRIPS,
+  preparePreviewScreenshot,
+  PREVIEW_MAX_BYTES,
+  PREVIEW_MAX_HEIGHT,
+  PREVIEW_MAX_WIDTH,
   type RawPicture,
   regionSimilarity,
   stitchMockup,
@@ -227,5 +231,40 @@ describe('картинки для правщика', () => {
 
   it('data:-адрес для сообщения', () => {
     expect(toDataUri(Buffer.from([1, 2, 3]))).toBe('data:image/jpeg;base64,AQID');
+  });
+});
+
+describe('preparePreviewScreenshot: сжатие превью-снимка для vision-моделей', () => {
+  it('небольшой снимок не увеличивается (scaled=false) и остаётся валидным JPEG', async () => {
+    const raw = await sharp({
+      create: { background: '#ffffff', channels: 3, height: 800, width: 1280 },
+    })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+
+    const prepared = await preparePreviewScreenshot(raw);
+    expect(prepared.width).toBe(1280);
+    expect(prepared.height).toBe(800);
+    expect(prepared.scaled).toBe(false);
+    expect(prepared.buffer.subarray(0, 2).toString('hex')).toBe('ffd8');
+    expect(prepared.buffer.byteLength).toBeLessThanOrEqual(PREVIEW_MAX_BYTES);
+  });
+
+  it('очень высокая/широкая страница ужимается в пределы 1568×2000 (scaled=true)', async () => {
+    const raw = await sharp({
+      create: { background: '#1e293b', channels: 3, height: 4200, width: 1600 },
+    })
+      .jpeg({ quality: 80 })
+      .toBuffer();
+
+    const prepared = await preparePreviewScreenshot(raw);
+    expect(prepared.width).toBeLessThanOrEqual(PREVIEW_MAX_WIDTH);
+    expect(prepared.height).toBeLessThanOrEqual(PREVIEW_MAX_HEIGHT);
+    expect(prepared.scaled).toBe(true);
+    expect(prepared.buffer.subarray(0, 2).toString('hex')).toBe('ffd8');
+  });
+
+  it('пустой буфер отклоняется ошибкой', async () => {
+    await expect(preparePreviewScreenshot(Buffer.alloc(0))).rejects.toThrow(/empty screenshot/);
   });
 });

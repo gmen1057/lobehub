@@ -73,12 +73,26 @@ const parseResult = (data: unknown): RenderResult | undefined => {
     return undefined;
   }
   if (!Array.isArray(value.lines) || !Array.isArray(value.images)) return undefined;
+  const renderer =
+    value.renderer === 'arckep_render' || value.renderer === 'playwright'
+      ? value.renderer
+      : undefined;
+  const rawPath = value.render_path;
+  const render_path =
+    rawPath &&
+    typeof rawPath === 'object' &&
+    typeof rawPath.browser === 'string' &&
+    typeof rawPath.sanitizer === 'string'
+      ? { browser: rawPath.browser, sanitizer: rawPath.sanitizer }
+      : undefined;
   return {
     elapsed_ms: isNumber(value.elapsed_ms) ? value.elapsed_ms : undefined,
     failed_images: Array.isArray(value.failed_images) ? value.failed_images : [],
     height: value.height,
     images: value.images,
     lines: value.lines,
+    ...(render_path ? { render_path } : {}),
+    ...(renderer ? { renderer } : {}),
     scroll_width: value.scroll_width,
     screenshot_jpeg_base64:
       typeof value.screenshot_jpeg_base64 === 'string' ? value.screenshot_jpeg_base64 : '',

@@ -4,6 +4,9 @@ import type {
   CheckSnapshot,
   EditArtifactParams,
   EditArtifactResult,
+  RenderArtifactParams,
+  RenderArtifactResult,
+  RenderArtifactScreenshot,
   TechniqueSummary,
   WriteArtifactParams,
   WriteArtifactResult,
@@ -22,6 +25,7 @@ import {
   validateHtmlArtifactSyntax,
 } from './htmlSyntax';
 import { buildMockup, loadMockPicture, type ReadFile } from './mockup';
+import { preparePreviewScreenshot } from './pictures';
 import { LayoutRenderError, type RenderParams } from './render';
 import { detectTechniques, isTechniqueCheckEnabled, type TechniqueFinding } from './techniques';
 import type { Measure, RenderResult } from './types';
@@ -61,14 +65,20 @@ export interface LayoutServiceDeps {
     system: string;
     topicId: string;
   }) => Promise<string>;
+  /** Строгая проверка зрения для renderArtifact: true только если abilities.vision === true (защита текстовых/legacy моделей от 400). */
+  modelHasStrictVision?: (model: string, provider: string) => Promise<boolean>;
   modelHasVision: (model: string, provider: string) => Promise<boolean>;
   /** Запись подготовки PDF с описанием макета (ждёт, если файл ещё готовится); нет записи — `undefined` */
   prepRecord: (fileId: string) => Promise<PdfPrepRecord | undefined>;
   readChatFileText: (fileId: string) => Promise<string | undefined>;
   readStorage: ReadFile;
+  /** Сколько вызовов renderArtifact уже было в текущем ходе (после последнего сообщения пользователя) */
+  recentRenderCount?: (topicId: string) => Promise<number>;
   render: (params: RenderParams) => Promise<RenderResult>;
   /** Сохранить HTML файлом чата человека; адрес — `address(fileId)` */
   saveHtml: (html: string, name: string) => Promise<{ address: string; fileId: string }>;
+  /** Сохранить сжатый JPEG-снимок рендера файлом чата для vision-модели */
+  savePreviewImage?: (buffer: Buffer, name: string) => Promise<{ address: string; fileId: string }>;
   /** Номер человека в студии */
   studioUserId: () => Promise<number>;
   /** PDF темы, от новых к старым */
@@ -85,6 +95,120 @@ export interface LayoutToolContext {
 
 /** Файл версии больше этого экран студии по ссылке не покажет (SOURCE_MAX_BYTES в студии). */
 export const MAX_FILE_BYTES = 2 * 1024 * 1024;
+/** Предел длины HTML для POST /api/chat/layout-render (MAX_HTML_CHARS в backend/app/schemas/layout_render.py). */
+export const MAX_RENDER_HTML_CHARS = 500_000;
+export const DEFAULT_RENDER_WIDTH = 1280;
+export const MIN_RENDER_WIDTH = 320;
+export const MAX_RENDER_WIDTH = 1600;
+export const MAX_RENDER_LINES = 50;
+export const MAX_RENDER_LINE_CHARS = 60;
+export const DEFAULT_MAX_RENDERS_PER_TURN = 3;
+
+export const maxRendersPerTurn = (): number => {
+  const value = Number(process.env.ARCKEP_LAYOUT_MAX_RENDERS_PER_TURN);
+  return Number.isFinite(value) && value >= 1
+    ? Math.min(Math.floor(value), 5)
+    : DEFAULT_MAX_RENDERS_PER_TURN;
+};
+
+/**
+ * In-process защита от обхода лимита в параллельной пачке `call_tools_batch` (где `Promise.all`
+ * запускает несколько `renderArtifact` до записи `message_plugins` в PostgreSQL).
+ */
+interface BatchSlotState {
+  at: number;
+  baselineDbPrior: number;
+  completed: number;
+}
+
+interface ActiveRenderSlot {
+  /** Завершённые в рамках одной пачки (`parentMessageId`) рендеры, пока DB-строка ещё не записана */
+  batches: Map<string, BatchSlotState>;
+  inFlight: number;
+  tail: Promise<void>;
+}
+
+const BATCH_SLOT_TTL_MS = 60_000;
+const activeRenderSlots = new Map<string, ActiveRenderSlot>();
+
+/** Сброс in-process слотов (только для тестов). */
+export const resetRenderSlotsForTests = () => {
+  activeRenderSlots.clear();
+};
+
+const pruneBatches = (slot: ActiveRenderSlot, now: number) => {
+  for (const [parentId, entry] of slot.batches) {
+    if (now - entry.at > BATCH_SLOT_TTL_MS) slot.batches.delete(parentId);
+  }
+};
+
+const tryReserveRenderSlot = async (
+  key: string,
+  parentMessageId: string | undefined,
+  readDbPrior: () => Promise<number>,
+  limit: number,
+): Promise<{ allowed: boolean; attempt: number }> => {
+  let slot = activeRenderSlots.get(key);
+  if (!slot) {
+    slot = { batches: new Map(), inFlight: 0, tail: Promise.resolve() };
+    activeRenderSlots.set(key, slot);
+  }
+
+  let releaseMutex!: () => void;
+  const prev = slot.tail;
+  const next = new Promise<void>((resolve) => {
+    releaseMutex = resolve;
+  });
+  slot.tail = prev.then(() => next);
+  await prev;
+
+  try {
+    const now = Date.now();
+    pruneBatches(slot, now);
+    const dbPrior = await readDbPrior();
+    let batchEntry = parentMessageId ? slot.batches.get(parentMessageId) : undefined;
+    if (parentMessageId && !batchEntry) {
+      batchEntry = { at: now, baselineDbPrior: dbPrior, completed: 0 };
+      slot.batches.set(parentMessageId, batchEntry);
+    }
+    const batchTotal = batchEntry ? batchEntry.baselineDbPrior + batchEntry.completed : 0;
+    const effectivePrior = Math.max(dbPrior, batchTotal) + slot.inFlight;
+    if (effectivePrior >= limit) {
+      return { allowed: false, attempt: limit };
+    }
+    slot.inFlight += 1;
+    return { allowed: true, attempt: effectivePrior + 1 };
+  } finally {
+    releaseMutex();
+    if (slot.inFlight === 0 && slot.batches.size === 0) {
+      activeRenderSlots.delete(key);
+    }
+  }
+};
+
+const releaseRenderSlot = (
+  key: string,
+  parentMessageId: string | undefined,
+  countCompleted: boolean,
+) => {
+  const slot = activeRenderSlots.get(key);
+  if (!slot) return;
+  slot.inFlight = Math.max(0, slot.inFlight - 1);
+  const now = Date.now();
+  pruneBatches(slot, now);
+  if (countCompleted && parentMessageId) {
+    const existing = slot.batches.get(parentMessageId);
+    if (existing) {
+      existing.at = now;
+      existing.completed += 1;
+    } else {
+      slot.batches.set(parentMessageId, { at: now, baselineDbPrior: 0, completed: 1 });
+    }
+  }
+  if (slot.inFlight === 0 && slot.batches.size === 0) {
+    activeRenderSlots.delete(key);
+  }
+};
 
 interface LatestArtifact {
   html: string;
@@ -94,12 +218,17 @@ interface LatestArtifact {
   versions: number;
 }
 
-const fileName = (identifier: string, kind: 'check' | 'edit' | 'write', n: number) => {
+const fileName = (
+  identifier: string,
+  kind: 'check' | 'edit' | 'preview' | 'write',
+  n: number,
+  ext: 'html' | 'jpg' = 'html',
+) => {
   const safe = identifier
     .replaceAll(/[^\w-]/g, '-')
     .slice(0, 60)
     .replaceAll(/^-+|-+$/g, '');
-  return `${safe || 'artifact'}-${kind}-${n}.html`;
+  return `${safe || 'artifact'}-${kind}-${n}.${ext}`;
 };
 
 const techniqueSummary = (findings: TechniqueFinding[] | undefined): TechniqueSummary[] =>
@@ -394,5 +523,193 @@ export class ArckepLayoutService {
       },
       tag: artifactTag({ identifier: latest.identifier, src: saved.address, title: latest.title }),
     };
+  }
+
+  /**
+   * `renderArtifact`: визуальная проверка HTML-артефакта в headless Chromium (`POST /api/chat/layout-render`)
+   * без привязки к PDF-макету. Возвращает геометрию/переполнение/картинки/строки; сжатый превью-снимок
+   * прикладывается ТОЛЬКО для моделей с подтверждённой поддержкой vision (текстовые модели получают чистые метрики).
+   * Никогда не изменяет и не скрывает уже созданный артефакт.
+   */
+  async renderArtifact(params: RenderArtifactParams): Promise<RenderArtifactResult> {
+    const topicId = this.requireTopic();
+    const latest = await this.latest(params.identifier);
+    const limit = maxRendersPerTurn();
+    const base = { identifier: latest.identifier, title: latest.title };
+
+    if (latest.html.length > MAX_RENDER_HTML_CHARS) {
+      return {
+        ...base,
+        failedImages: [],
+        images: [],
+        lines: [],
+        status: 'unavailable',
+        unavailableReason: `HTML длиннее ${MAX_RENDER_HTML_CHARS} знаков — отрисовка не поддерживается`,
+      };
+    }
+
+    const slotKey = `${this.ctx.userId ?? ''}:${topicId}`;
+    const reservation = await tryReserveRenderSlot(
+      slotKey,
+      this.ctx.parentMessageId,
+      () =>
+        this.deps.recentRenderCount ? this.deps.recentRenderCount(topicId) : Promise.resolve(0),
+      limit,
+    );
+
+    if (!reservation.allowed) {
+      return {
+        ...base,
+        attempt: reservation.attempt,
+        failedImages: [],
+        images: [],
+        limit,
+        lines: [],
+        status: 'limit_reached',
+      };
+    }
+
+    let countCompleted = false;
+    try {
+      let width = DEFAULT_RENDER_WIDTH;
+      let clampedFromWidth: number | undefined;
+      if (typeof params.width === 'number' && Number.isFinite(params.width)) {
+        const rounded = Math.round(params.width);
+        if (rounded < MIN_RENDER_WIDTH || rounded > MAX_RENDER_WIDTH) {
+          clampedFromWidth = rounded;
+          width = Math.min(MAX_RENDER_WIDTH, Math.max(MIN_RENDER_WIDTH, rounded));
+        } else {
+          width = rounded;
+        }
+      }
+
+      const lines = Array.isArray(params.lines)
+        ? params.lines
+            .filter((item): item is string => typeof item === 'string')
+            .map((item) => item.trim().slice(0, MAX_RENDER_LINE_CHARS))
+            .filter(Boolean)
+            .slice(0, MAX_RENDER_LINES)
+        : [];
+
+      const userId = await this.deps.studioUserId();
+      let rendered: RenderResult;
+      try {
+        rendered = await this.deps.render({
+          html: latest.html,
+          lines,
+          messageId: this.ctx.parentMessageId,
+          topicId,
+          userId,
+          width,
+        });
+      } catch (error) {
+        if (error instanceof LayoutRenderError) {
+          countCompleted = true;
+          console.warn(
+            `[arckep-layout] renderArtifact topic=${topicId} user=${this.ctx.userId}: недоступно (${error.kind}): ${error.message}`,
+          );
+          return {
+            ...base,
+            failedImages: [],
+            images: [],
+            lines: [],
+            status: 'unavailable',
+            unavailableReason: error.message,
+          };
+        }
+        throw error;
+      }
+
+      countCompleted = true;
+      const turn = await this.deps.turnModel(this.ctx.parentMessageId);
+      const canSee = turn
+        ? this.deps.modelHasStrictVision
+          ? await this.deps.modelHasStrictVision(turn.model, turn.provider)
+          : await this.deps.modelHasVision(turn.model, turn.provider)
+        : false;
+
+      let screenshot: RenderArtifactScreenshot | undefined;
+      if (canSee && rendered.screenshot_jpeg_base64 && this.deps.savePreviewImage) {
+        try {
+          const raw = Buffer.from(rendered.screenshot_jpeg_base64, 'base64');
+          const prepared = await preparePreviewScreenshot(raw);
+          const saved = await this.deps.savePreviewImage(
+            prepared.buffer,
+            fileName(latest.identifier, 'preview', latest.versions + 1, 'jpg'),
+          );
+          screenshot = {
+            address: saved.address,
+            bytes: prepared.buffer.byteLength,
+            fileId: saved.fileId,
+            height: prepared.height,
+            scaled: prepared.scaled,
+            width: prepared.width,
+          };
+        } catch (error) {
+          console.warn(
+            `[arckep-layout] renderArtifact topic=${topicId} user=${this.ctx.userId}: превью-снимок не сохранён: ${(error as Error).message}`,
+          );
+        }
+      }
+
+      const mappedLines = rendered.lines.map((line) => ({
+        fontSize: line.font_size ?? null,
+        fontWeight: line.font_weight ?? null,
+        found: Boolean(line.found),
+        h: line.h ?? null,
+        text: line.text,
+        x: line.x ?? null,
+        y: line.y ?? null,
+      }));
+      const mappedImages = rendered.images.map((image) => ({
+        error: image.error ?? null,
+        h: image.h,
+        loaded: Boolean(image.loaded),
+        origin: image.origin ?? null,
+        src: image.src ?? null,
+        w: image.w,
+        x: image.x,
+        y: image.y,
+      }));
+      const horizontalOverflowPx = Math.max(0, rendered.scroll_width - rendered.width);
+
+      log(
+        'renderArtifact done topic=%s id=%s %dx%d scrollW=%d overflow=%d vision=%s screenshot=%s',
+        topicId,
+        latest.identifier,
+        rendered.width,
+        rendered.height,
+        rendered.scroll_width,
+        horizontalOverflowPx,
+        canSee,
+        Boolean(screenshot),
+      );
+
+      return {
+        ...base,
+        attempt: reservation.attempt,
+        ...(clampedFromWidth !== undefined ? { clampedFromWidth } : {}),
+        elapsedMs: rendered.elapsed_ms,
+        failedImages: rendered.failed_images,
+        height: rendered.height,
+        horizontalOverflowPx,
+        images: mappedImages,
+        imagesLoaded: mappedImages.filter((item) => item.loaded).length,
+        imagesTotal: mappedImages.length,
+        limit,
+        lines: mappedLines,
+        linesFound: mappedLines.filter((item) => item.found).length,
+        linesTotal: mappedLines.length,
+        ...(rendered.render_path ? { renderPath: rendered.render_path } : {}),
+        ...(rendered.renderer ? { renderer: rendered.renderer } : {}),
+        ...(screenshot ? { screenshot } : {}),
+        screenshotAttached: Boolean(screenshot),
+        scrollWidth: rendered.scroll_width,
+        status: 'rendered',
+        width: rendered.width,
+      };
+    } finally {
+      releaseRenderSlot(slotKey, this.ctx.parentMessageId, countCompleted);
+    }
   }
 }
