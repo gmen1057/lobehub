@@ -23,10 +23,26 @@ import {
 
 export const ARCKEP_CONNECTOR_PREFIX = 'mcp-arckep-';
 
+/**
+ * Белые списки настроек коннекторов (UX-7D): наружу уходят только несекретные поля из `PUBLIC_SETTING_KEYS`,
+ * а секреты из `SECRET_SETTING_KEYS` никогда не возвращаются и сохраняются при частичном PATCH.
+ */
+export const PUBLIC_SETTING_KEYS = new Set([
+  'X-MCP-Host',
+  'X-MCP-Port',
+  'X-MCP-Database',
+  'X-MCP-User',
+]);
+export const SECRET_SETTING_KEYS = new Set(['X-MCP-Password']);
+
 export interface ConnectorSummary {
   description: string;
   identifier: string;
   installed: boolean;
+  /** Несекретные сохранённые настройки текущего пользователя (только `PUBLIC_SETTING_KEYS`) */
+  publicSettings: Record<string, string | number>;
+  /** Сохранён ли секрет (`X-MCP-Password` — открытый или `enc:v1:...`), само значение наружу не отдаётся */
+  secretFilled: boolean;
   /** Пользователь что-то сохранил в настройках (ключ, адрес) — для коннекторов, которым это нужно */
   settingsFilled: boolean;
   title: string;
@@ -77,21 +93,49 @@ interface ConnectorRow {
   type?: string | null;
 }
 
+const pickPublicSettings = (settings: Record<string, unknown>): Record<string, string | number> => {
+  const out: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (!PUBLIC_SETTING_KEYS.has(key)) continue;
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out[key] = value;
+    } else if (typeof value === 'string') {
+      const cleaned = value.trim();
+      if (cleaned.length > 0 && !cleaned.startsWith('enc:v1:')) {
+        out[key] = cleaned;
+      }
+    }
+  }
+  return out;
+};
+
+const hasSecretFilled = (settings: Record<string, unknown>): boolean => {
+  for (const key of SECRET_SETTING_KEYS) {
+    const value = settings[key];
+    if (typeof value === 'string' && value.trim().length > 0) return true;
+  }
+  return false;
+};
+
 export const summarizeConnector = (row: ConnectorRow, installed: boolean): ConnectorSummary => {
   const manifest = (row.manifest ?? {}) as { api?: unknown; meta?: Record<string, unknown> };
   const meta = manifest.meta ?? {};
   const api = Array.isArray(manifest.api) ? manifest.api : [];
+  const isUserMcp =
+    isArckepUserMcpId(row.identifier) || row.identifier.startsWith(ARCKEP_USER_MCP_PREFIX);
+  // Настройки читаем строго для установленного готового подключения текущего пользователя:
+  // неустановленные строки каталога и `umcp-*` (у которых секреты в `sealed`) никогда не светят настройками.
   const settings =
-    row.settings && typeof row.settings === 'object'
+    installed && !isUserMcp && row.settings && typeof row.settings === 'object'
       ? (row.settings as Record<string, unknown>)
       : {};
-  const userMcp = row.identifier.startsWith(ARCKEP_USER_MCP_PREFIX)
-    ? pickUserMcp(row.customParams)
-    : undefined;
+  const userMcp = isUserMcp ? pickUserMcp(row.customParams) : undefined;
   return {
     description: typeof meta.description === 'string' ? meta.description : '',
     identifier: row.identifier,
     installed,
+    publicSettings: pickPublicSettings(settings),
+    secretFilled: hasSecretFilled(settings),
     settingsFilled: Object.keys(settings).length > 0,
     title: typeof meta.title === 'string' && meta.title ? meta.title : row.identifier,
     tools: api
@@ -122,7 +166,7 @@ export class PluginService {
       this.latestCatalogRows(),
       this.pluginModel.query(),
     ]);
-    const mine = new Set(installed.map((row) => row.identifier));
+    const installedById = new Map(installed.map((row) => [row.identifier, row]));
     // arckep (19.10.2026, этап 3): в каталог входят и СВОИ подключения `umcp-*` этого человека (installed: true,
     // с `userMcp`): по этому ответу экран «Подключения» студии строит список и считает предел «10 своих».
     // Строки читаются через PluginModel человека, чужих здесь не бывает; в общем каталоге (`latestCatalogRows`)
@@ -131,7 +175,13 @@ export class PluginService {
       .filter((row) => isArckepUserMcpId(row.identifier))
       .map((row) => summarizeConnector({ ...(row as ConnectorRow), settings: null }, true));
     return [
-      ...latest.map((row) => summarizeConnector({ ...row, settings: null }, mine.has(row.identifier))),
+      ...latest.map((row) => {
+        const mineRow = installedById.get(row.identifier);
+        return summarizeConnector(
+          { ...row, settings: mineRow?.settings ?? null },
+          Boolean(mineRow),
+        );
+      }),
       ...own,
     ];
   }
@@ -157,8 +207,38 @@ export class PluginService {
   ): Promise<ConnectorSummary | null> {
     const existing = await this.pluginModel.findById(identifier);
     if (!existing) return null;
-    await this.pluginModel.update(identifier, { settings });
-    return summarizeConnector({ ...(existing as ConnectorRow), settings }, true);
+    const prevSettings =
+      existing.settings && typeof existing.settings === 'object'
+        ? (existing.settings as Record<string, unknown>)
+        : {};
+    const nextSettings: Record<string, unknown> = { ...prevSettings, ...settings };
+    for (const secretKey of SECRET_SETTING_KEYS) {
+      const secretLower = secretKey.toLowerCase();
+      // Убираем дубликаты в другом регистре (HTTP-заголовки регистронезависимы)
+      let incoming: unknown = settings[secretKey];
+      for (const [k, v] of Object.entries(settings)) {
+        if (k !== secretKey && k.toLowerCase() === secretLower) {
+          if (incoming === undefined) incoming = v;
+          delete nextSettings[k];
+        }
+      }
+      // Любой нестроковый или пустой/пробельный секрет (включая false / 0 / null) считаем пустым,
+      // чтобы не затереть сохранённый пароль.
+      const incomingEmpty = typeof incoming !== 'string' || incoming.trim().length === 0;
+      if (incomingEmpty) {
+        const prevSecret = prevSettings[secretKey];
+        if (typeof prevSecret === 'string' && prevSecret.trim().length > 0) {
+          // Сохраняем прежний секрет нетронутым (совместимо с plaintext и с `enc:v1:...`).
+          nextSettings[secretKey] = prevSecret;
+        } else {
+          delete nextSettings[secretKey];
+        }
+      } else {
+        nextSettings[secretKey] = incoming;
+      }
+    }
+    await this.pluginModel.update(identifier, { settings: nextSettings });
+    return summarizeConnector({ ...(existing as ConnectorRow), settings: nextSettings }, true);
   }
 
   /**
@@ -200,20 +280,14 @@ export class PluginService {
   }
 
   /** Перечитать `tools/list` своего подключения и обновить manifest; название и описание остаются. */
-  async refreshUserMcp(
-    identifier: string,
-    arckepUserId: number,
-  ): Promise<ConnectorSummary | null> {
+  async refreshUserMcp(identifier: string, arckepUserId: number): Promise<ConnectorSummary | null> {
     if (!isArckepUserMcpId(identifier)) return null;
     const existing = await this.pluginModel.findById(identifier);
     if (!existing) return null;
     const sealed = (existing.customParams as { arckepUserMcp?: { sealed?: unknown } } | null)
       ?.arckepUserMcp?.sealed;
     if (typeof sealed !== 'string' || !sealed.startsWith('enc:v1:')) {
-      throw new UserMcpGatewayError(
-        'Подключение повреждено: удалите его и добавьте заново',
-        409,
-      );
+      throw new UserMcpGatewayError('Подключение повреждено: удалите его и добавьте заново', 409);
     }
     const tools = await listUserMcpTools({
       // refresh: шлюз держит tools/list в кэше 10 минут и без заголовка вернул бы старый список
@@ -222,8 +296,9 @@ export class PluginService {
     if (tools.length === 0) {
       throw new UserMcpGatewayError('Сервер не отдал ни одного подходящего инструмента', 422);
     }
-    const meta = ((existing.manifest ?? {}) as { meta?: { description?: unknown; title?: unknown } })
-      .meta;
+    const meta = (
+      (existing.manifest ?? {}) as { meta?: { description?: unknown; title?: unknown } }
+    ).meta;
     const manifest = buildUserMcpManifest({
       description: typeof meta?.description === 'string' ? meta.description : '',
       identifier,
