@@ -32,6 +32,14 @@ import {
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { MessageService } from '@/server/services/message';
 
+import { getActiveTopicCompactions } from './compactionRegistry';
+
+export {
+  hasInFlightTopicCompaction,
+  hasInFlightTopicCompactionsForUser,
+  resetInFlightTopicCompactionsForTests,
+} from './compactionRegistry';
+
 const DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS = 20_000;
 const DEEPSEEK_CHUNK_ACK = 'Фрагмент истории принят.';
 const SUMMARIZER_SAFE_BUDGET_RATIO = 0.72;
@@ -44,7 +52,6 @@ const PROMPT_OVERHEAD_TOKENS =
   512;
 
 interface CompactTopicGlobal {
-  __arckepActiveTopicCompactions?: Set<string>;
   __arckepEngineSlotActivity?: {
     responseExecutions?: Map<number, { topicId?: string; userId: string }>;
   };
@@ -54,20 +61,6 @@ interface CompactTopicGlobal {
 }
 
 const globalForCompact = globalThis as unknown as CompactTopicGlobal;
-
-const getActiveTopicCompactions = (): Set<string> => {
-  if (!globalForCompact.__arckepActiveTopicCompactions) {
-    globalForCompact.__arckepActiveTopicCompactions = new Set<string>();
-  }
-  return globalForCompact.__arckepActiveTopicCompactions;
-};
-
-export const resetInFlightTopicCompactionsForTests = (): void => {
-  getActiveTopicCompactions().clear();
-};
-
-export const hasInFlightTopicCompaction = (userId: string, topicId: string): boolean =>
-  getActiveTopicCompactions().has(`${userId}:${topicId}`);
 
 const isTopicBusyFromGlobals = (userId: string, topicId: string): boolean => {
   const op = globalForCompact.__arckepResponsesStreamHub?.findByTopic?.(userId, topicId);
@@ -252,12 +245,43 @@ const hasOversizedDeepSeekUserTurn = (
   return false;
 };
 
+const buildCompressionPromptMessages = (params: {
+  existingSummary?: string;
+  fileRefsText: string;
+  messages: UIChatMessage[];
+}): ChatStreamPayload['messages'] => {
+  const existingSummary = params.existingSummary?.trim();
+  const existingSummaryBlock = existingSummary
+    ? `<existing_summary>\n${existingSummary}\n</existing_summary>\n\n`
+    : '';
+  const historyBlock = chatHistoryPrompts(
+    params.messages.map((message) => ({
+      ...message,
+      content:
+        `[source_message_id: ${message.id}]\n${message.content || ''}` +
+        (message.tools?.length ? `\nTool calls: ${JSON.stringify(message.tools)}` : ''),
+    })),
+  );
+  const fileRefsBlock = params.fileRefsText ? `\n\n${params.fileRefsText}` : '';
+
+  return [
+    {
+      content: compressContextSystemPrompt,
+      role: 'system',
+    },
+    {
+      content: `${existingSummaryBlock}${historyBlock}${fileRefsBlock}\n\n${compressContextUserPrompt}`,
+      role: 'user',
+    },
+  ];
+};
+
 const buildDeepSeekAlternatingCompressionMessages = (params: {
   existingSummary?: string;
+  fileRefsText: string;
   messages: UIChatMessage[];
-  priorCompressedGroups: UIChatMessage[];
 }): ChatStreamPayload['messages'] => {
-  const { existingSummary, messages: inputMessages, priorCompressedGroups } = params;
+  const { existingSummary, fileRefsText, messages: inputMessages } = params;
   const result: ChatStreamPayload['messages'] = [
     { content: compressContextSystemPrompt, role: 'system' },
   ];
@@ -334,11 +358,9 @@ const buildDeepSeekAlternatingCompressionMessages = (params: {
   }
   flushChunk();
 
-  const fileReferenceSources =
-    priorCompressedGroups.length > 0 ? [...priorCompressedGroups, ...inputMessages] : inputMessages;
-  const fileRefsText = fileReferences(fileReferenceSources).trim();
-  const finalInstructionContent = fileRefsText
-    ? `${fileRefsText}\n\n${compressContextUserPrompt}`
+  const trimmedFileRefs = fileRefsText.trim();
+  const finalInstructionContent = trimmedFileRefs
+    ? `${trimmedFileRefs}\n\n${compressContextUserPrompt}`
     : compressContextUserPrompt;
 
   if (
@@ -348,7 +370,7 @@ const buildDeepSeekAlternatingCompressionMessages = (params: {
     result.push({ content: finalInstructionContent, role: 'user' });
   } else {
     const refSlices = splitTextToTokenBudget(
-      fileRefsText,
+      trimmedFileRefs,
       DEEPSEEK_SUMMARIZER_USER_TURN_BUDGET_TOKENS - 256,
     );
     for (const slice of refSlices) {
@@ -363,13 +385,13 @@ const buildDeepSeekAlternatingCompressionMessages = (params: {
 const adjustEndForSurrogate = (text: string, end: number): number => {
   if (end <= 0 || end >= text.length) return end;
   const code = text.charCodeAt(end - 1);
-  return code >= 0xd800 && code <= 0xdbff ? end - 1 : end;
+  return code >= 0xd8_00 && code <= 0xdb_ff ? end - 1 : end;
 };
 
 const adjustStartForSurrogate = (text: string, start: number): number => {
   if (start <= 0 || start >= text.length) return start;
   const code = text.charCodeAt(start);
-  return code >= 0xdc00 && code <= 0xdfff ? start + 1 : start;
+  return code >= 0xdc_00 && code <= 0xdf_ff ? start + 1 : start;
 };
 
 const findLongestPrefixWithinTokens = (text: string, maxTokens: number): number => {
@@ -536,14 +558,11 @@ const hasInsufficientBalanceMarker = (
   }
   const record = value as Record<string, unknown>;
   if (
-    record.status === 402 ||
-    record.statusCode === 402 ||
-    record.code === 402 ||
-    record.code === '402' ||
     record.code === 'studio_insufficient_balance' ||
     record.code === 'insufficient_balance' ||
     record.type === 'insufficient_balance' ||
-    record.errorType === 'insufficient_balance'
+    record.errorType === 'insufficient_balance' ||
+    (record.code === 'billing_error' && record.type === 'insufficient_balance')
   ) {
     return true;
   }
@@ -552,10 +571,12 @@ const hasInsufficientBalanceMarker = (
   );
 };
 
-export class TopicCompactHttpError extends Error {
-  readonly status: 402 | 413 | 429;
+export type TopicCompactHttpStatus = 402 | 413 | 429 | 503;
 
-  constructor(status: 402 | 413 | 429, message: string) {
+export class TopicCompactHttpError extends Error {
+  readonly status: TopicCompactHttpStatus;
+
+  constructor(status: TopicCompactHttpStatus, message: string) {
     super(message);
     this.name = 'TopicCompactHttpError';
     this.status = status;
@@ -569,14 +590,14 @@ const mapSummarizerError = (error: unknown): Error => {
   const classified = classifyLLMError(error);
 
   const isProviderCreditsExhausted = recovery.providerCode === 'provider_credits_exhausted';
-  if (
-    !isProviderCreditsExhausted &&
-    (recovery.customerBalance ||
-      classified.billing ||
-      recovery.status === 402 ||
-      classified.status === 402 ||
-      hasInsufficientBalanceMarker(error))
-  ) {
+  if (isProviderCreditsExhausted) {
+    return new TopicCompactHttpError(
+      503,
+      extractReadableErrorMessage(error) || 'Provider credits exhausted',
+    );
+  }
+
+  if (recovery.customerBalance || hasInsufficientBalanceMarker(error)) {
     return new TopicCompactHttpError(402, 'Insufficient balance');
   }
 
@@ -722,7 +743,16 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
       safeCutoff = resolveSafeCutoffIndex(queriedMessages, cutoffIndex);
     }
 
-    // 6. Select candidates strictly before `safeCutoff`
+    // 6. Guard against overwriting any later compressedGroup after `safeCutoff`
+    if (queriedMessages.slice(safeCutoff).some((msg) => msg.role === 'compressedGroup')) {
+      return {
+        compacted: false,
+        compressedCount: 0,
+        messageGroupId: null,
+      };
+    }
+
+    // Select candidates strictly before `safeCutoff`
     const candidateRows = queriedMessages.slice(0, safeCutoff);
     const priorCompressedGroups = candidateRows.filter((msg) => msg.role === 'compressedGroup');
     const meaningfulMessages = candidateRows.filter(
@@ -734,7 +764,10 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
         !isEmptyAssistantPlaceholder(msg),
     );
 
-    if (meaningfulMessages.length < 2 && priorCompressedGroups.length <= 1) {
+    if (
+      (priorCompressedGroups.length === 0 && meaningfulMessages.length < 2) ||
+      (priorCompressedGroups.length === 1 && meaningfulMessages.length === 0)
+    ) {
       return {
         compacted: false,
         compressedCount: 0,
@@ -780,20 +813,49 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
 
     const runSummarizerPass = async (pass: {
       existingSummary?: string;
+      maxFileRefsTokens?: number;
       messages: UIChatMessage[];
       priorGroups: UIChatMessage[];
     }): Promise<string> => {
-      const compressOptions =
-        pass.existingSummary || pass.priorGroups.length > 0
-          ? {
-              ...(pass.existingSummary ? { existingSummary: pass.existingSummary } : {}),
-              ...(pass.priorGroups.length > 0 ? { priorMessages: pass.priorGroups } : {}),
-            }
-          : undefined;
-      const compressionPayload = compressOptions
-        ? chainCompressContext(pass.messages, compressOptions)
-        : chainCompressContext(pass.messages);
-      const rawPromptMessages = compressionPayload.messages ?? [];
+      const passFileReferenceSources =
+        pass.priorGroups.length > 0 ? [...pass.priorGroups, ...pass.messages] : pass.messages;
+      const rawFileRefsText = fileReferences(passFileReferenceSources).trim();
+      const rawFileRefsTokens = rawFileRefsText
+        ? estimateDeepSeekUserTurnTokens(rawFileRefsText) + 32
+        : 0;
+      const shouldTruncateFileRefs =
+        pass.maxFileRefsTokens !== undefined &&
+        Boolean(rawFileRefsText) &&
+        rawFileRefsTokens > pass.maxFileRefsTokens;
+      const boundedFileRefsText = shouldTruncateFileRefs
+        ? truncateMiddleToTokenBudget(
+            rawFileRefsText,
+            Math.max(256, pass.maxFileRefsTokens! - 32),
+            'file references',
+          )
+        : rawFileRefsText;
+
+      let rawPromptMessages: ChatStreamPayload['messages'];
+      if (shouldTruncateFileRefs) {
+        rawPromptMessages = buildCompressionPromptMessages({
+          existingSummary: pass.existingSummary,
+          fileRefsText: boundedFileRefsText,
+          messages: pass.messages,
+        });
+      } else {
+        const compressOptions =
+          pass.existingSummary || pass.priorGroups.length > 0
+            ? {
+                ...(pass.existingSummary ? { existingSummary: pass.existingSummary } : {}),
+                ...(pass.priorGroups.length > 0 ? { priorMessages: pass.priorGroups } : {}),
+              }
+            : undefined;
+        const compressionPayload = compressOptions
+          ? chainCompressContext(pass.messages, compressOptions)
+          : chainCompressContext(pass.messages);
+        rawPromptMessages = compressionPayload.messages ?? [];
+      }
+
       const needsDeepSeekTurnChunking =
         compressionModel.provider === 'deepseek' &&
         hasOversizedDeepSeekUserTurn(
@@ -803,8 +865,8 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
       const compressionMessages = needsDeepSeekTurnChunking
         ? buildDeepSeekAlternatingCompressionMessages({
             existingSummary: pass.existingSummary,
+            fileRefsText: boundedFileRefsText,
             messages: pass.messages,
-            priorCompressedGroups: pass.priorGroups,
           })
         : rawPromptMessages;
 
@@ -889,26 +951,26 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
       });
     } else {
       const maxSummaryTokens = Math.max(4_000, Math.floor(safeBudget * 0.25));
-      let rollingSummary = sanitizedExistingSummary
-        ? truncateMiddleToTokenBudget(
-            sanitizedExistingSummary,
-            maxSummaryTokens,
-            'existing summary',
-          )
-        : undefined;
+      const maxSummaryBodyTokens = Math.max(256, maxSummaryTokens - 64);
+      const fileRefsReserve = Math.min(4_000, Math.floor(safeBudget * 0.12));
+      let rollingSummary =
+        sanitizedExistingSummary &&
+        estimateSummaryBlockTokens(sanitizedExistingSummary) > maxSummaryTokens
+          ? truncateMiddleToTokenBudget(
+              sanitizedExistingSummary,
+              maxSummaryBodyTokens,
+              'existing summary',
+            )
+          : sanitizedExistingSummary;
 
-      const summaryReserve = Math.min(
-        Math.floor(safeBudget * 0.38),
-        PROMPT_OVERHEAD_TOKENS +
-          Math.max(4_000, estimateSummaryBlockTokens(rollingSummary)) +
-          1_024,
-      );
-      const batchMessageBudget = Math.max(8_000, safeBudget - summaryReserve);
+      const summaryReserve = PROMPT_OVERHEAD_TOKENS + maxSummaryTokens + fileRefsReserve + 1_024;
+      const batchMessageBudget = Math.max(4_000, safeBudget - summaryReserve);
       const batches = partitionMessagesIntoBatches(preparedMessages, batchMessageBudget);
 
       if (batches.length === 0) {
         summaryContent = await runSummarizerPass({
           existingSummary: rollingSummary,
+          maxFileRefsTokens: fileRefsReserve,
           messages: [],
           priorGroups: sanitizedPriorCompressedGroups,
         });
@@ -917,20 +979,26 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
           const priorGroupsForPass = i === 0 ? sanitizedPriorCompressedGroups : [];
           const nextSummary = await runSummarizerPass({
             existingSummary: rollingSummary,
+            maxFileRefsTokens: fileRefsReserve,
             messages: batches[i],
             priorGroups: priorGroupsForPass,
           });
           rollingSummary =
-            i < batches.length - 1 &&
-            estimateSummaryBlockTokens(nextSummary) > Math.floor(safeBudget * 0.35)
-              ? truncateMiddleToTokenBudget(nextSummary, maxSummaryTokens, 'rolling summary')
+            i < batches.length - 1 && estimateSummaryBlockTokens(nextSummary) > maxSummaryTokens
+              ? truncateMiddleToTokenBudget(nextSummary, maxSummaryBodyTokens, 'rolling summary')
               : nextSummary;
         }
         summaryContent = rollingSummary!;
       }
     }
 
-    // 11. Persist rolling compression group atomically without deleting visible message rows
+    // 11. Re-check topic idleness right before persisting to close any race window during LLM call
+    const busyBeforeWrite = isTopicBusy ? isTopicBusy() : isTopicBusyFromGlobals(userId, topicId);
+    if (busyBeforeWrite) {
+      throw createConflictError('Response is already in progress for this topic');
+    }
+
+    // Persist rolling compression group atomically without deleting visible message rows
     const messageIds = meaningfulMessages.map((msg) => msg.id);
     const messageService = new MessageService(db, userId);
     const compressionResult = await messageService.upsertRollingCompressionGroup(

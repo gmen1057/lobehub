@@ -9,6 +9,8 @@ import * as compressionThresholds from '@/server/modules/AgentRuntime/compressio
 import { estimateDeepSeekUserTurnTokens } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import {
   compactTopic,
+  hasInFlightTopicCompaction,
+  hasInFlightTopicCompactionsForUser,
   resetInFlightTopicCompactionsForTests,
 } from '@/server/services/topic/compactTopic';
 
@@ -716,6 +718,298 @@ describe('POST /api/v1/topics/:id/compact', () => {
     });
     const resEmptySummary = await postCompact('tpc_1', {});
     expect(resEmptySummary.status).toBe(500);
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+  });
+
+  it('9. multi-pass rolling fold держит фактический размер каждого прохода <= safeBudget при большом nextSummary и огромных fileReferences (а single-pass не режет fileReferences)', async () => {
+    const safeBudget = Math.floor(34_000 * 0.72); // 24_480
+    vi.spyOn(compressionThresholds, 'resolveCompressionThresholds').mockReturnValue({
+      maxWindowToken: 34_000,
+      midTurnThresholdRatio: 0.85,
+      physicalWindowToken: 34_000,
+      recompressionThresholdRatio: 0.65,
+      thresholdRatio: 0.5,
+    });
+
+    const makeManyFiles = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, idx) => ({
+        id: `file_${prefix}_${idx}`,
+        name: `very-long-specification-document-name-${prefix}-${idx}-revision-2026.pdf`,
+      }));
+
+    const heavyBody = 'Detailed technical context record for rolling batch fold. '.repeat(550);
+    mockQueryWithWhere.mockResolvedValueOnce([
+      makeMsg({
+        content: 'Prior rolling summary text.',
+        fileList: makeManyFiles('prior', 45) as any,
+        id: 'grp_0',
+        role: 'compressedGroup',
+      }),
+      makeMsg({
+        content: heavyBody,
+        fileList: makeManyFiles('m1', 45) as any,
+        id: 'm1',
+        role: 'user',
+      }),
+      makeMsg({
+        content: heavyBody,
+        fileList: makeManyFiles('m2', 45) as any,
+        id: 'm2',
+        parentId: 'm1',
+        role: 'assistant',
+      }),
+      makeMsg({
+        content: heavyBody,
+        fileList: makeManyFiles('m3', 45) as any,
+        id: 'm3',
+        parentId: 'm2',
+        role: 'user',
+      }),
+      makeMsg({
+        content: heavyBody,
+        fileList: makeManyFiles('m4', 45) as any,
+        id: 'm4',
+        parentId: 'm3',
+        role: 'assistant',
+      }),
+    ]);
+
+    // На проходе i = 0 суммаризатор возвращает огромный nextSummary (> 10K токенов, выше maxSummaryTokens = 6_120)
+    const oversizedSummary =
+      'SUMMARY_HEAD ' +
+      'Extensive rolling summary detail with exact identifiers and file cursors. '.repeat(900) +
+      ' SUMMARY_TAIL';
+    let pass = 0;
+    mockChat.mockImplementation(async (_payload: ChatStreamPayload, options: any) => {
+      pass += 1;
+      await options?.callback?.onText?.(
+        pass === 1 ? oversizedSummary : `Bounded rolling summary pass ${pass}`,
+      );
+      return new Response('');
+    });
+
+    const res = await postCompact('tpc_1', {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toEqual({
+      compacted: true,
+      compressedCount: 4,
+      messageGroupId: 'grp_1',
+    });
+
+    expect(mockChat.mock.calls.length).toBeGreaterThanOrEqual(2);
+    for (const [payload] of mockChat.mock.calls) {
+      const promptMsgs = payload.messages as Array<{ content: unknown; role: string }>;
+      const actualPromptTokens = promptMsgs.reduce((sum, msg) => {
+        const text = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+        return sum + estimateDeepSeekUserTurnTokens(text) + 4;
+      }, 0);
+      expect(actualPromptTokens).toBeLessThanOrEqual(safeBudget);
+    }
+
+    // На проходе i = 0 fileReferences были аккуратно обрезаны под fileRefsReserve
+    const pass0Text = (mockChat.mock.calls[0][0].messages as Array<{ content: string }>)
+      .map((m) => m.content)
+      .join('\n');
+    expect(pass0Text).toContain('<original_files>');
+    expect(pass0Text).toContain('of file references omitted during summarization');
+
+    // На проходе i = 1 огромный nextSummary с прохода 0 был обрезан до maxSummaryTokens
+    const pass1Text = (mockChat.mock.calls[1][0].messages as Array<{ content: string }>)
+      .map((m) => m.content)
+      .join('\n');
+    expect(pass1Text).toContain('SUMMARY_HEAD');
+    expect(pass1Text).toContain('SUMMARY_TAIL');
+    expect(pass1Text).toContain('of rolling summary omitted during summarization');
+
+    // Single-pass: умеренный список fileReferences не обрезается
+    mockChat.mockClear();
+    mockQueryWithWhere.mockResolvedValueOnce([
+      makeMsg({
+        content: 'Короткий вопрос с файлами',
+        fileList: makeManyFiles('single', 12) as any,
+        id: 's1',
+        role: 'user',
+      }),
+      makeMsg({
+        content: 'Короткий ответ',
+        id: 's2',
+        parentId: 's1',
+        role: 'assistant',
+      }),
+    ]);
+    mockChat.mockImplementationOnce(async (_payload: ChatStreamPayload, options: any) => {
+      await options?.callback?.onText?.('Single-pass summary');
+      return new Response('');
+    });
+
+    const singleRes = await postCompact('tpc_1', {});
+    expect(singleRes.status).toBe(200);
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    const singlePassText = (mockChat.mock.calls[0][0].messages as Array<{ content: string }>)
+      .map((m) => m.content)
+      .join('\n');
+    expect(singlePassText).not.toContain('of file references omitted during summarization');
+    expect(singlePassText).toContain('file_single_0');
+    expect(singlePassText).toContain('file_single_11');
+  });
+
+  it('10. compressedGroup после beforeMessageId → compacted=false без потери summary; 1 compressedGroup + 1 новое сообщение → compacted=true', async () => {
+    // 10a. В сохранённом хвосте после safeCutoff есть более поздняя compressedGroup → безопасный отказ без LLM
+    mockQueryWithWhere.mockResolvedValueOnce([
+      makeMsg({ content: 'Старое резюме 1', id: 'grp_1', role: 'compressedGroup' }),
+      makeMsg({ content: 'Промежуточный вопрос', id: 'u_mid', role: 'user' }),
+      makeMsg({
+        content: 'Промежуточный ответ',
+        id: 'a_mid',
+        parentId: 'u_mid',
+        role: 'assistant',
+      }),
+      makeMsg({ content: 'Позднее резюме 2', id: 'grp_2', role: 'compressedGroup' }),
+      makeMsg({ content: 'Свежий вопрос', id: 'u_new', role: 'user' }),
+    ]);
+
+    const guardedRes = await postCompact('tpc_1', { beforeMessageId: 'a_mid' });
+    expect(guardedRes.status).toBe(200);
+    expect((await guardedRes.json()).data).toEqual({
+      compacted: false,
+      compressedCount: 0,
+      messageGroupId: null,
+    });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+
+    // 10b. 1 priorCompressedGroup + 1 новое тяжёлое сообщение перед упавшим с 413 beforeMessageId → сжимается!
+    mockQueryWithWhere.mockResolvedValueOnce([
+      makeMsg({ content: 'Базовое резюме', id: 'grp_existing', role: 'compressedGroup' }),
+      makeMsg({ content: 'Огромный дамп перед 413', id: 'u_heavy', role: 'user' }),
+      makeMsg({ content: 'Новый запрос, упавший с 413', id: 'u_413', role: 'user' }),
+    ]);
+
+    const onePlusOneRes = await postCompact('tpc_1', { beforeMessageId: 'u_413' });
+    expect(onePlusOneRes.status).toBe(200);
+    expect((await onePlusOneRes.json()).data).toEqual({
+      compacted: true,
+      compressedCount: 1,
+      messageGroupId: 'grp_1',
+    });
+    expect(mockChat).toHaveBeenCalledTimes(1);
+    const promptJoined = (mockChat.mock.calls[0][0].messages as Array<{ content: string }>)
+      .map((m) => m.content)
+      .join('\n');
+    expect(promptJoined).toContain('Базовое резюме');
+    expect(promptJoined).toContain('Огромный дамп перед 413');
+    expect(promptJoined).not.toContain('Новый запрос, упавший с 413');
+    expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledWith(
+      'tpc_1',
+      ['u_heavy'],
+      { agentId: 'agent_1', topicId: 'tpc_1' },
+      '### Context\nСжатое резюме диалога.',
+    );
+
+    // 10c. 1 priorCompressedGroup + 0 новых сообщений перед beforeMessageId → compacted=false, 0 вызовов LLM
+    mockChat.mockClear();
+    mockUpsertRollingCompressionGroup.mockClear();
+    mockQueryWithWhere.mockResolvedValueOnce([
+      makeMsg({ content: 'Базовое резюме', id: 'grp_existing', role: 'compressedGroup' }),
+      makeMsg({ content: 'Запрос сразу после группы', id: 'u_413', role: 'user' }),
+    ]);
+    const zeroNewRes = await postCompact('tpc_1', { beforeMessageId: 'u_413' });
+    expect(zeroNewRes.status).toBe(200);
+    expect((await zeroNewRes.json()).data).toEqual({
+      compacted: false,
+      compressedCount: 0,
+      messageGroupId: 'grp_existing',
+    });
+    expect(mockChat).not.toHaveBeenCalled();
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+  });
+
+  it('11. обратная гонка: hasInFlightTopicCompactionsForUser выставлен во время LLM и если тема стала busy до записи — 409 без upsertRollingCompressionGroup', async () => {
+    let releaseLlm!: () => void;
+    let markLlmEntered!: () => void;
+    const llmEntered = new Promise<void>((resolve) => {
+      markLlmEntered = resolve;
+    });
+
+    mockChat.mockImplementationOnce(async (_payload: ChatStreamPayload, options: any) => {
+      markLlmEntered();
+      await new Promise<void>((resolve) => {
+        releaseLlm = resolve;
+      });
+      await options?.callback?.onText?.('Резюме, которое нельзя записывать поверх идущего ответа');
+      return new Response('');
+    });
+
+    const compactPromise = postCompact('tpc_1', {});
+    await llmEntered;
+
+    expect(hasInFlightTopicCompaction('user_1', 'tpc_1')).toBe(true);
+    expect(hasInFlightTopicCompactionsForUser('user_1')).toBe(true);
+    expect(hasInFlightTopicCompactionsForUser('user_other')).toBe(false);
+
+    // Симулируем, что тема стала занята (например, параллельный ответ) до завершения LLM-вызова
+    responsesStreamHub.register({
+      operationId: 'op_raced',
+      params: { input: 'Гонка', model: 'agent_1', stream: true } as any,
+      responseId: 'tpc_1',
+      topicId: 'tpc_1',
+      userId: 'user_1',
+    });
+
+    releaseLlm();
+    const racedRes = await compactPromise;
+    expect(racedRes.status).toBe(409);
+    expect(await racedRes.json()).toMatchObject({
+      error: 'Response is already in progress for this topic',
+      success: false,
+    });
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+    expect(hasInFlightTopicCompaction('user_1', 'tpc_1')).toBe(false);
+    expect(hasInFlightTopicCompactionsForUser('user_1')).toBe(false);
+  });
+
+  it('12. provider_credits_exhausted (status: 402) → HTTP 503, а голый upstream 402 без клиентских маркеров НЕ превращается в клиентский 402', async () => {
+    // 12a. provider_credits_exhausted c status=402 → 503 (не 402 и не 500)
+    mockChat.mockImplementationOnce(async (_payload: ChatStreamPayload, options: any) => {
+      await options?.callback?.onError?.({
+        body: { code: 'provider_credits_exhausted', status: 402 },
+        message: 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.',
+        status: 402,
+      });
+      return new Response('');
+    });
+
+    const creditsRes = await postCompact('tpc_1', {});
+    expect(creditsRes.status).toBe(503);
+    expect(await creditsRes.json()).toMatchObject({
+      error: 'Сейчас эта модель временно недоступна. Мы уже в процессе её восстановления.',
+      success: false,
+    });
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+
+    // 12b. provider_credits_exhausted без текста сообщения → 503 с fallback-сообщением
+    mockChat.mockRejectedValueOnce({
+      body: { code: 'provider_credits_exhausted' },
+      status: 402,
+    });
+    const creditsFallbackRes = await postCompact('tpc_1', {});
+    expect(creditsFallbackRes.status).toBe(503);
+    expect(await creditsFallbackRes.json()).toMatchObject({
+      error: 'Provider credits exhausted',
+      success: false,
+    });
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+
+    // 12c. Голый upstream status=402 без клиентских маркеров баланса → НЕ 402
+    mockChat.mockImplementationOnce(async (_payload: ChatStreamPayload, options: any) => {
+      await options?.callback?.onError?.({
+        message: 'Upstream vendor credits depleted',
+        status: 402,
+      });
+      return new Response('');
+    });
+    const bare402Res = await postCompact('tpc_1', {});
+    expect(bare402Res.status).toBe(500);
     expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
   });
 });
