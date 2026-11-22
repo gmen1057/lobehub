@@ -180,12 +180,12 @@ describe('same-turn recovery through native Google SDK streams', () => {
     const compression = await agent.runner({ phase: 'init', payload: {}, session }, state);
     if (Array.isArray(compression) || compression.type !== 'compress_context')
       throw new Error('Expected automatic compression');
-    const createCompressionGroup = vi.fn(async () => ({
+    const upsertRollingCompressionGroup = vi.fn(async () => ({
       messageGroupId: 'archive-11',
       messages: [...summaries, task],
     }));
     vi.mocked(MessageService).mockImplementationOnce(function () {
-      return { createCompressionGroup } as unknown as MessageService;
+      return { upsertRollingCompressionGroup } as unknown as MessageService;
     });
     vi.mocked(ctx.messageModel.query).mockResolvedValue(state.messages as any);
     const summarize = vi.fn(async (_request: unknown, options: { callback: any }) => {
@@ -255,8 +255,8 @@ describe('same-turn recovery through native Google SDK streams', () => {
     ).toHaveLength(12);
     expect(final.newState.messages.slice(0, 12)).toEqual(summaries);
     expect(summarize).toHaveBeenCalledOnce();
-    expect(createCompressionGroup).toHaveBeenCalledOnce();
-    expect(createCompressionGroup.mock.calls[0]).toEqual([
+    expect(upsertRollingCompressionGroup).toHaveBeenCalledOnce();
+    expect(upsertRollingCompressionGroup.mock.calls[0]).toEqual([
       'topic',
       [source.id],
       expect.anything(),

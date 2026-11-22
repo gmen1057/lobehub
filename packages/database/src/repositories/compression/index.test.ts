@@ -1,9 +1,12 @@
 // @vitest-environment node
 import { MessageGroupType } from '@lobechat/types';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { eq } from 'drizzle-orm';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '../../core/getTestDB';
-import { messageGroups, messages } from '../../schemas/message';
+import { MessageModel } from '../../models/message';
+import { files } from '../../schemas/file';
+import { messageGroups, messages, messagesFiles } from '../../schemas/message';
 import { topics } from '../../schemas/topic';
 import { users } from '../../schemas/user';
 import type { LobeChatDatabase } from '../../type';
@@ -861,6 +864,522 @@ describe('CompressionRepository', () => {
         //   { role: 'user', id: 'traj-5', content: 'New question' },
         //   { role: 'assistant', id: 'traj-6', content: 'New answer' },
         // ]
+      });
+    });
+
+    describe('upsertRollingCompressionGroup', () => {
+      it('rejects empty or whitespace-only summary content without mutating DB', async () => {
+        await serverDB.insert(messages).values([
+          {
+            content: 'Earlier turn',
+            createdAt: new Date('2025-01-01T10:00:00Z'),
+            id: 'empty-1',
+            role: 'user',
+            topicId,
+            userId,
+          },
+        ]);
+
+        await expect(
+          compressionRepo.upsertRollingCompressionGroup({
+            content: '   \n\t  ',
+            messageIds: ['empty-1'],
+            metadata: {},
+            topicId,
+          }),
+        ).rejects.toThrow('Compression summary must not be empty');
+
+        expect(await compressionRepo.getCompressionGroups(topicId)).toHaveLength(0);
+        expect(await compressionRepo.getUncompressedMessages(topicId)).toHaveLength(1);
+      });
+
+      it('anchors first insert createdAt to min(createdAt) so compressedGroup sorts before active turn', async () => {
+        const t1 = new Date('2025-01-01T10:00:00Z');
+        const t2 = new Date('2025-01-01T10:01:00Z');
+        const tActive = new Date('2025-01-01T10:05:00Z');
+
+        await serverDB.insert(messages).values([
+          { content: 'Turn 1 user', createdAt: t1, id: 'roll-1', role: 'user', topicId, userId },
+          {
+            content: 'Turn 1 assistant',
+            createdAt: t2,
+            id: 'roll-2',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+          // Inserted BEFORE compression runs (active turn)
+          {
+            content: 'Active turn user',
+            createdAt: tActive,
+            id: 'roll-active',
+            role: 'user',
+            topicId,
+            userId,
+          },
+        ]);
+
+        const groupId = await compressionRepo.upsertRollingCompressionGroup({
+          content: 'Rolling summary v1',
+          messageIds: ['roll-1', 'roll-2'],
+          metadata: {},
+          topicId,
+        });
+
+        const groups = await compressionRepo.getCompressionGroups(topicId);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].id).toBe(groupId);
+        expect(groups[0].createdAt.getTime()).toBe(t1.getTime());
+        expect(groups[0].createdAt.getTime()).toBeLessThan(tActive.getTime());
+        expect(groups[0].metadata).toEqual({
+          compressionStrategy: 'summarize',
+          endMessageId: 'roll-2',
+          originalMessageCount: 2,
+          startMessageId: 'roll-1',
+        });
+
+        const messageModel = new MessageModel(serverDB, userId);
+        const queried = await messageModel.query({ topicId });
+        expect(queried.map((m) => ({ id: m.id, role: m.role }))).toEqual([
+          { id: groupId, role: 'compressedGroup' },
+          { id: 'roll-active', role: 'user' },
+        ]);
+      });
+
+      it('reuses the same groupId on rolling recompression with zero DELETE calls and preserves UI metadata', async () => {
+        const t1 = new Date('2025-01-01T10:00:00Z');
+        const t2 = new Date('2025-01-01T10:01:00Z');
+        const t3 = new Date('2025-01-01T10:02:00Z');
+        const t4 = new Date('2025-01-01T10:03:00Z');
+        const t5 = new Date('2025-01-01T10:05:00Z');
+
+        await serverDB.insert(messages).values([
+          { content: 'M1', createdAt: t1, id: 'rc-1', role: 'user', topicId, userId },
+          { content: 'M2', createdAt: t2, id: 'rc-2', role: 'assistant', topicId, userId },
+          { content: 'M3', createdAt: t3, id: 'rc-3', role: 'user', topicId, userId },
+          { content: 'M4', createdAt: t4, id: 'rc-4', role: 'assistant', topicId, userId },
+          { content: 'M5 active', createdAt: t5, id: 'rc-5', role: 'user', topicId, userId },
+        ]);
+
+        const firstGroupId = await compressionRepo.upsertRollingCompressionGroup({
+          content: 'Summary pass 1',
+          messageIds: ['rc-1', 'rc-2'],
+          metadata: {},
+          topicId,
+        });
+
+        // Simulate user expanding the group in UI (stored in JSONB metadata column)
+        await compressionRepo.updateMetadata(firstGroupId, { expanded: true });
+
+        let deleteCalls = 0;
+        const origTransaction = serverDB.transaction.bind(serverDB);
+        const txSpy = vi.spyOn(serverDB, 'transaction').mockImplementation((async (
+          callback: any,
+          config: any,
+        ) =>
+          origTransaction(async (tx: any) => {
+            const origDelete = tx.delete.bind(tx);
+            tx.delete = (...args: any[]) => {
+              deleteCalls += 1;
+              return origDelete(...args);
+            };
+            return callback(tx);
+          }, config)) as any);
+
+        let secondGroupId: string;
+        try {
+          secondGroupId = await compressionRepo.upsertRollingCompressionGroup({
+            content: 'Summary pass 2 (consolidated)',
+            messageIds: ['rc-3', 'rc-4'],
+            metadata: {},
+            topicId,
+          });
+        } finally {
+          txSpy.mockRestore();
+        }
+
+        expect(secondGroupId).toBe(firstGroupId);
+        expect(deleteCalls).toBe(0);
+
+        const groups = await compressionRepo.getCompressionGroups(topicId);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].id).toBe(firstGroupId);
+        expect(groups[0].content).toBe('Summary pass 2 (consolidated)');
+        expect(groups[0].createdAt.getTime()).toBe(t1.getTime());
+        expect(groups[0].metadata).toEqual({
+          compressionStrategy: 'summarize',
+          endMessageId: 'rc-4',
+          originalMessageCount: 4,
+          startMessageId: 'rc-1',
+        });
+
+        // Verify JSONB UI metadata column was preserved
+        const [rawGroup] = await serverDB
+          .select({ metadata: messageGroups.metadata })
+          .from(messageGroups)
+          .where(eq(messageGroups.id, firstGroupId));
+        expect(rawGroup?.metadata).toEqual({ expanded: true });
+
+        // All 5 messages remain in DB; 4 compressed under firstGroupId, 1 active
+        const allTopicMessages = await serverDB
+          .select()
+          .from(messages)
+          .where(eq(messages.topicId, topicId));
+        expect(allTopicMessages).toHaveLength(5);
+        expect(await compressionRepo.getCompressedMessages(firstGroupId)).toHaveLength(4);
+        expect((await compressionRepo.getUncompressedMessages(topicId)).map((m) => m.id)).toEqual([
+          'rc-5',
+        ]);
+      });
+
+      it('consolidates a legacy 3-group topic into 1 group with zero ON DELETE CASCADE losses, preserving favorite/pinnedMessages and fileList', async () => {
+        const times = Array.from({ length: 9 }, (_, i) => new Date(`2025-01-01T10:0${i}:00Z`));
+
+        await serverDB.insert(messages).values([
+          {
+            content: 'Legacy 1 user',
+            createdAt: times[0],
+            favorite: false,
+            id: 'leg-1',
+            role: 'user',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Legacy 1 pinned assistant',
+            createdAt: times[1],
+            favorite: true,
+            id: 'leg-2',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Legacy 2 user',
+            createdAt: times[2],
+            favorite: false,
+            id: 'leg-3',
+            role: 'user',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Legacy 2 assistant',
+            createdAt: times[3],
+            favorite: false,
+            id: 'leg-4',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Legacy 3 user',
+            createdAt: times[4],
+            favorite: false,
+            id: 'leg-5',
+            role: 'user',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Legacy 3 pinned assistant',
+            createdAt: times[5],
+            favorite: true,
+            id: 'leg-6',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+          {
+            content: 'New turn user',
+            createdAt: times[6],
+            favorite: false,
+            id: 'leg-7',
+            role: 'user',
+            topicId,
+            userId,
+          },
+          {
+            content: 'New turn assistant',
+            createdAt: times[7],
+            favorite: false,
+            id: 'leg-8',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Active user message',
+            createdAt: times[8],
+            favorite: false,
+            id: 'leg-9',
+            role: 'user',
+            topicId,
+            userId,
+          },
+        ]);
+
+        // Attach files across legacy groups and the newly compressed turn
+        await serverDB.insert(files).values([
+          {
+            fileType: 'application/pdf',
+            id: 'file-leg-1',
+            name: 'contract-v1.pdf',
+            size: 1024,
+            url: '/files/contract-v1.pdf',
+            userId,
+          },
+          {
+            fileType: 'text/csv',
+            id: 'file-leg-2',
+            name: 'budget.csv',
+            size: 2048,
+            url: '/files/budget.csv',
+            userId,
+          },
+          {
+            fileType: 'text/markdown',
+            id: 'file-leg-3',
+            name: 'addendum.md',
+            size: 512,
+            url: '/files/addendum.md',
+            userId,
+          },
+        ]);
+
+        await serverDB.insert(messagesFiles).values([
+          { fileId: 'file-leg-1', messageId: 'leg-1', userId },
+          { fileId: 'file-leg-2', messageId: 'leg-3', userId },
+          { fileId: 'file-leg-3', messageId: 'leg-7', userId },
+        ]);
+
+        // Create 3 stacked legacy compression groups (all with defaultNow() > times[8])
+        const g1 = await compressionRepo.createCompressionGroup({
+          content: 'Legacy summary 1',
+          messageIds: ['leg-1', 'leg-2'],
+          metadata: { endMessageId: 'leg-2', originalMessageCount: 2, startMessageId: 'leg-1' },
+          topicId,
+        });
+        const g2 = await compressionRepo.createCompressionGroup({
+          content: 'Legacy summary 2',
+          messageIds: ['leg-3', 'leg-4'],
+          metadata: { endMessageId: 'leg-4', originalMessageCount: 2, startMessageId: 'leg-3' },
+          topicId,
+        });
+        const g3 = await compressionRepo.createCompressionGroup({
+          content: 'Legacy summary 3',
+          messageIds: ['leg-5', 'leg-6'],
+          metadata: { endMessageId: 'leg-6', originalMessageCount: 2, startMessageId: 'leg-5' },
+          topicId,
+        });
+
+        expect(await compressionRepo.getCompressionGroups(topicId)).toHaveLength(3);
+        expect(g2).not.toBe(g1);
+        expect(g3).not.toBe(g1);
+
+        // Consolidate all 3 legacy groups + leg-7, leg-8 into 1 rolling group
+        const consolidatedId = await compressionRepo.upsertRollingCompressionGroup({
+          content: 'Unified rolling summary of turns 1-4',
+          messageIds: ['leg-7', 'leg-8'],
+          metadata: {},
+          topicId,
+        });
+
+        expect(consolidatedId).toBe(g1);
+
+        // Only 1 compression group remains
+        const groupsAfter = await compressionRepo.getCompressionGroups(topicId);
+        expect(groupsAfter).toHaveLength(1);
+        expect(groupsAfter[0].id).toBe(g1);
+        expect(groupsAfter[0].content).toBe('Unified rolling summary of turns 1-4');
+        // createdAt self-healed to min(createdAt) < active user message
+        expect(groupsAfter[0].createdAt.getTime()).toBe(times[0].getTime());
+        expect(groupsAfter[0].createdAt.getTime()).toBeLessThan(times[8].getTime());
+        expect(groupsAfter[0].metadata).toEqual({
+          compressionStrategy: 'summarize',
+          endMessageId: 'leg-8',
+          originalMessageCount: 8,
+          startMessageId: 'leg-1',
+        });
+
+        // ZERO messages deleted via ON DELETE CASCADE
+        const allDbMessages = await serverDB
+          .select()
+          .from(messages)
+          .where(eq(messages.topicId, topicId));
+        expect(allDbMessages).toHaveLength(9);
+
+        const byId = new Map(allDbMessages.map((m) => [m.id, m]));
+        for (const id of ['leg-1', 'leg-2', 'leg-3', 'leg-4', 'leg-5', 'leg-6', 'leg-7', 'leg-8']) {
+          expect(byId.get(id)?.messageGroupId).toBe(g1);
+        }
+        expect(byId.get('leg-9')?.messageGroupId).toBeNull();
+        expect(byId.get('leg-2')?.favorite).toBe(true);
+        expect(byId.get('leg-6')?.favorite).toBe(true);
+
+        // File links survived intact
+        const remainingFileLinks = await serverDB
+          .select()
+          .from(messagesFiles)
+          .where(eq(messagesFiles.userId, userId));
+        expect(remainingFileLinks.map((f) => f.fileId).sort()).toEqual([
+          'file-leg-1',
+          'file-leg-2',
+          'file-leg-3',
+        ]);
+
+        // MessageModel.query returns [compressedGroup, leg-9] with pinnedMessages and fileList intact
+        const messageModel = new MessageModel(serverDB, userId);
+        const queried = await messageModel.query({ topicId });
+        expect(queried).toHaveLength(2);
+        expect(queried[0].role).toBe('compressedGroup');
+        expect(queried[0].id).toBe(g1);
+        expect((queried[0] as any).lastMessageId).toBe('leg-8');
+        expect((queried[0] as any).pinnedMessages?.map((m: any) => m.id)).toEqual([
+          'leg-2',
+          'leg-6',
+        ]);
+
+        const compressedFileIds = ((queried[0] as any).compressedMessages ?? [])
+          .flatMap((m: any) => (m.fileList ?? []).map((f: any) => f.id))
+          .sort();
+        expect(compressedFileIds).toEqual(['file-leg-1', 'file-leg-2', 'file-leg-3']);
+        expect(queried[1].id).toBe('leg-9');
+      });
+
+      it('consolidates legacy stacked groups even when messageIds is empty and isolates parallel/other-topic groups', async () => {
+        const otherTopicId = 'other-rolling-topic';
+        await serverDB.insert(topics).values({ id: otherTopicId, userId });
+
+        const t1 = new Date('2025-01-01T10:00:00Z');
+        const t2 = new Date('2025-01-01T10:01:00Z');
+        await serverDB.insert(messages).values([
+          { content: 'A', createdAt: t1, id: 'iso-1', role: 'user', topicId, userId },
+          { content: 'B', createdAt: t2, id: 'iso-2', role: 'assistant', topicId, userId },
+        ]);
+
+        const g1 = await compressionRepo.createCompressionGroup({
+          content: 'Old 1',
+          messageIds: ['iso-1'],
+          metadata: {},
+          topicId,
+        });
+        await compressionRepo.createCompressionGroup({
+          content: 'Old 2',
+          messageIds: ['iso-2'],
+          metadata: {},
+          topicId,
+        });
+
+        // Parallel group in same topic + compression group in other topic
+        await serverDB.insert(messageGroups).values({
+          id: 'parallel-group-1',
+          topicId,
+          type: MessageGroupType.Parallel,
+          userId,
+        });
+        const otherGroupId = await compressionRepo.createCompressionGroup({
+          content: 'Other topic summary',
+          messageIds: [],
+          metadata: {},
+          topicId: otherTopicId,
+        });
+
+        const resultId = await compressionRepo.upsertRollingCompressionGroup({
+          content: 'Consolidated legacy only',
+          messageIds: [],
+          metadata: {},
+          topicId,
+        });
+
+        expect(resultId).toBe(g1);
+        const groups = await compressionRepo.getCompressionGroups(topicId);
+        expect(groups).toHaveLength(1);
+        expect(groups[0].metadata).toEqual({
+          compressionStrategy: 'summarize',
+          endMessageId: 'iso-2',
+          originalMessageCount: 2,
+          startMessageId: 'iso-1',
+        });
+
+        // Parallel group and other topic group remain untouched
+        const parallelRows = await serverDB
+          .select()
+          .from(messageGroups)
+          .where(eq(messageGroups.id, 'parallel-group-1'));
+        expect(parallelRows).toHaveLength(1);
+
+        const otherTopicGroups = await compressionRepo.getCompressionGroups(otherTopicId);
+        expect(otherTopicGroups).toHaveLength(1);
+        expect(otherTopicGroups[0].id).toBe(otherGroupId);
+      });
+
+      it('protects against ON DELETE CASCADE via NOT EXISTS guard if another user still references a superseded group', async () => {
+        const otherUserId = 'other-user-cascade-guard';
+        await serverDB.insert(users).values({ id: otherUserId });
+
+        await serverDB.insert(messages).values([
+          {
+            content: 'Owner msg 1',
+            createdAt: new Date('2025-01-01T10:00:00Z'),
+            id: 'guard-1',
+            role: 'user',
+            topicId,
+            userId,
+          },
+          {
+            content: 'Owner msg 2',
+            createdAt: new Date('2025-01-01T10:01:00Z'),
+            id: 'guard-2',
+            role: 'assistant',
+            topicId,
+            userId,
+          },
+        ]);
+
+        const g1 = await compressionRepo.createCompressionGroup({
+          content: 'Group 1',
+          messageIds: ['guard-1'],
+          metadata: {},
+          topicId,
+        });
+        const g2 = await compressionRepo.createCompressionGroup({
+          content: 'Group 2',
+          messageIds: ['guard-2'],
+          metadata: {},
+          topicId,
+        });
+
+        // Simulate a foreign-user message pointing to g2 (not reassigned by userId-scoped UPDATE)
+        await serverDB.insert(messages).values({
+          content: 'Foreign user message on g2',
+          createdAt: new Date('2025-01-01T10:02:00Z'),
+          id: 'foreign-guard-msg',
+          messageGroupId: g2,
+          role: 'user',
+          topicId,
+          userId: otherUserId,
+        });
+
+        const keptId = await compressionRepo.upsertRollingCompressionGroup({
+          content: 'Consolidated safely',
+          messageIds: [],
+          metadata: {},
+          topicId,
+        });
+
+        expect(keptId).toBe(g1);
+        // Owner's guard-2 moved to g1
+        const ownerCompressed = await compressionRepo.getCompressedMessages(g1);
+        expect(ownerCompressed.map((m) => m.id)).toEqual(['guard-1', 'guard-2']);
+
+        // NOT EXISTS prevented deleting g2, so foreign-guard-msg was NOT cascade-deleted!
+        const [foreignMsg] = await serverDB
+          .select()
+          .from(messages)
+          .where(eq(messages.id, 'foreign-guard-msg'));
+        expect(foreignMsg).toBeDefined();
+        expect(foreignMsg?.messageGroupId).toBe(g2);
       });
     });
   });

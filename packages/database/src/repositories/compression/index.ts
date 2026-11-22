@@ -1,6 +1,6 @@
 import type { CompressionGroupMetadata } from '@lobechat/types';
 import { MessageGroupType } from '@lobechat/types';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, notExists, sql } from 'drizzle-orm';
 
 import type { MessageGroupItem } from '../../schemas';
 import { messageGroups, messages } from '../../schemas';
@@ -77,6 +77,163 @@ export class CompressionRepository {
       }
 
       return group.id;
+    });
+  }
+
+  /**
+   * Upsert a single rolling compression group for a topic in one transaction.
+   * Keeps the oldest existing compression group in-place (inserting only if none exist),
+   * reassigns messages from superseded groups and new messageIds BEFORE deleting empty
+   * superseded groups (ON DELETE CASCADE safety), and anchors createdAt to min(createdAt)
+   * of all messages in the group.
+   */
+  async upsertRollingCompressionGroup(params: CreateCompressionGroupParams): Promise<string> {
+    const { topicId, content, editorData, messageIds, metadata = {} } = params;
+    if (!content.trim()) throw new Error('Compression summary must not be empty');
+
+    return this.db.transaction(async (tx) => {
+      const existingGroups = await tx
+        .select({
+          description: messageGroups.description,
+          id: messageGroups.id,
+        })
+        .from(messageGroups)
+        .where(
+          and(
+            eq(messageGroups.userId, this.userId),
+            eq(messageGroups.topicId, topicId),
+            eq(messageGroups.type, MessageGroupType.Compression),
+          ),
+        )
+        .orderBy(asc(messageGroups.createdAt), asc(messageGroups.id));
+
+      let targetGroupId: string;
+      let existingDescription: string | null = null;
+      let supersededIds: string[] = [];
+
+      if (existingGroups.length > 0) {
+        targetGroupId = existingGroups[0].id;
+        existingDescription = existingGroups[0].description;
+        supersededIds = existingGroups.slice(1).map((group) => group.id);
+      } else {
+        const initialDescription = JSON.stringify({
+          ...metadata,
+          compressionStrategy: metadata.compressionStrategy ?? 'summarize',
+        });
+        const result = (await tx
+          .insert(messageGroups)
+          .values({
+            content,
+            description: initialDescription,
+            editorData,
+            topicId,
+            type: MessageGroupType.Compression,
+            userId: this.userId,
+          })
+          .returning()) as MessageGroupItem[];
+
+        targetGroupId = result[0].id;
+      }
+
+      // CRITICAL ON DELETE CASCADE SAFETY: Reassign ALL messages BEFORE any DELETE.
+      if (supersededIds.length > 0) {
+        await tx
+          .update(messages)
+          .set({ messageGroupId: targetGroupId })
+          .where(
+            and(eq(messages.userId, this.userId), inArray(messages.messageGroupId, supersededIds)),
+          );
+      }
+
+      if (messageIds.length > 0) {
+        await tx
+          .update(messages)
+          .set({ messageGroupId: targetGroupId })
+          .where(
+            and(
+              eq(messages.userId, this.userId),
+              eq(messages.topicId, topicId),
+              inArray(messages.id, messageIds),
+            ),
+          );
+      }
+
+      const groupMessages = await tx
+        .select({
+          createdAt: messages.createdAt,
+          id: messages.id,
+        })
+        .from(messages)
+        .where(and(eq(messages.userId, this.userId), eq(messages.messageGroupId, targetGroupId)))
+        .orderBy(asc(messages.createdAt), asc(messages.id));
+
+      const minCreatedAt = groupMessages[0]?.createdAt;
+      const totalCount = groupMessages.length;
+      const startMessageId = groupMessages[0]?.id;
+      const endMessageId = groupMessages.at(-1)?.id;
+
+      let existingMetadata: CompressionGroupMetadata = {};
+      if (existingDescription) {
+        try {
+          existingMetadata = JSON.parse(existingDescription) as CompressionGroupMetadata;
+        } catch {
+          existingMetadata = {};
+        }
+      }
+
+      const mergedMetadata: CompressionGroupMetadata = {
+        ...existingMetadata,
+        ...metadata,
+        compressionStrategy:
+          metadata.compressionStrategy ?? existingMetadata.compressionStrategy ?? 'summarize',
+        endMessageId: endMessageId ?? metadata.endMessageId,
+        originalMessageCount: totalCount,
+        startMessageId: startMessageId ?? metadata.startMessageId,
+      };
+
+      const updateValues: {
+        content: string;
+        createdAt?: Date;
+        description: string;
+        editorData?: unknown;
+        updatedAt: Date;
+      } = {
+        content,
+        description: JSON.stringify(mergedMetadata),
+        updatedAt: new Date(),
+      };
+
+      if (minCreatedAt) {
+        updateValues.createdAt = minCreatedAt;
+      }
+
+      if (editorData !== undefined) {
+        updateValues.editorData = editorData;
+      }
+
+      await tx
+        .update(messageGroups)
+        .set(updateValues)
+        .where(and(eq(messageGroups.id, targetGroupId), eq(messageGroups.userId, this.userId)));
+
+      if (supersededIds.length > 0) {
+        await tx.delete(messageGroups).where(
+          and(
+            eq(messageGroups.userId, this.userId),
+            eq(messageGroups.topicId, topicId),
+            eq(messageGroups.type, MessageGroupType.Compression),
+            inArray(messageGroups.id, supersededIds),
+            notExists(
+              tx
+                .select({ one: sql`1` })
+                .from(messages)
+                .where(eq(messages.messageGroupId, messageGroups.id)),
+            ),
+          ),
+        );
+      }
+
+      return targetGroupId;
     });
   }
 

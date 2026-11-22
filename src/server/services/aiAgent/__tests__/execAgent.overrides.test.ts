@@ -346,15 +346,17 @@ describe('AiAgentService.execAgent — arckep: настройки одного �
     });
   });
 
-  it('wires compressionModel to claude-haiku-5-5 (effort: low) by default and deepseek-flash under Data Guard', async () => {
+  it('wires compressionModel to deepseek-flash by default and under Data Guard', async () => {
     await service.execAgent({ agentId: 'agent-1', prompt: 'Normal turn' });
     expect(mockCreateOperation.mock.calls.at(-1)![0].modelRuntimeConfig).toMatchObject({
       compressionModel: {
-        effort: 'low',
-        model: 'claude-haiku-5-5',
-        provider: 'anthropic',
+        model: 'deepseek-flash',
+        provider: 'deepseek',
       },
     });
+    expect(
+      mockCreateOperation.mock.calls.at(-1)![0].modelRuntimeConfig.compressionModel.effort,
+    ).toBeUndefined();
 
     await service.execAgent({
       agentId: 'agent-1',

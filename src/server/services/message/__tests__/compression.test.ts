@@ -1,8 +1,9 @@
 // @vitest-environment node
+import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getTestDB } from '@/database/core/getTestDB';
-import { messages, topics, users } from '@/database/schemas';
+import { files, messageGroups, messages, messagesFiles, topics, users } from '@/database/schemas';
 
 import { MessageService } from '../index';
 
@@ -85,5 +86,199 @@ describe('complete summary publication', () => {
     expect(finalized.messages?.find((message) => message.role === 'compressedGroup')?.content).toBe(
       'Final summary',
     );
+  });
+});
+
+describe('upsertRollingCompressionGroup', () => {
+  it('rejects missing or whitespace-only summary content', async () => {
+    const service = new MessageService(db, owner);
+
+    await expect(service.upsertRollingCompressionGroup(topicId, ['old'], context)).rejects.toThrow(
+      'Compression summary must not be empty',
+    );
+    await expect(
+      service.upsertRollingCompressionGroup(topicId, ['old'], context, ' \n\t '),
+    ).rejects.toThrow('Compression summary must not be empty');
+
+    const groups = await db.select().from(messageGroups).where(eq(messageGroups.topicId, topicId));
+    expect(groups).toHaveLength(0);
+  });
+
+  it('orders the rolling compressedGroup before the active user message and reuses the same groupId', async () => {
+    await db.delete(messages);
+    await db.insert(messages).values([
+      {
+        content: 'Turn 1 user',
+        createdAt: new Date('2025-01-01T10:00:00Z'),
+        id: 't1-u',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 1 assistant',
+        createdAt: new Date('2025-01-01T10:01:00Z'),
+        id: 't1-a',
+        role: 'assistant',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 2 user',
+        createdAt: new Date('2025-01-01T10:02:00Z'),
+        id: 't2-u',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 2 assistant',
+        createdAt: new Date('2025-01-01T10:03:00Z'),
+        id: 't2-a',
+        role: 'assistant',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Active turn user',
+        createdAt: new Date('2025-01-01T10:05:00Z'),
+        id: 't3-active',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+    ]);
+
+    const service = new MessageService(db, owner);
+    const first = await service.upsertRollingCompressionGroup(
+      topicId,
+      ['t1-u', 't1-a'],
+      context,
+      'Rolling summary v1',
+    );
+
+    expect(first.messages.map((m) => ({ id: m.id, role: m.role }))).toEqual([
+      { id: first.messageGroupId, role: 'compressedGroup' },
+      { id: 't2-u', role: 'user' },
+      { id: 't2-a', role: 'assistant' },
+      { id: 't3-active', role: 'user' },
+    ]);
+    expect(first.messages[0].content).toBe('Rolling summary v1');
+
+    const second = await service.upsertRollingCompressionGroup(
+      topicId,
+      ['t2-u', 't2-a'],
+      context,
+      'Rolling summary v2',
+    );
+
+    expect(second.messageGroupId).toBe(first.messageGroupId);
+    expect(second.messages.map((m) => ({ id: m.id, role: m.role }))).toEqual([
+      { id: first.messageGroupId, role: 'compressedGroup' },
+      { id: 't3-active', role: 'user' },
+    ]);
+    expect(second.messages[0].content).toBe('Rolling summary v2');
+
+    // All original message rows remain intact in PostgreSQL
+    const dbMessages = await db.select().from(messages).where(eq(messages.topicId, topicId));
+    expect(dbMessages).toHaveLength(5);
+  });
+
+  it('consolidates legacy multiple compression groups without deleting messages and preserves pinnedMessages and fileList', async () => {
+    await db.delete(messages);
+    await db.insert(messages).values([
+      {
+        content: 'Turn 1 user',
+        createdAt: new Date('2025-01-01T10:00:00Z'),
+        favorite: false,
+        id: 'svc-1',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 1 pinned',
+        createdAt: new Date('2025-01-01T10:01:00Z'),
+        favorite: true,
+        id: 'svc-2',
+        role: 'assistant',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 2 user',
+        createdAt: new Date('2025-01-01T10:02:00Z'),
+        favorite: false,
+        id: 'svc-3',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Turn 2 assistant',
+        createdAt: new Date('2025-01-01T10:03:00Z'),
+        favorite: false,
+        id: 'svc-4',
+        role: 'assistant',
+        topicId,
+        userId: owner,
+      },
+      {
+        content: 'Active user turn',
+        createdAt: new Date('2025-01-01T10:06:00Z'),
+        favorite: false,
+        id: 'svc-5',
+        role: 'user',
+        topicId,
+        userId: owner,
+      },
+    ]);
+
+    await db.insert(files).values({
+      fileType: 'application/pdf',
+      id: 'svc-file-1',
+      name: 'spec.pdf',
+      size: 512,
+      url: '/files/spec.pdf',
+      userId: owner,
+    });
+    await db.insert(messagesFiles).values({
+      fileId: 'svc-file-1',
+      messageId: 'svc-1',
+      userId: owner,
+    });
+
+    const service = new MessageService(db, owner);
+    const legacy1 = await service.createCompressionGroup(
+      topicId,
+      ['svc-1', 'svc-2'],
+      context,
+      'Legacy 1',
+    );
+    await service.createCompressionGroup(topicId, ['svc-3'], context, 'Legacy 2');
+
+    const rolled = await service.upsertRollingCompressionGroup(
+      topicId,
+      ['svc-4'],
+      undefined,
+      'Unified summary',
+    );
+
+    expect(rolled.messageGroupId).toBe(legacy1.messageGroupId);
+    expect(rolled.messages.map((m) => ({ id: m.id, role: m.role }))).toEqual([
+      { id: legacy1.messageGroupId, role: 'compressedGroup' },
+      { id: 'svc-5', role: 'user' },
+    ]);
+    expect((rolled.messages[0] as any).pinnedMessages?.map((m: any) => m.id)).toEqual(['svc-2']);
+    const attachedFileIds = ((rolled.messages[0] as any).compressedMessages ?? []).flatMap(
+      (m: any) => (m.fileList ?? []).map((f: any) => f.id),
+    );
+    expect(attachedFileIds).toEqual(['svc-file-1']);
+
+    const groups = await db.select().from(messageGroups).where(eq(messageGroups.topicId, topicId));
+    expect(groups).toHaveLength(1);
+
+    const dbMessages = await db.select().from(messages).where(eq(messages.topicId, topicId));
+    expect(dbMessages).toHaveLength(5);
   });
 });
