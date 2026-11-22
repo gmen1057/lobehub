@@ -26,6 +26,13 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
               'In code_artifacts mode, omit to list versions; provide the exact fileId to read source.',
             type: 'string',
           },
+          maxLines: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 500,
+            description:
+              'In code_artifacts mode (with fileId), optional max lines per page when using startLine (default 250, max 500; bounded by character limit).',
+          },
           offset: {
             type: 'integer',
             minimum: 0,
@@ -37,11 +44,17 @@ export const TopicReferenceManifest: BuiltinToolManifest = {
             description:
               'For archive continuation, copy snapshotAt from the previous page unchanged to exclude newly generated messages.',
           },
+          startLine: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'In code_artifacts mode (with fileId), optional 1-based start line for line-numbered reading (L<N>: <line>). Follow nextStartLine to continue.',
+          },
           query: {
             type: 'string',
             maxLength: 500,
             description:
-              'Optional literal search within the original archive. Omit to read sequentially.',
+              'Optional literal search within the original archive or code artifact source. Returns totalMatches and up to 50 matches with line numbers and offsets. Omit to read sequentially.',
           },
         },
         required: ['topicId'],

@@ -235,6 +235,113 @@ describe('ArckepToolResultTrimProcessor', () => {
       expect(out.messages[11].content).toBe(xmlMulti2);
       expect(out.metadata.arckepToolResultTrim?.deduplicatedCount).toBe(1);
     });
+
+    it('keeps distinct startLine/maxLines pages separate and preserves line cursors in stubs', async () => {
+      const processor = new ArckepToolResultTrimProcessor();
+      const makeLineKnowledgeXml = (
+        fileId: string,
+        startLine: number,
+        endLine: number,
+        nextStartLine: number | null,
+        totalLines: number,
+      ) => {
+        const cov = JSON.stringify({
+          complete: false,
+          endLine,
+          endOffset: endLine * 50,
+          lineEnding: 'CRLF',
+          nextOffset: nextStartLine ? endLine * 50 : null,
+          nextStartLine,
+          startLine,
+          startOffset: (startLine - 1) * 50,
+          totalCharCount: totalLines * 50,
+          totalLines,
+        });
+        const body = `L${startLine}: ${'x'.repeat(6000)}`;
+        return `<knowledge_base_files totalCount="1">\n<file id="${fileId}" name="Module1.bas">\n<coverage>${cov}</coverage>\n${body}\n</file>\n</knowledge_base_files>`;
+      };
+
+      const oldPage = makeLineKnowledgeXml('vba-1', 1, 250, 251, 900);
+      const page1 = makeLineKnowledgeXml('vba-1', 1, 250, 251, 900);
+      const page2 = makeLineKnowledgeXml('vba-1', 251, 500, 501, 900);
+      const page1Short = makeLineKnowledgeXml('vba-1', 1, 100, 101, 900);
+
+      const messages = [
+        // Turn 1 (old: < appliedCutoff)
+        { content: 'Turn 1', id: 'u1', role: 'user' },
+        ...makeToolPair({
+          apiName: 'readKnowledge',
+          args: { fileIds: ['vba-1'], startLine: 1 },
+          assistantId: 'a1',
+          content: oldPage,
+          identifier: 'lobe-knowledge-base',
+          toolCallId: 'tc-old',
+          toolMsgId: 't-old',
+        }),
+        // Turn 2 (recent: startLine=1 default maxLines=250 -> will be deduped by Turn 3 explicit maxLines=250)
+        { content: 'Turn 2', id: 'u2', role: 'user' },
+        ...makeToolPair({
+          apiName: 'readKnowledge',
+          args: { fileIds: ['vba-1'], startLine: 1 },
+          assistantId: 'a2',
+          content: page1,
+          identifier: 'lobe-knowledge-base',
+          toolCallId: 'tc-p1-a',
+          toolMsgId: 't-p1-a',
+        }),
+        // Turn 3 (recent: distinct startLine=251 AND distinct maxLines=100 AND duplicate startLine=1,maxLines=250)
+        { content: 'Turn 3', id: 'u3', role: 'user' },
+        ...makeToolPair({
+          apiName: 'readKnowledge',
+          args: { fileIds: ['vba-1'], startLine: 251 },
+          assistantId: 'a3-p2',
+          content: page2,
+          identifier: 'lobe-knowledge-base',
+          toolCallId: 'tc-p2',
+          toolMsgId: 't-p2',
+        }),
+        ...makeToolPair({
+          apiName: 'readKnowledge',
+          args: { fileIds: ['vba-1'], maxLines: 100, startLine: 1 },
+          assistantId: 'a3-short',
+          content: page1Short,
+          identifier: 'lobe-knowledge-base',
+          toolCallId: 'tc-short',
+          toolMsgId: 't-short',
+        }),
+        ...makeToolPair({
+          apiName: 'readKnowledge',
+          args: { fileIds: ['vba-1'], maxLines: 250, startLine: 1 },
+          assistantId: 'a3-p1-b',
+          content: page1,
+          identifier: 'lobe-knowledge-base',
+          toolCallId: 'tc-p1-b',
+          toolMsgId: 't-p1-b',
+        }),
+        // Turn 4 (current)
+        { content: 'Turn 4', id: 'u4', role: 'user' },
+      ];
+
+      const out = await processor.process(makeContext(messages));
+
+      // t-old and t-p1-a are stubbed with line cursor fields preserved
+      const oldStub = out.messages.find((m) => m.id === 't-old')?.content;
+      expect(oldStub).toContain('Original knowledge page retained');
+      expect(oldStub).toContain('"startLine":1');
+      expect(oldStub).toContain('"endLine":250');
+      expect(oldStub).toContain('"nextStartLine":251');
+      expect(oldStub).toContain('"totalLines":900');
+
+      const dupStub = out.messages.find((m) => m.id === 't-p1-a')?.content;
+      expect(dupStub).toContain('Original knowledge page retained');
+      expect(dupStub).toContain('"startLine":1');
+      expect(dupStub).toContain('"nextStartLine":251');
+
+      // Different startLine (251), different maxLines (100), and latest startLine=1 are ALL kept intact!
+      expect(out.messages.find((m) => m.id === 't-p2')?.content).toBe(page2);
+      expect(out.messages.find((m) => m.id === 't-short')?.content).toBe(page1Short);
+      expect(out.messages.find((m) => m.id === 't-p1-b')?.content).toBe(page1);
+    });
   });
 
   describe('Rule 2: getTopicContext & searchKnowledgeBase', () => {

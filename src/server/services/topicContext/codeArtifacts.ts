@@ -1,4 +1,5 @@
 import type { LobeChatDatabase } from '@lobechat/database';
+import { decodeSourceText, TextEncodingError } from '@lobechat/file-loaders';
 import { readFilePage } from '@lobechat/prompts';
 import { and, desc, eq, exists, or, sql } from 'drizzle-orm';
 
@@ -75,7 +76,7 @@ export async function topicHasCodeArtifacts(db: LobeChatDatabase, userId: string
 export async function readCodeArtifacts(
   db: LobeChatDatabase,
   userId: string,
-  { fileId, offset, query, topicId }: TopicContextParams,
+  { fileId, maxLines, offset, query, startLine, topicId }: TopicContextParams,
   includeTextFiles = true,
 ) {
   const scope = ownedCodeArtifacts(db, userId, topicId, includeTextFiles);
@@ -116,8 +117,19 @@ export async function readCodeArtifacts(
   if (bytes.byteLength > MAX_SOURCE_BYTES) {
     return { content: 'Code artifact source exceeds the file limit.', success: false };
   }
-  const source = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
-  const { content, ...page } = readFilePage(source, { offset, query });
+  let source: string;
+  try {
+    source = decodeSourceText(bytes).text;
+  } catch (e) {
+    if (e instanceof TextEncodingError) {
+      return {
+        content: 'Code artifact source is not valid UTF-8 or Windows-1251 text.',
+        success: false,
+      };
+    }
+    throw e;
+  }
+  const { content, ...page } = readFilePage(source, { maxLines, offset, query, startLine });
   return {
     content: `${JSON.stringify({ fileId, ...page })}\n${content}`,
     success: true,

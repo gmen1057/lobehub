@@ -17,10 +17,19 @@ const formatFileContent = (file: FileContent, options: FileReadOptions, limit: n
   }
 
   const page = readFilePage(file.content, options, limit);
-  const coverage = page.complete
-    ? ''
-    : `\n<coverage>${JSON.stringify({ ...page, content: undefined })}</coverage>\n` +
+  const isLineMode = page.startLine !== undefined;
+  let coverage = '';
+  if (isLineMode) {
+    coverage = `\n<coverage>${JSON.stringify({ ...page, content: undefined })}</coverage>\n`;
+    if (!page.complete) {
+      coverage +=
+        '[Partial source. Continue with readKnowledge(fileIds, startLine=nextStartLine) or offset=nextOffset. A query searches literal text, not meaning; no match is not proof of absence. For complete coverage omit query and read sequentially until nextStartLine=null.]\n';
+    }
+  } else if (!page.complete) {
+    coverage =
+      `\n<coverage>${JSON.stringify({ ...page, content: undefined })}</coverage>\n` +
       '[Partial source. Continue with readKnowledge(fileIds, offset=nextOffset). A query searches literal text, not meaning; no match is not proof of absence. For complete coverage omit query and read from offset=0 to nextOffset=null.]\n';
+  }
   return `<file id="${file.fileId}" name="${file.filename}">
 ${coverage}${page.content}
 </file>`;
