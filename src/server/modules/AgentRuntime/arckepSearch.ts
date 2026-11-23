@@ -38,7 +38,13 @@ export const ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS = new Set([
 /** Подключение студии с двумя инструментами web_search / web_fetch (mcp_service/chat_connectors.py). */
 export const ARCKEP_WEB_SEARCH_CONNECTOR = 'mcp-arckep-studio-web';
 
-type SearchChatConfig = { searchMode?: string; useModelBuiltinSearch?: boolean } | undefined;
+type SearchChatConfig =
+  | {
+      deepseekDataGuardProtected?: boolean;
+      searchMode?: string;
+      useModelBuiltinSearch?: boolean;
+    }
+  | undefined;
 
 const isSearchOff = (chatConfig: SearchChatConfig): boolean => {
   const mode = chatConfig?.searchMode ?? 'auto';
@@ -135,10 +141,17 @@ export const offersArckepSearchChoice = async (
 
 export const resolveSandboxAllowInternet = async (params: {
   agentConfig?: { chatConfig?: SearchChatConfig };
+  dataGuardProtected?: boolean;
   disabledToolIds?: readonly string[];
   model?: string;
   provider?: string;
 }): Promise<boolean> => {
+  if (
+    params.dataGuardProtected === true ||
+    params.agentConfig?.chatConfig?.deepseekDataGuardProtected === true
+  ) {
+    return false;
+  }
   const { agentConfig, disabledToolIds, model, provider } = params;
   // Явно выключенный тумблер «Поиск в интернете» (searchMode === 'off' | 'disabled') всегда закрывает сеть E2B
   // на всех моделях, даже если mcp-arckep-studio-web установлен у пользователя в БД.

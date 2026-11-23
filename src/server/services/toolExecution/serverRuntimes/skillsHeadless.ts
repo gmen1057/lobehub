@@ -1,8 +1,8 @@
 import { builtinSkills, RemotionVideoIdentifier } from '@lobechat/builtin-skills';
-import { type CommandResult } from '@lobechat/builtin-tool-skills';
-import {
-  type ExportFileResult,
-  type SkillRuntimeService,
+import type { CommandResult } from '@lobechat/builtin-tool-skills';
+import type {
+  ExportFileResult,
+  SkillRuntimeService,
 } from '@lobechat/builtin-tool-skills/executionRuntime';
 import { getMimeType } from '@lobechat/utils';
 import debug from 'debug';
@@ -10,15 +10,14 @@ import { sha256 } from 'js-sha256';
 
 import { fileEnv } from '@/envs/file';
 import { filterBuiltinSkills } from '@/helpers/skillFilters';
-import { type FileService } from '@/server/services/file';
-import { type SkillResourceService } from '@/server/services/skill/resource';
+import type { FileService } from '@/server/services/file';
+import type { SkillResourceService } from '@/server/services/skill/resource';
+import type { SandboxFile, SkillSandbox } from '@/server/services/skillSandbox';
 import {
   base64DecodedSize,
   safeRelativePath,
   SANDBOX_MAX_EXPORT_BYTES,
-  type SandboxFile,
   skillFolderName,
-  type SkillSandbox,
 } from '@/server/services/skillSandbox';
 import { nanoid, uuid } from '@/utils/uuid';
 
@@ -44,9 +43,9 @@ interface ResolvedSkillFiles {
   identifier: string;
 }
 
-/** Команда или путь относится к видеопесочнице Remotion (`/workspace/project`, `/opt/remotion`, `.runtime/`). */
+/** Команда или путь относится к видеопесочнице Remotion (`/opt/remotion`, `.runtime/`, `exports/`, `public/media/`, `Composition.tsx`, `video.mp4`). */
 export const isRemotionTarget = (text: string): boolean =>
-  /\/workspace\/project|\/opt\/remotion|(?:^|[\s"'/])\.runtime\/|Composition\.tsx|preview\.html|video\.mp4|still\.png/.test(
+  /\/workspace\/project\/(?:\.runtime|exports|public\/media)(?:\/|$)|(?:^|[\s"'/])(?:\.runtime|exports|public\/media)\/|\/opt\/remotion|Composition\.tsx|preview\.html|video\.mp4|still\.png|npx\s+remotion/.test(
     text,
   );
 

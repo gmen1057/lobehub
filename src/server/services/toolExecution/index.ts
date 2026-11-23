@@ -5,12 +5,13 @@ import {
   isArckepPaidStudioTool,
   isArckepUserMcpId,
 } from '@lobechat/builtin-tools';
-import { type ChatToolPayload } from '@lobechat/types';
+import type { ChatToolPayload } from '@lobechat/types';
 import { safeParseJSON } from '@lobechat/utils';
 import debug from 'debug';
 
 import { PluginModel } from '@/database/models/plugin';
-import { type CloudMCPParams, type ToolCallContent } from '@/libs/mcp';
+import { TopicModel } from '@/database/models/topic';
+import type { CloudMCPParams, ToolCallContent } from '@/libs/mcp';
 import { FileService } from '@/server/services/file';
 import {
   contentBlocksToString,
@@ -18,22 +19,29 @@ import {
   replaceMediaBlocksWithText,
 } from '@/server/services/mcp/contentProcessor';
 import {
+  appendSandboxBridgeTrailer,
+  appendTrailerAfterTruncation,
+  prepareSandboxBridgeSession,
+  runWithSandboxBridgeScope,
+  stripAndCommitMcpBlocks,
+} from '@/server/services/sandboxWorkspace/bridge';
+import {
   DEFAULT_TOOL_RESULT_MAX_LENGTH,
   truncateToolResult,
 } from '@/server/utils/truncateToolResult';
 
 import { DiscoverService } from '../discover';
-import { type MCPService } from '../mcp';
+import type { MCPService } from '../mcp';
 import { buildUserMcpHeaders, getUserMcpGatewayUrl } from '../userMcp/gateway';
-import { type BuiltinToolsExecutor } from './builtin';
+import type { BuiltinToolsExecutor } from './builtin';
 import { classifyToolError } from './errorClassification';
 import { assertMcpConnectionAllowed, getStudioMcpUrl, isInternalConnectorUrl } from './mcpPolicy';
 import { userOwnsTopic } from './topicOwnership';
 import { gatePaidToolCall, markTopicUntrusted } from './topicTrust';
-import {
-  type ToolExecutionContext,
-  type ToolExecutionResult,
-  type ToolExecutionResultResponse,
+import type {
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolExecutionResultResponse,
 } from './types';
 
 const log = debug('lobe-server:tool-execution-service');
@@ -45,8 +53,8 @@ const TOPIC_HEADERS = new Set(['x-arckep-topic', 'x-arckep-topic-id', 'x-mcp-top
 // image-studio-public-mcp). Адрес задаёт сервер, не манифест подключения: `getStudioMcpUrl()` (./mcpPolicy,
 // ARCKEP_STUDIO_MCP_URL) — он же в белом списке адресов `mcp-arckep-*`.
 
-/** Заголовок доступа песочницы E2B к интернету: выставляет только сервер по настройкам поиска. */
-const SANDBOX_INTERNET_HEADERS = new Set(['x-arckep-allow-internet']);
+/** Заголовки безопасности песочницы E2B (интернет и Data Guard): выставляет только сервер. */
+const SANDBOX_SECURITY_HEADERS = new Set(['x-arckep-allow-internet', 'x-arckep-data-guard']);
 
 interface ToolExecutionServiceDeps {
   builtinToolsExecutor: BuiltinToolsExecutor;
@@ -114,19 +122,23 @@ export class ToolExecutionService {
       }
 
       const typeStr = type as string;
-      let data: ToolExecutionResult;
-      switch (typeStr) {
-        case 'mcp': {
-          data = await this.executeMCPTool(payload, context);
-          break;
-        }
-
-        case 'builtin':
-        default: {
-          data = await this.builtinToolsExecutor.execute(payload, context);
-          break;
-        }
-      }
+      const { result: data, trailer: sandboxBridgeTrailer } = await runWithSandboxBridgeScope(
+        {
+          agentId: context.agentId,
+          dataGuardProtected: context.dataGuardProtected,
+          messageId: context.messageId ?? context.parentMessageId,
+          parentMessageId: context.parentMessageId,
+          serverDB: context.serverDB,
+          topicId: context.topicId,
+          userId: context.userId,
+        },
+        async () => {
+          if (typeStr === 'mcp') {
+            return this.executeMCPTool(payload, context);
+          }
+          return this.builtinToolsExecutor.execute(payload, context);
+        },
+      );
 
       const executionTime = Date.now() - startTime;
 
@@ -134,7 +146,7 @@ export class ToolExecutionService {
       // Use agent-specific config if provided, otherwise use default
       // Source readers already return bounded pages with exact cursors. Cutting a page
       // again would silently skip source characters on the next read.
-      const truncatedContent =
+      const truncatedBody =
         identifier === 'arckep-text-file' ||
         (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') ||
         (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext') ||
@@ -144,22 +156,24 @@ export class ToolExecutionService {
           : truncateToolResult(data.content, context.toolResultMaxLength);
 
       // Log if content was truncated
-      if (truncatedContent !== data.content) {
+      if (truncatedBody !== data.content) {
         const maxLength = context.toolResultMaxLength ?? DEFAULT_TOOL_RESULT_MAX_LENGTH;
         log(
           'Tool result truncated for %s:%s - original: %d chars, truncated: %d chars (limit: %d)',
           identifier,
           apiName,
           data.content.length,
-          truncatedContent.length,
+          truncatedBody.length,
           maxLength,
         );
       }
 
+      const finalContent = appendTrailerAfterTruncation(truncatedBody, sandboxBridgeTrailer);
+
       if (!data.success) {
         return {
           ...data,
-          content: truncatedContent,
+          content: finalContent,
           error: normalizeExecutionError(data.error, data.content),
           executionTime,
         };
@@ -167,7 +181,7 @@ export class ToolExecutionService {
 
       return {
         ...data,
-        content: truncatedContent,
+        content: finalContent,
         executionTime,
       };
 
@@ -268,7 +282,7 @@ export class ToolExecutionService {
           if (['x-arckep-user', 'x-mcp-user-id'].includes(key.toLowerCase())) continue;
           // Номер темы (песочница E2B) задаёт только сервер, см. ниже.
           if (TOPIC_HEADERS.has(key.toLowerCase())) continue;
-          if (SANDBOX_INTERNET_HEADERS.has(key.toLowerCase())) continue;
+          if (SANDBOX_SECURITY_HEADERS.has(key.toLowerCase())) continue;
           if (value === undefined || value === null || value === '') continue;
           const text = String(value)
             .replaceAll(/[\r\n\0]/g, '')
@@ -338,22 +352,36 @@ export class ToolExecutionService {
     // Заголовки темы из манифеста и настроек человека отбрасываются у всех подключений.
     for (const key of Object.keys(headers)) {
       if (TOPIC_HEADERS.has(key.toLowerCase())) delete headers[key];
-      if (SANDBOX_INTERNET_HEADERS.has(key.toLowerCase())) delete headers[key];
+      if (SANDBOX_SECURITY_HEADERS.has(key.toLowerCase())) delete headers[key];
     }
     // Песочница E2B: тема отдаётся шлюзу только вместе с номером человека в студии и только если тема его
     // (номер приходит от клиента, шлюз ему доверяет: заголовок сильнее session_id из аргументов модели).
     // Нет своей темы или человека — вызов отклоняется: откат на session_id, который называет модель, дал бы
     // выбрать чужую песочницу. Ошибка уходит модели текстом (executeMCPTool).
     if (identifier === ARCKEP_E2B_CONNECTOR_ID) {
-      if (
-        !context.topicId ||
-        !arckepUserId ||
-        !(await userOwnsTopic(context.serverDB, context.userId, context.topicId))
-      ) {
+      let ownedTopic: { id?: string; metadata?: unknown } | undefined;
+      if (context.topicId) {
+        try {
+          ownedTopic = await new TopicModel(context.serverDB, context.userId).findById(
+            context.topicId,
+          );
+        } catch {
+          ownedTopic = undefined;
+        }
+      }
+      if (!context.topicId || !arckepUserId || !ownedTopic) {
         throw new Error('Песочница доступна только в своём чате аккаунта студии Arckep.');
       }
+      const topicMeta = (ownedTopic.metadata ?? undefined) as Record<string, unknown> | undefined;
+      const effectiveDataGuard = Boolean(
+        context.dataGuardProtected || topicMeta?.dataGuardProtected === true,
+      );
       headers['X-Arckep-Topic'] = context.topicId;
-      headers['X-Arckep-Allow-Internet'] = context.sandboxAllowInternet ? '1' : '0';
+      headers['X-Arckep-Allow-Internet'] =
+        !effectiveDataGuard && context.sandboxAllowInternet ? '1' : '0';
+      if (effectiveDataGuard) {
+        headers['X-Arckep-Data-Guard'] = '1';
+      }
     }
 
     return { ...mcpParams, headers };
@@ -438,7 +466,11 @@ export class ToolExecutionService {
    * Base64 не остаётся ни в тексте для модели, ни в pluginState, ни в базе. Нет пользователя или базы,
    * либо загрузка упала — блок заменяется строкой «[картинка не сохранена: причина]», инструмент не падает.
    */
-  private createMediaProcessor(context: ToolExecutionContext, identifier?: string) {
+  private createMediaProcessor(
+    context: ToolExecutionContext,
+    identifier?: string,
+    effectiveDataGuard = false,
+  ) {
     return async (blocks: ToolCallContent[]): Promise<ToolCallContent[]> => {
       // Текстовые ответы (подключения студии, базы данных и т. д.) хранилища не касаются.
       const needsStorage = blocks.some(
@@ -463,7 +495,7 @@ export class ToolExecutionService {
 
       return processContentBlocks(blocks, fileService, {
         degradeOnError: true,
-        fileImagesAsMedia: identifier === ARCKEP_E2B_CONNECTOR_ID,
+        fileImagesAsMedia: identifier === ARCKEP_E2B_CONNECTOR_ID && !effectiveDataGuard,
       });
     };
   }
@@ -532,10 +564,73 @@ export class ToolExecutionService {
       }
 
       // For stdio/http/sse types, use standard MCP service
+      const rawClientParams = await this.withUserConnectionParams(identifier, mcpParams, context);
+      const isE2bSandbox = identifier === ARCKEP_E2B_CONNECTOR_ID;
+      let effectiveArgsStr = args;
+      let clientParams = rawClientParams;
+      let mediaProcessor: (blocks: ToolCallContent[]) => Promise<ToolCallContent[]>;
+
+      if (isE2bSandbox) {
+        const bridgeSession = await prepareSandboxBridgeSession({
+          apiName,
+          argsStr: args,
+          context: {
+            agentId: context.agentId,
+            dataGuardProtected: context.dataGuardProtected,
+            messageId: context.messageId ?? context.parentMessageId,
+            parentMessageId: context.parentMessageId,
+            serverDB: context.serverDB,
+            topicId: context.topicId,
+            userId: context.userId,
+          },
+        });
+        effectiveArgsStr = bridgeSession.argsStr;
+        const effectiveDataGuard = Boolean(
+          context.dataGuardProtected ||
+          rawClientParams?.headers?.['X-Arckep-Data-Guard'] === '1' ||
+          bridgeSession.effectiveDataGuard,
+        );
+        const baseMediaProcessor = this.createMediaProcessor(
+          context,
+          identifier,
+          effectiveDataGuard,
+        );
+
+        if (rawClientParams && typeof rawClientParams === 'object') {
+          clientParams = {
+            ...rawClientParams,
+            headers: {
+              ...rawClientParams.headers,
+              'X-Arckep-Allow-Internet':
+                !effectiveDataGuard && context.sandboxAllowInternet ? '1' : '0',
+              'X-Arckep-Data-Guard': effectiveDataGuard ? '1' : '0',
+            },
+          };
+        }
+
+        mediaProcessor = async (blocks: ToolCallContent[]) => {
+          const { cleanedBlocks, mediaBlocks, receiptFooter } = await stripAndCommitMcpBlocks(
+            blocks,
+            bridgeSession,
+          );
+          if (receiptFooter) {
+            appendSandboxBridgeTrailer(receiptFooter);
+          }
+          const processedBlocks = await baseMediaProcessor(cleanedBlocks);
+          return mediaBlocks.length > 0 ? [...processedBlocks, ...mediaBlocks] : processedBlocks;
+        };
+      } else {
+        mediaProcessor = this.createMediaProcessor(
+          context,
+          identifier,
+          Boolean(context.dataGuardProtected),
+        );
+      }
+
       const result = await this.mcpService.callTool({
-        argsStr: args,
-        clientParams: await this.withUserConnectionParams(identifier, mcpParams, context),
-        processContentBlocks: this.createMediaProcessor(context, identifier),
+        argsStr: effectiveArgsStr,
+        clientParams,
+        processContentBlocks: mediaProcessor,
         toolName: apiName,
       });
 

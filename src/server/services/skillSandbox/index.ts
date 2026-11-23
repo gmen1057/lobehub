@@ -1,5 +1,16 @@
-import { type CommandResult } from '@lobechat/builtin-tool-skills';
+import type { CommandResult } from '@lobechat/builtin-tool-skills';
 import debug from 'debug';
+
+import type { SandboxBridgeContext } from '@/server/services/sandboxWorkspace/bridge';
+import {
+  appendSandboxBridgeTrailer,
+  getActiveSandboxBridgeContext,
+  hasActiveSandboxBridgeScope,
+  prepareSandboxBridgeSession,
+  sanitizeBridgeArgumentsObject,
+} from '@/server/services/sandboxWorkspace/bridge';
+import { extractAndStripArckepSync } from '@/server/services/sandboxWorkspace/commitSync';
+import { resolveEffectiveTopicGuardAndAgent } from '@/server/services/sandboxWorkspace/manifest';
 
 const log = debug('lobe-server:skill-sandbox');
 
@@ -88,6 +99,10 @@ export interface SkillSandboxOptions {
    * песочница работала бы неучтённо, поэтому вызывающий не создаёт SkillSandbox для чужих аккаунтов.
    */
   arckepUserId: string;
+  /** Опциональный контекст файлового моста S3 ↔ /workspace (в ToolExecutionService передаётся и через AsyncLocalStorage). */
+  bridgeContext?: SandboxBridgeContext;
+  /** Режим Data Guard: принудительно закрывает интернет и передаёт X-Arckep-Data-Guard: '1'. */
+  dataGuard?: boolean;
   fetchImpl?: typeof fetch;
   gatewayUrl?: string;
   topicId: string;
@@ -121,17 +136,18 @@ const b64 = (value: string | Uint8Array) => Buffer.from(value).toString('base64'
  */
 export const buildCommandProgram = (options: {
   command: string;
-  /** Папка запуска (относительно домашней или абсолютный путь вида `/workspace/project`); без неё — домашняя */
+  /** Папка запуска (относительно домашней или абсолютный путь вида `/workspace/project`); без неё — `/workspace` */
   cwd?: string;
   files?: SandboxFile[];
   timeoutSec?: number;
 }): string => {
   const timeoutSec = options.timeoutSec ?? SANDBOX_COMMAND_TIMEOUT_SEC;
+  const hasExplicitCwd = Boolean(options.cwd);
   const root = options.cwd
     ? options.cwd.startsWith('/')
       ? JSON.stringify(options.cwd)
       : `os.path.join(os.path.expanduser("~"), ${JSON.stringify(options.cwd)})`
-    : 'os.path.expanduser("~")';
+    : '"/workspace"';
   const payload = (options.files ?? []).map((file) => [file.path, b64(file.content)]);
 
   return `import base64, json, os, subprocess
@@ -140,7 +156,13 @@ def _out(code, out, err):
     print(_M + json.dumps({"exit": code, "stdout": out, "stderr": err}, ensure_ascii=False))
 try:
     _root = ${root}
-    os.makedirs(_root, exist_ok=True)
+${
+  hasExplicitCwd
+    ? ''
+    : `    if not os.path.isdir(_root):
+        _root = os.path.expanduser("~")
+`
+}    os.makedirs(_root, exist_ok=True)
 ${
   payload.length > 0
     ? `    for _p, _b in json.loads(base64.b64decode("${b64(JSON.stringify(payload))}").decode()):
@@ -150,7 +172,16 @@ ${
             _h.write(base64.b64decode(_b))
 `
     : ''
-}    _r = subprocess.run(base64.b64decode("${b64(options.command)}").decode(), shell=True, capture_output=True, text=True, errors="replace", cwd=_root, timeout=${timeoutSec})
+}    _env = os.environ.copy()
+${
+  options.cwd === '/workspace/project'
+    ? ''
+    : `    _pp = [p for p in _env.get("PYTHONPATH", "").split(":") if p]
+    _head = [p for p in ("/workspace/project", "/workspace") if p not in _pp]
+    if _head or _pp:
+        _env["PYTHONPATH"] = ":".join(_head + _pp)
+`
+}    _r = subprocess.run(base64.b64decode("${b64(options.command)}").decode(), shell=True, capture_output=True, text=True, errors="replace", cwd=_root, env=_env, timeout=${timeoutSec})
     _out(_r.returncode, _r.stdout, _r.stderr)
 except subprocess.TimeoutExpired:
     _out(124, "", "Command stopped: it did not finish in ${timeoutSec} seconds. Split the work into smaller steps.")
@@ -206,12 +237,52 @@ export class SkillSandbox {
     toolName: string,
     args: Record<string, unknown>,
     maxResponseBytes: number = GATEWAY_COMMAND_RESPONSE_LIMIT,
-  ): Promise<{ ok: true; text: string } | { message: string; ok: false }> {
-    const isRemotion = args.template === 'remotion';
+  ): Promise<{ ok: true; receiptFooter?: string; text: string } | { message: string; ok: false }> {
+    const cleanedArgs = sanitizeBridgeArgumentsObject(args);
+    const isRemotion = cleanedArgs.template === 'remotion';
     const timeoutMs = isRemotion ? GATEWAY_REMOTION_TIMEOUT_MS : GATEWAY_TIMEOUT_MS;
+
+    const rawBridgeCtx = this.options.bridgeContext ?? getActiveSandboxBridgeContext();
+    const effectiveBridgeCtx: SandboxBridgeContext | undefined = rawBridgeCtx
+      ? {
+          ...rawBridgeCtx,
+          dataGuardProtected: Boolean(this.options.dataGuard || rawBridgeCtx.dataGuardProtected),
+          messageId: rawBridgeCtx.messageId ?? rawBridgeCtx.parentMessageId ?? null,
+          topicId: rawBridgeCtx.topicId ?? this.options.topicId,
+        }
+      : undefined;
+
+    const bridgeSession =
+      toolName === 'execute_code' && effectiveBridgeCtx
+        ? await prepareSandboxBridgeSession({
+            apiName: 'execute_code',
+            argsObject: cleanedArgs,
+            context: effectiveBridgeCtx,
+          })
+        : null;
+
+    let effectiveDataGuard = Boolean(
+      this.options.dataGuard ||
+      effectiveBridgeCtx?.dataGuardProtected ||
+      bridgeSession?.effectiveDataGuard,
+    );
+    if (!effectiveDataGuard && !bridgeSession && effectiveBridgeCtx?.serverDB) {
+      const resolved = await resolveEffectiveTopicGuardAndAgent({
+        agentId: effectiveBridgeCtx.agentId,
+        dataGuardProtected: effectiveBridgeCtx.dataGuardProtected,
+        serverDB: effectiveBridgeCtx.serverDB,
+        topicId: effectiveBridgeCtx.topicId,
+        userId: effectiveBridgeCtx.userId,
+      });
+      effectiveDataGuard = resolved.effectiveDataGuard;
+    }
+
+    const outgoingArgs = bridgeSession ? bridgeSession.argsObject : cleanedArgs;
+
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
-      'X-Arckep-Allow-Internet': this.options.allowInternet ? '1' : '0',
+      'X-Arckep-Allow-Internet': !effectiveDataGuard && this.options.allowInternet ? '1' : '0',
+      'X-Arckep-Data-Guard': effectiveDataGuard ? '1' : '0',
       'X-Arckep-Topic': this.options.topicId,
       'X-Arckep-User': this.options.arckepUserId,
     };
@@ -224,7 +295,10 @@ export class SkillSandbox {
           id: Date.now(),
           jsonrpc: '2.0',
           method: 'tools/call',
-          params: { arguments: { ...args, session_id: this.options.topicId }, name: toolName },
+          params: {
+            arguments: { ...outgoingArgs, session_id: this.options.topicId },
+            name: toolName,
+          },
         }),
         headers,
         method: 'POST',
@@ -246,10 +320,34 @@ export class SkillSandbox {
       };
       if (data.error) return { message: data.error.message || 'Sandbox gateway error.', ok: false };
 
-      const text = data.result?.content?.[0]?.text ?? '';
-      if (data.result?.isError) return { message: text || 'Sandbox gateway error.', ok: false };
+      const rawText = data.result?.content?.[0]?.text ?? '';
+      const { cleanedText, syncReport } = extractAndStripArckepSync(rawText);
+      if (data.result?.isError) {
+        return { message: cleanedText || 'Sandbox gateway error.', ok: false };
+      }
 
-      return { ok: true, text };
+      let receiptFooter: string | undefined;
+      if (syncReport && bridgeSession) {
+        const committed = await bridgeSession.commitFromSyncReport(syncReport);
+        const imageLines = committed.mediaBlocks.map((img) => `![](${img.data})`);
+        const trailerParts = [
+          ...committed.receiptFooter
+            .split('\n')
+            .filter((line) => Boolean(line) && !line.startsWith('ARCKEP_')),
+          ...imageLines,
+          ...committed.markerLines,
+        ];
+        const fullTrailer = trailerParts.join('\n');
+        if (fullTrailer) {
+          if (hasActiveSandboxBridgeScope()) {
+            appendSandboxBridgeTrailer(fullTrailer);
+          } else {
+            receiptFooter = fullTrailer;
+          }
+        }
+      }
+
+      return { ok: true, receiptFooter, text: cleanedText };
     } catch (error) {
       log('gateway call %s failed: %O', toolName, error);
       return { message: `The sandbox is unavailable: ${(error as Error).message}`, ok: false };
@@ -292,7 +390,15 @@ export class SkillSandbox {
     const result = await this.call('execute_code', callArgs);
     if (!result.ok) return { exitCode: 1, output: '', stderr: result.message, success: false };
 
-    return parseCommandOutput(result.text);
+    const parsed = parseCommandOutput(result.text);
+    if (result.receiptFooter) {
+      const trimmedOut = parsed.output.replace(/\n+$/, '');
+      return {
+        ...parsed,
+        output: trimmedOut ? `${trimmedOut}\n\n${result.receiptFooter}` : result.receiptFooter,
+      };
+    }
+    return parsed;
   }
 
   /** Файл из песочницы (base64). */
