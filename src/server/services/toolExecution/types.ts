@@ -38,6 +38,7 @@ export interface ToolExecutionContext {
   toolResultMaxLength?: number;
   topicId?: string;
   userId?: string;
+  workspaceDataGuardReady?: boolean;
 }
 
 export interface ToolExecutionResult {

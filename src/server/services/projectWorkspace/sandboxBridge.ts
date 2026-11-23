@@ -4,6 +4,7 @@ import { sha256 as computeSha256 } from 'js-sha256';
 
 import { agents, files, projectWorkspaceFiles } from '@/database/schemas';
 
+import { computeWorkspaceDataGuardState } from './dataGuard';
 import { normalizeWorkspacePath, WorkspaceError } from './paths';
 import type { WorkspaceStorageAdapter } from './store';
 import { ProjectWorkspaceStore } from './store';
@@ -75,12 +76,25 @@ export async function listHydratableProjectFiles(params: {
   if (!isWorkspaceEnabled()) return [];
 
   const [agent] = await params.serverDB
-    .select({ id: agents.id })
+    .select({ chatConfig: agents.chatConfig, id: agents.id })
     .from(agents)
     .where(and(eq(agents.id, params.agentId), eq(agents.userId, params.userId)))
     .limit(1);
 
   if (!agent) return [];
+
+  if (params.dataGuardProtected) {
+    const dgState = await computeWorkspaceDataGuardState({
+      agentChatConfig: (agent.chatConfig as Record<string, unknown> | null | undefined) ?? {},
+      agentId: params.agentId,
+      db: params.serverDB,
+      requestDataGuardProtected: true,
+      userId: params.userId,
+    });
+    if (!dgState.workspaceDataGuardReady) {
+      return [];
+    }
+  }
 
   const rows = await params.serverDB
     .select({
@@ -138,6 +152,7 @@ export async function applySandboxProjectFileSync(
     sha256: string;
     topicId: string;
     userId: string;
+    workspaceDataGuardReady?: boolean;
   },
   fileServiceOverride?: WorkspaceStorageAdapter,
 ): Promise<SandboxProjectSyncResult> {
@@ -149,13 +164,27 @@ export async function applySandboxProjectFileSync(
     };
   }
 
+  let effectiveWorkspaceDataGuardReady = false;
   if (params.dataGuardProtected) {
-    return {
-      message:
-        'В защищённом режиме Data Guard изменения из песочницы сохраняются только в текущей теме.',
-      outcome: 'fallback_to_topic',
-      reason: 'data_guard_blocked',
-    };
+    const isReady =
+      params.workspaceDataGuardReady ??
+      (
+        await computeWorkspaceDataGuardState({
+          agentId: params.agentId,
+          db: params.serverDB,
+          requestDataGuardProtected: true,
+          userId: params.userId,
+        })
+      ).workspaceDataGuardReady;
+    if (!isReady) {
+      return {
+        message:
+          'В защищённом режиме Data Guard изменения из песочницы сохраняются только в текущей теме.',
+        outcome: 'fallback_to_topic',
+        reason: 'data_guard_blocked',
+      };
+    }
+    effectiveWorkspaceDataGuardReady = true;
   }
 
   let normalizedPath: string;
@@ -268,6 +297,8 @@ export async function applySandboxProjectFileSync(
       actor: 'sandbox',
       baseRevision: params.baseRevision,
       changeNote: 'Synced from E2B sandbox (/workspace/project)',
+      dataGuardStatus:
+        params.dataGuardProtected && effectiveWorkspaceDataGuardReady ? 'scrubbed' : 'unmasked',
       encodedBytesOverride: params.bytes,
       messageId: params.messageId,
       path: normalizedPath,

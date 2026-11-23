@@ -255,11 +255,70 @@ const toRevisionDto = (row: ProjectFileRevisionItem): WorkspaceRevisionDto => ({
 });
 
 interface LockedAgentRow {
+  chatConfig: Record<string, unknown> | null;
   id: string;
   slug: string | null;
   systemRole: string | null;
   title: string | null;
   virtual: boolean | null;
+}
+
+export async function assertNoActivePathPrefixConflict(
+  tx: LobeChatDatabase | Transaction,
+  params: {
+    agentId: string;
+    excludeWorkspaceFileId?: string;
+    normalizedPath: string;
+    userId: string;
+  },
+): Promise<void> {
+  const segments = params.normalizedPath.split('/');
+  const lowerPrefixes: string[] = [];
+  for (let i = 1; i < segments.length; i++) {
+    lowerPrefixes.push(segments.slice(0, i).join('/').toLowerCase());
+  }
+
+  const escapedLowerTarget = escapeLikeLiteral(params.normalizedPath.toLowerCase());
+  const descendantPattern = `${escapedLowerTarget}/%`;
+
+  const prefixCondition =
+    lowerPrefixes.length > 0
+      ? sql`lower(${projectWorkspaceFiles.path}) IN (${sql.join(
+          lowerPrefixes.map((p) => sql`${p}`),
+          sql`, `,
+        )})`
+      : undefined;
+  const descendantCondition = sql`lower(${projectWorkspaceFiles.path}) LIKE ${descendantPattern} ESCAPE '\\'`;
+
+  const conflictClause = prefixCondition
+    ? sql`(${prefixCondition} OR ${descendantCondition})`
+    : descendantCondition;
+
+  const conflicts = await tx
+    .select({ id: projectWorkspaceFiles.id, path: projectWorkspaceFiles.path })
+    .from(projectWorkspaceFiles)
+    .where(
+      and(
+        eq(projectWorkspaceFiles.userId, params.userId),
+        eq(projectWorkspaceFiles.agentId, params.agentId),
+        isNull(projectWorkspaceFiles.deletedAt),
+        params.excludeWorkspaceFileId
+          ? ne(projectWorkspaceFiles.id, params.excludeWorkspaceFileId)
+          : undefined,
+        conflictClause,
+      ),
+    )
+    .limit(1);
+
+  const conflict = conflicts[0];
+  if (conflict) {
+    throw new WorkspaceError(
+      'PATH_PREFIX_CONFLICT',
+      `Путь "${params.normalizedPath}" конфликтует с существующим файлом или папкой "${conflict.path}"`,
+      409,
+      { conflictingFileId: conflict.id, conflictingPath: conflict.path },
+    );
+  }
 }
 
 export class ProjectWorkspaceStore {
@@ -280,6 +339,73 @@ export class ProjectWorkspaceStore {
       this.defaultFileService = new FileService(this.db, this.userId);
     }
     return this.defaultFileService;
+  }
+
+  private isAgentDataGuardProtected(agent: LockedAgentRow): boolean {
+    return Boolean(agent.chatConfig?.dataGuardProtected);
+  }
+
+  private isAgentDataGuardCommercial(agent: LockedAgentRow): boolean {
+    return Boolean(agent.chatConfig?.dataGuardCommercial);
+  }
+
+  private getAgentDataGuardProtectedSince(agent: LockedAgentRow): string | null {
+    const raw = agent.chatConfig?.dataGuardProtectedSince;
+    return typeof raw === 'string' && raw.length > 0 ? raw : null;
+  }
+
+  public async deleteS3KeysSafe(keys: string[]): Promise<void> {
+    await this.safeDeleteS3Keys(keys);
+  }
+
+  public async resolveEstimatedTokensForRows(
+    executor: LobeChatDatabase | Transaction,
+    rows: ProjectWorkspaceFileItem[],
+  ): Promise<Map<string, number>> {
+    return this.resolveEstimatedTokensMap(executor, rows);
+  }
+
+  public async toWorkspaceFileDtos(
+    executor: LobeChatDatabase | Transaction,
+    rows: ProjectWorkspaceFileItem[],
+  ): Promise<WorkspaceFileDto[]> {
+    return this.toFileDtos(executor, rows);
+  }
+
+  public async assertQuotasForWriteInTx(
+    tx: Transaction,
+    params: {
+      addedRevisionBytes: number;
+      agentId: string;
+      excludeWorkspaceFileId?: string;
+      isCreatingActiveSlot: boolean;
+      newByteSize: number;
+      newCharCount: number;
+      newEstimatedTokens: number;
+      newKind: WorkspaceFileKind;
+      newLoadMode: WorkspaceLoadMode;
+    },
+  ): Promise<void> {
+    return this.assertBudgetAndQuotasForWrite(tx, params);
+  }
+
+  public async syncRagMembershipInTx(
+    tx: Transaction,
+    params: {
+      agentId: string;
+      agentTitle: string | null;
+      newFileId: string | null;
+      newRagEnabled: boolean;
+      oldFileId: string | null;
+      oldRagEnabled: boolean;
+      preserveChunks?: boolean;
+    },
+  ): Promise<void> {
+    return this.syncFileRagMembership(tx, params);
+  }
+
+  public async pruneRevisionsInTx(tx: Transaction, workspaceFileId: string): Promise<string[]> {
+    return this.pruneOldRevisionsInTx(tx, workspaceFileId);
   }
 
   private async safeDeleteS3Key(key: string | null | undefined): Promise<void> {
@@ -320,6 +446,7 @@ export class ProjectWorkspaceStore {
   ): Promise<LockedAgentRow> {
     const baseQuery = executor
       .select({
+        chatConfig: agents.chatConfig,
         id: agents.id,
         slug: agents.slug,
         systemRole: agents.systemRole,
@@ -334,7 +461,10 @@ export class ProjectWorkspaceStore {
     if (!agent) {
       throw new WorkspaceError('AGENT_NOT_FOUND', 'Agent not found', 404);
     }
-    return agent;
+    return {
+      ...agent,
+      chatConfig: (agent.chatConfig as Record<string, unknown> | null | undefined) ?? null,
+    };
   }
 
   private assertNotInboxInstruction(agent: LockedAgentRow, normalizedPath: string): void {
@@ -798,9 +928,18 @@ export class ProjectWorkspaceStore {
       newRagEnabled: boolean;
       oldFileId: string | null;
       oldRagEnabled: boolean;
+      preserveChunks?: boolean;
     },
   ): Promise<void> {
-    const { agentId, agentTitle, newFileId, newRagEnabled, oldFileId, oldRagEnabled } = params;
+    const {
+      agentId,
+      agentTitle,
+      newFileId,
+      newRagEnabled,
+      oldFileId,
+      oldRagEnabled,
+      preserveChunks = false,
+    } = params;
 
     const shouldRemoveOld =
       Boolean(oldFileId) && (oldRagEnabled || !newRagEnabled) && oldFileId !== newFileId;
@@ -827,7 +966,7 @@ export class ProjectWorkspaceStore {
         .where(eq(knowledgeBaseFiles.fileId, fileToDetach))
         .limit(1);
 
-      if (otherKbRefs.length === 0) {
+      if (otherKbRefs.length === 0 && !preserveChunks) {
         await new FileModel(this.db, this.userId).deleteFileChunks(tx as any, [fileToDetach]);
       }
     }
@@ -1057,12 +1196,15 @@ export class ProjectWorkspaceStore {
 
   public async getWorkspaceOverview(agentId: string): Promise<{
     budget: WorkspaceBudgetSummary;
+    dataGuardCommercial: boolean;
+    dataGuardProtected: boolean;
     files: WorkspaceFileDto[];
     instructionFile: WorkspaceFileDto | null;
     pendingProposals: WorkspaceProposalDto[];
+    workspaceDataGuardReady: boolean;
     workspaceEnabled: boolean;
   }> {
-    await this.ensureAgentOwned(this.db, agentId, false);
+    const agent = await this.ensureAgentOwned(this.db, agentId, false);
 
     const activeRows = await this.db
       .select()
@@ -1083,12 +1225,21 @@ export class ProjectWorkspaceStore {
     ]);
 
     const instructionFile = dtos.find((f) => isRootAgentsMd(f.path)) ?? null;
+    const dataGuardProtected = this.isAgentDataGuardProtected(agent);
+    const dataGuardCommercial = this.isAgentDataGuardCommercial(agent);
+    const unmaskedActiveCount = activeRows.filter(
+      (r) => r.loadMode !== 'disabled' && r.dataGuardStatus !== 'scrubbed',
+    ).length;
+    const workspaceDataGuardReady = Boolean(dataGuardProtected && unmaskedActiveCount === 0);
 
     return {
       budget,
+      dataGuardCommercial,
+      dataGuardProtected,
       files: dtos,
       instructionFile,
       pendingProposals,
+      workspaceDataGuardReady,
       workspaceEnabled: isWorkspaceEnabled(),
     };
   }
@@ -1194,6 +1345,7 @@ export class ProjectWorkspaceStore {
     baseRevision?: number | null;
     changeNote?: string | null;
     content?: string;
+    dataGuardStatus?: WorkspaceDataGuardStatus;
     encodedBytesOverride?: Uint8Array;
     encoding?: SourceTextEncoding;
     isProtected?: boolean;
@@ -1215,6 +1367,8 @@ export class ProjectWorkspaceStore {
     removedLines: number;
   }> {
     const normalizedPath = normalizeWorkspacePath(params.path);
+    const effectiveDataGuardStatus: WorkspaceDataGuardStatus =
+      params.dataGuardStatus === 'scrubbed' ? 'scrubbed' : 'unmasked';
     const cleanedSummary =
       params.userSummary !== undefined ? sanitizeUserSummary(params.userSummary) : undefined;
     const cleanedChangeNote = sanitizeChangeNote(params.changeNote);
@@ -1317,7 +1471,22 @@ export class ProjectWorkspaceStore {
         const agent = await this.ensureAgentOwned(tx, params.agentId, true);
         this.assertNotInboxInstruction(agent, normalizedPath);
 
+        if (this.isAgentDataGuardProtected(agent) && effectiveDataGuardStatus !== 'scrubbed') {
+          throw new WorkspaceError(
+            'DATA_GUARD_SCRUB_REQUIRED',
+            'Protected project requires scrubbed content (dataGuardStatus="scrubbed")',
+            409,
+          );
+        }
+
         const lockedRow = await this.lockWorkspaceRowByPath(tx, params.agentId, normalizedPath);
+
+        await assertNoActivePathPrefixConflict(tx, {
+          agentId: params.agentId,
+          excludeWorkspaceFileId: lockedRow?.id,
+          normalizedPath,
+          userId: this.userId,
+        });
 
         if (lockedRow && lockedRow.deletedAt === null && lockedRow.kind === 'document') {
           throw new WorkspaceError(
@@ -1568,7 +1737,7 @@ export class ProjectWorkspaceStore {
               currentDocumentId: newDocId,
               currentFileId: newFileId,
               currentRevision: 1,
-              dataGuardStatus: 'unmasked',
+              dataGuardStatus: effectiveDataGuardStatus,
               deletedAt: null,
               deletedBy: null,
               encoding: finalEncoding,
@@ -1599,6 +1768,7 @@ export class ProjectWorkspaceStore {
               currentDocumentId: newDocId,
               currentFileId: newFileId,
               currentRevision: nextRev,
+              dataGuardStatus: effectiveDataGuardStatus,
               deletedAt: null,
               deletedBy: null,
               encoding: finalEncoding,
@@ -1652,7 +1822,7 @@ export class ProjectWorkspaceStore {
           agentId: params.agentId,
           agentTitle: agent.title,
           newFileId,
-          newRagEnabled: nextRagEnabled,
+          newRagEnabled: effectiveLoadMode === 'disabled' ? false : nextRagEnabled,
           oldFileId: lockedRow?.currentFileId ?? null,
           oldRagEnabled: Boolean(lockedRow?.ragEnabled),
         });
@@ -1726,6 +1896,7 @@ export class ProjectWorkspaceStore {
       baseRevision?: number | null;
       changeNote?: string | null;
       content: string;
+      dataGuardStatus?: WorkspaceDataGuardStatus;
       encoding?: SourceTextEncoding;
       isProtected?: boolean;
       lineEnding?: SourceLineEnding;
@@ -1805,6 +1976,7 @@ export class ProjectWorkspaceStore {
       baseRevision: input.baseRevision,
       changeNote: input.changeNote,
       content: input.content,
+      dataGuardStatus: input.dataGuardStatus,
       encoding: input.encoding,
       isProtected: isRootAgentsMd(normalizedPath) ? true : input.isProtected,
       lineEnding: input.lineEnding,
@@ -1823,7 +1995,7 @@ export class ProjectWorkspaceStore {
   public async syncAgentInstructionFromAgentApi(
     agentId: string,
     systemRole: string | null | undefined,
-    _opts?: { isCreate?: boolean },
+    opts?: { dataGuardStatus?: WorkspaceDataGuardStatus; isCreate?: boolean },
   ): Promise<{ changed: boolean; file: WorkspaceFileDto | null }> {
     if (systemRole === undefined) {
       return { changed: false, file: null };
@@ -1874,6 +2046,7 @@ export class ProjectWorkspaceStore {
       allowLatestRevisionInTx: true,
       changeNote: 'Synced via agent instruction API',
       content: systemRole,
+      dataGuardStatus: opts?.dataGuardStatus,
       isProtected: true,
       path: 'AGENTS.md',
     });
@@ -1885,6 +2058,7 @@ export class ProjectWorkspaceStore {
     agentId: string,
     input: {
       baseRevision?: number | null;
+      dataGuardStatus?: WorkspaceDataGuardStatus;
       enableRag?: boolean;
       fileId: string;
       kind: WorkspaceFileKind;
@@ -1900,6 +2074,8 @@ export class ProjectWorkspaceStore {
   }> {
     const normalizedPath = normalizeWorkspacePath(input.path);
     const cleanedSummary = sanitizeUserSummary(input.userSummary);
+    const effectiveDataGuardStatus: WorkspaceDataGuardStatus =
+      input.dataGuardStatus === 'scrubbed' ? 'scrubbed' : 'unmasked';
 
     const fileModel = new FileModel(this.db, this.userId);
     const uploadedFile = await fileModel.findById(input.fileId);
@@ -1946,7 +2122,22 @@ export class ProjectWorkspaceStore {
         const agent = await this.ensureAgentOwned(tx, agentId, true);
         this.assertNotInboxInstruction(agent, normalizedPath);
 
+        if (this.isAgentDataGuardProtected(agent) && effectiveDataGuardStatus !== 'scrubbed') {
+          throw new WorkspaceError(
+            'DATA_GUARD_SCRUB_REQUIRED',
+            'Protected project requires scrubbed file registration (dataGuardStatus="scrubbed")',
+            409,
+          );
+        }
+
         const lockedRow = await this.lockWorkspaceRowByPath(tx, agentId, normalizedPath);
+        await assertNoActivePathPrefixConflict(tx, {
+          agentId,
+          excludeWorkspaceFileId: lockedRow?.id,
+          normalizedPath,
+          userId: this.userId,
+        });
+
         if (
           input.baseRevision === undefined ||
           input.baseRevision === null ||
@@ -2040,7 +2231,7 @@ export class ProjectWorkspaceStore {
               currentDocumentId: newDocId,
               currentFileId: uploadedFile.id,
               currentRevision: 1,
-              dataGuardStatus: 'unmasked',
+              dataGuardStatus: effectiveDataGuardStatus,
               encoding: decoded.encoding,
               isProtected,
               kind: 'text',
@@ -2067,6 +2258,7 @@ export class ProjectWorkspaceStore {
               currentDocumentId: newDocId,
               currentFileId: uploadedFile.id,
               currentRevision: nextRev,
+              dataGuardStatus: effectiveDataGuardStatus,
               deletedAt: null,
               deletedBy: null,
               encoding: decoded.encoding,
@@ -2118,9 +2310,13 @@ export class ProjectWorkspaceStore {
           agentId,
           agentTitle: agent.title,
           newFileId: uploadedFile.id,
-          newRagEnabled: ragEnabled,
+          newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
           oldFileId: lockedRow?.currentFileId ?? null,
           oldRagEnabled: Boolean(lockedRow?.ragEnabled),
+          preserveChunks:
+            ragEnabled &&
+            effectiveLoadMode === 'disabled' &&
+            lockedRow?.currentFileId === uploadedFile.id,
         });
 
         s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, savedRow.id)));
@@ -2165,7 +2361,21 @@ export class ProjectWorkspaceStore {
 
     const result = await this.db.transaction(async (tx) => {
       const agent = await this.ensureAgentOwned(tx, agentId, true);
+      if (this.isAgentDataGuardProtected(agent) && effectiveDataGuardStatus !== 'scrubbed') {
+        throw new WorkspaceError(
+          'DATA_GUARD_SCRUB_REQUIRED',
+          'Protected project requires scrubbed file registration (dataGuardStatus="scrubbed")',
+          409,
+        );
+      }
+
       const lockedRow = await this.lockWorkspaceRowByPath(tx, agentId, normalizedPath);
+      await assertNoActivePathPrefixConflict(tx, {
+        agentId,
+        excludeWorkspaceFileId: lockedRow?.id,
+        normalizedPath,
+        userId: this.userId,
+      });
 
       if (
         input.baseRevision === undefined ||
@@ -2234,7 +2444,7 @@ export class ProjectWorkspaceStore {
             currentDocumentId: null,
             currentFileId: uploadedFile.id,
             currentRevision: 1,
-            dataGuardStatus: 'unmasked',
+            dataGuardStatus: effectiveDataGuardStatus,
             encoding: null,
             isProtected,
             kind: 'document',
@@ -2261,6 +2471,7 @@ export class ProjectWorkspaceStore {
             currentDocumentId: null,
             currentFileId: uploadedFile.id,
             currentRevision: nextRev,
+            dataGuardStatus: effectiveDataGuardStatus,
             deletedAt: null,
             deletedBy: null,
             encoding: null,
@@ -2305,9 +2516,13 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: uploadedFile.id,
-        newRagEnabled: ragEnabled,
+        newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
         oldFileId: lockedRow?.currentFileId ?? null,
         oldRagEnabled: Boolean(lockedRow?.ragEnabled),
+        preserveChunks:
+          ragEnabled &&
+          effectiveLoadMode === 'disabled' &&
+          lockedRow?.currentFileId === uploadedFile.id,
       });
 
       s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, savedRow.id)));
@@ -2398,6 +2613,18 @@ export class ProjectWorkspaceStore {
 
         const existingAtTarget = await this.lockWorkspaceRowByPath(tx, agentId, nextPath);
         if (existingAtTarget && existingAtTarget.id !== row.id) {
+          if (existingAtTarget.deletedAt !== null) {
+            throw new WorkspaceError(
+              'TRASH_PATH_CONFLICT',
+              'Файл с таким путём находится в корзине — восстановите его или удалите из корзины навсегда',
+              409,
+              {
+                deletedAt: existingAtTarget.deletedAt.toISOString(),
+                trashFileId: existingAtTarget.id,
+              },
+            );
+          }
+
           throw new WorkspaceError(
             'FILE_ALREADY_EXISTS',
             `Another workspace file entry already exists at "${nextPath}"`,
@@ -2409,6 +2636,13 @@ export class ProjectWorkspaceStore {
             },
           );
         }
+
+        await assertNoActivePathPrefixConflict(tx, {
+          agentId,
+          excludeWorkspaceFileId: row.id,
+          normalizedPath: nextPath,
+          userId: this.userId,
+        });
       }
 
       const tokensMap = await this.resolveEstimatedTokensMap(tx, [row]);
@@ -2471,9 +2705,11 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: row.currentFileId,
-        newRagEnabled: nextRagEnabled,
+        newRagEnabled: nextLoadMode === 'disabled' ? false : nextRagEnabled,
         oldFileId: row.currentFileId,
-        oldRagEnabled: row.ragEnabled,
+        oldRagEnabled:
+          row.loadMode === 'disabled' ? !nextRagEnabled && row.ragEnabled : row.ragEnabled,
+        preserveChunks: nextRagEnabled && nextLoadMode === 'disabled',
       });
 
       const [dto] = await this.toFileDtos(tx, [updated!]);
@@ -2631,6 +2867,7 @@ export class ProjectWorkspaceStore {
       baseRevision?: number | null;
       changeNote?: string | null;
       content?: string;
+      dataGuardStatus?: WorkspaceDataGuardStatus;
       encodedBytesOverride?: Uint8Array;
       encoding?: SourceTextEncoding;
       lineEnding?: SourceLineEnding;
@@ -2638,6 +2875,7 @@ export class ProjectWorkspaceStore {
       messageId?: string | null;
       path: string;
       reason?: string | null;
+      toolCallId?: string | null;
       topicId?: string | null;
       userSummary?: string | null;
     },
@@ -2648,6 +2886,7 @@ export class ProjectWorkspaceStore {
       baseRevision: input.baseRevision,
       changeNote: input.changeNote,
       content: input.content,
+      dataGuardStatus: input.dataGuardStatus,
       encodedBytesOverride: input.encodedBytesOverride,
       encoding: input.encoding,
       lineEnding: input.lineEnding,
@@ -2682,6 +2921,7 @@ export class ProjectWorkspaceStore {
       actor?: 'agent' | 'sandbox';
       baseRevision?: number | null;
       changeNote?: string | null;
+      dataGuardStatus?: WorkspaceDataGuardStatus;
       edits: PatchEdit[];
       messageId?: string | null;
       path?: string;
@@ -2799,6 +3039,8 @@ export class ProjectWorkspaceStore {
       baseRevision: row.currentRevision,
       changeNote: input.changeNote,
       content: stripLeadingBomChar(patchRes.content),
+      dataGuardStatus:
+        input.dataGuardStatus ?? (row.dataGuardStatus === 'scrubbed' ? 'scrubbed' : 'unmasked'),
       encoding: targetEncoding,
       lineEnding: targetLineEnding,
       messageId: input.messageId,
@@ -2968,7 +3210,7 @@ export class ProjectWorkspaceStore {
    */
   public async searchProjectFiles(
     agentId: string,
-    params: { limit?: number; pathPrefix?: string; query: string },
+    params: { limit?: number; pathPrefix?: string; query: string; requireScrubbed?: boolean },
   ): Promise<WorkspaceSearchResult> {
     const trimmedQuery = params.query?.trim() ?? '';
     if (!trimmedQuery) {
@@ -3002,6 +3244,9 @@ export class ProjectWorkspaceStore {
           isNull(projectWorkspaceFiles.deletedAt),
           ne(projectWorkspaceFiles.loadMode, 'disabled'),
           eq(projectWorkspaceFiles.kind, 'text'),
+          params.requireScrubbed
+            ? eq(projectWorkspaceFiles.dataGuardStatus, 'scrubbed')
+            : undefined,
           escapedPrefix
             ? sql`lower(${projectWorkspaceFiles.path}) LIKE lower(${`${escapedPrefix}%`}) ESCAPE '\\'`
             : undefined,
@@ -3234,6 +3479,32 @@ export class ProjectWorkspaceStore {
         );
       }
 
+      const agentProtected = this.isAgentDataGuardProtected(agent);
+      if (agentProtected) {
+        if (row.dataGuardStatus !== 'scrubbed') {
+          throw new WorkspaceError(
+            'DATA_GUARD_SCRUB_REQUIRED',
+            'Нельзя откатить незащищённый файл в защищённом проекте',
+            409,
+          );
+        }
+
+        const protectedSinceRaw = this.getAgentDataGuardProtectedSince(agent);
+        if (protectedSinceRaw) {
+          const protectedSinceDate = new Date(protectedSinceRaw);
+          if (
+            !Number.isNaN(protectedSinceDate.getTime()) &&
+            targetRevRow.createdAt < protectedSinceDate
+          ) {
+            throw new WorkspaceError(
+              'DATA_GUARD_SCRUB_REQUIRED',
+              'Нельзя откатить файл к ревизии, созданной до включения защиты проекта',
+              409,
+            );
+          }
+        }
+      }
+
       let targetEstimatedTokens = 0;
       let diffStats: { addedLines: number; removedLines: number } | null = null;
 
@@ -3261,6 +3532,15 @@ export class ProjectWorkspaceStore {
       }
 
       const isResurrecting = row.deletedAt !== null;
+      if (isResurrecting) {
+        await assertNoActivePathPrefixConflict(tx, {
+          agentId,
+          excludeWorkspaceFileId: row.id,
+          normalizedPath: row.path,
+          userId: this.userId,
+        });
+      }
+
       await this.assertBudgetAndQuotasForWrite(tx, {
         addedRevisionBytes: targetRevRow.byteSize,
         agentId,
@@ -3274,6 +3554,8 @@ export class ProjectWorkspaceStore {
       });
 
       const nextRev = row.currentRevision + 1;
+      const nextDataGuardStatus: WorkspaceDataGuardStatus =
+        agentProtected || row.dataGuardStatus === 'scrubbed' ? 'scrubbed' : 'unmasked';
 
       const [updated] = await tx
         .update(projectWorkspaceFiles)
@@ -3284,6 +3566,7 @@ export class ProjectWorkspaceStore {
           currentDocumentId: targetRevRow.documentId,
           currentFileId: targetRevRow.fileId,
           currentRevision: nextRev,
+          dataGuardStatus: nextDataGuardStatus,
           deletedAt: null,
           deletedBy: null,
           encoding: targetRevRow.encoding,
@@ -3324,9 +3607,13 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: targetRevRow.fileId,
-        newRagEnabled: row.ragEnabled,
+        newRagEnabled: row.loadMode === 'disabled' ? false : row.ragEnabled,
         oldFileId: row.currentFileId,
         oldRagEnabled: row.ragEnabled,
+        preserveChunks:
+          row.ragEnabled &&
+          row.loadMode === 'disabled' &&
+          targetRevRow.fileId === row.currentFileId,
       });
 
       s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, row.id)));
@@ -3338,6 +3625,14 @@ export class ProjectWorkspaceStore {
 
     if (s3KeysToPrune.length > 0) await this.safeDeleteS3Keys(s3KeysToPrune);
     return result;
+  }
+
+  public async restoreRevision(
+    agentId: string,
+    workspaceFileId: string,
+    input: { baseRevision?: number; targetRevision: number },
+  ): Promise<{ budget: WorkspaceBudgetSummary; file: WorkspaceFileDto }> {
+    return this.rollbackFileRevision(agentId, workspaceFileId, input);
   }
 
   public async applyProposal(
@@ -3520,6 +3815,13 @@ export class ProjectWorkspaceStore {
         ? await this.lockWorkspaceRowById(tx, agentId, proposal.workspaceFileId)
         : await this.lockWorkspaceRowByPath(tx, agentId, normalizedPath);
 
+      await assertNoActivePathPrefixConflict(tx, {
+        agentId,
+        excludeWorkspaceFileId: lockedRow?.id,
+        normalizedPath,
+        userId: this.userId,
+      });
+
       if (proposal.proposalType === 'edit') {
         if (
           !lockedRow ||
@@ -3611,6 +3913,10 @@ export class ProjectWorkspaceStore {
         lockedRow?.deletedAt === null
           ? lockedRow.loadPriority
           : defaultPriorityForPathAndMode(normalizedPath, effectiveLoadMode);
+      const nextDataGuardStatus: WorkspaceDataGuardStatus =
+        lockedRow?.dataGuardStatus === 'scrubbed' || this.isAgentDataGuardProtected(agent)
+          ? 'scrubbed'
+          : 'unmasked';
 
       let savedRow: ProjectWorkspaceFileItem;
       if (!lockedRow) {
@@ -3625,7 +3931,7 @@ export class ProjectWorkspaceStore {
             currentDocumentId: newDocId,
             currentFileId: proposal.proposedFileId!,
             currentRevision: 1,
-            dataGuardStatus: 'unmasked',
+            dataGuardStatus: nextDataGuardStatus,
             encoding: payload.encoding,
             isProtected: effectiveProtected,
             kind: 'text',
@@ -3652,6 +3958,7 @@ export class ProjectWorkspaceStore {
             currentDocumentId: newDocId,
             currentFileId: proposal.proposedFileId!,
             currentRevision: nextRev,
+            dataGuardStatus: nextDataGuardStatus,
             deletedAt: null,
             deletedBy: null,
             encoding: payload.encoding,
@@ -3714,7 +4021,7 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: proposal.proposedFileId!,
-        newRagEnabled: ragEnabled,
+        newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
         oldFileId: lockedRow?.currentFileId ?? null,
         oldRagEnabled: Boolean(lockedRow?.ragEnabled),
       });

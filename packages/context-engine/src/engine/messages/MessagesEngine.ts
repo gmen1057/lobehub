@@ -79,6 +79,7 @@ const WORKSPACE_TOOL_APIS = new Set([
   'readProjectFile',
   'patchProjectFile',
   'writeProjectFile',
+  'writeProjectFilePart',
   'deleteProjectFile',
 ]);
 
@@ -166,6 +167,8 @@ const collectInitialMaskedToolMsgIds = (initialMessages: unknown[] | undefined):
   return ids;
 };
 
+const MASKED_TOOL_ARGUMENTS_JSON = '{"masked":"[Data Guard]"}';
+
 class WorkspaceDataGuardMaskProcessor extends BaseProcessor {
   readonly name = 'WorkspaceDataGuardMaskProcessor';
 
@@ -174,31 +177,63 @@ class WorkspaceDataGuardMaskProcessor extends BaseProcessor {
     const maskedCallIds = new Set<string>();
     const maskedMsgIds = collectInitialMaskedToolMsgIds(context.initialState?.messages);
 
-    for (const msg of clonedContext.messages) {
+    for (let i = 0; i < clonedContext.messages.length; i++) {
+      const msg = clonedContext.messages[i];
       if (!msg || msg.role !== 'assistant') continue;
 
+      let nextTools = msg.tools;
+      let toolsChanged = false;
       if (Array.isArray(msg.tools)) {
-        for (const tool of msg.tools) {
+        nextTools = msg.tools.map((tool: any) => {
           if (
-            typeof tool?.id === 'string' &&
-            tool.id &&
-            isDataGuardSensitivePayload(tool.identifier, tool.apiName)
+            tool &&
+            (isDataGuardSensitivePayload(tool.identifier, tool.apiName) ||
+              isDataGuardSensitiveToolName(tool.name))
           ) {
-            maskedCallIds.add(tool.id);
+            if (typeof tool.id === 'string' && tool.id) {
+              maskedCallIds.add(tool.id);
+            }
+            if (tool.arguments !== MASKED_TOOL_ARGUMENTS_JSON) {
+              toolsChanged = true;
+              return { ...tool, arguments: MASKED_TOOL_ARGUMENTS_JSON };
+            }
           }
-        }
+          return tool;
+        });
       }
 
+      let nextToolCalls = msg.tool_calls;
+      let toolCallsChanged = false;
       if (Array.isArray(msg.tool_calls)) {
-        for (const tc of msg.tool_calls) {
-          if (
-            typeof tc?.id === 'string' &&
-            tc.id &&
-            isDataGuardSensitiveToolName(tc.function?.name)
-          ) {
-            maskedCallIds.add(tc.id);
+        nextToolCalls = msg.tool_calls.map((tc: any) => {
+          const isSensitive =
+            isDataGuardSensitiveToolName(tc?.function?.name) ||
+            (typeof tc?.id === 'string' && tc.id && maskedCallIds.has(tc.id));
+          if (isSensitive) {
+            if (typeof tc?.id === 'string' && tc.id) {
+              maskedCallIds.add(tc.id);
+            }
+            if (tc?.function && tc.function.arguments !== MASKED_TOOL_ARGUMENTS_JSON) {
+              toolCallsChanged = true;
+              return {
+                ...tc,
+                function: {
+                  ...tc.function,
+                  arguments: MASKED_TOOL_ARGUMENTS_JSON,
+                },
+              };
+            }
           }
-        }
+          return tc;
+        });
+      }
+
+      if (toolsChanged || toolCallsChanged) {
+        clonedContext.messages[i] = {
+          ...msg,
+          ...(toolsChanged ? { tools: nextTools } : {}),
+          ...(toolCallsChanged ? { tool_calls: nextToolCalls } : {}),
+        };
       }
     }
 
@@ -219,11 +254,20 @@ class WorkspaceDataGuardMaskProcessor extends BaseProcessor {
         isDataGuardSensitivePayload(msg.plugin?.identifier, msg.plugin?.apiName) ||
         isDataGuardSensitiveToolName(msg.name);
 
-      if (shouldMask && msg.content !== DATA_GUARD_MASKED_TOOL_CONTENT) {
-        clonedContext.messages[i] = {
-          ...msg,
-          content: DATA_GUARD_MASKED_TOOL_CONTENT,
-        };
+      if (shouldMask) {
+        const maskPluginArgs =
+          msg.plugin &&
+          typeof msg.plugin === 'object' &&
+          msg.plugin.arguments !== MASKED_TOOL_ARGUMENTS_JSON;
+        if (msg.content !== DATA_GUARD_MASKED_TOOL_CONTENT || maskPluginArgs) {
+          clonedContext.messages[i] = {
+            ...msg,
+            content: DATA_GUARD_MASKED_TOOL_CONTENT,
+            ...(maskPluginArgs
+              ? { plugin: { ...msg.plugin, arguments: MASKED_TOOL_ARGUMENTS_JSON } }
+              : {}),
+          };
+        }
       }
     }
 
@@ -308,6 +352,7 @@ export class MessagesEngine {
       dynamicSystemAppend,
       workspaceIndexBlock,
       deepseekDataGuardProtected,
+      workspaceDataGuardReady,
       inputTemplate,
       enableHistoryCount,
       historyCount,
@@ -380,6 +425,7 @@ export class MessagesEngine {
       documents: agentDocuments,
       enabled: hasAgentDocuments,
     };
+    const blockUnmaskedWorkspace = Boolean(deepseekDataGuardProtected && !workspaceDataGuardReady);
 
     return [
       // =============================================
@@ -400,7 +446,7 @@ export class MessagesEngine {
       new SystemRoleInjector({ systemRole }),
       // Project workspace pinned rules (<project_rules>, Breakpoint 1 static prefix)
       new ProjectWorkspaceRulesInjector({
-        enabled: !deepseekDataGuardProtected && !!workspaceRulesBlock,
+        enabled: !blockUnmaskedWorkspace && !!workspaceRulesBlock,
         rulesBlock: workspaceRulesBlock,
       }),
       // Per-turn dynamic system additions (strictly AFTER <project_rules> to keep Breakpoint 1 warm)
@@ -473,7 +519,7 @@ export class MessagesEngine {
       }),
       // Project workspace file index (<project_workspace_index trust="untrusted_workspace_data">)
       new ProjectWorkspaceIndexInjector({
-        enabled: !deepseekDataGuardProtected && !!workspaceIndexBlock,
+        enabled: !blockUnmaskedWorkspace && !!workspaceIndexBlock,
         indexBlock: workspaceIndexBlock,
       }),
       // Agent documents → before first user message
@@ -592,7 +638,7 @@ export class MessagesEngine {
       new ReactionFeedbackProcessor({ enabled: true }),
       // Message content processing (image encoding, multimodal, workspaceDelta)
       new MessageContentProcessor({
-        deepseekDataGuardProtected,
+        deepseekDataGuardProtected: blockUnmaskedWorkspace,
         fileContext: fileContext || { enabled: true, includeFileUrl: true },
         isCanUseVideo: capabilities?.isCanUseVideo || (() => false),
         isCanUseVision: capabilities?.isCanUseVision || (() => true),
@@ -607,7 +653,7 @@ export class MessagesEngine {
         provider,
       }),
       // Data Guard masking for historical arckep-workspace & searchKnowledgeBase tool outputs (keeps readKnowledge intact)
-      ...(deepseekDataGuardProtected ? [new WorkspaceDataGuardMaskProcessor()] : []),
+      ...(blockUnmaskedWorkspace ? [new WorkspaceDataGuardMaskProcessor()] : []),
       // Cache-safe stale tool result & superseded inline artifact trimming
       // MUST run strictly AFTER GroupMessageFlatten/TasksFlatten/CompressedGroupRoleTransform/ToolCallProcessor
       // and strictly BEFORE ToolMessageReorder and MessageCleanupProcessor

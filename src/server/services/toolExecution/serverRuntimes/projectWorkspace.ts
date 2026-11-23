@@ -25,6 +25,7 @@ import {
   normalizeWorkspacePath,
   ProjectWorkspaceStore,
   WorkspaceError,
+  writeProjectFilePart as executeWriteProjectFilePart,
 } from '@/server/services/projectWorkspace';
 import { registerProjectWorkspaceSandboxBridge } from '@/server/services/projectWorkspace/sandboxBridge';
 import type { PatchEdit } from '@/server/services/textFiles/patch';
@@ -36,6 +37,7 @@ registerProjectWorkspaceSandboxBridge();
 
 export const WORKSPACE_CHANGE_MARKER_PREFIX = 'ARCKEP_WORKSPACE_CHANGE ';
 export const WORKSPACE_PROPOSAL_MARKER_PREFIX = 'ARCKEP_WORKSPACE_PROPOSAL ';
+export const MAX_WRITE_TOOL_CONTENT_BYTES = 64 * 1024;
 
 const WRITE_LIMIT_TTL_MS = 30 * 60 * 1000;
 const WRITE_LIMIT_REACHED_MESSAGE =
@@ -85,7 +87,7 @@ const validateEntryGuard = (ctx: ToolExecutionContext): ToolExecutionResult | nu
     };
   }
 
-  if (ctx.dataGuardProtected === true) {
+  if (ctx.dataGuardProtected === true && ctx.workspaceDataGuardReady !== true) {
     return {
       content: 'Project workspace is disabled in Data Guard protected mode.',
       success: false,
@@ -389,7 +391,8 @@ const tryReadParsedDocumentPage = async (
     row = rows[0];
   }
 
-  if (!row || row.kind !== 'document') return null;
+  if (!row || row.kind !== 'document' || row.loadMode === 'disabled') return null;
+  if (ctx.dataGuardProtected && row.dataGuardStatus !== 'scrubbed') return null;
 
   let targetFileId: string = row.currentFileId;
   let targetRevision: number = row.currentRevision;
@@ -520,6 +523,7 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
         const folderLower = normalizedFolder.toLowerCase();
 
         const filtered = overview.files.filter((file) => {
+          if (ctx.dataGuardProtected && file.dataGuardStatus !== 'scrubbed') return false;
           if (!args.includeDisabled && file.loadMode === 'disabled') return false;
           if (folderLower) {
             const pathLower = file.path.toLowerCase();
@@ -588,18 +592,20 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
       }
 
       try {
+        const effectiveDataGuardStatus = ctx.workspaceDataGuardReady ? 'scrubbed' : 'unmasked';
         const store = new ProjectWorkspaceStore(ctx.serverDB!, ctx.userId!);
         const res = await store.patchAgentTextFile(ctx.agentId!, {
           actor: 'agent',
           baseRevision: args.baseRevision,
           changeNote: args.changeNote ?? null,
+          dataGuardStatus: effectiveDataGuardStatus,
           edits: Array.isArray(args.edits) ? args.edits : [],
           messageId: ctx.messageId ?? ctx.parentMessageId ?? null,
           path: args.path,
           reason: args.reason ?? null,
           topicId: ctx.topicId ?? null,
           workspaceFileId: args.workspaceFileId,
-        });
+        } as any);
         return formatAgentWriteOutcome(res);
       } catch (error) {
         return formatWorkspaceErrorResult(error);
@@ -632,6 +638,14 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
           startLine: args.startLine,
           workspaceFileId: args.workspaceFileId,
         });
+
+        if (ctx.dataGuardProtected && res.file.dataGuardStatus !== 'scrubbed') {
+          return {
+            content: 'Project workspace file is not scrubbed for Data Guard protected mode.',
+            error: { code: 'DATA_GUARD_SCRUB_REQUIRED', message: 'File is not scrubbed' },
+            success: false,
+          };
+        }
 
         return {
           content: formatReadPageSummary(res.file.path, res.revision, res.page, res.wrappedContent),
@@ -668,6 +682,7 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
           limit: args.limit,
           pathPrefix: args.pathPrefix,
           query: args.query ?? '',
+          requireScrubbed: Boolean(ctx.dataGuardProtected),
         });
 
         const content =
@@ -717,17 +732,34 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
         };
       }
 
+      const rawContent = typeof args.content === 'string' ? args.content : '';
+      const contentBytes = Buffer.byteLength(rawContent, 'utf8');
+      if (contentBytes > MAX_WRITE_TOOL_CONTENT_BYTES) {
+        return {
+          content: `Workspace error [FILE_TOO_LARGE]: writeProjectFile supports files up to 64 KiB (${MAX_WRITE_TOOL_CONTENT_BYTES} bytes), got ${contentBytes} bytes. For files > 64 KiB (up to 2 MiB), use writeProjectFilePart in sequential chunks <= 64 KiB (part = 1..N, passing uploadId from part 1 on parts 2..N, and final = true on the last chunk).`,
+          error: {
+            code: 'FILE_TOO_LARGE',
+            details: { byteSize: contentBytes, maxBytes: MAX_WRITE_TOOL_CONTENT_BYTES },
+            message:
+              'Content exceeds 64 KiB; use writeProjectFilePart in chunks <= 64 KiB (part = 1..N, final = true on last chunk)',
+          },
+          success: false,
+        };
+      }
+
       const limitError = checkAndConsumeWriteSlot(ctx);
       if (limitError) return limitError;
 
       try {
+        const effectiveDataGuardStatus = ctx.workspaceDataGuardReady ? 'scrubbed' : 'unmasked';
         const store = new ProjectWorkspaceStore(ctx.serverDB!, ctx.userId!);
         // Note: userSummary is strictly omitted so agent cannot inject text into <project_workspace_index> (H-1)
         const res = await store.writeAgentTextFile(ctx.agentId!, {
           actor: 'agent',
           baseRevision: args.baseRevision ?? null,
           changeNote: args.changeNote ?? null,
-          content: typeof args.content === 'string' ? args.content : '',
+          content: rawContent,
+          dataGuardStatus: effectiveDataGuardStatus,
           encoding: args.encoding,
           lineEnding: args.lineEnding,
           messageId: ctx.messageId ?? ctx.parentMessageId ?? null,
@@ -736,6 +768,128 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
           topicId: ctx.topicId ?? null,
         });
         return formatAgentWriteOutcome(res);
+      } catch (error) {
+        return formatWorkspaceErrorResult(error);
+      }
+    },
+
+    async writeProjectFilePart(rawArgs: unknown, callContext?: ToolExecutionContext) {
+      const ctx: ToolExecutionContext = { ...baseContext, ...callContext };
+      const guard = validateEntryGuard(ctx);
+      if (guard) return guard;
+
+      const args = (rawArgs ?? {}) as {
+        baseRevision?: number;
+        changeNote?: string;
+        encoding?: SourceTextEncoding;
+        final?: boolean;
+        lineEnding?: 'lf' | 'crlf' | 'LF' | 'CRLF';
+        part?: number;
+        path?: string;
+        reason?: string;
+        text?: string;
+        uploadId?: string;
+      };
+
+      if (
+        ctx.agentId === 'inbox' &&
+        typeof args.path === 'string' &&
+        isRootAgentsMd(args.path.trim())
+      ) {
+        return {
+          content:
+            'Workspace error [INBOX_INSTRUCTION_FORBIDDEN]: Inbox agent cannot store root AGENTS.md instructions.',
+          error: { code: 'INBOX_INSTRUCTION_FORBIDDEN', message: 'Forbidden on inbox' },
+          success: false,
+        };
+      }
+
+      if (
+        typeof args.part !== 'number' ||
+        !Number.isInteger(args.part) ||
+        args.part < 1 ||
+        args.part > 64
+      ) {
+        return {
+          content: 'Workspace error [INVALID_OPERATION]: part must be an integer between 1 and 64.',
+          error: {
+            code: 'INVALID_OPERATION',
+            message: 'part must be an integer between 1 and 64',
+          },
+          success: false,
+        };
+      }
+
+      if (typeof args.final !== 'boolean') {
+        return {
+          content:
+            'Workspace error [INVALID_OPERATION]: final (boolean) is required for writeProjectFilePart.',
+          error: { code: 'INVALID_OPERATION', message: 'final (boolean) is required' },
+          success: false,
+        };
+      }
+
+      if (
+        args.part > 1 &&
+        (typeof args.uploadId !== 'string' || args.uploadId.trim().length === 0)
+      ) {
+        return {
+          content:
+            'Workspace error [INVALID_OPERATION]: uploadId returned from part=1 is required when part > 1.',
+          error: {
+            code: 'INVALID_OPERATION',
+            message: 'uploadId is required when part > 1',
+          },
+          success: false,
+        };
+      }
+
+      // Consume 1 mutation slot ONLY on part === 1 (parts 2..N belong to the same logical file write)
+      if (args.part === 1) {
+        const limitError = checkAndConsumeWriteSlot(ctx);
+        if (limitError) return limitError;
+      }
+
+      try {
+        const effectiveDataGuardStatus = ctx.workspaceDataGuardReady ? 'scrubbed' : 'unmasked';
+        const res = await executeWriteProjectFilePart({
+          agentId: ctx.agentId!,
+          baseRevision: args.baseRevision ?? null,
+          changeNote: args.changeNote ?? args.reason,
+          dataGuardStatus: effectiveDataGuardStatus,
+          db: ctx.serverDB!,
+          encoding: args.encoding,
+          final: args.final,
+          lineEnding: args.lineEnding,
+          messageId: ctx.messageId ?? ctx.parentMessageId ?? null,
+          operationId: ctx.operationId,
+          part: args.part,
+          path: typeof args.path === 'string' ? args.path : '',
+          text: typeof args.text === 'string' ? args.text : '',
+          toolCallId: ctx.toolCallId,
+          topicId: ctx.topicId ?? null,
+          uploadId: args.uploadId,
+          userId: ctx.userId!,
+        });
+
+        if (res.kind === 'staged') {
+          const nextPart = res.part + 1;
+          return {
+            content: `Staged chunk #${res.part} for "${res.path}" (uploadId="${res.uploadId}", accumulatedBytes=${res.accumulatedBytes}). Continue by calling writeProjectFilePart with uploadId="${res.uploadId}", path="${res.path}", part=${nextPart}, and set final=true on the final chunk.`,
+            state: {
+              accumulatedBytes: res.accumulatedBytes,
+              ...(res.idempotentReplay ? { idempotentReplay: true } : {}),
+              kind: 'staged',
+              nextPart,
+              part: res.part,
+              path: res.path,
+              uploadId: res.uploadId,
+            },
+            success: true,
+          };
+        }
+
+        return formatAgentWriteOutcome(res.writeOutcome);
       } catch (error) {
         return formatWorkspaceErrorResult(error);
       }

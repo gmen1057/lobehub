@@ -431,6 +431,7 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
         'readProjectFile',
         'patchProjectFile',
         'writeProjectFile',
+        'writeProjectFilePart',
         'deleteProjectFile',
       ]);
 
@@ -473,7 +474,7 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
       );
     });
 
-    it('loads all 6 arckep-workspace tools eager on Step 0 when unpinnedCount > 0 && textFilesCount > 0', async () => {
+    it('loads all 7 arckep-workspace tools eager on Step 0 when unpinnedCount > 0 && textFilesCount > 0', async () => {
       mockResolveTopicWorkspaceSnapshot.mockResolvedValue(
         makeSnapshot({
           activeFilesCount: 2,
@@ -493,7 +494,7 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
 
       const [{ appContext, toolSet }] = mockCreateOperation.mock.calls[0];
       expect(toolSet.enabledToolIds).toContain(PROJECT_WORKSPACE_TOOL);
-      expect(toolSet.manifestMap[PROJECT_WORKSPACE_TOOL].api).toHaveLength(6);
+      expect(toolSet.manifestMap[PROJECT_WORKSPACE_TOOL].api).toHaveLength(7);
       expect(appContext.workspaceIndexBlock).toContain('src/app.py');
     });
 
@@ -535,13 +536,14 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
         `${PROJECT_WORKSPACE_TOOL}____listProjectFiles____builtin`,
         `${PROJECT_WORKSPACE_TOOL}____readProjectFile____builtin`,
       ]);
-      // Full 6-tool manifest stays in manifestMap so activateTools(['arckep-workspace']) unlocks writeProjectFile
+      // Full 7-tool manifest stays in manifestMap so activateTools(['arckep-workspace']) unlocks writeProjectFile & writeProjectFilePart
       expect(toolSet.manifestMap[PROJECT_WORKSPACE_TOOL].api.map((a: any) => a.name)).toEqual([
         'listProjectFiles',
         'searchProjectFiles',
         'readProjectFile',
         'patchProjectFile',
         'writeProjectFile',
+        'writeProjectFilePart',
         'deleteProjectFile',
       ]);
       // Managed KB has documentFilesCount > 0 -> searchKnowledgeBase stays enabled!

@@ -4,21 +4,35 @@ import { z } from 'zod';
 
 import type {
   WorkspaceBudgetSummary,
+  WorkspaceDataGuardStatus,
   WorkspaceFileDto,
   WorkspaceFileKind,
   WorkspaceLoadMode,
   WorkspaceProposalDto,
   WorkspaceRevisionDto,
-} from '@/server/services/projectWorkspace';
+} from '@/server/services/projectWorkspace/paths';
+import type {
+  WorkspaceQuotaDto,
+  WorkspaceTrashFileDto,
+} from '@/server/services/projectWorkspace/trash';
 
 export type {
+  WorkspaceExportManifestItem,
+  WorkspaceExportManifestResponse,
+} from '@/server/services/projectWorkspace/exportManifest';
+export type {
   WorkspaceBudgetSummary,
+  WorkspaceDataGuardStatus,
   WorkspaceFileDto,
   WorkspaceFileKind,
   WorkspaceLoadMode,
   WorkspaceProposalDto,
   WorkspaceRevisionDto,
-} from '@/server/services/projectWorkspace';
+} from '@/server/services/projectWorkspace/paths';
+export type {
+  WorkspaceQuotaDto,
+  WorkspaceTrashFileDto,
+} from '@/server/services/projectWorkspace/trash';
 
 const optionalPositiveIntQuery = z.preprocess(
   (value) => (value === '' || value === undefined ? undefined : value),
@@ -41,6 +55,16 @@ export const AgentWorkspaceFileParamSchema = z.object({
 });
 
 export type AgentWorkspaceFileParam = z.infer<typeof AgentWorkspaceFileParamSchema>;
+
+export const AgentWorkspaceFileRestoreRevParamSchema = z.object({
+  agentId: z.string().min(1, 'Agent ID is required'),
+  rev: requiredPositiveIntQuery,
+  workspaceFileId: z.string().min(1, 'Workspace file ID is required'),
+});
+
+export type AgentWorkspaceFileRestoreRevParam = z.infer<
+  typeof AgentWorkspaceFileRestoreRevParamSchema
+>;
 
 export const AgentWorkspaceProposalParamSchema = z.object({
   agentId: z.string().min(1, 'Agent ID is required'),
@@ -77,9 +101,10 @@ export interface PutWorkspaceTextRequest {
   baseRevision?: number | null;
   changeNote?: string | null;
   content: string;
+  dataGuardStatus?: WorkspaceDataGuardStatus;
   encoding?: SourceTextEncoding | null;
   isProtected?: boolean | null;
-  lineEnding?: SourceLineEnding | null;
+  lineEnding?: SourceLineEnding | 'lf' | 'crlf' | null;
   loadMode?: WorkspaceLoadMode | null;
   path: string;
   userSummary?: string | null;
@@ -89,9 +114,10 @@ export const PutWorkspaceTextSchema = z.object({
   baseRevision: z.number().int().min(0).nullish(),
   changeNote: z.string().nullish(),
   content: z.string(),
+  dataGuardStatus: z.enum(['unmasked', 'scrubbed']).optional(),
   encoding: z.enum(['utf-8', 'utf-8-bom', 'windows-1251']).nullish(),
   isProtected: z.boolean().nullish(),
-  lineEnding: z.enum(['LF', 'CRLF']).nullish(),
+  lineEnding: z.enum(['LF', 'CRLF', 'lf', 'crlf']).nullish(),
   loadMode: z.enum(['always', 'on_demand', 'disabled']).nullish(),
   path: z.string(),
   userSummary: z.string().nullish(),
@@ -99,6 +125,7 @@ export const PutWorkspaceTextSchema = z.object({
 
 export interface RegisterWorkspaceFileRequest {
   baseRevision?: number | null;
+  dataGuardStatus?: WorkspaceDataGuardStatus;
   enableRag?: boolean | null;
   fileId: string;
   kind: WorkspaceFileKind;
@@ -110,6 +137,7 @@ export interface RegisterWorkspaceFileRequest {
 
 export const RegisterWorkspaceFileSchema = z.object({
   baseRevision: z.number().int().min(0).nullish(),
+  dataGuardStatus: z.enum(['unmasked', 'scrubbed']).optional(),
   enableRag: z.boolean().nullish(),
   fileId: z.string().min(1, 'fileId is required'),
   kind: z.enum(['text', 'document']),
@@ -153,13 +181,20 @@ export const RollbackWorkspaceFileSchema = z.object({
   targetRevision: z.number().int().min(1),
 });
 
+export const RestoreRevisionBodySchema = z.object({
+  baseRevision: z.number().int().min(1).nullish(),
+});
+
 // ==================== Response Types ====================
 
 export interface WorkspaceOverviewResponse {
   budget: WorkspaceBudgetSummary;
+  dataGuardCommercial: boolean;
+  dataGuardProtected: boolean;
   files: WorkspaceFileDto[];
   instructionFile: WorkspaceFileDto | null;
   pendingProposals: WorkspaceProposalDto[];
+  workspaceDataGuardReady: boolean;
   workspaceEnabled: boolean;
 }
 
@@ -209,4 +244,18 @@ export interface WorkspaceApplyProposalResponse {
 
 export interface WorkspaceRejectProposalResponse {
   proposal: WorkspaceProposalDto;
+}
+
+export interface WorkspaceTrashResponse {
+  files: WorkspaceTrashFileDto[];
+}
+
+export interface WorkspaceRestoreTrashResponse {
+  budget: WorkspaceBudgetSummary;
+  file: WorkspaceFileDto;
+  quota: WorkspaceQuotaDto;
+}
+
+export interface WorkspacePurgeTrashResponse {
+  purgedCount: number;
 }

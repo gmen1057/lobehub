@@ -122,16 +122,18 @@ export class ToolExecutionService {
       }
 
       const typeStr = type as string;
+      const bridgeScopeContext = {
+        agentId: context.agentId,
+        dataGuardProtected: context.dataGuardProtected,
+        messageId: context.messageId ?? context.parentMessageId,
+        parentMessageId: context.parentMessageId,
+        serverDB: context.serverDB,
+        topicId: context.topicId,
+        userId: context.userId,
+        workspaceDataGuardReady: context.workspaceDataGuardReady,
+      };
       const { result: data, trailer: sandboxBridgeTrailer } = await runWithSandboxBridgeScope(
-        {
-          agentId: context.agentId,
-          dataGuardProtected: context.dataGuardProtected,
-          messageId: context.messageId ?? context.parentMessageId,
-          parentMessageId: context.parentMessageId,
-          serverDB: context.serverDB,
-          topicId: context.topicId,
-          userId: context.userId,
-        },
+        bridgeScopeContext,
         async () => {
           if (typeStr === 'mcp') {
             return this.executeMCPTool(payload, context);
@@ -148,6 +150,7 @@ export class ToolExecutionService {
       // again would silently skip source characters on the next read.
       const truncatedBody =
         identifier === 'arckep-text-file' ||
+        identifier === 'arckep-workspace' ||
         (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') ||
         (identifier === 'lobe-topic-reference' && apiName === 'getTopicContext') ||
         (identifier === 'lobe-agent-documents' &&
@@ -571,18 +574,20 @@ export class ToolExecutionService {
       let mediaProcessor: (blocks: ToolCallContent[]) => Promise<ToolCallContent[]>;
 
       if (isE2bSandbox) {
+        const mcpBridgeContext = {
+          agentId: context.agentId,
+          dataGuardProtected: context.dataGuardProtected,
+          messageId: context.messageId ?? context.parentMessageId,
+          parentMessageId: context.parentMessageId,
+          serverDB: context.serverDB,
+          topicId: context.topicId,
+          userId: context.userId,
+          workspaceDataGuardReady: context.workspaceDataGuardReady,
+        };
         const bridgeSession = await prepareSandboxBridgeSession({
           apiName,
           argsStr: args,
-          context: {
-            agentId: context.agentId,
-            dataGuardProtected: context.dataGuardProtected,
-            messageId: context.messageId ?? context.parentMessageId,
-            parentMessageId: context.parentMessageId,
-            serverDB: context.serverDB,
-            topicId: context.topicId,
-            userId: context.userId,
-          },
+          context: mcpBridgeContext,
         });
         effectiveArgsStr = bridgeSession.argsStr;
         const effectiveDataGuard = Boolean(

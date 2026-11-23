@@ -56,6 +56,7 @@ export const serverMessagesEngine = async ({
   dynamicSystemAppend,
   workspaceIndexBlock,
   deepseekDataGuardProtected,
+  workspaceDataGuardReady,
   inputTemplate,
   enableHistoryCount,
   forceFinish,
@@ -128,6 +129,7 @@ export const serverMessagesEngine = async ({
     ...(dynamicSystemAppend && { dynamicSystemAppend }),
     ...(workspaceIndexBlock && { workspaceIndexBlock }),
     ...(deepseekDataGuardProtected !== undefined && { deepseekDataGuardProtected }),
+    ...(workspaceDataGuardReady !== undefined && { workspaceDataGuardReady }),
 
     // Timezone for system date provider
     timezone: userTimezone,

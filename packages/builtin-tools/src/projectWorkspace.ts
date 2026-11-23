@@ -6,7 +6,7 @@ export const PROJECT_WORKSPACE_TOOL = 'arckep-workspace';
 const READ_ONLY_API_NAMES = new Set(['listProjectFiles', 'readProjectFile']);
 
 export const READ_ONLY_PROJECT_WORKSPACE_SYSTEM_ROLE =
-  'Inspect files in the current project workspace (read-only mode: this project currently contains binary documents only). Use listProjectFiles to inspect paths and metadata, readProjectFile for parsed document pages when available, or searchKnowledgeBase for semantic search across indexed documents.';
+  'Inspect files in the current project workspace (read-only mode: this project currently contains binary documents only). Use listProjectFiles to inspect paths and metadata, readProjectFile for parsed document pages when available, or searchKnowledgeBase for semantic search across indexed documents. If you need to create or modify a text file in the project, first call lobe-activator____activateTools with identifiers: ["arckep-workspace"] to unlock write tools.';
 
 export const ProjectWorkspaceManifest: BuiltinToolManifest = {
   api: [
@@ -172,7 +172,7 @@ export const ProjectWorkspaceManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Create a new text file (omit baseRevision or pass 0) or overwrite an existing text file (pass current baseRevision) in the project workspace. Protected paths create a pending user-approval proposal.',
+        'Create a new text file (omit baseRevision or pass 0) or overwrite an existing text file (pass current baseRevision) up to 64 KiB (<= 64 KiB) in the project workspace. For files > 64 KiB (up to 2 MiB), use writeProjectFilePart in sequential chunks up to 64 KiB. Protected paths create a pending user-approval proposal.',
       name: 'writeProjectFile',
       parameters: {
         additionalProperties: false,
@@ -216,6 +216,63 @@ export const ProjectWorkspaceManifest: BuiltinToolManifest = {
     },
     {
       description:
+        'Write a large text file (> 64 KiB, up to 2 MiB total) to the project workspace in sequential chunks up to 64 KiB UTF-8 each. Start with part=1 (final=false), pass the returned uploadId on parts 2..N, and pass final=true on the last chunk to atomically commit the file (or create a proposal for protected files).',
+      name: 'writeProjectFilePart',
+      parameters: {
+        additionalProperties: false,
+        properties: {
+          baseRevision: {
+            description:
+              '0 or omit when creating a new file; expected current revision when overwriting an existing file.',
+            minimum: 0,
+            type: 'integer',
+          },
+          changeNote: {
+            description:
+              'Short revision note or reason for editing a protected file (up to 240 chars).',
+            type: 'string',
+          },
+          encoding: {
+            description: 'Text encoding (defaults to existing file encoding or utf-8).',
+            enum: ['utf-8', 'utf-8-bom', 'windows-1251'],
+            type: 'string',
+          },
+          final: {
+            description:
+              'false for intermediate chunks; true on the final chunk to atomically save the file.',
+            type: 'boolean',
+          },
+          lineEnding: {
+            description: 'Line ending style (lf/crlf or LF/CRLF).',
+            enum: ['lf', 'crlf', 'LF', 'CRLF'],
+            type: 'string',
+          },
+          part: {
+            description: '1-based sequential chunk index (1..64).',
+            maximum: 64,
+            minimum: 1,
+            type: 'integer',
+          },
+          path: {
+            description:
+              'Relative POSIX path of the project text file (allowed text/code extension).',
+            type: 'string',
+          },
+          text: {
+            description: 'Chunk text content (up to 64 KiB UTF-8 per part).',
+            type: 'string',
+          },
+          uploadId: {
+            description: 'Upload session identifier returned on part=1 (required when part > 1).',
+            type: 'string',
+          },
+        },
+        required: ['path', 'part', 'text', 'final'],
+        type: 'object',
+      },
+    },
+    {
+      description:
         'Delete (soft-delete) a project workspace file at baseRevision. Protected files create a delete proposal awaiting user approval.',
       name: 'deleteProjectFile',
       parameters: {
@@ -252,7 +309,7 @@ export const ProjectWorkspaceManifest: BuiltinToolManifest = {
     title: 'Файлы проекта',
   },
   systemRole:
-    'Manage persistent files in the current project workspace. Read on-demand files via readProjectFile or searchProjectFiles before editing. Prefer patchProjectFile with baseRevision for existing text files; use writeProjectFile for new files or full rewrites. Writes/deletes on protected files (AGENTS.md, rules/**, pinned, or locked) create a pending_user_approval proposal without changing the active version — do not retry submitting the same proposal.',
+    'Manage persistent files in the current project workspace. Read on-demand files via readProjectFile or searchProjectFiles before editing. Prefer patchProjectFile with baseRevision for existing text files; use writeProjectFile for new files or full rewrites <= 64 KiB, and writeProjectFilePart in sequential <= 64 KiB chunks for larger text files (> 64 KiB up to 2 MiB). Writes/deletes on protected files (AGENTS.md, rules/**, pinned, or locked) create a pending_user_approval proposal without changing the active version — do not retry submitting the same proposal.',
   type: 'builtin',
 };
 
