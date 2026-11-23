@@ -6,6 +6,8 @@ import {
   type ToolManifestInfo,
 } from '@lobechat/builtin-tool-activator/executionRuntime';
 import { SkillsExecutionRuntime } from '@lobechat/builtin-tool-skills/executionRuntime';
+import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
+import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 
 import { AgentSkillModel } from '@/database/models/agentSkill';
 import { filterBuiltinSkills, filterUserSkills, isHeadlessSkillMode } from '@/helpers/skillFilters';
@@ -56,9 +58,20 @@ export const activatorRuntime: ServerRuntimeRegistration = {
       getToolManifests: async (identifiers: string[]): Promise<ToolManifestInfo[]> => {
         // Note: context.toolManifestMap should only contain discoverable tools.
         // The caller is responsible for scoping this map to exclude hidden/internal tools.
+        const requestedIds = [...identifiers];
+        if (
+          requestedIds.includes(TEXT_FILE_TOOL) &&
+          context.toolManifestMap[TEXT_FILE_TOOL] &&
+          context.toolManifestMap[TopicReferenceIdentifier] &&
+          !requestedIds.includes(TopicReferenceIdentifier) &&
+          !activatedIds.includes(TopicReferenceIdentifier)
+        ) {
+          requestedIds.push(TopicReferenceIdentifier);
+        }
+
         const results: ToolManifestInfo[] = [];
 
-        for (const id of identifiers) {
+        for (const id of requestedIds) {
           const manifest = context.toolManifestMap[id];
           if (!manifest) continue;
 

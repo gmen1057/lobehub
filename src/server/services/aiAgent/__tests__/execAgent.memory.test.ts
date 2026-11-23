@@ -197,11 +197,9 @@ describe('execAgent - memory enabled priority', () => {
     } as any);
 
     // Mock embeddings on OpenAI prototype so addPreferenceMemory succeeds cleanly without network
-    const embedSpy = vi
-      .spyOn(OpenAI.Embeddings.prototype, 'create')
-      .mockResolvedValue({
-        data: [{ embedding: Array.from({ length: 1024 }, () => 0.01) }],
-      } as any);
+    const embedSpy = vi.spyOn(OpenAI.Embeddings.prototype, 'create').mockResolvedValue({
+      data: [{ embedding: Array.from({ length: 1024 }, () => 0.01) }],
+    } as any);
 
     const addRes = await (runtimeExec as any).addPreferenceMemory({
       details: 'Wants bullet lists',

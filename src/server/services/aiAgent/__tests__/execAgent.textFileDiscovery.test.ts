@@ -57,7 +57,7 @@ describe('Studio automatic file writing', () => {
     bytes.clear();
   });
 
-  it('advertises only the catalogue entry, activates, writes, and drops the schema on the next turn', async () => {
+  it('advertises only the catalogue entry, activates with topic-reference, stays active in the 4-turn window, and drops after inactivity', async () => {
     vi.stubEnv('OPENAI_API_KEY', 'sk-offline-fixture');
     vi.stubEnv('ARCKEP_HEADLESS_TOOLS', '1');
     db = await getTestDB();
@@ -101,7 +101,8 @@ describe('Studio automatic file writing', () => {
           { fileName, final: true, part: 1, text },
           'call_write',
         );
-      if (captured.length === 6)
+      // Turn 6 (after 3 idle turns, outside RECENT_ACTIVE_TOOL_USER_MESSAGES = 4): stale writePart must fail
+      if (captured.length === 8)
         return toolResponse(
           'arckep-text-file____writePart____builtin',
           { fileName: 'unexpected', final: true, part: 1, text },
@@ -109,20 +110,33 @@ describe('Studio automatic file writing', () => {
         );
       return createMockResponsesAPIStream('Готово');
     }) as any);
-    const topicId = await run('Привет');
-    await run('Собери модуль', topicId);
-    await run('Как дела?', topicId);
-    await run('Что ещё?', topicId);
-    expect(captured).toHaveLength(7);
-    for (const i of [0, 1, 4]) {
+    const topicId = await run('Привет'); // captured[0]
+    await run('Собери модуль', topicId); // captured[1] activate -> captured[2] writePart -> captured[3] done
+    await run('Как дела?', topicId); // captured[4] (still inside 4-turn window -> stays active!)
+    await run('Что ещё?', topicId); // captured[5] (still inside 4-turn window)
+    await run('Про погоду', topicId); // captured[6] (still inside 4-turn window)
+    await run('Давний вопрос', topicId); // captured[7] (dropped! stale call fails) -> captured[8] done
+    expect(captured).toHaveLength(9);
+
+    // Before activation (Turn 1, Turn 2 step 0) and after 4-turn window expires (Turn 6): schema absent
+    for (const i of [0, 1, 7]) {
       expect(captured[i].tools.some((name) => name.includes('activateTools'))).toBe(true);
       expect(captured[i].tools.some((name) => name.includes('writePart'))).toBe(false);
+      expect(captured[i].tools.some((name) => name.includes('patchFile'))).toBe(false);
       expect(captured[i].input).toContain('Создать файл с полным модулем');
-      expect(captured[i].input).not.toContain(
-        'Save complete text and source files with consecutive',
-      );
+      expect(captured[i].input).not.toContain('Prefer patchFile to atomically edit');
     }
+
+    // Immediately after activateTools(['arckep-text-file']): writePart + patchFile + co-activated getTopicContext
     expect(captured[2].tools.some((name) => name.includes('writePart'))).toBe(true);
+    expect(captured[2].tools.some((name) => name.includes('patchFile'))).toBe(true);
+    expect(captured[2].tools.some((name) => name.includes('getTopicContext'))).toBe(true);
+
+    // On the next turn inside the 4-turn window: arckep-text-file + topic-reference STAY active (no re-activation!)
+    expect(captured[4].tools.some((name) => name.includes('writePart'))).toBe(true);
+    expect(captured[4].tools.some((name) => name.includes('patchFile'))).toBe(true);
+    expect(captured[4].tools.some((name) => name.includes('getTopicContext'))).toBe(true);
+
     expect(
       (sdk.mock.calls[2][0].tools as Array<{ name?: string; parameters?: unknown }>).find((tool) =>
         tool.name?.includes('writePart'),
@@ -130,6 +144,18 @@ describe('Studio automatic file writing', () => {
     ).toMatchObject({
       required: expect.arrayContaining(['fileName', 'part', 'text', 'final']),
       properties: { documentId: { type: 'string' }, text: { type: 'string' } },
+    });
+    expect(
+      (sdk.mock.calls[2][0].tools as Array<{ name?: string; parameters?: unknown }>).find((tool) =>
+        tool.name?.includes('patchFile'),
+      )?.parameters,
+    ).toMatchObject({
+      required: ['edits'],
+      properties: {
+        documentId: { type: 'string' },
+        edits: { type: 'array' },
+        sourceFileId: { type: 'string' },
+      },
     });
     const files = await new TextFileStore(db, userId, topicId).list();
     expect(files).toHaveLength(1);

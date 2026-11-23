@@ -214,3 +214,266 @@ it('retains the latest of nine 20k Cyrillic source pages plus recoverable cursor
   expect(compacted[0]).toEqual(messages[0]);
   expect(JSON.stringify(compacted).length).toBeLessThan(25000);
 });
+
+it('compacts patchFile edits into _appliedEditsCount, parses diff-tailed receipts, and drops superseded writes/patches', () => {
+  const receipt1 =
+    'ARCKEP_TEXT_FILE_V1\n' +
+    JSON.stringify({
+      documentId: 'doc-p',
+      fileId: 'f1',
+      fileName: 'm.bas',
+      part: 1,
+      status: 'ready',
+    }) +
+    '\nPatch applied: 2 edits, lines 10 -> 10 (+2 / -2)\n@@ -1,2 +1,2 @@\n-a\n+b';
+  const receipt2 =
+    'ARCKEP_TEXT_FILE_V1\n' +
+    JSON.stringify({
+      documentId: 'doc-p',
+      fileId: 'f2',
+      fileName: 'm.bas',
+      part: 2,
+      status: 'ready',
+    }) +
+    '\nPatch applied: 3 edits, lines 10 -> 12 (+3 / -1)\n@@ -5,2 +5,4 @@\n+new line';
+
+  const messages = [
+    { content: 'Patch the file', id: 'req-p', role: 'user' },
+    {
+      content: '',
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              edits: [
+                { newText: 'b1'.repeat(2000), oldText: 'a1'.repeat(2000) },
+                { newText: 'b2', oldText: 'a2' },
+              ],
+              fileName: 'm.bas',
+              sourceFileId: 'src-1',
+            }),
+            name: 'arckep-text-file____patchFile____builtin',
+          },
+          id: 'p1',
+        },
+      ],
+    },
+    { content: receipt1, role: 'tool', tool_call_id: 'p1' },
+    {
+      content: '',
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              documentId: 'doc-p',
+              edits: [
+                { newText: 'n1'.repeat(3000), oldText: 'o1'.repeat(3000) },
+                { newText: 'n2', oldText: 'o2' },
+                { newText: 'n3', oldText: 'o3' },
+              ],
+            }),
+            name: 'arckep-text-file____patchFile____builtin',
+          },
+          id: 'p2',
+        },
+      ],
+    },
+    { content: receipt2, role: 'tool', tool_call_id: 'p2' },
+  ];
+
+  const compacted = compactWriterContext(messages, 'req-p');
+  // p1 (superseded) dropped; p2 (latest) retained with edits folded into _appliedEditsCount
+  expect(compacted).toHaveLength(3);
+  const callArgs = JSON.parse(compacted[1].tool_calls[0].function.arguments);
+  expect(callArgs).toEqual({
+    _appliedEditsCount: 3,
+    documentId: 'doc-p',
+  });
+  expect('edits' in callArgs).toBe(false);
+  // Full tool content with diff summary is preserved for the LLM on the retained latest patch
+  expect(compacted[2].content).toBe(receipt2);
+});
+
+it('retains line-based cursor fields (startLine, endLine, nextStartLine, totalLines) in compacted oldPages', () => {
+  const page = (startLine: number, endLine: number, nextStartLine: number | null) =>
+    JSON.stringify({
+      endLine,
+      fileId: 'f-lines',
+      nextStartLine,
+      startLine,
+      totalLines: 800,
+    }) +
+    '\n' +
+    'L1: '.repeat(1500);
+
+  const messages = [
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-lines'], startLine: 1 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk1',
+        },
+      ],
+    },
+    { content: page(1, 250, 251), role: 'tool', tool_call_id: 'rk1' },
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-lines'], startLine: 251 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk2',
+        },
+      ],
+    },
+    { content: page(251, 500, 501), role: 'tool', tool_call_id: 'rk2' },
+  ];
+
+  const compacted = compactWriterContext(messages);
+  expect(compacted[1].content).toContain('"startLine":1');
+  expect(compacted[1].content).toContain('"endLine":250');
+  expect(compacted[1].content).toContain('"nextStartLine":251');
+  expect(compacted[1].content).toContain('"totalLines":800');
+  expect(compacted[3].content).toBe(messages[3].content);
+});
+
+it('extracts JSON cursor from <coverage> block for XML-formatted readKnowledge results', () => {
+  const xmlPage = (startLine: number, endLine: number, nextStartLine: number | null) =>
+    `<knowledge_base_files totalCount="1">\n` +
+    `<instruction>Use the information from these files to answer the user's question.</instruction>\n` +
+    `<file id="f-kb" name="Module1.bas">\n\n` +
+    `<coverage>${JSON.stringify({
+      complete: nextStartLine === null,
+      endLine,
+      endOffset: endLine * 50,
+      nextOffset: nextStartLine === null ? null : endLine * 50,
+      nextStartLine,
+      startLine,
+      startOffset: (startLine - 1) * 50,
+      totalCharCount: 40_000,
+      totalLines: 800,
+    })}</coverage>\n` +
+    `[Partial source. Continue with readKnowledge(fileIds, startLine=nextStartLine)]\n` +
+    'Dim lineContent As String\n'.repeat(250) +
+    `</file>\n</knowledge_base_files>`;
+
+  const messages = [
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-kb'], startLine: 1 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk_xml_1',
+        },
+      ],
+    },
+    { content: xmlPage(1, 250, 251), role: 'tool', tool_call_id: 'rk_xml_1' },
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({ fileIds: ['f-kb'], startLine: 251 }),
+            name: 'lobe-knowledge-base____readKnowledge____builtin',
+          },
+          id: 'rk_xml_2',
+        },
+      ],
+    },
+    { content: xmlPage(251, 500, 501), role: 'tool', tool_call_id: 'rk_xml_2' },
+  ];
+
+  const compacted = compactWriterContext(messages);
+  expect(compacted[1].content).toContain('"startLine":1');
+  expect(compacted[1].content).toContain('"endLine":250');
+  expect(compacted[1].content).toContain('"nextStartLine":251');
+  expect(compacted[1].content).toContain('"totalLines":800');
+  expect(compacted[1].content).toContain('"nextOffset":12500');
+  expect(compacted[1].content).not.toContain(' {}');
+  expect(compacted[3].content).toBe(messages[3].content);
+});
+
+it('extracts cursor from long getTopicContext first-line headers with 50 matches (> 2500 chars)', () => {
+  const matches = Array.from({ length: 50 }, (_, i) => ({
+    line: i * 10 + 1,
+    offset: i * 500,
+    preview: `Public Sub DiscountHandler_${i}(ByVal ws As Worksheet, ByVal rowIdx As Long) ' long preview ${i}`,
+  }));
+  const longHeader = JSON.stringify({
+    endLine: 250,
+    fileId: 'f-long-hdr',
+    matches,
+    nextOffset: 15_000,
+    nextStartLine: 251,
+    startLine: 1,
+    startOffset: 0,
+    totalCharCount: 180_000,
+    totalLines: 4000,
+  });
+  expect(longHeader.length).toBeGreaterThan(2500);
+  expect(longHeader.length).toBeLessThan(24_000);
+
+  const messages = [
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              fileId: 'f-long-hdr',
+              mode: 'code_artifacts',
+              query: 'DiscountHandler',
+            }),
+            name: 'lobe-topic-reference____getTopicContext____builtin',
+          },
+          id: 'gt_1',
+        },
+      ],
+    },
+    { content: longHeader + '\n' + 'body '.repeat(1200), role: 'tool', tool_call_id: 'gt_1' },
+    {
+      role: 'assistant',
+      tool_calls: [
+        {
+          function: {
+            arguments: JSON.stringify({
+              fileId: 'f-long-hdr',
+              mode: 'code_artifacts',
+              startLine: 251,
+            }),
+            name: 'lobe-topic-reference____getTopicContext____builtin',
+          },
+          id: 'gt_2',
+        },
+      ],
+    },
+    {
+      content:
+        JSON.stringify({ startLine: 251, endLine: 500, nextStartLine: 501 }) +
+        '\n' +
+        'z'.repeat(5000),
+      role: 'tool',
+      tool_call_id: 'gt_2',
+    },
+  ];
+
+  const compacted = compactWriterContext(messages);
+  expect(compacted[1].content).toContain('"startLine":1');
+  expect(compacted[1].content).toContain('"endLine":250');
+  expect(compacted[1].content).toContain('"nextStartLine":251');
+  expect(compacted[1].content).toContain('"totalLines":4000');
+  expect(compacted[1].content).toContain('"nextOffset":15000');
+  expect(compacted[1].content).not.toContain(' {}');
+  expect(compacted[3].content).toBe(messages[3].content);
+});

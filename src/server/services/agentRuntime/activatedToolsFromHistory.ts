@@ -1,4 +1,5 @@
 import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
+import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import type { ActivatedStepTool, LobeToolManifest } from '@lobechat/context-engine';
 
@@ -119,16 +120,29 @@ export const seedActivatedStepToolsFromHistory = (
   if (!toolSet?.manifestMap) return [];
 
   const alreadyEnabled = new Set(toolSet.enabledToolIds ?? []);
+  const seededIds = new Set<string>();
   const seeded: ActivatedStepTool[] = [];
 
-  for (const id of collectActivatedToolIdsFromMessages(messages)) {
-    // Writing is an intent of this turn. A durable continuation is already in enabledToolIds.
-    if (id === TEXT_FILE_TOOL || alreadyEnabled.has(id)) continue;
+  const trySeed = (id: string) => {
+    if (alreadyEnabled.has(id) || seededIds.has(id)) return;
+    const manifest = toolSet.manifestMap![id];
+    if (!manifest) return;
 
+    seededIds.add(id);
+    seeded.push({ activatedAtStep: 0, id, manifest, source: 'discovery' });
+  };
+
+  for (const id of collectActivatedToolIdsFromMessages(messages)) {
     const manifest = toolSet.manifestMap[id];
     if (!manifest) continue;
 
-    seeded.push({ activatedAtStep: 0, id, manifest, source: 'discovery' });
+    trySeed(id);
+
+    // Co-activate topic reference when text-file writer is active so the model can inspect
+    // saved/patched code artifacts without an extra activateTools round-trip.
+    if (id === TEXT_FILE_TOOL) {
+      trySeed(TopicReferenceIdentifier);
+    }
   }
 
   return seeded;

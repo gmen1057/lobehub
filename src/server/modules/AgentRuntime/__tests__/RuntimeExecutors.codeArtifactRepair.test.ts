@@ -166,6 +166,7 @@ describe('RuntimeExecutors code-artifact mimic self-healing repair', () => {
     expect(repairUserMsg?.role).toBe('user');
     expect(repairUserMsg?.content).toContain('Markdown-блоком кода');
     expect(repairUserMsg?.content).toContain('arckep-text-file/writePart');
+    expect(repairUserMsg?.content).toContain('arckep-text-file/patchFile');
 
     // Agent schedules Step 2 reusing the same assistantMessageId
     const nextInstruction = await agent.runner(step1.nextContext!, step1.newState);

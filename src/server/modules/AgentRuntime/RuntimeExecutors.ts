@@ -24,6 +24,7 @@ import { LobeActivatorIdentifier } from '@lobechat/builtin-tool-activator';
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
+import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
 import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
@@ -73,6 +74,7 @@ import {
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
 import { compactWriterContext } from '@/server/services/textFiles/context';
+import { stripTextFileReceiptForClient } from '@/server/services/textFiles/store';
 import {
   type ToolExecutionResultResponse,
   type ToolExecutionService,
@@ -653,6 +655,24 @@ const canWriteTextFile = (state: AgentState) =>
   state.metadata?.studioTextFileEnabled === true &&
   (state.operationToolSet?.enabledToolIds.includes(TEXT_FILE_TOOL) === true ||
     state.activatedStepTools?.some((tool) => tool.id === TEXT_FILE_TOOL) === true);
+
+const expandCoActivatedTools = (
+  discovered: ReadonlyArray<{ identifier: string }>,
+  manifestMap: Record<string, LobeToolManifest>,
+  alreadyEnabledIds?: ReadonlyArray<string>,
+): Array<{ identifier: string }> => {
+  const expanded = [...discovered];
+  const hasTextFile = expanded.some((t) => t.identifier === TEXT_FILE_TOOL);
+  const alreadyHasTopicRef =
+    expanded.some((t) => t.identifier === TopicReferenceIdentifier) ||
+    alreadyEnabledIds?.includes(TopicReferenceIdentifier) === true;
+
+  if (hasTextFile && !alreadyHasTopicRef && manifestMap[TopicReferenceIdentifier]) {
+    expanded.push({ identifier: TopicReferenceIdentifier });
+  }
+
+  return expanded;
+};
 
 const formatErrorEventData = (error: unknown, phase: string) => {
   let errorMessage = 'Unknown error';
@@ -2122,7 +2142,7 @@ export const createRuntimeExecutors = (
                 role: 'assistant',
               },
               {
-                content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...) или текстовая заглушка [Saved ... — previous code block stored by server.]. Такие теги и заглушки создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/ и не имитируй [Saved ... — previous code block stored by server.]. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart.`,
+                content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...) или текстовая заглушка [Saved ... — previous code block stored by server.]. Такие теги и заглушки создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/ и не имитируй [Saved ... — previous code block stored by server.]. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart (для нового файла) либо arckep-text-file/patchFile (для правок существующего файла).`,
                 role: 'user',
               },
             );
@@ -3147,6 +3167,8 @@ export const createRuntimeExecutors = (
         executionResult,
       );
 
+      const clientSafeContent = stripTextFileReceiptForClient(executionResult.content);
+
       // Publish tool execution result event
       await streamManager.publishStreamEvent(operationId, {
         data: {
@@ -3156,7 +3178,10 @@ export const createRuntimeExecutors = (
           maxAttempts: TOOL_MAX_RETRIES + 1,
           payload: { ...payload, toolCalling: diagnosticToolCall(payload.toolCalling) },
           phase: 'tool_execution',
-          result: executionResult,
+          result:
+            clientSafeContent === executionResult.content
+              ? executionResult
+              : { ...executionResult, content: clientSafeContent },
         },
         stepIndex,
         type: 'tool_end',
@@ -3167,7 +3192,7 @@ export const createRuntimeExecutors = (
       try {
         const toolMessage = await ctx.messageModel.create({
           agentId: state.metadata!.agentId!,
-          content: executionResult.content,
+          content: clientSafeContent,
           metadata: { toolExecutionTimeMs: executionTime },
           parentId: payload.parentMessageId,
           plugin: (chatToolPayload.identifier === 'arckep-text-file'
@@ -3247,10 +3272,15 @@ export const createRuntimeExecutors = (
       const discoveredTools = executionResult.state?.activatedTools as
         Array<{ identifier: string }> | undefined;
       if (discoveredTools?.length) {
+        const expandedDiscovered = expandCoActivatedTools(
+          discoveredTools,
+          effectiveManifestMap,
+          state.operationToolSet?.enabledToolIds,
+        );
         const existingIds = new Set(
           (newState.activatedStepTools ?? []).map((t: { id: string }) => t.id),
         );
-        const newActivations = discoveredTools
+        const newActivations = expandedDiscovered
           .filter((t) => !existingIds.has(t.identifier))
           .map((t) => ({
             activatedAtStep: state.stepCount,
@@ -3401,15 +3431,18 @@ export const createRuntimeExecutors = (
       };
     }
 
-    // Track all tool message IDs created during execution
-    const toolMessageIds: string[] = [];
-    const toolResults: any[] = [];
-
     // Execute server tools concurrently (skip client tools in mixed batch)
+    // Preserve deterministic toolsToExecute order regardless of promise settlement timing.
     const toolsToExecute = serverTools.length > 0 ? serverTools : toolsCalling;
+    const toolMessageIdsByIndex: Array<string | undefined> = Array.from({
+      length: toolsToExecute.length,
+    });
+    const toolResultsByIndex: Array<any | undefined> = Array.from({
+      length: toolsToExecute.length,
+    });
     const consumedUnresolvedIds: string[] = [];
     await Promise.all(
-      toolsToExecute.map(async (chatToolPayload: ChatToolPayload) => {
+      toolsToExecute.map(async (chatToolPayload: ChatToolPayload, idx: number) => {
         const toolName = `${chatToolPayload.identifier}/${chatToolPayload.apiName}`;
 
         if (chatToolPayload.identifier === UNRESOLVED_TOOL_IDENTIFIER) {
@@ -3426,14 +3459,14 @@ export const createRuntimeExecutors = (
           consumedUnresolvedIds.push(chatToolPayload.id);
 
           // Never write __arckep_unresolved_tool__ tool rows to PostgreSQL; keep synthetic feedback in memory only.
-          toolResults.push({
+          toolResultsByIndex[idx] = {
             data: executionResult,
             executionTime: 0,
             isSuccess: false,
             synthetic: true,
             toolCall: chatToolPayload,
             toolCallId: chatToolPayload.id,
-          });
+          };
           events.push({ id: chatToolPayload.id, result: executionResult, type: 'tool_result' });
           return;
         }
@@ -3501,6 +3534,8 @@ export const createRuntimeExecutors = (
             `[${operationLogId}] Executed ${toolName} in ${executionTime}ms, success: ${isSuccess}`,
           );
 
+          const clientSafeContent = stripTextFileReceiptForClient(executionResult.content);
+
           // Publish tool execution result event
           await streamManager.publishStreamEvent(operationId, {
             data: {
@@ -3510,7 +3545,10 @@ export const createRuntimeExecutors = (
               maxAttempts: TOOL_MAX_RETRIES + 1,
               payload: { parentMessageId, toolCalling: diagnosticToolCall(chatToolPayload) },
               phase: 'tool_execution',
-              result: executionResult,
+              result:
+                clientSafeContent === executionResult.content
+                  ? executionResult
+                  : { ...executionResult, content: clientSafeContent },
             },
             stepIndex,
             type: 'tool_end',
@@ -3520,7 +3558,7 @@ export const createRuntimeExecutors = (
           try {
             const toolMessage = await ctx.messageModel.create({
               agentId: state.metadata!.agentId!,
-              content: executionResult.content,
+              content: clientSafeContent,
               metadata: { toolExecutionTimeMs: executionTime },
               parentId: parentMessageId,
               plugin: (chatToolPayload.identifier === 'arckep-text-file'
@@ -3533,7 +3571,7 @@ export const createRuntimeExecutors = (
               tool_call_id: chatToolPayload.id,
               topicId: state.metadata?.topicId,
             });
-            toolMessageIds.push(toolMessage.id);
+            toolMessageIdsByIndex[idx] = toolMessage.id;
             const documentFileId = getDocumentFileId(executionResult);
             if (documentFileId) await ctx.messageModel.addFiles(toolMessage.id, [documentFileId]);
             log(`[${operationLogId}] Created tool message ${toolMessage.id} for ${toolName}`);
@@ -3544,25 +3582,23 @@ export const createRuntimeExecutors = (
             );
           }
 
-          // Collect tool result
-          toolResults.push({
+          // Collect tool result in deterministic toolsToExecute order
+          const toolCost = TOOL_PRICING[toolName] || 0;
+          toolResultsByIndex[idx] = {
             data: executionResult,
             executionTime,
             isSuccess,
             toolCall: chatToolPayload,
             toolCallId: chatToolPayload.id,
-          });
+            usageParams: {
+              executionTime,
+              success: isSuccess,
+              toolCost,
+              toolName,
+            },
+          };
 
           events.push({ id: chatToolPayload.id, result: executionResult, type: 'tool_result' });
-
-          // Collect per-tool usage for post-batch accumulation
-          const toolCost = TOOL_PRICING[toolName] || 0;
-          toolResults.at(-1).usageParams = {
-            executionTime,
-            success: isSuccess,
-            toolCost,
-            toolName,
-          };
         } catch (error) {
           if (ctx.signal?.aborted) return;
           console.error(`[${operationLogId}] Tool execution failed for ${toolName}:`, error);
@@ -3577,6 +3613,13 @@ export const createRuntimeExecutors = (
           events.push({ error, type: 'error' });
         }
       }),
+    );
+
+    const toolMessageIds = toolMessageIdsByIndex.filter(
+      (id): id is string => typeof id === 'string',
+    );
+    const toolResults = toolResultsByIndex.filter(
+      (r): r is NonNullable<typeof r> => r !== undefined,
     );
 
     log(
@@ -3636,7 +3679,12 @@ export const createRuntimeExecutors = (
       const discovered = result.data?.state?.activatedTools as
         Array<{ identifier: string }> | undefined;
       if (discovered?.length) {
-        const newActivations = discovered
+        const expandedDiscovered = expandCoActivatedTools(
+          discovered,
+          batchEffectiveManifestMap,
+          state.operationToolSet?.enabledToolIds,
+        );
+        const newActivations = expandedDiscovered
           .filter((t) => !existingActivationIds.has(t.identifier))
           .map((t) => ({
             activatedAtStep: state.stepCount,
@@ -3716,7 +3764,136 @@ export const createRuntimeExecutors = (
       // Use conversation-flow parse to resolve branching into linear flat list
       // parse() handles assistantGroup, compare, supervisor, etc. virtual message types
       const { flatList } = parse(latestMessages);
-      newState.messages = hydrateGroupMessages(flatList, latestMessages);
+      const hydratedMessages = hydrateGroupMessages(flatList, latestMessages);
+
+      // Postgres masks arckep-text-file tool arguments to '{}' to keep DB rows lean,
+      // but if a patchFile/writePart call failed in this batch before any checkpoint was committed,
+      // restore the active turn's original arguments in memory so the next LLM step can fix its edits[].
+      const textFileToolNameRe = /^arckep-text-file(?:____|$)/;
+      const preservedTextFileArgs = new Map<string, string>();
+      const recordPreservedArg = (id: unknown, args: unknown) => {
+        if (
+          typeof id === 'string' &&
+          id.length > 0 &&
+          typeof args === 'string' &&
+          args.length > 0 &&
+          args !== '{}'
+        ) {
+          preservedTextFileArgs.set(id, args);
+        }
+      };
+      const turnRequestId = state.metadata?.studioTextFileRequestId;
+      const turnBoundary = turnRequestId
+        ? state.messages.findIndex((m: any) => m?.role === 'user' && m?.id === turnRequestId)
+        : -1;
+      const activeTurnMessages =
+        turnBoundary >= 0 ? state.messages.slice(turnBoundary) : state.messages;
+      for (const msg of activeTurnMessages as any[]) {
+        if (!msg || typeof msg !== 'object') continue;
+        if (Array.isArray(msg.tool_calls)) {
+          for (const tc of msg.tool_calls) {
+            if (textFileToolNameRe.test(tc?.function?.name || '')) {
+              recordPreservedArg(tc.id, tc.function?.arguments);
+            }
+          }
+        }
+        if (Array.isArray(msg.tools)) {
+          for (const tool of msg.tools) {
+            if (tool?.identifier === 'arckep-text-file') {
+              recordPreservedArg(tool.id, tool.arguments);
+            }
+          }
+        }
+        if (Array.isArray(msg.children)) {
+          for (const child of msg.children) {
+            if (Array.isArray(child?.tools)) {
+              for (const tool of child.tools) {
+                if (tool?.identifier === 'arckep-text-file') {
+                  recordPreservedArg(tool.id, tool.arguments);
+                }
+              }
+            }
+          }
+        }
+        if (msg.role === 'tool' && msg.plugin?.identifier === 'arckep-text-file') {
+          recordPreservedArg(msg.tool_call_id, msg.plugin.arguments);
+        }
+      }
+      for (const tc of toolsToExecute) {
+        if (tc.identifier === 'arckep-text-file') {
+          recordPreservedArg(tc.id, tc.arguments);
+        }
+      }
+
+      const restoreArg = (id: unknown, currentArgs: unknown): string | undefined => {
+        if (typeof id !== 'string') return undefined;
+        if (currentArgs !== undefined && currentArgs !== '' && currentArgs !== '{}')
+          return undefined;
+        return preservedTextFileArgs.get(id);
+      };
+
+      newState.messages =
+        preservedTextFileArgs.size === 0
+          ? hydratedMessages
+          : hydratedMessages.map((msg: any) => {
+              if (!msg || typeof msg !== 'object') return msg;
+              let nextMsg = msg;
+
+              if (
+                (msg.role === 'assistantGroup' || msg.role === 'supervisor') &&
+                Array.isArray(msg.children)
+              ) {
+                let childrenChanged = false;
+                const nextChildren = msg.children.map((child: any) => {
+                  if (!Array.isArray(child?.tools)) return child;
+                  let toolsChanged = false;
+                  const nextTools = child.tools.map((tool: any) => {
+                    if (tool?.identifier !== 'arckep-text-file') return tool;
+                    const restored = restoreArg(tool.id, tool.arguments);
+                    if (!restored) return tool;
+                    toolsChanged = true;
+                    return { ...tool, arguments: restored };
+                  });
+                  if (!toolsChanged) return child;
+                  childrenChanged = true;
+                  return { ...child, tools: nextTools };
+                });
+                if (childrenChanged) nextMsg = { ...nextMsg, children: nextChildren };
+              }
+
+              if (Array.isArray(nextMsg.tools)) {
+                let toolsChanged = false;
+                const nextTools = nextMsg.tools.map((tool: any) => {
+                  if (tool?.identifier !== 'arckep-text-file') return tool;
+                  const restored = restoreArg(tool.id, tool.arguments);
+                  if (!restored) return tool;
+                  toolsChanged = true;
+                  return { ...tool, arguments: restored };
+                });
+                if (toolsChanged) nextMsg = { ...nextMsg, tools: nextTools };
+              }
+
+              if (Array.isArray(nextMsg.tool_calls)) {
+                let callsChanged = false;
+                const nextCalls = nextMsg.tool_calls.map((tc: any) => {
+                  if (!textFileToolNameRe.test(tc?.function?.name || '')) return tc;
+                  const restored = restoreArg(tc.id, tc.function?.arguments);
+                  if (!restored) return tc;
+                  callsChanged = true;
+                  return { ...tc, function: { ...tc.function, arguments: restored } };
+                });
+                if (callsChanged) nextMsg = { ...nextMsg, tool_calls: nextCalls };
+              }
+
+              if (nextMsg.role === 'tool' && nextMsg.plugin?.identifier === 'arckep-text-file') {
+                const restored = restoreArg(nextMsg.tool_call_id, nextMsg.plugin.arguments);
+                if (restored) {
+                  nextMsg = { ...nextMsg, plugin: { ...nextMsg.plugin, arguments: restored } };
+                }
+              }
+
+              return nextMsg;
+            });
 
       const syntheticResults = toolResults.filter((r) => r.synthetic);
       if (syntheticResults.length > 0) {

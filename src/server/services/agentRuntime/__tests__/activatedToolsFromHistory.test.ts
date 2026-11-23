@@ -166,4 +166,57 @@ describe('seedActivatedStepToolsFromHistory', () => {
       }),
     ).toEqual([]);
   });
+
+  it('keeps arckep-text-file active within the 4-turn window and co-activates lobe-topic-reference when present', () => {
+    const richToolSet = {
+      enabledToolIds: ['lobe-activator'],
+      manifestMap: {
+        'arckep-text-file': manifest('arckep-text-file'),
+        'lobe-activator': manifest('lobe-activator'),
+        'lobe-topic-reference': manifest('lobe-topic-reference'),
+      },
+    };
+
+    const recentHistory = [
+      { content: 'Поправь модуль', role: 'user' },
+      activatorMessage(['arckep-text-file']),
+      { content: 'Готово', role: 'assistant' },
+      { content: 'Поправь ещё строку 500', role: 'user' },
+    ];
+
+    const seeded = seedActivatedStepToolsFromHistory(recentHistory, richToolSet);
+    expect(seeded.map((t) => t.id)).toEqual(['arckep-text-file', 'lobe-topic-reference']);
+
+    // Does not duplicate either tool if already in enabledToolIds
+    const withAlreadyEnabled = seedActivatedStepToolsFromHistory(recentHistory, {
+      ...richToolSet,
+      enabledToolIds: ['lobe-activator', 'arckep-text-file', 'lobe-topic-reference'],
+    });
+    expect(withAlreadyEnabled).toEqual([]);
+
+    // Does not co-activate lobe-topic-reference if arckep-text-file is absent from manifestMap (e.g. Data Guard)
+    const underDataGuard = seedActivatedStepToolsFromHistory(recentHistory, {
+      enabledToolIds: ['lobe-activator'],
+      manifestMap: {
+        'lobe-activator': manifest('lobe-activator'),
+        'lobe-topic-reference': manifest('lobe-topic-reference'),
+      },
+    });
+    expect(underDataGuard).toEqual([]);
+
+    // Drops arckep-text-file after 4 idle user turns
+    const staleHistory = [
+      { content: 'Ход 1', role: 'user' },
+      activatorMessage(['arckep-text-file']),
+      { content: 'Ответ 1', role: 'assistant' },
+      { content: 'Ход 2', role: 'user' },
+      { content: 'Ответ 2', role: 'assistant' },
+      { content: 'Ход 3', role: 'user' },
+      { content: 'Ответ 3', role: 'assistant' },
+      { content: 'Ход 4', role: 'user' },
+      { content: 'Ответ 4', role: 'assistant' },
+      { content: 'Ход 5 (текущий)', role: 'user' },
+    ];
+    expect(seedActivatedStepToolsFromHistory(staleHistory, richToolSet)).toEqual([]);
+  });
 });
