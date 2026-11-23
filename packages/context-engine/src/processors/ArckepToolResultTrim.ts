@@ -35,7 +35,8 @@ type WorkspaceToolApiName =
   | 'patchProjectFile'
   | 'readProjectFile'
   | 'searchProjectFiles'
-  | 'writeProjectFile';
+  | 'writeProjectFile'
+  | 'writeProjectFilePart';
 
 const WORKSPACE_TOOL_APIS = new Set<WorkspaceToolApiName>([
   'deleteProjectFile',
@@ -44,6 +45,7 @@ const WORKSPACE_TOOL_APIS = new Set<WorkspaceToolApiName>([
   'readProjectFile',
   'searchProjectFiles',
   'writeProjectFile',
+  'writeProjectFilePart',
 ]);
 
 const ARTIFACT_BLOCK_RE = /(<lobeArtifact\b([^>]*)(?<!\/)>)([\s\S]*?)(<\/lobeArtifact>)/g;
@@ -267,7 +269,13 @@ const compactWorkspaceWriterArgumentsJson = (
   wsApi: WorkspaceToolApiName,
   rawArgs: string,
 ): string => {
-  if (wsApi !== 'writeProjectFile' && wsApi !== 'patchProjectFile') return rawArgs;
+  if (
+    wsApi !== 'writeProjectFile' &&
+    wsApi !== 'patchProjectFile' &&
+    wsApi !== 'writeProjectFilePart'
+  ) {
+    return rawArgs;
+  }
   if (rawArgs.length <= WORKSPACE_WRITE_ARG_COMPACT_CHARS) return rawArgs;
 
   try {
@@ -283,6 +291,15 @@ const compactWorkspaceWriterArgumentsJson = (
     ) {
       const orig = nextObj.content;
       nextObj.content = `${orig.slice(0, 120)}\n…[содержимое writeProjectFile (${orig.length} знаков) из прежнего хода сокращено]…\n${orig.slice(-80)}`;
+      changed = true;
+    } else if (
+      wsApi === 'writeProjectFilePart' &&
+      typeof nextObj.text === 'string' &&
+      nextObj.text.length > WORKSPACE_WRITE_ARG_COMPACT_CHARS
+    ) {
+      const targetPath =
+        typeof nextObj.path === 'string' && nextObj.path.length > 0 ? nextObj.path : '<unknown>';
+      nextObj.text = `[... ${nextObj.text.length} chars of chunk #${nextObj.part ?? '?'} written to ${targetPath}; read current file via arckep-workspace____readProjectFile ...]`;
       changed = true;
     } else if (wsApi === 'patchProjectFile' && Array.isArray(nextObj.edits)) {
       const editsJsonLen = JSON.stringify(nextObj.edits).length;
@@ -1653,7 +1670,11 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
                 parsedName?.apiName ?? '',
                 tc.function?.name,
               );
-              if (wsApi === 'writeProjectFile' || wsApi === 'patchProjectFile') {
+              if (
+                wsApi === 'writeProjectFile' ||
+                wsApi === 'patchProjectFile' ||
+                wsApi === 'writeProjectFilePart'
+              ) {
                 const compactedWsArgs = compactWorkspaceWriterArgumentsJson(wsApi, rawArgs);
                 if (compactedWsArgs !== rawArgs) {
                   tcChanged = true;
@@ -1713,7 +1734,11 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
               const toolId = typeof tool.identifier === 'string' ? tool.identifier : '';
               const toolApi = typeof tool.apiName === 'string' ? tool.apiName : '';
               const wsApi = resolveWorkspaceToolApi(toolId, toolApi);
-              if (wsApi === 'writeProjectFile' || wsApi === 'patchProjectFile') {
+              if (
+                wsApi === 'writeProjectFile' ||
+                wsApi === 'patchProjectFile' ||
+                wsApi === 'writeProjectFilePart'
+              ) {
                 const compactedWsArgs = compactWorkspaceWriterArgumentsJson(wsApi, rawArgs);
                 if (compactedWsArgs !== rawArgs) {
                   toolsChanged = true;

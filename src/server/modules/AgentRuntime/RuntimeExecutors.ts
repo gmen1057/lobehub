@@ -73,6 +73,7 @@ import {
 } from '@/server/services/arckepLayout/htmlSyntax';
 import { FileService } from '@/server/services/file';
 import { MessageService } from '@/server/services/message';
+import { maskUnmaskedWorkspaceHistoryForSummarizer } from '@/server/services/projectWorkspace';
 import { compactWriterContext } from '@/server/services/textFiles/context';
 import { stripTextFileReceiptForClient } from '@/server/services/textFiles/store';
 import {
@@ -529,6 +530,23 @@ const isOperationInterrupted = async (ctx: RuntimeExecutorContext) => {
 // Встроенный поиск моделей и «Поиск Arckep» — в ./arckepSearch (здесь остаётся реэкспорт для тестов и вызовов).
 export { resolveServerEnabledSearch };
 
+const resolveRuntimeDataGuardFlags = (
+  state: AgentState,
+  fallbackAgentConfig?: any,
+): { dataGuardProtected: boolean; workspaceDataGuardReady: boolean } => {
+  const effectiveCfg = state.metadata?.agentConfig ?? fallbackAgentConfig;
+  const chatCfg = (effectiveCfg?.chatConfig ?? fallbackAgentConfig?.chatConfig) as
+    Record<string, unknown> | undefined;
+  const dataGuardProtected = Boolean(
+    chatCfg?.dataGuardProtected || chatCfg?.deepseekDataGuardProtected,
+  );
+  const workspaceDataGuardReady = Boolean(
+    (state.metadata as Record<string, unknown> | undefined)?.workspaceDataGuardReady ??
+    chatCfg?.__workspaceDataGuardReady,
+  );
+  return { dataGuardProtected, workspaceDataGuardReady };
+};
+
 const resolveToolSandboxAllowInternet = async (
   state: AgentState,
   agentConfig: any,
@@ -825,7 +843,10 @@ export const createRuntimeExecutors = (
     }
 
     assertDeepSeekDocumentsGuardCompatible(
-      !!(ctx.agentConfig?.chatConfig as any)?.deepseekDataGuardProtected,
+      Boolean(
+        (ctx.agentConfig?.chatConfig as any)?.dataGuardProtected ||
+        (ctx.agentConfig?.chatConfig as any)?.deepseekDataGuardProtected,
+      ),
       llmPayload.messages as any[],
     );
 
@@ -928,8 +949,10 @@ export const createRuntimeExecutors = (
         }
 
         const effectiveAgentConfig = state.metadata?.agentConfig ?? agentConfig;
-        const dataGuardProtected =
-          effectiveAgentConfig?.chatConfig?.deepseekDataGuardProtected === true;
+        const { dataGuardProtected, workspaceDataGuardReady } = resolveRuntimeDataGuardFlags(
+          state,
+          agentConfig,
+        );
         const workspaceActive = state.metadata?.workspaceActive === true;
 
         // Fetch agent documents for context injection (skipped when Project Workspace or Data Guard is active)
@@ -1002,6 +1025,7 @@ export const createRuntimeExecutors = (
           },
           botPlatformContext: ctx.botPlatformContext,
           deepseekDataGuardProtected: dataGuardProtected,
+          ...(workspaceDataGuardReady ? { workspaceDataGuardReady: true } : {}),
           discordContext: ctx.discordContext,
           dynamicSystemAppend: state.metadata?.dynamicSystemAppend,
           enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,
@@ -1010,8 +1034,9 @@ export const createRuntimeExecutors = (
           ...(forceFinishPrompt ? { forceFinishPrompt } : {}),
           historyCount: agentConfig.chatConfig?.historyCount ?? undefined,
           knowledge: {
-            fileContents:
-              workspaceActive || dataGuardProtected
+            fileContents: dataGuardProtected
+              ? []
+              : workspaceActive
                 ? undefined
                 : agentConfig.files
                     ?.filter((f: { enabled?: boolean | null }) => f.enabled === true)
@@ -1021,7 +1046,17 @@ export const createRuntimeExecutors = (
                       filename: f.name ?? '',
                     })),
             knowledgeBases: dataGuardProtected
-              ? undefined
+              ? workspaceDataGuardReady
+                ? (effectiveAgentConfig?.knowledgeBases ?? agentConfig.knowledgeBases ?? [])
+                    .filter(
+                      (kb: { enabled?: boolean | null; type?: string | null }) =>
+                        kb.enabled === true && kb.type === 'project_workspace',
+                    )
+                    .map((kb: { id?: string; name?: string }) => ({
+                      id: kb.id ?? '',
+                      name: kb.name ?? '',
+                    }))
+                : []
               : agentConfig.knowledgeBases
                   ?.filter((kb: { enabled?: boolean | null }) => kb.enabled === true)
                   .map((kb: { id?: string; name?: string }) => ({
@@ -2433,9 +2468,13 @@ export const createRuntimeExecutors = (
     const assistantPlaceholderPatch = incomingAssistantMessageId
       ? { assistantMessageId: incomingAssistantMessageId }
       : {};
-    const dataGuardProtected = isDeepSeekDataGuardProtected(
-      ctx.agentConfig ?? state.metadata?.agentConfig,
-    );
+    const {
+      dataGuardProtected: stateDataGuardProtected,
+      workspaceDataGuardReady: stateWorkspaceDataGuardReady,
+    } = resolveRuntimeDataGuardFlags(state, ctx.agentConfig);
+    const dataGuardProtected =
+      stateDataGuardProtected ||
+      isDeepSeekDataGuardProtected(ctx.agentConfig ?? state.metadata?.agentConfig);
     const compressionModel = dataGuardProtected
       ? DATA_GUARD_COMPRESSION_MODEL
       : newState.modelRuntimeConfig?.compressionModel || newState.modelRuntimeConfig;
@@ -2566,7 +2605,11 @@ export const createRuntimeExecutors = (
         };
       }
 
-      const preparedMessages = messagesToSummarize.map(prepareMessageForSummarizer);
+      const sourceMessagesForSummarizer =
+        dataGuardProtected && !stateWorkspaceDataGuardReady
+          ? maskUnmaskedWorkspaceHistoryForSummarizer(messagesToSummarize)
+          : messagesToSummarize;
+      const preparedMessages = sourceMessagesForSummarizer.map(prepareMessageForSummarizer);
       const sanitizedExistingSummary = existingSummary
         ? rewriteSavedCodeArtifactTagsForLLM(existingSummary)
         : existingSummary;
@@ -3156,6 +3199,10 @@ export const createRuntimeExecutors = (
 
       // Execute tool using ToolExecutionService
       const sandboxAllowInternet = await resolveToolSandboxAllowInternet(state, agentConfig);
+      const {
+        dataGuardProtected: toolDataGuardProtected,
+        workspaceDataGuardReady: toolWorkspaceDataGuardReady,
+      } = resolveRuntimeDataGuardFlags(state, ctx.agentConfig);
       log(`[${operationLogId}] Executing tool ${toolName} ...`);
       const execution = await executeToolWithRetry(
         () => {
@@ -3170,8 +3217,8 @@ export const createRuntimeExecutors = (
             taskId: state.metadata?.taskId,
             toolManifestMap: effectiveManifestMap,
             operationId,
-            dataGuardProtected:
-              state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
+            dataGuardProtected: toolDataGuardProtected,
+            workspaceDataGuardReady: toolWorkspaceDataGuardReady,
             studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
             studioTextFileEnabled: canWriteTextFile(state),
             studioTextFileContinueId: state.metadata?.studioTextFileContinueId,
@@ -3524,6 +3571,10 @@ export const createRuntimeExecutors = (
             state,
             batchAgentConfig,
           );
+          const {
+            dataGuardProtected: batchDataGuardProtected,
+            workspaceDataGuardReady: batchWorkspaceDataGuardReady,
+          } = resolveRuntimeDataGuardFlags(state, ctx.agentConfig);
 
           const execution = await executeToolWithRetry(
             () => {
@@ -3538,8 +3589,8 @@ export const createRuntimeExecutors = (
                 taskId: state.metadata?.taskId,
                 toolManifestMap: batchManifestMap,
                 operationId,
-                dataGuardProtected:
-                  state.metadata?.agentConfig?.chatConfig?.deepseekDataGuardProtected === true,
+                dataGuardProtected: batchDataGuardProtected,
+                workspaceDataGuardReady: batchWorkspaceDataGuardReady,
                 studioTextFileRequestId: state.metadata?.studioTextFileRequestId,
                 studioTextFileEnabled: canWriteTextFile(state),
                 studioTextFileContinueId: state.metadata?.studioTextFileContinueId,

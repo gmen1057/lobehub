@@ -12,6 +12,7 @@ export enum FilesTabs {
 export enum FileSource {
   ImageGeneration = 'image_generation',
   PageEditor = 'page-editor',
+  ProjectWorkspaceStaging = 'project_workspace_staging',
   VideoGeneration = 'video_generation',
 }
 

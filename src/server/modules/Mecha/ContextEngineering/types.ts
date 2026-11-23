@@ -137,6 +137,8 @@ export interface ServerMessagesEngineParams {
   workspaceIndexBlock?: string;
   /** When true, suppresses unmasked workspace rules/index/deltas and masks historical workspace & searchKnowledgeBase tool outputs */
   deepseekDataGuardProtected?: boolean;
+  /** When true on a protected project (all active files scrubbed), enables scrubbed workspace rules/index/deltas & tools */
+  workspaceDataGuardReady?: boolean;
 
   // ========== Skills ==========
   /** Skills configuration for <available_skills> injection */

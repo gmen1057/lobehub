@@ -54,11 +54,15 @@ setInterval(cleanupApiKeyCache, 10 * 60 * 1000);
  * Supports both OIDC tokens and API keys via Bearer token
  */
 export const userAuthMiddleware = async (c: Context, next: Next) => {
-  // Slot management routes authenticate directly with ARCKEP_ENGINE_SERVICE_KEY (without X-Arckep-User-Id)
+  // Slot management & workspace maintenance routes authenticate directly with ARCKEP_ENGINE_SERVICE_KEY (without X-Arckep-User-Id)
   const reqPath = c.req.path;
   if (
     reqPath === '/api/v1/arckep/engine-slot' ||
-    reqPath.startsWith('/api/v1/arckep/engine-slot/')
+    reqPath.startsWith('/api/v1/arckep/engine-slot/') ||
+    reqPath === '/api/v1/workspace-maintenance' ||
+    reqPath.startsWith('/api/v1/workspace-maintenance/') ||
+    reqPath === '/api/v1/agents/workspace-maintenance/purge-expired-trash' ||
+    reqPath === '/api/v1/agents/workspace-maintenance/purge-expired-trash/'
   ) {
     return next();
   }

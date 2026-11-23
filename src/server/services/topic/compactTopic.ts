@@ -31,6 +31,10 @@ import {
 } from '@/server/modules/AgentRuntime/RuntimeExecutors';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 import { MessageService } from '@/server/services/message';
+import {
+  computeWorkspaceDataGuardState,
+  maskUnmaskedWorkspaceHistoryForSummarizer,
+} from '@/server/services/projectWorkspace';
 
 import { getActiveTopicCompactions } from './compactionRegistry';
 
@@ -779,6 +783,22 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
     const effectiveDataGuardProtected = Boolean(
       dataGuardProtected || isDeepSeekDataGuardProtected(agentConfig),
     );
+    let workspaceDataGuardReady = false;
+    if (effectiveDataGuardProtected) {
+      try {
+        const dgState = await computeWorkspaceDataGuardState({
+          agentChatConfig:
+            (agentConfig?.chatConfig as Record<string, unknown> | null | undefined) ?? {},
+          agentId: topic.agentId,
+          db,
+          requestDataGuardProtected: effectiveDataGuardProtected,
+          userId,
+        });
+        workspaceDataGuardReady = dgState.workspaceDataGuardReady;
+      } catch {
+        workspaceDataGuardReady = false;
+      }
+    }
     const compressionModel = resolveCompressionModelConfig({
       agentConfig: {
         chatConfig: {
@@ -789,8 +809,12 @@ export const compactTopic = async (params: CompactTopicParams): Promise<CompactT
       ...(explicitCompressionModel ? { explicitCompressionModel } : {}),
     });
 
-    // 8. Prepare messages & rewrite saved code artifact tags
-    const preparedMessages = meaningfulMessages.map(prepareMessageForSummarizer);
+    // 8. Prepare messages & rewrite saved code artifact tags (mask unmasked workspace history when Data Guard is active without scrubbed project readiness)
+    const sourceMessagesForSummarizer =
+      effectiveDataGuardProtected && !workspaceDataGuardReady
+        ? maskUnmaskedWorkspaceHistoryForSummarizer(meaningfulMessages)
+        : meaningfulMessages;
+    const preparedMessages = sourceMessagesForSummarizer.map(prepareMessageForSummarizer);
     const rawExistingSummary = priorCompressedGroups
       .map((group) => (typeof group.content === 'string' ? group.content.trim() : ''))
       .filter(Boolean)

@@ -54,11 +54,11 @@ export interface AgentConfigLike {
   chatConfig?: object | null;
 }
 
-export const isDeepSeekDataGuardProtected = (agentConfig?: AgentConfigLike | null): boolean =>
-  Boolean(
-    (agentConfig?.chatConfig as { deepseekDataGuardProtected?: unknown } | null | undefined)
-      ?.deepseekDataGuardProtected,
-  );
+export const isDeepSeekDataGuardProtected = (agentConfig?: AgentConfigLike | null): boolean => {
+  const cfg = agentConfig?.chatConfig as
+    { dataGuardProtected?: unknown; deepseekDataGuardProtected?: unknown } | null | undefined;
+  return Boolean(cfg?.dataGuardProtected || cfg?.deepseekDataGuardProtected);
+};
 
 /**
  * Resolves the cost-efficient model for context summarization (ENG-2B).

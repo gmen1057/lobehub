@@ -107,6 +107,7 @@ import { KlavisService } from '@/server/services/klavis';
 import { MarketService } from '@/server/services/market';
 import type { ResolvedTopicWorkspaceSnapshot } from '@/server/services/projectWorkspace';
 import {
+  computeWorkspaceDataGuardState,
   estimateWorkspaceTokens,
   hasEverHadAgentsMd,
   isWorkspaceEnabled,
@@ -836,17 +837,28 @@ export class AiAgentService {
     const builtinSlugs = Object.values(BUILTIN_AGENT_SLUGS) as string[];
     const isBuiltinAgent =
       Boolean(agentSlug && builtinSlugs.includes(agentSlug)) || agentConfig.virtual === true;
-    const dataGuardProtected =
-      (agentConfig.chatConfig as { deepseekDataGuardProtected?: boolean } | undefined)
-        ?.deepseekDataGuardProtected === true;
+    const projectDataGuardEnabled = Boolean((agentConfig.chatConfig as any)?.dataGuardProtected);
+    const dataGuardProtected = Boolean(
+      projectDataGuardEnabled || (agentConfig.chatConfig as any)?.deepseekDataGuardProtected,
+    );
+    if (projectDataGuardEnabled) {
+      agentConfig.chatConfig = {
+        ...agentConfig.chatConfig,
+        deepseekDataGuardProtected: true,
+      } as any;
+    }
     const useDynamicSystemAppend = workspaceEnabled && !isBuiltinAgent;
     const dynamicSystemAppendParts: string[] = [];
 
     // Protect DB systemRole & legacy knowledge/files BEFORE merging builtin runtime config (R2-1, R2-2, B-4)
     if (dataGuardProtected && !isBuiltinAgent) {
       agentConfig.systemRole = '';
-      agentConfig.knowledgeBases = [];
       agentConfig.files = [];
+      agentConfig.knowledgeBases = projectDataGuardEnabled
+        ? (agentConfig.knowledgeBases ?? []).filter(
+            (kb: { type?: string | null }) => kb?.type === 'project_workspace',
+          )
+        : [];
     } else if (workspaceEnabled && !isBuiltinAgent) {
       const migratedToAgentsMd = await hasEverHadAgentsMd(this.db, this.userId, resolvedAgentId);
       if (migratedToAgentsMd) {
@@ -1165,7 +1177,35 @@ export class AiAgentService {
       deepseekDocumentIds,
     );
 
-    const workspaceActive = workspaceEnabled && !isBuiltinAgent && !dataGuardProtected;
+    let workspaceDataGuardReady = false;
+    if (workspaceEnabled && !isBuiltinAgent && dataGuardProtected) {
+      try {
+        const dgState = await computeWorkspaceDataGuardState({
+          agentChatConfig:
+            (agentConfig.chatConfig as unknown as Record<string, unknown> | null | undefined) ?? {},
+          agentId: resolvedAgentId,
+          db: this.db,
+          requestDataGuardProtected: dataGuardProtected,
+          userId: this.userId,
+        });
+        workspaceDataGuardReady = dgState.workspaceDataGuardReady;
+      } catch (error) {
+        log('execAgent: computeWorkspaceDataGuardState failed, failing closed: %O', error);
+        workspaceDataGuardReady = false;
+      }
+    }
+    if (workspaceDataGuardReady) {
+      agentConfig.chatConfig = {
+        ...agentConfig.chatConfig,
+        __workspaceDataGuardReady: true,
+      } as any;
+    }
+
+    const workspaceActive =
+      workspaceEnabled && !isBuiltinAgent && (!dataGuardProtected || workspaceDataGuardReady);
+    if (!workspaceActive && dataGuardProtected && !isBuiltinAgent) {
+      agentConfig.knowledgeBases = [];
+    }
     let workspaceSnapshot: ResolvedTopicWorkspaceSnapshot | undefined;
     if (workspaceActive) {
       const isIsolatedThread = Boolean(appContext?.threadId);
@@ -1697,7 +1737,7 @@ export class AiAgentService {
         studioConnectorIds.length > 0 &&
         !pickedToolIds.has(ArckepStudioIdentifier);
       const hideLegacyAgentDocs = (workspaceEnabled || dataGuardProtected) && !isBuiltinAgent;
-      const hideProjectWorkspace = !workspaceEnabled || dataGuardProtected || isBuiltinAgent;
+      const hideProjectWorkspace = !workspaceActive;
       const hiddenToolIds = [
         ...restHiddenToolIds,
         ...excludedPluginIds,

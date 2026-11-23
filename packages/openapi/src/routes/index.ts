@@ -18,6 +18,7 @@ import RolesRoutes from './roles.route';
 import SkillsRoutes from './skills.route';
 import TopicsRoutes from './topics.route';
 import UsersRoutes from './users.route';
+import WorkspaceMaintenanceRoutes from './workspace-maintenance.route';
 
 // Mount workspace sub-routes under /api/v1/agents/:agentId/workspace/... strictly BEFORE /:id in AgentsRoutes
 const CombinedAgentsRoutes = new Hono();
@@ -42,4 +43,5 @@ export default {
   'skills': SkillsRoutes,
   'topics': TopicsRoutes,
   'users': UsersRoutes,
+  'workspace-maintenance': WorkspaceMaintenanceRoutes,
 };

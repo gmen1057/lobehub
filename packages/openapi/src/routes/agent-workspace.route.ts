@@ -11,6 +11,7 @@ import { requireAnyPermission } from '../middleware/permission-check';
 import { AgentWorkspaceService } from '../services/agent-workspace.service';
 import type {
   AgentWorkspaceFileParam,
+  AgentWorkspaceFileRestoreRevParam,
   AgentWorkspaceParam,
   AgentWorkspaceProposalParam,
   DeleteWorkspaceFileQuery,
@@ -23,6 +24,7 @@ import type {
 } from '../types/agent-workspace.type';
 import {
   AgentWorkspaceFileParamSchema,
+  AgentWorkspaceFileRestoreRevParamSchema,
   AgentWorkspaceParamSchema,
   AgentWorkspaceProposalParamSchema,
   DeleteWorkspaceFileBodySchema,
@@ -30,10 +32,13 @@ import {
   GetWorkspaceFileDetailQuerySchema,
   PutWorkspaceTextSchema,
   RegisterWorkspaceFileSchema,
+  RestoreRevisionBodySchema,
   RollbackWorkspaceFileSchema,
   UpdateWorkspaceFileMetadataSchema,
   WorkspaceDiffQuerySchema,
 } from '../types/agent-workspace.type';
+import { requireEngineServiceKey } from './arckep-engine-slot.route';
+import { handlePurgeExpiredTrash } from './workspace-maintenance.route';
 
 class AgentWorkspaceController extends BaseController {
   protected override handleError(c: Context, error: unknown): Response {
@@ -235,6 +240,100 @@ class AgentWorkspaceController extends BaseController {
       return this.handleError(c, error);
     }
   }
+
+  async restoreRevisionByParam(c: Context): Promise<Response> {
+    try {
+      const { agentId, rev, workspaceFileId } =
+        this.getParams<AgentWorkspaceFileRestoreRevParam>(c);
+      let baseRevision: number | undefined;
+
+      const rawBody = await c.req.text();
+      if (rawBody.trim().length > 0) {
+        let parsedJson: unknown;
+        try {
+          parsedJson = JSON.parse(rawBody);
+        } catch {
+          return this.error(c, 'Invalid JSON body', 400);
+        }
+        const parsed = RestoreRevisionBodySchema.safeParse(parsedJson);
+        if (!parsed.success) {
+          return this.error(
+            c,
+            parsed.error.issues[0]?.message || 'Invalid restore revision body',
+            400,
+          );
+        }
+        baseRevision = parsed.data.baseRevision ?? undefined;
+      }
+
+      const service = await this.createService(c);
+      const data = await service.rollbackFileRevision(agentId, workspaceFileId, {
+        baseRevision,
+        targetRevision: rev,
+      });
+      return this.success(c, data, 'Workspace file rolled back');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  async listTrash(c: Context): Promise<Response> {
+    try {
+      const { agentId } = this.getParams<AgentWorkspaceParam>(c);
+      const service = await this.createService(c);
+      const data = await service.listTrash(agentId);
+      return this.success(c, data, 'Workspace trash retrieved');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  async restoreTrashFile(c: Context): Promise<Response> {
+    try {
+      const bodyError = await this.ensureOptionalObjectBody(c);
+      if (bodyError) return bodyError;
+
+      const { agentId, workspaceFileId } = this.getParams<AgentWorkspaceFileParam>(c);
+      const service = await this.createService(c);
+      const data = await service.restoreTrashFile(agentId, workspaceFileId);
+      return this.success(c, data, 'Workspace file restored from trash');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  async purgeTrashFile(c: Context): Promise<Response> {
+    try {
+      const { agentId, workspaceFileId } = this.getParams<AgentWorkspaceFileParam>(c);
+      const service = await this.createService(c);
+      const data = await service.purgeTrashFile(agentId, workspaceFileId);
+      return this.success(c, data, 'Workspace trash file permanently deleted');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  async emptyTrash(c: Context): Promise<Response> {
+    try {
+      const { agentId } = this.getParams<AgentWorkspaceParam>(c);
+      const service = await this.createService(c);
+      const data = await service.emptyTrash(agentId);
+      return this.success(c, data, 'Workspace trash emptied');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  async getExportManifest(c: Context): Promise<Response> {
+    try {
+      const { agentId } = this.getParams<AgentWorkspaceParam>(c);
+      const service = await this.createService(c);
+      const data = await service.getExportManifest(agentId);
+      return this.success(c, data, 'Workspace export manifest retrieved');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
 }
 
 const AgentWorkspaceRoutes = new Hono();
@@ -259,6 +358,14 @@ const registerWithOptionalTrailingSlash = (
     (AgentWorkspaceRoutes[method] as any)(`${path}/`, ...handlers);
   }
 };
+
+// 0. Alias for service-key GC strictly BEFORE /:agentId routes
+registerWithOptionalTrailingSlash(
+  'post',
+  '/workspace-maintenance/purge-expired-trash',
+  requireEngineServiceKey,
+  handlePurgeExpiredTrash,
+);
 
 // 1. GET /api/v1/agents/:agentId/workspace
 registerWithOptionalTrailingSlash(
@@ -292,10 +399,20 @@ registerWithOptionalTrailingSlash(
   async (c: Context) => new AgentWorkspaceController().putTextFile(c),
 );
 
-// 4. POST /api/v1/agents/:agentId/workspace/files
+// 4. POST /api/v1/agents/:agentId/workspace/files (+ alias /register-file)
 registerWithOptionalTrailingSlash(
   'post',
   '/:agentId/workspace/files',
+  requireAuth,
+  requireAgentUpdate,
+  zValidator('param', AgentWorkspaceParamSchema),
+  zValidator('json', RegisterWorkspaceFileSchema),
+  async (c: Context) => new AgentWorkspaceController().registerFile(c),
+);
+
+registerWithOptionalTrailingSlash(
+  'post',
+  '/:agentId/workspace/register-file',
   requireAuth,
   requireAgentUpdate,
   zValidator('param', AgentWorkspaceParamSchema),
@@ -346,7 +463,7 @@ registerWithOptionalTrailingSlash(
   async (c: Context) => new AgentWorkspaceController().diffRevisions(c),
 );
 
-// 9. POST /api/v1/agents/:agentId/workspace/files/:workspaceFileId/rollback
+// 9. POST /api/v1/agents/:agentId/workspace/files/:workspaceFileId/rollback (+ alias /restore/:rev)
 registerWithOptionalTrailingSlash(
   'post',
   '/:agentId/workspace/files/:workspaceFileId/rollback',
@@ -355,6 +472,15 @@ registerWithOptionalTrailingSlash(
   zValidator('param', AgentWorkspaceFileParamSchema),
   zValidator('json', RollbackWorkspaceFileSchema),
   async (c: Context) => new AgentWorkspaceController().rollbackFile(c),
+);
+
+registerWithOptionalTrailingSlash(
+  'post',
+  '/:agentId/workspace/files/:workspaceFileId/restore/:rev',
+  requireAuth,
+  requireAgentUpdate,
+  zValidator('param', AgentWorkspaceFileRestoreRevParamSchema),
+  async (c: Context) => new AgentWorkspaceController().restoreRevisionByParam(c),
 );
 
 // 10. POST /api/v1/agents/:agentId/workspace/proposals/:proposalId/apply
@@ -375,6 +501,56 @@ registerWithOptionalTrailingSlash(
   requireAgentUpdate,
   zValidator('param', AgentWorkspaceProposalParamSchema),
   async (c: Context) => new AgentWorkspaceController().rejectProposal(c),
+);
+
+// 12. GET /api/v1/agents/:agentId/workspace/trash
+registerWithOptionalTrailingSlash(
+  'get',
+  '/:agentId/workspace/trash',
+  requireAuth,
+  requireAgentRead,
+  zValidator('param', AgentWorkspaceParamSchema),
+  async (c: Context) => new AgentWorkspaceController().listTrash(c),
+);
+
+// 13. POST /api/v1/agents/:agentId/workspace/trash/:workspaceFileId/restore
+registerWithOptionalTrailingSlash(
+  'post',
+  '/:agentId/workspace/trash/:workspaceFileId/restore',
+  requireAuth,
+  requireAgentUpdate,
+  zValidator('param', AgentWorkspaceFileParamSchema),
+  async (c: Context) => new AgentWorkspaceController().restoreTrashFile(c),
+);
+
+// 14. DELETE /api/v1/agents/:agentId/workspace/trash/:workspaceFileId
+registerWithOptionalTrailingSlash(
+  'delete',
+  '/:agentId/workspace/trash/:workspaceFileId',
+  requireAuth,
+  requireAgentUpdate,
+  zValidator('param', AgentWorkspaceFileParamSchema),
+  async (c: Context) => new AgentWorkspaceController().purgeTrashFile(c),
+);
+
+// 15. DELETE /api/v1/agents/:agentId/workspace/trash
+registerWithOptionalTrailingSlash(
+  'delete',
+  '/:agentId/workspace/trash',
+  requireAuth,
+  requireAgentUpdate,
+  zValidator('param', AgentWorkspaceParamSchema),
+  async (c: Context) => new AgentWorkspaceController().emptyTrash(c),
+);
+
+// 16. GET /api/v1/agents/:agentId/workspace/export-manifest
+registerWithOptionalTrailingSlash(
+  'get',
+  '/:agentId/workspace/export-manifest',
+  requireAuth,
+  requireAgentRead,
+  zValidator('param', AgentWorkspaceParamSchema),
+  async (c: Context) => new AgentWorkspaceController().getExportManifest(c),
 );
 
 export default AgentWorkspaceRoutes;

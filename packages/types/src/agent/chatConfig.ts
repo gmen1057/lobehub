@@ -32,6 +32,23 @@ export interface LobeAgentChatConfig extends AgentMemoryChatConfig {
   compressionModelId?: string;
 
   /**
+   * Whether commercial secrets (sums/rates/contracts) are scrubbed in protected project mode
+   */
+  dataGuardCommercial?: boolean;
+  /**
+   * Whether the project is in persistent "Protected Project" (Data Guard) mode
+   */
+  dataGuardProtected?: boolean;
+  /**
+   * ISO-8601 timestamp when persistent project Data Guard protection was enabled
+   */
+  dataGuardProtectedSince?: string;
+  /**
+   * Per-request / runtime Data Guard protection flag
+   */
+  deepseekDataGuardProtected?: boolean;
+
+  /**
    * Disable context caching
    */
   disableContextCaching?: boolean;
@@ -190,6 +207,10 @@ export const AgentChatConfigSchema = z
     autoCreateTopicThreshold: z.number().default(2),
     codexMaxReasoningEffort: z.enum(['low', 'medium', 'high', 'xhigh']).optional(),
     compressionModelId: z.string().optional(),
+    dataGuardCommercial: z.boolean().optional(),
+    dataGuardProtected: z.boolean().optional(),
+    dataGuardProtectedSince: z.string().optional(),
+    deepseekDataGuardProtected: z.boolean().optional(),
     disableContextCaching: z.boolean().optional(),
     effort: z.enum(['low', 'medium', 'high', 'max']).optional(),
     enableAdaptiveThinking: z.boolean().optional(),
