@@ -12,7 +12,14 @@ export const params = {
   baseURL: 'https://api.deepseek.com/v1',
   chatCompletion: {
     handlePayload: (payload) => {
-      const shouldForceAssistantReasoningContent = payload.model === 'deepseek-reasoner';
+      const isThinkingDisabled =
+        payload.thinking?.type === 'disabled' || payload.reasoning_effort === 'none';
+      const isThinkingModel =
+        payload.model === 'deepseek-reasoner' ||
+        payload.model === 'deepseek-v4-pro' ||
+        payload.model === 'deepseek-flash';
+      const shouldForceAssistantReasoningContent =
+        !isThinkingDisabled && (payload.thinking?.type === 'enabled' || isThinkingModel);
 
       // Transform reasoning object to reasoning_content string for multi-turn conversations
       const messages = payload.messages.map((message: any) => {
@@ -25,7 +32,7 @@ export const params = {
               ? reasoning.content
               : undefined;
 
-        // DeepSeek reasoner with tool calls requires assistant history messages to carry reasoning_content
+        // DeepSeek thinking mode requires assistant messages in the active chain to carry reasoning_content
         if (message.role === 'assistant' && shouldForceAssistantReasoningContent) {
           return {
             ...rest,

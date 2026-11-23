@@ -173,6 +173,90 @@ describe('LobeDeepSeekAI - custom features', () => {
         },
       ]);
     });
+
+    it.each(['deepseek-v4-pro', 'deepseek-flash'])(
+      'should preserve reasoning_content and backfill empty string for %s in default thinking mode',
+      (model) => {
+        const payload = {
+          messages: [
+            { role: 'user', content: 'Давай обе' },
+            { role: 'assistant', content: 'Отлично, делаю обе.' },
+            {
+              role: 'assistant',
+              content: '',
+              reasoning_content: 'Re-activating sandbox tool',
+              tool_calls: [
+                {
+                  id: 'call_1',
+                  type: 'function',
+                  function: { name: 'activateTools', arguments: '{}' },
+                },
+              ],
+            },
+            { role: 'tool', content: 'Activated', tool_call_id: 'call_1' },
+          ],
+          model,
+        };
+
+        const result = params.chatCompletion!.handlePayload!(payload as any);
+
+        expect(result.messages).toEqual([
+          { role: 'user', content: 'Давай обе' },
+          { role: 'assistant', content: 'Отлично, делаю обе.', reasoning_content: '' },
+          {
+            role: 'assistant',
+            content: '',
+            reasoning_content: 'Re-activating sandbox tool',
+            tool_calls: [
+              {
+                id: 'call_1',
+                type: 'function',
+                function: { name: 'activateTools', arguments: '{}' },
+              },
+            ],
+          },
+          { role: 'tool', content: 'Activated', tool_call_id: 'call_1' },
+        ]);
+      },
+    );
+
+    it('should not inject empty reasoning_content when thinking is explicitly disabled', () => {
+      const disabledByThinking = params.chatCompletion!.handlePayload!({
+        messages: [
+          { role: 'user', content: 'Hello' },
+          { role: 'assistant', content: 'Hi' },
+        ],
+        model: 'deepseek-v4-pro',
+        thinking: { type: 'disabled' },
+      } as any);
+      expect(disabledByThinking.messages[1]).toEqual({ role: 'assistant', content: 'Hi' });
+
+      const disabledByEffort = params.chatCompletion!.handlePayload!({
+        messages: [
+          { role: 'user', content: 'Hello' },
+          { role: 'assistant', content: 'Hi' },
+        ],
+        model: 'deepseek-flash',
+        reasoning_effort: 'none',
+      } as any);
+      expect(disabledByEffort.messages[1]).toEqual({ role: 'assistant', content: 'Hi' });
+    });
+
+    it('should backfill empty reasoning_content for deepseek-chat when thinking is explicitly enabled', () => {
+      const result = params.chatCompletion!.handlePayload!({
+        messages: [
+          { role: 'user', content: 'Hello' },
+          { role: 'assistant', content: 'Hi' },
+        ],
+        model: 'deepseek-chat',
+        thinking: { type: 'enabled' },
+      } as any);
+      expect(result.messages[1]).toEqual({
+        role: 'assistant',
+        content: 'Hi',
+        reasoning_content: '',
+      });
+    });
   });
 
   describe('Debug Configuration', () => {
