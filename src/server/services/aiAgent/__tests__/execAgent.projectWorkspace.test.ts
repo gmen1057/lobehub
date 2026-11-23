@@ -1178,6 +1178,24 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
         success: false,
       });
     });
+
+    it('registers globalThis.__arckepProjectWorkspaceSandboxBridge on module load and runtime factory initialization', () => {
+      const initialBridge = (globalThis as Record<string, any>)
+        .__arckepProjectWorkspaceSandboxBridge;
+      expect(initialBridge).toBeDefined();
+      expect(typeof initialBridge.listHydratableProjectFiles).toBe('function');
+      expect(typeof initialBridge.applySandboxProjectFileSync).toBe('function');
+
+      // Clear globalThis and verify projectWorkspaceRuntime.factory re-registers the bridge
+      delete (globalThis as Record<string, any>).__arckepProjectWorkspaceSandboxBridge;
+      projectWorkspaceRuntime.factory(baseCtx);
+
+      const restoredBridge = (globalThis as Record<string, any>)
+        .__arckepProjectWorkspaceSandboxBridge;
+      expect(restoredBridge).toBeDefined();
+      expect(typeof restoredBridge.listHydratableProjectFiles).toBe('function');
+      expect(typeof restoredBridge.applySandboxProjectFileSync).toBe('function');
+    });
   });
 
   describe('6. Backward compatibility when ARCKEP_WORKSPACE_ENABLED=0', () => {

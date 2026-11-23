@@ -26,10 +26,13 @@ import {
   ProjectWorkspaceStore,
   WorkspaceError,
 } from '@/server/services/projectWorkspace';
+import { registerProjectWorkspaceSandboxBridge } from '@/server/services/projectWorkspace/sandboxBridge';
 import type { PatchEdit } from '@/server/services/textFiles/patch';
 
 import type { ToolExecutionContext, ToolExecutionResult } from '../types';
 import type { ServerRuntimeRegistration } from './types';
+
+registerProjectWorkspaceSandboxBridge();
 
 export const WORKSPACE_CHANGE_MARKER_PREFIX = 'ARCKEP_WORKSPACE_CHANGE ';
 export const WORKSPACE_PROPOSAL_MARKER_PREFIX = 'ARCKEP_WORKSPACE_PROPOSAL ';
@@ -453,8 +456,9 @@ const tryReadParsedDocumentPage = async (
   };
 };
 
-export const projectWorkspaceRuntime: ServerRuntimeRegistration = {
-  factory: (baseContext) => ({
+const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
+  registerProjectWorkspaceSandboxBridge();
+  return {
     async deleteProjectFile(rawArgs: unknown, callContext?: ToolExecutionContext) {
       const ctx: ToolExecutionContext = { ...baseContext, ...callContext };
       const guard = validateEntryGuard(ctx);
@@ -736,6 +740,10 @@ export const projectWorkspaceRuntime: ServerRuntimeRegistration = {
         return formatWorkspaceErrorResult(error);
       }
     },
-  }),
+  };
+};
+
+export const projectWorkspaceRuntime: ServerRuntimeRegistration = {
+  factory: (baseContext) => buildRuntimeMethods(baseContext),
   identifier: PROJECT_WORKSPACE_TOOL,
 };

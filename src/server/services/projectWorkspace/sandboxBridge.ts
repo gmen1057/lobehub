@@ -341,3 +341,19 @@ export async function applySandboxProjectFileSync(
     throw error;
   }
 }
+
+export interface ProjectWorkspaceSandboxBridgeGlobal {
+  applySandboxProjectFileSync: typeof applySandboxProjectFileSync;
+  listHydratableProjectFiles: typeof listHydratableProjectFiles;
+}
+
+export function registerProjectWorkspaceSandboxBridge(): ProjectWorkspaceSandboxBridgeGlobal {
+  const bridge: ProjectWorkspaceSandboxBridgeGlobal = {
+    applySandboxProjectFileSync,
+    listHydratableProjectFiles,
+  };
+  (globalThis as Record<string, unknown>).__arckepProjectWorkspaceSandboxBridge = bridge;
+  return bridge;
+}
+
+registerProjectWorkspaceSandboxBridge();
