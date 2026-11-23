@@ -129,6 +129,14 @@ export interface ServerMessagesEngineParams {
 
   /** System role */
   systemRole?: string;
+  /** Pre-formatted `<project_rules>` block injected in Breakpoint 1 right after systemRole */
+  workspaceRulesBlock?: string;
+  /** Per-turn dynamic system additions (`instructions`, `resumeRule`, `setupHints`, `codeSourceRules`) injected after `<project_rules>` */
+  dynamicSystemAppend?: string;
+  /** Pre-formatted `<project_workspace_index>` block injected in Phase 3 after KnowledgeInjector */
+  workspaceIndexBlock?: string;
+  /** When true, suppresses unmasked workspace rules/index/deltas and masks historical workspace & searchKnowledgeBase tool outputs */
+  deepseekDataGuardProtected?: boolean;
 
   // ========== Skills ==========
   /** Skills configuration for <available_skills> injection */
@@ -170,5 +178,9 @@ export {
   type KnowledgeBaseInfo,
   type TopicReferenceItem,
   type UserMemoryData,
+  type WorkspaceDeltaItem,
+  type WorkspaceDeltaPayload,
+  type WorkspaceIndexEntryInput,
+  type WorkspaceRuleFileInput,
 } from '@lobechat/context-engine';
 export type { PageContentContext } from '@lobechat/prompts';

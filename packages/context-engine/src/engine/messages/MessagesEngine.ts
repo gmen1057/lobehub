@@ -1,7 +1,9 @@
 import debug from 'debug';
+import { Md5 } from 'ts-md5';
 
 import type { OpenAIChatMessage } from '@/types/index';
 
+import { BaseProcessor } from '../../base/BaseProcessor';
 import { ContextEngine } from '../../pipeline';
 import {
   AgentCouncilFlattenProcessor,
@@ -36,6 +38,7 @@ import {
   ArckepConditionalRulesProvider,
   BotPlatformContextInjector,
   DiscordContextProvider,
+  DynamicSystemAppendInjector,
   EvalContextSystemInjector,
   ForceFinishSummaryInjector,
   GroupAgentBuilderContextInjector,
@@ -46,6 +49,8 @@ import {
   KnowledgeInjector,
   PageEditorContextInjector,
   PageSelectionsInjector,
+  ProjectWorkspaceIndexInjector,
+  ProjectWorkspaceRulesInjector,
   SelectedSkillInjector,
   SkillContextProvider,
   SystemDateProvider,
@@ -56,11 +61,175 @@ import {
   UserMemoryInjector,
 } from '../../providers';
 import { SelectedToolInjector } from '../../providers/SelectedToolInjector';
-import type { ContextProcessor } from '../../types';
+import type { ContextProcessor, PipelineContext } from '../../types';
 import { ToolNameResolver } from '../tools';
 import type { MessagesEngineParams, MessagesEngineResult } from './types';
 
 const log = debug('context-engine:MessagesEngine');
+
+const DATA_GUARD_MASKED_TOOL_CONTENT =
+  '[Содержимое незащищённого файла проекта скрыто в защищённом режиме]';
+const WORKSPACE_IDENTIFIER = 'arckep-workspace';
+const WORKSPACE_ID_MD5_TOKEN = `MD5HASH_${Md5.hashStr(WORKSPACE_IDENTIFIER).toString().slice(0, 12)}`;
+const SEARCH_KB_API = 'searchKnowledgeBase';
+const SEARCH_KB_MD5_TOKEN = `MD5HASH_${Md5.hashStr(SEARCH_KB_API).toString().slice(0, 12)}`;
+const WORKSPACE_TOOL_APIS = new Set([
+  'listProjectFiles',
+  'searchProjectFiles',
+  'readProjectFile',
+  'patchProjectFile',
+  'writeProjectFile',
+  'deleteProjectFile',
+]);
+
+const isDataGuardSensitiveToolName = (rawName: string | undefined): boolean => {
+  if (!rawName || typeof rawName !== 'string') return false;
+
+  for (const prefix of [WORKSPACE_IDENTIFIER, WORKSPACE_ID_MD5_TOKEN]) {
+    if (
+      rawName === prefix ||
+      rawName.startsWith(`${prefix}____`) ||
+      rawName.startsWith(`${prefix}.`) ||
+      rawName.startsWith(`${prefix}/`) ||
+      rawName.startsWith(`${prefix}__`)
+    ) {
+      return true;
+    }
+  }
+
+  for (const wsApi of WORKSPACE_TOOL_APIS) {
+    if (rawName.includes(WORKSPACE_IDENTIFIER) && rawName.includes(wsApi)) {
+      return true;
+    }
+  }
+
+  // Mask searchKnowledgeBase, NEVER readKnowledge (ENG-4 scrubbed chat attachments rely on readKnowledge)
+  if (
+    rawName === SEARCH_KB_API ||
+    rawName.includes(`____${SEARCH_KB_API}`) ||
+    rawName.includes(`.${SEARCH_KB_API}`) ||
+    rawName.includes(`/${SEARCH_KB_API}`) ||
+    rawName.includes(`__${SEARCH_KB_API}`) ||
+    rawName.includes(`____${SEARCH_KB_MD5_TOKEN}`)
+  ) {
+    return true;
+  }
+
+  return false;
+};
+
+const isDataGuardSensitivePayload = (
+  identifier: string | undefined,
+  apiName: string | undefined,
+): boolean => {
+  if (identifier === WORKSPACE_IDENTIFIER) return true;
+  if (apiName === SEARCH_KB_API) return true;
+  return false;
+};
+
+const collectInitialMaskedToolMsgIds = (initialMessages: unknown[] | undefined): Set<string> => {
+  const ids = new Set<string>();
+  if (!Array.isArray(initialMessages)) return ids;
+
+  const visit = (item: any) => {
+    if (!item || typeof item !== 'object') return;
+
+    if (
+      item.role === 'tool' &&
+      typeof item.id === 'string' &&
+      (isDataGuardSensitivePayload(item.plugin?.identifier, item.plugin?.apiName) ||
+        isDataGuardSensitiveToolName(item.name))
+    ) {
+      ids.add(item.id);
+    }
+
+    if (Array.isArray(item.tools)) {
+      for (const tool of item.tools) {
+        if (
+          tool?.result?.id &&
+          typeof tool.result.id === 'string' &&
+          isDataGuardSensitivePayload(tool.identifier, tool.apiName)
+        ) {
+          ids.add(tool.result.id);
+        }
+      }
+    }
+
+    for (const key of ['children', 'members', 'tasks']) {
+      if (Array.isArray(item[key])) {
+        for (const child of item[key]) visit(child);
+      }
+    }
+  };
+
+  for (const msg of initialMessages) visit(msg);
+  return ids;
+};
+
+class WorkspaceDataGuardMaskProcessor extends BaseProcessor {
+  readonly name = 'WorkspaceDataGuardMaskProcessor';
+
+  protected async doProcess(context: PipelineContext): Promise<PipelineContext> {
+    const clonedContext = this.cloneContext(context);
+    const maskedCallIds = new Set<string>();
+    const maskedMsgIds = collectInitialMaskedToolMsgIds(context.initialState?.messages);
+
+    for (const msg of clonedContext.messages) {
+      if (!msg || msg.role !== 'assistant') continue;
+
+      if (Array.isArray(msg.tools)) {
+        for (const tool of msg.tools) {
+          if (
+            typeof tool?.id === 'string' &&
+            tool.id &&
+            isDataGuardSensitivePayload(tool.identifier, tool.apiName)
+          ) {
+            maskedCallIds.add(tool.id);
+          }
+        }
+      }
+
+      if (Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          if (
+            typeof tc?.id === 'string' &&
+            tc.id &&
+            isDataGuardSensitiveToolName(tc.function?.name)
+          ) {
+            maskedCallIds.add(tc.id);
+          }
+        }
+      }
+    }
+
+    for (let i = 0; i < clonedContext.messages.length; i++) {
+      const msg = clonedContext.messages[i];
+      if (!msg) continue;
+
+      const isToolRole = msg.role === 'tool';
+      const isConvertedToolMsg =
+        msg.role === 'user' && typeof msg.id === 'string' && maskedMsgIds.has(msg.id);
+
+      if (!isToolRole && !isConvertedToolMsg) continue;
+
+      const shouldMask =
+        isConvertedToolMsg ||
+        (typeof msg.id === 'string' && maskedMsgIds.has(msg.id)) ||
+        (typeof msg.tool_call_id === 'string' && maskedCallIds.has(msg.tool_call_id)) ||
+        isDataGuardSensitivePayload(msg.plugin?.identifier, msg.plugin?.apiName) ||
+        isDataGuardSensitiveToolName(msg.name);
+
+      if (shouldMask && msg.content !== DATA_GUARD_MASKED_TOOL_CONTENT) {
+        clonedContext.messages[i] = {
+          ...msg,
+          content: DATA_GUARD_MASKED_TOOL_CONTENT,
+        };
+      }
+    }
+
+    return this.markAsExecuted(clonedContext);
+  }
+}
 
 /**
  * MessagesEngine - High-level message processing engine
@@ -135,6 +304,10 @@ export class MessagesEngine {
       model,
       provider,
       systemRole,
+      workspaceRulesBlock,
+      dynamicSystemAppend,
+      workspaceIndexBlock,
+      deepseekDataGuardProtected,
       inputTemplate,
       enableHistoryCount,
       historyCount,
@@ -225,6 +398,16 @@ export class MessagesEngine {
       new AgentDocumentBeforeSystemInjector(agentDocConfig),
       // Agent's system role (creates the initial system message)
       new SystemRoleInjector({ systemRole }),
+      // Project workspace pinned rules (<project_rules>, Breakpoint 1 static prefix)
+      new ProjectWorkspaceRulesInjector({
+        enabled: !deepseekDataGuardProtected && !!workspaceRulesBlock,
+        rulesBlock: workspaceRulesBlock,
+      }),
+      // Per-turn dynamic system additions (strictly AFTER <project_rules> to keep Breakpoint 1 warm)
+      new DynamicSystemAppendInjector({
+        content: dynamicSystemAppend,
+        enabled: !!dynamicSystemAppend,
+      }),
       // Eval context (appends envPrompt)
       new EvalContextSystemInjector({ enabled: !!evalContext?.envPrompt, evalContext }),
       // Bot platform context (formatting instructions for non-Markdown platforms)
@@ -287,6 +470,11 @@ export class MessagesEngine {
       new KnowledgeInjector({
         fileContents: knowledge?.fileContents,
         knowledgeBases: knowledge?.knowledgeBases,
+      }),
+      // Project workspace file index (<project_workspace_index trust="untrusted_workspace_data">)
+      new ProjectWorkspaceIndexInjector({
+        enabled: !deepseekDataGuardProtected && !!workspaceIndexBlock,
+        indexBlock: workspaceIndexBlock,
       }),
       // Agent documents → before first user message
       new AgentDocumentContextInjector(agentDocConfig),
@@ -402,8 +590,9 @@ export class MessagesEngine {
 
       // Reaction feedback
       new ReactionFeedbackProcessor({ enabled: true }),
-      // Message content processing (image encoding, multimodal)
+      // Message content processing (image encoding, multimodal, workspaceDelta)
       new MessageContentProcessor({
+        deepseekDataGuardProtected,
         fileContext: fileContext || { enabled: true, includeFileUrl: true },
         isCanUseVideo: capabilities?.isCanUseVideo || (() => false),
         isCanUseVision: capabilities?.isCanUseVision || (() => true),
@@ -417,6 +606,8 @@ export class MessagesEngine {
         model,
         provider,
       }),
+      // Data Guard masking for historical arckep-workspace & searchKnowledgeBase tool outputs (keeps readKnowledge intact)
+      ...(deepseekDataGuardProtected ? [new WorkspaceDataGuardMaskProcessor()] : []),
       // Cache-safe stale tool result & superseded inline artifact trimming
       // MUST run strictly AFTER GroupMessageFlatten/TasksFlatten/CompressedGroupRoleTransform/ToolCallProcessor
       // and strictly BEFORE ToolMessageReorder and MessageCleanupProcessor

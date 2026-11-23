@@ -2,6 +2,7 @@ import type { AgentRuntimeContext, AgentState } from '@lobechat/agent-runtime';
 import { BUILTIN_AGENT_SLUGS, getAgentRuntimeConfig } from '@lobechat/builtin-agents';
 import { builtinSkills } from '@lobechat/builtin-skills';
 import { LobeActivatorIdentifier, systemPromptHeadless } from '@lobechat/builtin-tool-activator';
+import { AgentDocumentsIdentifier } from '@lobechat/builtin-tool-agent-documents';
 import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { ArckepStudioIdentifier } from '@lobechat/builtin-tool-arckep-studio';
 import { CronManifest } from '@lobechat/builtin-tool-cron';
@@ -26,9 +27,12 @@ import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference
 import {
   ARCKEP_STUDIO_CONNECTOR_PREFIX,
   arckepLazyToolIds,
+  buildReadOnlyProjectWorkspaceManifest,
   builtinTools,
   isArckepLazyMcpConnectorId,
   manualModeExcludeToolIds,
+  PROJECT_WORKSPACE_TOOL,
+  ProjectWorkspaceManifest,
   TEXT_FILE_TOOL,
 } from '@lobechat/builtin-tools';
 import { LOADING_FLAT } from '@lobechat/const';
@@ -51,6 +55,7 @@ import type {
 import { ThreadStatus, ThreadType } from '@lobechat/types';
 import { nanoid } from '@lobechat/utils';
 import debug from 'debug';
+import { and, eq, isNull } from 'drizzle-orm';
 import mime from 'mime';
 
 import { AgentModel } from '@/database/models/agent';
@@ -64,6 +69,7 @@ import { ThreadModel } from '@/database/models/thread';
 import { TopicModel } from '@/database/models/topic';
 import { UserModel } from '@/database/models/user';
 import { UserPersonaModel } from '@/database/models/userMemory/persona';
+import { projectWorkspaceFiles } from '@/database/schemas';
 import { filterUserSkills, shouldEnableBuiltinSkill } from '@/helpers/skillFilters';
 import { isTrustedClientEnabled } from '@/libs/trusted-client';
 import {
@@ -99,6 +105,13 @@ import { DocumentService } from '@/server/services/document';
 import { FileService } from '@/server/services/file';
 import { KlavisService } from '@/server/services/klavis';
 import { MarketService } from '@/server/services/market';
+import type { ResolvedTopicWorkspaceSnapshot } from '@/server/services/projectWorkspace';
+import {
+  estimateWorkspaceTokens,
+  hasEverHadAgentsMd,
+  isWorkspaceEnabled,
+  resolveTopicWorkspaceSnapshot,
+} from '@/server/services/projectWorkspace';
 import { CONTINUATION_CONTEXT } from '@/server/services/textFiles/diagnostics';
 import { TextFileStore } from '@/server/services/textFiles/store';
 import { deviceProxy } from '@/server/services/toolExecution/deviceProxy';
@@ -125,6 +138,7 @@ import { assertTopicAccess } from './topicAccess';
 const log = debug('lobe-server:ai-agent-service');
 
 export const DEFAULT_CHAT_MAX_STEPS = 60;
+export const LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS = 30_000;
 
 interface FileAttachmentContentLike {
   content?: string | null;
@@ -817,10 +831,31 @@ export class AiAgentService {
       agentConfig.provider,
     );
 
-    // 2. Merge builtin agent runtime config (systemRole, plugins)
-    // The DB only stores persist config. Runtime config (e.g. inbox systemRole) is generated dynamically.
+    const workspaceEnabled = isWorkspaceEnabled();
     const agentSlug = agentConfig.slug;
     const builtinSlugs = Object.values(BUILTIN_AGENT_SLUGS) as string[];
+    const isBuiltinAgent =
+      Boolean(agentSlug && builtinSlugs.includes(agentSlug)) || agentConfig.virtual === true;
+    const dataGuardProtected =
+      (agentConfig.chatConfig as { deepseekDataGuardProtected?: boolean } | undefined)
+        ?.deepseekDataGuardProtected === true;
+    const useDynamicSystemAppend = workspaceEnabled && !isBuiltinAgent;
+    const dynamicSystemAppendParts: string[] = [];
+
+    // Protect DB systemRole & legacy knowledge/files BEFORE merging builtin runtime config (R2-1, R2-2, B-4)
+    if (dataGuardProtected && !isBuiltinAgent) {
+      agentConfig.systemRole = '';
+      agentConfig.knowledgeBases = [];
+      agentConfig.files = [];
+    } else if (workspaceEnabled && !isBuiltinAgent) {
+      const migratedToAgentsMd = await hasEverHadAgentsMd(this.db, this.userId, resolvedAgentId);
+      if (migratedToAgentsMd) {
+        agentConfig.systemRole = '';
+      }
+    }
+
+    // 2. Merge builtin agent runtime config (systemRole, plugins)
+    // The DB only stores persist config. Runtime config (e.g. inbox systemRole) is generated dynamically.
     if (agentSlug && builtinSlugs.includes(agentSlug)) {
       const runtimeConfig = getAgentRuntimeConfig(agentSlug, {
         model: agentConfig.model,
@@ -842,11 +877,15 @@ export class AiAgentService {
 
     await throwIfExecutionAborted('agent configuration');
 
-    // 2.5. Append additional instructions to agent's systemRole
+    // 2.5. Append additional instructions (dynamic in workspace mode, static legacy otherwise)
     if (instructions) {
-      agentConfig.systemRole = agentConfig.systemRole
-        ? `${agentConfig.systemRole}\n\n${instructions}`
-        : instructions;
+      if (useDynamicSystemAppend) {
+        dynamicSystemAppendParts.push(instructions);
+      } else {
+        agentConfig.systemRole = agentConfig.systemRole
+          ? `${agentConfig.systemRole}\n\n${instructions}`
+          : instructions;
+      }
       log('execAgent: appended additional instructions to systemRole');
     }
     if (studioWebChat) {
@@ -1092,7 +1131,13 @@ export class AiAgentService {
           ' in topic ' +
           topicId +
           '.';
-        agentConfig.systemRole = [agentConfig.systemRole, resumeRule].filter(Boolean).join('\n\n');
+        if (useDynamicSystemAppend) {
+          dynamicSystemAppendParts.push(resumeRule);
+        } else {
+          agentConfig.systemRole = [agentConfig.systemRole, resumeRule]
+            .filter(Boolean)
+            .join('\n\n');
+        }
       }
     } else if (studioCodeFileContinueId) {
       throw new Error('File continuation unavailable for this conversation.');
@@ -1119,6 +1164,82 @@ export class AiAgentService {
       historyMessages,
       deepseekDocumentIds,
     );
+
+    const workspaceActive = workspaceEnabled && !isBuiltinAgent && !dataGuardProtected;
+    let workspaceSnapshot: ResolvedTopicWorkspaceSnapshot | undefined;
+    if (workspaceActive) {
+      const isIsolatedThread = Boolean(appContext?.threadId);
+      const hasEmptyHistory = historyMessages.length === 0;
+      const compressedGroupMsg = historyMessages.findLast(
+        (msg: any) => msg?.role === 'compressedGroup',
+      );
+      const compressionSignature = compressedGroupMsg
+        ? `${compressedGroupMsg.id}:${new Date(
+            compressedGroupMsg.updatedAt ?? compressedGroupMsg.createdAt ?? 0,
+          ).toISOString()}`
+        : null;
+
+      type SnapshotResolveCallParams = Parameters<typeof resolveTopicWorkspaceSnapshot>[0] & {
+        forceRebuild?: boolean;
+      };
+      const snapshotParams: SnapshotResolveCallParams = isIsolatedThread
+        ? {
+            agentId: resolvedAgentId,
+            compressionSignature,
+            db: this.db,
+            persist: false,
+            topicId: undefined,
+            userId: this.userId,
+          }
+        : {
+            agentId: resolvedAgentId,
+            compressionSignature,
+            db: this.db,
+            forceRebuild: hasEmptyHistory,
+            persist: !resume && Boolean(topicId),
+            topicId,
+            userId: this.userId,
+          };
+      workspaceSnapshot = await resolveTopicWorkspaceSnapshot(snapshotParams);
+
+      const hasManagedWorkspaceKb = Boolean(
+        agentConfig.knowledgeBases?.some(
+          (kb: { enabled?: boolean | null; type?: string | null }) =>
+            kb?.enabled === true && kb?.type === 'project_workspace',
+        ),
+      );
+      if (hasManagedWorkspaceKb) {
+        let hasWorkspaceRagFiles = false;
+        if (workspaceSnapshot.activeFilesCount > 0) {
+          if (typeof (this.db as any)?.select === 'function') {
+            try {
+              const [ragRow] = await this.db
+                .select({ id: projectWorkspaceFiles.id })
+                .from(projectWorkspaceFiles)
+                .where(
+                  and(
+                    eq(projectWorkspaceFiles.userId, this.userId),
+                    eq(projectWorkspaceFiles.agentId, resolvedAgentId),
+                    isNull(projectWorkspaceFiles.deletedAt),
+                    eq(projectWorkspaceFiles.ragEnabled, true),
+                  ),
+                )
+                .limit(1);
+              hasWorkspaceRagFiles = Boolean(ragRow);
+            } catch {
+              hasWorkspaceRagFiles = workspaceSnapshot.documentFilesCount > 0;
+            }
+          } else {
+            hasWorkspaceRagFiles = workspaceSnapshot.documentFilesCount > 0;
+          }
+        }
+        if (!hasWorkspaceRagFiles) {
+          agentConfig.knowledgeBases = (agentConfig.knowledgeBases ?? []).filter(
+            (kb: { type?: string | null }) => kb?.type !== 'project_workspace',
+          );
+        }
+      }
+    }
 
     await throwIfExecutionAborted('message history loading');
 
@@ -1339,9 +1460,13 @@ export class AiAgentService {
           log('execAgent: link connectors activated: %O', linkConnectors.activate);
         }
         if (linkConnectors.setupHints.length > 0) {
-          agentConfig.systemRole = [agentConfig.systemRole, ...linkConnectors.setupHints]
-            .filter(Boolean)
-            .join('\n\n');
+          if (useDynamicSystemAppend) {
+            dynamicSystemAppendParts.push(...linkConnectors.setupHints);
+          } else {
+            agentConfig.systemRole = [agentConfig.systemRole, ...linkConnectors.setupHints]
+              .filter(Boolean)
+              .join('\n\n');
+          }
           log('execAgent: link connector setup hint added (%d)', linkConnectors.setupHints.length);
         }
       }
@@ -1397,11 +1522,13 @@ export class AiAgentService {
           (kb: { enabled?: boolean | null }) => kb.enabled === true,
         ) ?? false;
 
-      try {
-        const docs = await this.agentDocumentsService.getAgentDocuments(resolvedAgentId);
-        hasAgentDocuments = docs.length > 0;
-      } catch {
-        // Agent documents check is non-critical
+      if ((!workspaceEnabled && !dataGuardProtected) || isBuiltinAgent) {
+        try {
+          const docs = await this.agentDocumentsService.getAgentDocuments(resolvedAgentId);
+          hasAgentDocuments = docs.length > 0;
+        } catch {
+          // Agent documents check is non-critical
+        }
       }
 
       log('execAgent: isBotConversation=%s', isBotConversation);
@@ -1447,16 +1574,25 @@ export class AiAgentService {
         const codeSourceRules = hasSavedCode
           ? `Saved code versions are available for this topic. When continuing or editing earlier code, call getTopicContext with topicId=${JSON.stringify(topicId)} and mode="code_artifacts". Select the requested version from the list, then read its source using its fileId and follow nextOffset until you have the needed code. Use the exact source when editing. If the desired code has no saved version, look it up in the original archive.`
           : `When asked to continue or edit code from compressed history, retrieve the exact original with getTopicContext and topicId=${JSON.stringify(topicId)}, mode="archive" before writing changes.`;
-        agentConfig.systemRole = [agentConfig.systemRole, codeSourceRules]
-          .filter(Boolean)
-          .join('\n\n');
+        if (useDynamicSystemAppend) {
+          dynamicSystemAppendParts.push(codeSourceRules);
+        } else {
+          agentConfig.systemRole = [agentConfig.systemRole, codeSourceRules]
+            .filter(Boolean)
+            .join('\n\n');
+        }
       }
+      const enableProjectWorkspace =
+        workspaceActive && !excludedPluginIds.has(PROJECT_WORKSPACE_TOOL);
       const hasTopicReference =
         /refer_topic/.test(prompt ?? '') || hasSavedCode || hasCompressedHistory;
       agentPlugins = [
-        ...agentPlugins,
-        ...(hasTopicReference ? ['lobe-topic-reference'] : []),
-        ...(isBotConversation ? [MessageToolIdentifier] : []),
+        ...new Set([
+          ...agentPlugins,
+          ...(enableProjectWorkspace ? [PROJECT_WORKSPACE_TOOL] : []),
+          ...(hasTopicReference ? ['lobe-topic-reference'] : []),
+          ...(isBotConversation ? [MessageToolIdentifier] : []),
+        ]),
       ];
 
       // Derive activeDeviceId from device context:
@@ -1560,10 +1696,14 @@ export class AiAgentService {
         !keepsOwnToolSet &&
         studioConnectorIds.length > 0 &&
         !pickedToolIds.has(ArckepStudioIdentifier);
+      const hideLegacyAgentDocs = (workspaceEnabled || dataGuardProtected) && !isBuiltinAgent;
+      const hideProjectWorkspace = !workspaceEnabled || dataGuardProtected || isBuiltinAgent;
       const hiddenToolIds = [
         ...restHiddenToolIds,
         ...excludedPluginIds,
         ...(hideLegacyStudio ? [ArckepStudioIdentifier] : []),
+        ...(hideLegacyAgentDocs ? [AgentDocumentsIdentifier] : []),
+        ...(hideProjectWorkspace ? [PROJECT_WORKSPACE_TOOL] : []),
       ];
       disabledToolIds = [...new Set(hiddenToolIds)];
       // arckep (19.10.2026): инструменты навыков (lobe-skills) не в постоянной части запроса. Манифест лежит в
@@ -1598,10 +1738,21 @@ export class AiAgentService {
       // Only a scoped, committed continuation gets the writer on step one.
       // Saved agent plugins and tools picked by a client must follow the same discovery path.
       if (enableTextFile && !continuationReceipt) lazyToolIds.push(TEXT_FILE_TOOL);
+      if (
+        enableProjectWorkspace &&
+        (workspaceSnapshot?.unpinnedCount ?? 0) === 0 &&
+        !isManualMode &&
+        !pickedToolIds.has(PROJECT_WORKSPACE_TOOL) &&
+        !continuationReceipt &&
+        !lazyToolIds.includes(PROJECT_WORKSPACE_TOOL)
+      ) {
+        lazyToolIds.push(PROJECT_WORKSPACE_TOOL);
+      }
 
       const pluginIds = dropExcluded([
         ...(agentConfig.plugins || []),
         ...pickedPluginIds,
+        ...(enableProjectWorkspace ? [PROJECT_WORKSPACE_TOOL] : []),
         LocalSystemManifest.identifier,
         RemoteDeviceManifest.identifier,
         ...(isBotConversation ? [MessageToolIdentifier] : []),
@@ -1633,6 +1784,20 @@ export class AiAgentService {
         }
       }
 
+      const useReadOnlyProjectWorkspace =
+        enableProjectWorkspace &&
+        !continuationReceipt &&
+        (workspaceSnapshot?.unpinnedCount ?? 0) > 0 &&
+        (workspaceSnapshot?.textFilesCount ?? 0) === 0 &&
+        (workspaceSnapshot?.documentFilesCount ?? 0) > 0;
+      if (useReadOnlyProjectWorkspace && typeof toolsEngine.addPluginManifest === 'function') {
+        const wsManifest =
+          typeof toolsEngine.getPluginManifest === 'function'
+            ? (toolsEngine.getPluginManifest(PROJECT_WORKSPACE_TOOL) ?? ProjectWorkspaceManifest)
+            : ProjectWorkspaceManifest;
+        toolsEngine.addPluginManifest(buildReadOnlyProjectWorkspaceManifest(wsManifest as any));
+      }
+
       toolsResult = toolsEngine.generateToolsDetailed({
         excludeDefaultToolIds: excludeDefaultToolIds.length > 0 ? excludeDefaultToolIds : undefined,
         model,
@@ -1655,17 +1820,28 @@ export class AiAgentService {
       enabledManifests.forEach((manifest) => {
         toolManifestMap[manifest.identifier] = manifest;
       });
+      if (useReadOnlyProjectWorkspace) {
+        // Step 0 tools keep only listProjectFiles + readProjectFile, while manifestMap retains
+        // the full 6-tool manifest so activateTools(['arckep-workspace']) unlocks writeProjectFile.
+        toolManifestMap[PROJECT_WORKSPACE_TOOL] = ProjectWorkspaceManifest as any;
+      }
 
       // Ленивые инструменты — в карту манифестов: активатор перечисляет их в <available_tools> и
       // подключает по activateTools; в tools первого шага их нет. Инструмент памяти при выключенной
       // памяти не предлагается вовсе (как и раньше, когда он не попадал в tools).
-      if (!continuationReceipt && typeof toolsEngine.getPluginManifest === 'function') {
+      if (!continuationReceipt) {
         for (const id of lazyToolIds) {
           if (toolManifestMap[id]) continue;
           // выключенное человеком на это сообщение не предлагается и не возвращается из истории темы
           if (excludedPluginIds.has(id)) continue;
           if (id === 'lobe-user-memory' && !globalMemoryEnabled) continue;
-          const manifest = toolsEngine.getPluginManifest(id);
+          const manifest =
+            typeof toolsEngine.getPluginManifest === 'function'
+              ? (toolsEngine.getPluginManifest(id) ??
+                (id === PROJECT_WORKSPACE_TOOL ? (ProjectWorkspaceManifest as any) : undefined))
+              : id === PROJECT_WORKSPACE_TOOL
+                ? (ProjectWorkspaceManifest as any)
+                : undefined;
           if (manifest) toolManifestMap[id] = manifest;
         }
       }
@@ -1979,6 +2155,13 @@ export class AiAgentService {
 
     // 13. Create user message in database
     // Include threadId if provided (for SubAgent task execution in isolated Thread)
+    const workspaceDelta =
+      !resume && workspaceSnapshot?.workspaceDelta ? workspaceSnapshot.workspaceDelta : undefined;
+    const dynamicSystemAppend =
+      useDynamicSystemAppend && dynamicSystemAppendParts.length > 0
+        ? dynamicSystemAppendParts.filter(Boolean).join('\n\n')
+        : undefined;
+
     const userMessageRecord = resume
       ? undefined
       : await this.messageModel.create({
@@ -1986,7 +2169,7 @@ export class AiAgentService {
           content: prompt,
           files: fileIds,
           metadata:
-            attachmentRefs.length > 0 || deepseekDocumentIds?.length
+            attachmentRefs.length > 0 || deepseekDocumentIds?.length || workspaceDelta
               ? {
                   ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
                   ...(deepseekDocumentIds?.length
@@ -1997,6 +2180,7 @@ export class AiAgentService {
                           : {}),
                       }
                     : {}),
+                  ...(workspaceDelta ? { workspaceDelta } : {}),
                 }
               : undefined,
           role: 'user',
@@ -2030,7 +2214,10 @@ export class AiAgentService {
       id: userMessageRecord?.id,
       imageList,
       metadata:
-        attachmentRefs.length > 0 || pdfLayouts.length > 0 || deepseekDocumentIds?.length
+        attachmentRefs.length > 0 ||
+        pdfLayouts.length > 0 ||
+        deepseekDocumentIds?.length ||
+        workspaceDelta
           ? {
               ...(deepseekDocumentIds?.length
                 ? {
@@ -2042,6 +2229,7 @@ export class AiAgentService {
                 : {}),
               ...(attachmentRefs.length > 0 ? { attachments: attachmentRefs } : {}),
               ...(pdfLayouts.length > 0 ? { layouts: pdfLayouts } : {}),
+              ...(workspaceDelta ? { workspaceDelta } : {}),
             }
           : undefined,
       role: 'user' as const,
@@ -2058,7 +2246,40 @@ export class AiAgentService {
     const timestamp = Date.now();
     const operationId = `op_${timestamp}_${resolvedAgentId}_${topicId}_${nanoid(8)}`;
 
-    const topicCacheTtlMs = 5 * 60 * 1000;
+    const isAnthropicFamily = provider === 'anthropic' || model.toLowerCase().includes('claude');
+    let isLongContextAnthropic = false;
+    if (isAnthropicFamily) {
+      let estimatedInputTokens =
+        (workspaceSnapshot?.pinnedTokens ?? 0) +
+        (workspaceSnapshot?.indexBlock
+          ? estimateWorkspaceTokens(workspaceSnapshot.indexBlock)
+          : 0) +
+        (agentConfig.systemRole ? estimateWorkspaceTokens(agentConfig.systemRole) : 0) +
+        (dynamicSystemAppend ? estimateWorkspaceTokens(dynamicSystemAppend) : 0) +
+        (tools?.length ? estimateWorkspaceTokens(JSON.stringify(tools)) : 0);
+
+      for (const m of allMessages) {
+        if (estimatedInputTokens >= LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS) break;
+        if (!m) continue;
+        const msgText =
+          typeof m.content === 'string' ? m.content : m.content ? JSON.stringify(m.content) : '';
+        if (msgText) estimatedInputTokens += estimateWorkspaceTokens(msgText);
+        if (Array.isArray(m.fileList)) {
+          for (const f of m.fileList) {
+            if (typeof f?.content === 'string' && f.content) {
+              estimatedInputTokens += estimateWorkspaceTokens(
+                f.content.slice(0, FILE_PREVIEW_CHARS),
+              );
+            }
+          }
+        }
+        if (Array.isArray(m.tools)) {
+          estimatedInputTokens += estimateWorkspaceTokens(JSON.stringify(m.tools));
+        }
+      }
+      isLongContextAnthropic = estimatedInputTokens >= LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS;
+    }
+    const topicCacheTtlMs = isLongContextAnthropic ? 60 * 60 * 1000 : 5 * 60 * 1000;
     const priorMessages = resume ? historyMessages.slice(0, -1) : historyMessages;
     let lastActivityMs = 0;
     for (const m of priorMessages) {
@@ -2169,6 +2390,7 @@ export class AiAgentService {
         userTimezone,
         appContext: {
           agentId: resolvedAgentId,
+          ...(dynamicSystemAppend ? { dynamicSystemAppend } : {}),
           groupId: appContext?.groupId,
           studioTextFileRequestId: enableTextFile ? userMessageRecord?.id : undefined,
           studioTextFileContinueId: continueDocumentId,
@@ -2185,6 +2407,15 @@ export class AiAgentService {
           topicCacheWarm,
           topicId,
           trigger,
+          ...(workspaceActive ? { workspaceActive: true } : {}),
+          workspaceIndexBlock:
+            workspaceActive && workspaceSnapshot?.indexBlock
+              ? workspaceSnapshot.indexBlock
+              : undefined,
+          workspaceRulesBlock:
+            workspaceActive && workspaceSnapshot?.rulesBlock
+              ? workspaceSnapshot.rulesBlock
+              : undefined,
         },
         autoStart,
         botPlatformContext,

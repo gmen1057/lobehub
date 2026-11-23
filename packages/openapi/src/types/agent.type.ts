@@ -21,7 +21,7 @@ export interface CreateAgentRequest {
   params?: Record<string, unknown>;
   plugins?: string[] | null;
   provider?: string;
-  systemRole?: string;
+  systemRole?: string | null;
   title: string;
 }
 
@@ -62,7 +62,7 @@ export const CreateAgentRequestSchema = z.object({
   params: z.record(z.unknown()).nullish(),
   plugins: z.array(z.string()).nullish(),
   provider: z.string().nullish(),
-  systemRole: z.string().nullish(),
+  systemRole: z.string().max(60_000).nullish(),
   title: z.string().min(1, '标题不能为空'),
 });
 

@@ -25,6 +25,10 @@ import type { S3 } from '@/server/modules/S3';
 import { FileS3 } from '@/server/modules/S3';
 import { DocumentService } from '@/server/services/document';
 import { FileService as CoreFileService } from '@/server/services/file';
+import {
+  findWorkspaceFileReferences,
+  isWorkspaceEnabled,
+} from '@/server/services/projectWorkspace';
 import { isChunkingUnsupported } from '@/utils/isChunkingUnsupported';
 import { nanoid } from '@/utils/uuid';
 
@@ -136,7 +140,31 @@ export class FileUploadService extends BaseService {
       throw this.createNotFoundError('知识库不存在或无权访问');
     }
 
+    if (isWorkspaceEnabled() && knowledgeBase.type === 'project_workspace') {
+      throw this.createConflictError(
+        'Managed project workspace knowledge base cannot be modified directly; use Workspace API',
+      );
+    }
+
     return knowledgeBase;
+  }
+
+  private async assertNotManagedWorkspaceKnowledgeBase(knowledgeBaseId: string): Promise<void> {
+    if (!isWorkspaceEnabled()) return;
+
+    const knowledgeBase = this.db?.query?.knowledgeBases?.findFirst
+      ? await this.db.query.knowledgeBases.findFirst({
+          where: eq(knowledgeBases.id, knowledgeBaseId),
+        })
+      : typeof this.knowledgeBaseModel?.findById === 'function'
+        ? await this.knowledgeBaseModel.findById(knowledgeBaseId)
+        : null;
+
+    if (knowledgeBase?.type === 'project_workspace') {
+      throw this.createConflictError(
+        'Managed project workspace knowledge base cannot be modified directly; use Workspace API',
+      );
+    }
   }
 
   /**
@@ -147,6 +175,10 @@ export class FileUploadService extends BaseService {
       const isPermitted = await this.resolveOperationPermission('FILE_UPLOAD');
       if (!isPermitted.isPermitted) {
         throw this.createAuthorizationError(isPermitted.message || '无权上传文件');
+      }
+
+      if (request.knowledgeBaseId) {
+        await this.assertNotManagedWorkspaceKnowledgeBase(request.knowledgeBaseId);
       }
 
       const results: BatchFileUploadResponse = {
@@ -655,6 +687,10 @@ export class FileUploadService extends BaseService {
         throw this.createAuthorizationError(isPermitted.message || '无权上传文件');
       }
 
+      if (options.knowledgeBaseId) {
+        await this.assertNotManagedWorkspaceKnowledgeBase(options.knowledgeBaseId);
+      }
+
       this.log('info', 'Starting public file upload', {
         directory: options.directory,
         name: file.name,
@@ -1037,6 +1073,14 @@ export class FileUploadService extends BaseService {
       }
 
       const file = await this.findFileByIdWithPermission(fileId, permissionResult);
+
+      // B-1: Prevent deleting any file referenced by active workspace files, revisions, or proposals BEFORE touching S3
+      const wsRef = await findWorkspaceFileReferences(this.db, fileId);
+      if (wsRef.referenced) {
+        throw this.createConflictError(
+          'File is referenced by a project workspace or its revision history and cannot be deleted directly',
+        );
+      }
 
       // Delete S3 file
       await this.coreFileService.deleteFile(file.url);
@@ -1569,6 +1613,19 @@ export class FileUploadService extends BaseService {
 
       // 3. Handle knowledge base association
       if ('knowledgeBaseId' in updateData) {
+        if (isWorkspaceEnabled()) {
+          const wsRef = await findWorkspaceFileReferences(this.db, fileId);
+          if (wsRef.referenced) {
+            throw this.createConflictError(
+              'File belongs to a managed project workspace and its knowledge base link cannot be modified directly',
+            );
+          }
+
+          if (updateData.knowledgeBaseId) {
+            await this.assertNotManagedWorkspaceKnowledgeBase(updateData.knowledgeBaseId);
+          }
+        }
+
         await this.db.transaction(async (trx) => {
           // Delete existing knowledge base association (for global permission users, use the file's actual userId)
           const targetUserId = file.userId;

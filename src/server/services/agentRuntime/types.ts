@@ -131,6 +131,7 @@ export interface OperationCreationParams {
   agentConfig?: any;
   appContext: {
     agentId?: string;
+    dynamicSystemAppend?: string;
     groupId?: string | null;
     studioTextFileCheckpoint?: { documentId: string; part: number; status: string };
     studioTextFileContinueId?: string;
@@ -143,6 +144,9 @@ export interface OperationCreationParams {
     topicCacheWarm?: boolean;
     topicId?: string | null;
     trigger?: string;
+    workspaceActive?: boolean;
+    workspaceIndexBlock?: string;
+    workspaceRulesBlock?: string;
   };
   autoStart?: boolean;
   /** Bot platform context for injecting platform capabilities (e.g. markdown support) */

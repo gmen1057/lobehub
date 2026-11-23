@@ -52,6 +52,10 @@ export const serverMessagesEngine = async ({
   model,
   provider,
   systemRole,
+  workspaceRulesBlock,
+  dynamicSystemAppend,
+  workspaceIndexBlock,
+  deepseekDataGuardProtected,
   inputTemplate,
   enableHistoryCount,
   forceFinish,
@@ -120,6 +124,10 @@ export const serverMessagesEngine = async ({
 
     provider,
     systemRole,
+    ...(workspaceRulesBlock && { workspaceRulesBlock }),
+    ...(dynamicSystemAppend && { dynamicSystemAppend }),
+    ...(workspaceIndexBlock && { workspaceIndexBlock }),
+    ...(deepseekDataGuardProtected !== undefined && { deepseekDataGuardProtected }),
 
     // Timezone for system date provider
     timezone: userTimezone,

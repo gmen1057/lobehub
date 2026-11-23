@@ -1,4 +1,5 @@
 // Context Provider exports
+export { formatWorkspaceUpdates } from '../processors/MessageContent';
 export { AgentBuilderContextInjector } from './AgentBuilderContextInjector';
 export {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
@@ -23,6 +24,19 @@ export { KnowledgeInjector } from './KnowledgeInjector';
 export { PageEditorContextInjector } from './PageEditorContextInjector';
 export { PageSelectionsInjector } from './PageSelectionsInjector';
 export {
+  formatProjectWorkspaceIndexBlock,
+  INLINE_WORKSPACE_INDEX_MAX_FILES,
+  MAX_WORKSPACE_INDEX_CHARS,
+  ProjectWorkspaceIndexInjector,
+  RECENT_UNPINNED_PREVIEW_LIMIT,
+  sanitizeWorkspaceIndexLabel,
+} from './ProjectWorkspaceIndexInjector';
+export {
+  DynamicSystemAppendInjector,
+  formatProjectRulesBlock,
+  ProjectWorkspaceRulesInjector,
+} from './ProjectWorkspaceRulesInjector';
+export {
   formatSelectedSkills,
   formatSelectedSkillsContext,
   SelectedSkillInjector,
@@ -41,6 +55,7 @@ export { TopicReferenceContextInjector } from './TopicReferenceContextInjector';
 export { UserMemoryInjector } from './UserMemoryInjector';
 
 // Re-export types
+export type { WorkspaceDeltaItem, WorkspaceDeltaPayload } from '../processors/MessageContent';
 export type {
   AgentBuilderContext,
   AgentBuilderContextInjectorConfig,
@@ -88,6 +103,15 @@ export type { HistorySummaryConfig } from './HistorySummary';
 export type { KnowledgeInjectorConfig } from './KnowledgeInjector';
 export type { PageEditorContextInjectorConfig } from './PageEditorContextInjector';
 export type { PageSelectionsInjectorConfig } from './PageSelectionsInjector';
+export type {
+  ProjectWorkspaceIndexInjectorConfig,
+  WorkspaceIndexEntryInput,
+} from './ProjectWorkspaceIndexInjector';
+export type {
+  DynamicSystemAppendInjectorConfig,
+  ProjectWorkspaceRulesInjectorConfig,
+  WorkspaceRuleFileInput,
+} from './ProjectWorkspaceRulesInjector';
 export type { SelectedSkillInjectorConfig } from './SelectedSkillInjector';
 export type { SelectedToolInjectorConfig } from './SelectedToolInjector';
 export type { SkillContextProviderConfig, SkillMeta } from './SkillContextProvider';

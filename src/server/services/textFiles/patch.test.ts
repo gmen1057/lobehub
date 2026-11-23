@@ -459,4 +459,33 @@ describe('applyAtomicPatch', () => {
     expect(res.content).not.toContain('As Long');
     expect(elapsedMs).toBeLessThan(200);
   });
+
+  it('formats targetEncoding in diffSummary when provided and defaults to utf-8 otherwise', () => {
+    const source = 'Sub Run()\r\n    x = 1\r\nEnd Sub\r\n';
+
+    const preserveCp1251 = applyAtomicPatch(
+      source,
+      [{ newText: '    x = 2', oldText: '    x = 1' }],
+      {
+        fileName: 'Module1.bas',
+        sourceEncoding: 'windows-1251',
+        targetEncoding: 'windows-1251',
+      },
+    );
+    expect(preserveCp1251.ok).toBe(true);
+    if (preserveCp1251.ok) {
+      expect(preserveCp1251.diffSummary).toContain(
+        'encoding windows-1251 -> windows-1251, lineEnding CRLF.',
+      );
+    }
+
+    const defaultUtf8 = applyAtomicPatch(source, [{ newText: '    x = 2', oldText: '    x = 1' }], {
+      fileName: 'Module1.bas',
+      sourceEncoding: 'windows-1251',
+    });
+    expect(defaultUtf8.ok).toBe(true);
+    if (defaultUtf8.ok) {
+      expect(defaultUtf8.diffSummary).toContain('encoding windows-1251 -> utf-8, lineEnding CRLF.');
+    }
+  });
 });

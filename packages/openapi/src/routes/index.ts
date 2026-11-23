@@ -1,4 +1,7 @@
+import { Hono } from 'hono';
+
 import AgentGroupsRoutes from './agent-groups.route';
+import AgentWorkspaceRoutes from './agent-workspace.route';
 import AgentsRoutes from './agents.route';
 import ArckepRoutes from './arckep.route';
 import FileRoutes from './files.route';
@@ -16,9 +19,14 @@ import SkillsRoutes from './skills.route';
 import TopicsRoutes from './topics.route';
 import UsersRoutes from './users.route';
 
+// Mount workspace sub-routes under /api/v1/agents/:agentId/workspace/... strictly BEFORE /:id in AgentsRoutes
+const CombinedAgentsRoutes = new Hono();
+CombinedAgentsRoutes.route('/', AgentWorkspaceRoutes);
+CombinedAgentsRoutes.route('/', AgentsRoutes);
+
 export default {
   'agent-groups': AgentGroupsRoutes,
-  'agents': AgentsRoutes,
+  'agents': CombinedAgentsRoutes,
   'arckep': ArckepRoutes,
   'files': FileRoutes,
   'knowledge-bases': KnowledgeBasesRoutes,

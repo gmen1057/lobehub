@@ -1,5 +1,5 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
-import { and, count, desc, eq, ilike, isNull, notInArray, or } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNull, notInArray, or, sql } from 'drizzle-orm';
 
 import { agents, agentsToSessions, messages, topics, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
@@ -276,6 +276,14 @@ export class TopicService extends BaseService {
         } else {
           changes.agentId = null;
           changes.sessionId = null;
+        }
+
+        // H-2: Atomically clear frozen workspacePrefixSnapshot when moving topic across agents or out of a project
+        if (payload.metadata !== undefined) {
+          const nextMetaJson = JSON.stringify(payload.metadata);
+          changes.metadata = sql`(COALESCE(${topics.metadata}, '{}'::jsonb) || ${nextMetaJson}::jsonb) - 'workspacePrefixSnapshot'`;
+        } else {
+          changes.metadata = sql`COALESCE(${topics.metadata}, '{}'::jsonb) - 'workspacePrefixSnapshot'`;
         }
       }
 

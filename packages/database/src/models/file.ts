@@ -403,7 +403,7 @@ export class FileModel {
     });
 
   // Abstract common method for deleting chunks
-  private deleteFileChunks = async (trx: PgTransaction<any>, fileIds: string[]) => {
+  public deleteFileChunks = async (trx: PgTransaction<any>, fileIds: string[]) => {
     if (fileIds.length === 0) return;
 
     // Get all chunk IDs related to the files to be deleted (knowledge base protection logic removed)

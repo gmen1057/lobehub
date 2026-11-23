@@ -1,10 +1,19 @@
+import { INBOX_SESSION_ID } from '@lobechat/const';
 import { and, count, desc, eq, ilike, inArray, isNull, or } from 'drizzle-orm';
+import { HTTPException } from 'hono/http-exception';
 
 import { AgentModel } from '@/database/models/agent';
 import type { NewAgent } from '@/database/schemas';
 import { agents, agentsToSessions } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { idGenerator, randomSlug } from '@/database/utils/idGenerator';
+import {
+  cleanupAgentWorkspaceBeforeDelete,
+  isWorkspaceEnabled,
+  ProjectWorkspaceStore,
+  resolveAgentSystemRoleFromWorkspace,
+  WorkspaceError,
+} from '@/server/services/projectWorkspace';
 
 import { BaseService } from '../common/base.service';
 import { processPaginationConditions } from '../helpers/pagination';
@@ -78,8 +87,11 @@ export class AgentService extends BaseService {
   async createAgent(request: CreateAgentRequest): ServiceResult<AgentDetailResponse> {
     this.log('info', '创建智能体', { title: request.title });
 
+    const workspaceEnabled = isWorkspaceEnabled();
+    const hasInitialInstruction = Boolean(request.systemRole?.trim());
+
     try {
-      return await this.db.transaction(async (tx) => {
+      const createdAgent = await this.db.transaction(async (tx) => {
         // Prepare creation data
         const newAgentData: NewAgent = {
           accessedAt: new Date(),
@@ -97,19 +109,45 @@ export class AgentService extends BaseService {
           plugins: request.plugins ?? [],
           provider: request.provider || null,
           slug: randomSlug(4), // Auto-generated slug
-          systemRole: request.systemRole || null,
+          systemRole: workspaceEnabled ? null : request.systemRole || null,
           title: request.title,
           updatedAt: new Date(),
           userId: this.userId,
         };
 
         // Insert into database
-        const [createdAgent] = await tx.insert(agents).values(newAgentData).returning();
-        this.log('info', 'Agent 创建成功', { id: createdAgent.id, slug: createdAgent.slug });
+        const [inserted] = await tx.insert(agents).values(newAgentData).returning();
+        this.log('info', 'Agent 创建成功', { id: inserted.id, slug: inserted.slug });
 
-        return createdAgent;
+        return inserted;
       });
+
+      if (workspaceEnabled && hasInitialInstruction) {
+        try {
+          const store = new ProjectWorkspaceStore(this.db, this.userId);
+          await store.syncAgentInstructionFromAgentApi(createdAgent.id, request.systemRole, {
+            isCreate: true,
+          });
+          return {
+            ...createdAgent,
+            systemRole: request.systemRole ?? null,
+          };
+        } catch (syncError) {
+          await this.db
+            .delete(agents)
+            .where(and(eq(agents.id, createdAgent.id), eq(agents.userId, this.userId)));
+          throw syncError;
+        }
+      }
+
+      return createdAgent;
     } catch (error) {
+      if (error instanceof WorkspaceError) {
+        throw new HTTPException(error.httpStatus, { message: error.message });
+      }
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       this.handleServiceError(error, '创建 Agent');
     }
   }
@@ -122,6 +160,8 @@ export class AgentService extends BaseService {
   async updateAgent(request: UpdateAgentRequest): ServiceResult<AgentDetailResponse> {
     this.log('info', '更新智能体', { id: request.id, title: request.title });
 
+    const workspaceEnabled = isWorkspaceEnabled();
+
     try {
       // Permission validation
       const permissionResult = await this.resolveOperationPermission('AGENT_UPDATE', {
@@ -132,7 +172,7 @@ export class AgentService extends BaseService {
         throw this.createAuthorizationError(permissionResult.message || '无权更新此 Agent');
       }
 
-      return await this.db.transaction(async (tx) => {
+      const { isInboxOrVirtual, updatedAgent } = await this.db.transaction(async (tx) => {
         // Build query conditions
         const whereConditions = [eq(agents.id, request.id)];
         if (permissionResult.condition?.userId) {
@@ -146,6 +186,15 @@ export class AgentService extends BaseService {
 
         if (!existingAgent) {
           throw this.createBusinessError(`Agent ID "${request.id}" 不存在`);
+        }
+
+        const isBuiltinInboxOrVirtual =
+          existingAgent.slug === INBOX_SESSION_ID || existingAgent.virtual === true;
+
+        if (request.systemRole !== undefined && isBuiltinInboxOrVirtual) {
+          throw this.createBusinessError(
+            'System instructions cannot be modified for inbox or virtual agents',
+          );
         }
 
         // Only update fields actually provided in the request to avoid overwriting existing values with undefined
@@ -166,7 +215,9 @@ export class AgentService extends BaseService {
           updateData.openingQuestions = request.openingQuestions ?? [];
         if (request.plugins !== undefined) updateData.plugins = request.plugins ?? [];
         if (request.provider !== undefined) updateData.provider = request.provider ?? null;
-        if (request.systemRole !== undefined) updateData.systemRole = request.systemRole ?? null;
+        if (request.systemRole !== undefined) {
+          updateData.systemRole = workspaceEnabled ? null : (request.systemRole ?? null);
+        }
         if (request.title !== undefined) updateData.title = request.title;
 
         // Merge params instead of fully overwriting
@@ -187,16 +238,56 @@ export class AgentService extends BaseService {
         }
 
         // Update database
-        const [updatedAgent] = await tx
+        const [updated] = await tx
           .update(agents)
           .set(updateData)
           .where(and(...whereConditions))
           .returning();
 
-        this.log('info', 'Agent 更新成功', { id: updatedAgent.id, slug: updatedAgent.slug });
-        return updatedAgent;
+        this.log('info', 'Agent 更新成功', { id: updated.id, slug: updated.slug });
+        return { isInboxOrVirtual: isBuiltinInboxOrVirtual, updatedAgent: updated };
       });
+
+      if (workspaceEnabled && !isInboxOrVirtual) {
+        const ownerUserId = updatedAgent.userId || this.userId;
+        if (request.systemRole !== undefined) {
+          const store = new ProjectWorkspaceStore(this.db, ownerUserId);
+          const syncRes = await store.syncAgentInstructionFromAgentApi(
+            request.id,
+            request.systemRole,
+          );
+          const effectiveSystemRole =
+            !request.systemRole ||
+            !request.systemRole.trim() ||
+            syncRes.file?.loadMode === 'disabled'
+              ? null
+              : request.systemRole;
+          return {
+            ...updatedAgent,
+            systemRole: effectiveSystemRole,
+          };
+        }
+
+        const resolved = await resolveAgentSystemRoleFromWorkspace(
+          this.db,
+          ownerUserId,
+          updatedAgent.id,
+          updatedAgent.systemRole,
+        );
+        return {
+          ...updatedAgent,
+          systemRole: resolved.systemRole,
+        };
+      }
+
+      return updatedAgent;
     } catch (error) {
+      if (error instanceof WorkspaceError) {
+        throw new HTTPException(error.httpStatus, { message: error.message });
+      }
+      if (error instanceof HTTPException) {
+        throw error;
+      }
       this.handleServiceError(error, '更新 Agent');
     }
   }
@@ -240,6 +331,13 @@ export class AgentService extends BaseService {
           throw this.createBusinessError(`迁移目标 Agent ID ${request.migrateSessionTo} 不存在`);
         }
 
+        // B-1: Always clean up workspace files, revisions, proposals, managed KB, and S3 objects BEFORE deleting the agent
+        await cleanupAgentWorkspaceBeforeDelete(
+          this.db,
+          targetAgent.userId || this.userId,
+          request.agentId,
+        );
+
         // Migrate session associations to the target Agent
         await this.migrateAgentSessions(request.agentId, request.migrateSessionTo);
 
@@ -253,6 +351,13 @@ export class AgentService extends BaseService {
           .delete(agents)
           .where(and(eq(agents.id, request.agentId), eq(agents.userId, this.userId)));
       } else {
+        // B-1: Always clean up workspace files, revisions, proposals, managed KB, and S3 objects BEFORE cascade deleting the agent
+        await cleanupAgentWorkspaceBeforeDelete(
+          this.db,
+          targetAgent.userId || this.userId,
+          request.agentId,
+        );
+
         // No migration: reuse AgentModel.delete, which cascades deletion of associated sessions, messages, topics, etc.
         const agentModel = new AgentModel(this.db, this.userId);
         await agentModel.delete(request.agentId);
@@ -293,6 +398,33 @@ export class AgentService extends BaseService {
       if (!agent || !agent.id) {
         this.log('warn', 'Agent 不存在', { agentId });
         return null;
+      }
+
+      if (isWorkspaceEnabled()) {
+        const isBuiltinInboxOrVirtual = agent.slug === INBOX_SESSION_ID || agent.virtual === true;
+        const resolved = isBuiltinInboxOrVirtual
+          ? { systemRole: agent.systemRole }
+          : await resolveAgentSystemRoleFromWorkspace(
+              this.db,
+              this.userId,
+              agentId,
+              agent.systemRole,
+            );
+
+        const rawAgent = agent as AgentDetailResponse & {
+          knowledgeBases?: Array<{ type?: string | null }>;
+        };
+        const filteredKnowledgeBases = Array.isArray(rawAgent.knowledgeBases)
+          ? rawAgent.knowledgeBases.filter((kb) => kb?.type !== 'project_workspace')
+          : rawAgent.knowledgeBases;
+
+        return {
+          ...rawAgent,
+          ...(filteredKnowledgeBases !== undefined
+            ? { knowledgeBases: filteredKnowledgeBases }
+            : {}),
+          systemRole: resolved.systemRole,
+        } as AgentDetailResponse;
       }
 
       return agent as AgentDetailResponse;
