@@ -247,6 +247,7 @@ export class SkillSandbox {
       ? {
           ...rawBridgeCtx,
           dataGuardProtected: Boolean(this.options.dataGuard || rawBridgeCtx.dataGuardProtected),
+          messageId: rawBridgeCtx.messageId ?? rawBridgeCtx.parentMessageId ?? null,
           topicId: rawBridgeCtx.topicId ?? this.options.topicId,
         }
       : undefined;

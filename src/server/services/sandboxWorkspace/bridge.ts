@@ -22,6 +22,7 @@ export interface SandboxBridgeContext {
   agentId?: string | null;
   dataGuardProtected?: boolean;
   messageId?: string | null;
+  parentMessageId?: string | null;
   presigner?: SandboxS3Presigner | null;
   s3?: SandboxSyncStorage;
   serverDB?: LobeChatDatabase;
@@ -189,7 +190,7 @@ export async function prepareSandboxBridgeSession(params: {
         callUuid: manifest.callUuid,
         effectiveAgentId: manifest.effectiveAgentId,
         effectiveDataGuard: manifest.effectiveDataGuard,
-        messageId: ctx.messageId,
+        messageId: ctx.messageId ?? ctx.parentMessageId ?? null,
         remotion,
         s3: ctx.s3 ?? testBridgeDepsOverride?.s3,
         serverDB: ctx.serverDB!,

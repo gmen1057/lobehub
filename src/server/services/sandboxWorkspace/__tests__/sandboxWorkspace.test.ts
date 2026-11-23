@@ -878,7 +878,7 @@ describe('STRAT-4B Engine Sandbox Bridge', () => {
         [s3Keys[0]]: 'def add(a, b):\n    return a + b\n',
         [s3Keys[1]]: '# AGENTS\nRule 1\n',
         [s3Keys[2]]: 'print("conflict")\n',
-        [s3Keys[3]]: new Uint8Array([0x89, 0x50, 0x4e, 0x47]),
+        [s3Keys[3]]: new Uint8Array([137, 80, 78, 71]),
         [s3Keys[4]]: new Uint8Array(2 * 1024 * 1024 + 128), // > 2 MiB!
       });
       const slotKeyMap = new Map(s3Keys.map((k, i) => [i, k]));
@@ -1355,7 +1355,7 @@ describe('STRAT-4B Engine Sandbox Bridge', () => {
         content: [
           {
             text: JSON.stringify({
-              content_base64: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+              content_base64: Buffer.from([137, 80, 78, 71]).toString('base64'),
               filename: 'scan.png',
               success: true,
             }),
@@ -1460,6 +1460,179 @@ describe('STRAT-4B Engine Sandbox Bridge', () => {
         });
         expect(run2.stdout).toContain('"stdout": "/workspace/project:/workspace\\n"');
       }
+    });
+
+    it('regression [LOW-1]: forwards context.parentMessageId as messageId into applySandboxProjectFileSync when context.messageId is undefined (both MCP and lobe-skills)', async () => {
+      vi.stubEnv('ARCKEP_WORKSPACE_ENABLED', '1');
+      const receivedMessageIds: Array<string | null | undefined> = [];
+      const applyMock = vi.fn(async (params: any) => {
+        receivedMessageIds.push(params.messageId);
+        return {
+          addedLines: 2,
+          agentId: params.agentId,
+          outcome: 'updated' as const,
+          path: params.path,
+          prevRevision: 1,
+          removedLines: 0,
+          revision: 2,
+          workspaceFileId: 'wf_low1',
+        };
+      });
+      setProjectWorkspaceBridgeForTests({ applySandboxProjectFileSync: applyMock });
+
+      const db = createFakeDb();
+      const presigner = createFakePresigner();
+      setSandboxBridgeDepsForTests({ presigner });
+
+      // 1) MCP path (`mcp-arckep-e2b-sandbox` / `execute_code`)
+      const callTool = vi.fn(async (opts: any) => {
+        const parsedArgs = JSON.parse(opts.argsStr);
+        const slot0Key = parsedArgs._arckep_bridge.uploadSlots[0].s3Key;
+        const s3 = createFakeS3Storage({ [slot0Key]: 'print("v2")\n' });
+        setSandboxBridgeDepsForTests({ presigner, s3 });
+
+        const syncPayload: ArckepSandboxSyncReport = {
+          deletedTopicRelPaths: [],
+          hydratedCount: 0,
+          resumed: true,
+          synced: [
+            {
+              baseRevision: 1,
+              mimeType: 'text/x-python',
+              relPath: 'project/src/app.py',
+              sha256: createHash('sha256').update('print("v2")\n').digest('hex'),
+              size: 12,
+              slotIndex: 0,
+              zone: 'project',
+            },
+          ],
+          version: 1,
+          warnings: [],
+        };
+        return MCPService.processToolCallResult(
+          {
+            content: [
+              {
+                text: `done\n${ARCKEP_SYNC_MARKER}${JSON.stringify(syncPayload)}`,
+                type: 'text',
+              },
+            ],
+          },
+          opts.processContentBlocks,
+        );
+      });
+
+      // 2) Builtin `lobe-skills` (`runCommand`) path
+      const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body));
+        const slot0Key = body.params.arguments._arckep_bridge.uploadSlots[0].s3Key;
+        const s3 = createFakeS3Storage({ [slot0Key]: 'print("v3")\n' });
+        setSandboxBridgeDepsForTests({ presigner, s3 });
+
+        const syncPayload: ArckepSandboxSyncReport = {
+          deletedTopicRelPaths: [],
+          hydratedCount: 0,
+          resumed: true,
+          synced: [
+            {
+              baseRevision: 2,
+              mimeType: 'text/x-python',
+              relPath: 'project/src/app.py',
+              sha256: createHash('sha256').update('print("v3")\n').digest('hex'),
+              size: 12,
+              slotIndex: 0,
+              zone: 'project',
+            },
+          ],
+          version: 1,
+          warnings: [],
+        };
+        const cmdJson = JSON.stringify({ exit: 0, stderr: '', stdout: 'skill done' });
+        const text = `${RESULT_MARKER}${cmdJson}\n${ARCKEP_SYNC_MARKER}${JSON.stringify(syncPayload)}`;
+        return new Response(
+          JSON.stringify({ id: 1, jsonrpc: '2.0', result: { content: [{ text }] } }),
+        );
+      });
+
+      const runtimeSandbox = new SkillSandbox({
+        allowInternet: false,
+        arckepUserId: '42',
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+        gatewayUrl: 'http://gw.test/mcp/e2b-sandbox',
+        topicId: 'tpc_1',
+      });
+      const headless = new HeadlessSkillRuntimeService({
+        base: {
+          findAll: async () => ({ data: [], total: 0 }),
+          findById: async () => undefined as any,
+          findByName: async () => undefined as any,
+          readResource: async () => '' as any,
+        },
+        fileService: { createFileRecord: vi.fn(), uploadBuffer: vi.fn() },
+        resourceService: { readResource: vi.fn() },
+        sandbox: runtimeSandbox,
+        topicId: 'tpc_1',
+      });
+      const skillsExec = new SkillsExecutionRuntime({ builtinSkills: [], service: headless });
+
+      const service = new ToolExecutionService({
+        builtinToolsExecutor: {
+          execute: async (payload: any) => skillsExec.runCommand(JSON.parse(payload.arguments)),
+        } as any,
+        mcpService: { callTool } as any,
+      });
+
+      const mcpRes = await service.executeTool(
+        {
+          apiName: 'execute_code',
+          arguments: JSON.stringify({
+            code: 'open("project/src/app.py","w").write("print(\\"v2\\")\\n")',
+          }),
+          id: 'tc_low1_mcp',
+          identifier: E2B_ID,
+          type: 'mcp',
+        } as any,
+        {
+          agentId: 'agt_proj_1',
+          messageId: undefined,
+          parentMessageId: 'msg_assistant_parent_1',
+          serverDB: db as any,
+          toolManifestMap: {
+            [E2B_ID]: {
+              identifier: E2B_ID,
+              mcpParams: { type: 'http', url: 'http://127.0.0.1:8410/mcp/e2b-sandbox' },
+            } as any,
+          },
+          topicId: 'tpc_1',
+          userId: 'u1',
+        },
+      );
+      expect(mcpRes.success).toBe(true);
+      expect(mcpRes.content).toContain('ARCKEP_WORKSPACE_CHANGE ');
+
+      setSandboxBridgeDepsForTests({ presigner });
+      const skillRes = await service.executeTool(
+        {
+          apiName: 'runCommand',
+          arguments: JSON.stringify({ command: 'python update.py', description: 'update' }),
+          id: 'tc_low1_skill',
+          identifier: 'lobe-skills',
+          type: 'builtin',
+        } as any,
+        {
+          agentId: 'agt_proj_1',
+          messageId: undefined,
+          parentMessageId: 'msg_assistant_parent_1',
+          serverDB: db as any,
+          toolManifestMap: {},
+          topicId: 'tpc_1',
+          userId: 'u1',
+        },
+      );
+      expect(skillRes.success).toBe(true);
+      expect(skillRes.content).toContain('ARCKEP_WORKSPACE_CHANGE ');
+
+      expect(receivedMessageIds).toEqual(['msg_assistant_parent_1', 'msg_assistant_parent_1']);
     });
   });
 });

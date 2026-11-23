@@ -126,7 +126,8 @@ export class ToolExecutionService {
         {
           agentId: context.agentId,
           dataGuardProtected: context.dataGuardProtected,
-          messageId: context.messageId,
+          messageId: context.messageId ?? context.parentMessageId,
+          parentMessageId: context.parentMessageId,
           serverDB: context.serverDB,
           topicId: context.topicId,
           userId: context.userId,
@@ -576,7 +577,8 @@ export class ToolExecutionService {
           context: {
             agentId: context.agentId,
             dataGuardProtected: context.dataGuardProtected,
-            messageId: context.messageId,
+            messageId: context.messageId ?? context.parentMessageId,
+            parentMessageId: context.parentMessageId,
             serverDB: context.serverDB,
             topicId: context.topicId,
             userId: context.userId,
