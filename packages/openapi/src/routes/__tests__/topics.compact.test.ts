@@ -1012,4 +1012,29 @@ describe('POST /api/v1/topics/:id/compact', () => {
     expect(bare402Res.status).toBe(500);
     expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
   });
+
+  it('13. отменённая операция (cancelRequested=true, done=false) не блокирует /compact с 409', async () => {
+    const op = responsesStreamHub.register({
+      operationId: 'op_cancelling_compact',
+      params: { input: 'Отменяемый ответ', model: 'agent_1', stream: true } as any,
+      responseId: 'tpc_1',
+      topicId: 'tpc_1',
+      userId: 'user_1',
+    });
+
+    // До Stop активная операция блокирует компактификацию с 409
+    const busyRes = await postCompact('tpc_1', {});
+    expect(busyRes.status).toBe(409);
+    expect(mockUpsertRollingCompressionGroup).not.toHaveBeenCalled();
+
+    // После Stop (cancelRequested=true, done=false) блокировка 409 снята
+    responsesStreamHub.requestCancel(op.operationId);
+    expect(op.done).toBe(false);
+    expect(op.cancelRequested).toBe(true);
+
+    const res = await postCompact('tpc_1', {});
+    expect(res.status).toBe(200);
+    expect((await res.json()).data).toMatchObject({ compacted: true, messageGroupId: 'grp_1' });
+    expect(mockUpsertRollingCompressionGroup).toHaveBeenCalledTimes(1);
+  });
 });

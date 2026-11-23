@@ -5,6 +5,7 @@ import type {
   StreamEvent,
 } from '@/server/modules/AgentRuntime/StreamEventManager';
 import type { IStreamEventManager } from '@/server/modules/AgentRuntime/types';
+import { abortLocalOperation } from '@/server/services/agentRuntime/operationInterruption';
 import { setEngineSlotDraining } from '@/server/services/sandboxJobs/slotState';
 
 import type { CreateResponseRequest } from '../types/responses.type';
@@ -27,6 +28,8 @@ export interface HubSubscriber {
 
 export interface HubOperation {
   bytes: number;
+  /** Пользователь уже нажал «Стоп» и отмена принята — не блокировать новые сообщения до конца фоновой очистки. */
+  cancelRequested: boolean;
   /** Секунды Unix — `created_at` ответа. */
   createdAt: number;
   done: boolean;
@@ -133,6 +136,7 @@ export class ResponsesStreamHub implements IStreamEventManager {
     const op: HubOperation = {
       ...input,
       bytes: 0,
+      cancelRequested: false,
       createdAt: Math.floor(nowMs / 1000),
       done: false,
       events: [],
@@ -143,6 +147,26 @@ export class ResponsesStreamHub implements IStreamEventManager {
     };
     this.operations.set(input.operationId, op);
     return op;
+  }
+
+  /**
+   * Принятая отмена ответа (кнопка «Стоп»): сразу помечает `cancelRequested`, обрывает
+   * локальный AbortController и шлёт `operation_interrupted` подписчикам хаба.
+   */
+  requestCancel(operationId: string, reason: string = 'user_cancelled'): boolean {
+    const op = this.operations.get(operationId);
+    if (!op || op.done) return false;
+    const alreadyRequested = op.cancelRequested;
+    op.cancelRequested = true;
+    abortLocalOperation(operationId, reason);
+    if (!alreadyRequested) {
+      void this.publishStreamEvent(operationId, {
+        data: { reason },
+        stepIndex: 0,
+        type: 'operation_interrupted',
+      });
+    }
+    return !alreadyRequested;
   }
 
   /** Ответ закончился: подписчики узнают об этом и отписываются; история живёт ещё `finishedTtlMs`. */
@@ -294,18 +318,21 @@ export class ResponsesStreamHub implements IStreamEventManager {
     return this.operations.get(operationId);
   }
 
-  /** Ответ темы этого человека: идущий, иначе самый свежий из завершённых (пока не вычищен). */
+  /** Ответ темы этого человека: идущий (и не отменённый), иначе самый свежий по seq (пока не вычищен). */
   findByTopic(userId: string, topicId: string): HubOperation | undefined {
     this.prune();
     let best: HubOperation | undefined;
+    const isActive = (o: HubOperation) => !o.done && !o.cancelRequested;
     for (const op of this.operations.values()) {
       if (op.userId !== userId || op.topicId !== topicId) continue;
       if (!best) {
         best = op;
         continue;
       }
-      if (best.done !== op.done) {
-        if (best.done) best = op;
+      const bestActive = isActive(best);
+      const opActive = isActive(op);
+      if (bestActive !== opActive) {
+        if (!bestActive) best = op;
         continue;
       }
       if (op.seq > best.seq) best = op;
@@ -313,11 +340,11 @@ export class ResponsesStreamHub implements IStreamEventManager {
     return best;
   }
 
-  /** Темы человека, в которых ответ ещё идёт. */
+  /** Темы человека, в которых ответ ещё идёт и не был отменён. */
   runningTopics(userId: string): string[] {
     const out = new Set<string>();
     for (const op of this.operations.values()) {
-      if (op.userId === userId && !op.done) out.add(op.topicId);
+      if (op.userId === userId && !op.done && !op.cancelRequested) out.add(op.topicId);
     }
     return [...out];
   }

@@ -139,7 +139,7 @@ export class TopicController extends BaseController {
         db,
         isTopicBusy: () => {
           const op = responsesStreamHub.findByTopic(userId, id);
-          if (op && !op.done) return true;
+          if (op && !op.done && !op.cancelRequested) return true;
           return hasInFlightResponseTopic(userId, id);
         },
         topicId: id,

@@ -11,6 +11,7 @@ interface HttpRequestTrackEntry {
 }
 
 interface ResponseExecutionTrackEntry {
+  cancelled: boolean;
   id: number;
   isResumeFlow: boolean;
   operationId?: string;
@@ -113,6 +114,7 @@ export const beginResponseExecution = (params: {
   const state = getState();
   const id = ++state.seq;
   const entry: ResponseExecutionTrackEntry = {
+    cancelled: false,
     id,
     isResumeFlow: Boolean(params.isResumeFlow),
     startedAt: Date.now(),
@@ -141,11 +143,24 @@ export const beginResponseExecution = (params: {
   };
 };
 
+export const markResponseExecutionCancelled = (userId: string, topicId: string): number => {
+  if (!userId || !topicId) return 0;
+  const state = getState();
+  let count = 0;
+  for (const entry of state.responseExecutions.values()) {
+    if (entry.userId === userId && entry.topicId === topicId && !entry.cancelled) {
+      entry.cancelled = true;
+      count += 1;
+    }
+  }
+  return count;
+};
+
 export const hasInFlightResponseTopic = (userId: string, topicId: string): boolean => {
   if (!userId || !topicId) return false;
   const state = getState();
   for (const entry of state.responseExecutions.values()) {
-    if (entry.userId === userId && entry.topicId === topicId) {
+    if (entry.userId === userId && entry.topicId === topicId && !entry.cancelled) {
       return true;
     }
   }
@@ -157,7 +172,7 @@ export const getInFlightResponseTopicsForUser = (userId: string): string[] => {
   const state = getState();
   const topics = new Set<string>();
   for (const entry of state.responseExecutions.values()) {
-    if (entry.userId === userId && entry.topicId) {
+    if (entry.userId === userId && entry.topicId && !entry.cancelled) {
       topics.add(entry.topicId);
     }
   }

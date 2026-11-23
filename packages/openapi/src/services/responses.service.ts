@@ -18,6 +18,7 @@ import type {
   StreamEvent,
 } from '@/server/modules/AgentRuntime/StreamEventManager';
 import { AgentRuntimeService } from '@/server/services/agentRuntime';
+import { isAbortError } from '@/server/services/agentRuntime/abort';
 import {
   extractStreamedPartialFromEvents,
   hasPaidOrMeaningfulAssistantPayload,
@@ -44,6 +45,7 @@ import {
   beginResponseExecution,
   getInFlightResponseTopicsForUser,
   hasInFlightResponseTopic,
+  markResponseExecutionCancelled,
 } from './engineSlotActivity';
 import { type HubOperation, responsesStreamHub } from './responsesStreamHub';
 
@@ -171,23 +173,41 @@ export class ResponsesService extends BaseService {
     }
     if (this.hasFunctionCallOutputs(params.input)) return;
     const op = responsesStreamHub.findByTopic(this.userId, previousTopicId);
-    if ((op && !op.done) || hasInFlightResponseTopic(this.userId, previousTopicId)) {
+    if (
+      (op && !op.done && !op.cancelRequested) ||
+      hasInFlightResponseTopic(this.userId, previousTopicId)
+    ) {
       throw conflict('Response is already in progress for this topic');
     }
   }
 
   /**
    * arckep (chat-next-redesign, E2): остановить ответ. Id ответа кодирует тему, у темы может
-   * быть незавершённая операция — она помечается прерванной и остановится на границе шага.
+   * быть незавершённая операция — она помечается прерванной, активный LLM-поток обрывается по
+   * AbortSignal, а тема сразу снимается с блокировки новых сообщений.
    */
   async cancelResponse(responseId: string): Promise<{ cancelled: number; id: string }> {
     const topicId = this.extractTopicIdFromResponseId(responseId);
     if (!topicId) return { cancelled: 0, id: responseId };
     const agentRuntimeService = new AgentRuntimeService(this.db, this.userId, {
       queueService: null,
+      streamEventManager: responsesStreamHub,
     });
-    const cancelled = await agentRuntimeService.interruptTopicOperations(topicId);
-    this.log('info', 'Response cancel requested', { cancelled, responseId, topicId });
+    const interrupted = await agentRuntimeService.interruptTopicOperations(topicId);
+    const localOp = responsesStreamHub.findByTopic(this.userId, topicId);
+    const localCancelled =
+      localOp && !localOp.done ? responsesStreamHub.requestCancel(localOp.operationId) : false;
+    if (interrupted > 0 || localCancelled || localOp?.cancelRequested) {
+      markResponseExecutionCancelled(this.userId, topicId);
+    }
+    const cancelled = interrupted > 0 ? interrupted : localCancelled ? 1 : 0;
+    this.log('info', 'Response cancel requested', {
+      cancelled,
+      interrupted,
+      localCancelled,
+      responseId,
+      topicId,
+    });
     return { cancelled, id: responseId };
   }
 
@@ -757,8 +777,21 @@ export class ResponsesService extends BaseService {
             responsesStreamHub.markDone(operationId, effectiveState);
           },
           async (err) => {
-            this.log('error', 'Streaming execution failed', { error: err, responseId });
-            let effectiveState = { status: 'error' } as AgentState;
+            const wasCancelled =
+              op.cancelRequested || (isAbortError(err) && err.message === 'user_cancelled');
+            if (!wasCancelled) {
+              this.log('error', 'Streaming execution failed', { error: err, responseId });
+            }
+            let effectiveState: AgentState = wasCancelled
+              ? ({
+                  interruption: {
+                    canResume: false,
+                    interruptedAt: new Date().toISOString(),
+                    reason: 'user_cancelled',
+                  },
+                  status: 'interrupted',
+                } as unknown as AgentState)
+              : ({ status: 'error' } as AgentState);
             if (responsesStreamHub.isShuttingDown()) {
               const overrideState = await finalizeOnServerShutdown('SIGTERM', op, effectiveState);
               if (overrideState) effectiveState = overrideState;
@@ -903,6 +936,8 @@ export class ResponsesService extends BaseService {
       if (op.finalState?.status === 'error') status = 'failed';
       else if (this.resolveIncompleteReason(op.finalState)) status = 'incomplete';
       else status = 'completed';
+    } else if (op.cancelRequested) {
+      status = 'incomplete';
     }
     return {
       created_at: op.createdAt,
