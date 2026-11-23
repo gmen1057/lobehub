@@ -20,7 +20,10 @@ export type WorkspaceErrorCode =
   | 'MALWARE_SIGNATURE'
   | 'PATCH_FAILED'
   | 'PINNED_BUDGET_EXCEEDED'
+  | 'PROPOSAL_EXPIRED'
   | 'PROPOSAL_NOT_FOUND'
+  | 'PROPOSAL_NOT_PENDING'
+  | 'PROPOSAL_SUPERSEDED'
   | 'PROTECTED_FILE'
   | 'QUOTA_EXCEEDED'
   | 'REVISION_CONFLICT'
@@ -36,7 +39,7 @@ export type WorkspaceUpdatedBy =
 export type WorkspaceIndexingStatus = 'error' | 'indexing' | 'none' | 'ready';
 export type WorkspaceDataGuardStatus = 'scrubbed' | 'unmasked';
 export type WorkspaceProposalType = 'create_pinned' | 'delete' | 'edit';
-export type WorkspaceProposalStatus = 'applied' | 'pending' | 'rejected' | 'superseded';
+export type WorkspaceProposalStatus = 'applied' | 'expired' | 'pending' | 'rejected' | 'superseded';
 
 export interface WorkspaceFileDto {
   agentId: string;

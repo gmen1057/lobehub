@@ -16,6 +16,7 @@ import {
   knowledgeBases,
   messages,
   messagesFiles,
+  projectFileProposals,
   topics,
   users,
 } from '@lobechat/database/schemas';
@@ -519,6 +520,46 @@ describe('ProjectWorkspace core (1A-2)', () => {
       expect(rej1.proposal.status).toBe('rejected');
       const rej2 = await store.rejectProposal(agentId, propEdit.proposal.id);
       expect(rej2.proposal.status).toBe('rejected');
+
+      // Cross-state conflicts return exact 409 codes (PROPOSAL_NOT_PENDING / PROPOSAL_SUPERSEDED / PROPOSAL_EXPIRED)
+      await expect(store.applyProposal(agentId, propEdit.proposal.id)).rejects.toMatchObject({
+        code: 'PROPOSAL_NOT_PENDING',
+        details: expect.objectContaining({ proposalStatus: 'rejected' }),
+        httpStatus: 409,
+      });
+      await expect(store.rejectProposal(agentId, propCreate.proposal.id)).rejects.toMatchObject({
+        code: 'PROPOSAL_NOT_PENDING',
+        details: expect.objectContaining({ proposalStatus: 'applied' }),
+        httpStatus: 409,
+      });
+
+      const propSuperseded = await store.patchAgentTextFile(agentId, {
+        edits: [{ newText: 'Rule 1\nRule 3', oldText: 'Rule 1' }],
+        path: 'AGENTS.md',
+        reason: 'Superseded test',
+      });
+      if (propSuperseded.outcome !== 'proposal_created') throw new Error('expected proposal');
+      await db
+        .update(projectFileProposals)
+        .set({ status: 'superseded' })
+        .where(eq(projectFileProposals.id, propSuperseded.proposal.id));
+
+      await expect(store.applyProposal(agentId, propSuperseded.proposal.id)).rejects.toMatchObject({
+        code: 'PROPOSAL_SUPERSEDED',
+        details: expect.objectContaining({ proposalStatus: 'superseded' }),
+        httpStatus: 409,
+      });
+
+      await db
+        .update(projectFileProposals)
+        .set({ status: 'expired' })
+        .where(eq(projectFileProposals.id, propSuperseded.proposal.id));
+
+      await expect(store.applyProposal(agentId, propSuperseded.proposal.id)).rejects.toMatchObject({
+        code: 'PROPOSAL_EXPIRED',
+        details: expect.objectContaining({ proposalStatus: 'expired' }),
+        httpStatus: 409,
+      });
 
       // Unprotected file: write 33 revisions to verify >30 rotation preserves v1!
       let rev = 0;

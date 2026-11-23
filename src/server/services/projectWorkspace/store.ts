@@ -74,6 +74,7 @@ import {
   listPendingProposalsForAgent,
   lockWorkspaceProposalForUpdate,
   rejectWorkspaceProposal,
+  resolveNonPendingProposalErrorCode,
   toWorkspaceProposalDto,
 } from './proposals';
 import {
@@ -3441,10 +3442,10 @@ export class ProjectWorkspaceStore {
 
       if (proposal.status !== 'pending') {
         throw new WorkspaceError(
-          'REVISION_CONFLICT',
+          resolveNonPendingProposalErrorCode(proposal.status),
           `Cannot apply proposal in status "${proposal.status}"`,
           409,
-          { proposalId: proposal.id, status: proposal.status },
+          { proposalId: proposal.id, proposalStatus: proposal.status, status: proposal.status },
         );
       }
 

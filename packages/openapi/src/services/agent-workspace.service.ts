@@ -1,5 +1,4 @@
 import type { LobeChatDatabase } from '@/database/type';
-import type { WorkspaceHttpStatus } from '@/server/services/projectWorkspace';
 import {
   isWorkspaceEnabled,
   ProjectWorkspaceStore,
@@ -50,7 +49,7 @@ export class AgentWorkspaceService extends BaseService {
       throw new WorkspaceError(
         'WORKSPACE_DISABLED',
         'Project workspace is currently disabled',
-        503 as WorkspaceHttpStatus,
+        409,
       );
     }
   }

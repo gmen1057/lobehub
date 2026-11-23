@@ -1010,7 +1010,7 @@ describe('OpenAPI Agent Workspace Routes & Protective Invariants (1A-3)', () => 
       expect(mocks.deleteAgentKnowledgeBase).toHaveBeenCalledWith('agt_1', 'kb_ext');
     });
 
-    it('Emergency rollback mode (ARCKEP_WORKSPACE_ENABLED=0, M-6): GET /workspace returns workspaceEnabled:false, all mutating Workspace routes return 503 WORKSPACE_DISABLED, deleteFile stays 409 before S3, and legacy KB operations succeed without 409', async () => {
+    it('Emergency rollback mode (ARCKEP_WORKSPACE_ENABLED=0, M-6): GET /workspace returns workspaceEnabled:false, all mutating Workspace routes return 409 WORKSPACE_DISABLED, deleteFile stays 409 before S3, and legacy KB operations succeed without 409', async () => {
       process.env.ARCKEP_WORKSPACE_ENABLED = '0';
 
       mocks.store.getWorkspaceOverview.mockResolvedValue({
@@ -1028,7 +1028,7 @@ describe('OpenAPI Agent Workspace Routes & Protective Invariants (1A-3)', () => 
       expect(getRes.status).toBe(200);
       expect((await getRes.json()).data.workspaceEnabled).toBe(false);
 
-      // 2. All mutating workspace routes reject with 503 WORKSPACE_DISABLED and do not touch store/DB
+      // 2. All mutating workspace routes reject with 409 WORKSPACE_DISABLED and do not touch store/DB
       const mutatingCalls: Array<[string, string, unknown?]> = [
         ['PUT', '/api/v1/agents/agt_1/workspace/text', { content: 'x', path: 'AGENTS.md' }],
         [
@@ -1049,7 +1049,7 @@ describe('OpenAPI Agent Workspace Routes & Protective Invariants (1A-3)', () => 
           headers: payload === undefined ? undefined : { 'Content-Type': 'application/json' },
           method,
         });
-        expect(res.status).toBe(503);
+        expect(res.status).toBe(409);
         const json = await res.json();
         expect(json).toMatchObject({
           code: 'WORKSPACE_DISABLED',

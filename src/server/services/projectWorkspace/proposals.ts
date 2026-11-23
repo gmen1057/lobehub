@@ -199,6 +199,14 @@ export async function lockWorkspaceProposalForUpdate(
   return proposal;
 }
 
+export function resolveNonPendingProposalErrorCode(
+  status: string,
+): 'PROPOSAL_EXPIRED' | 'PROPOSAL_NOT_PENDING' | 'PROPOSAL_SUPERSEDED' {
+  if (status === 'superseded') return 'PROPOSAL_SUPERSEDED';
+  if (status === 'expired') return 'PROPOSAL_EXPIRED';
+  return 'PROPOSAL_NOT_PENDING';
+}
+
 export async function rejectWorkspaceProposal(
   db: LobeChatDatabase,
   userId: string,
@@ -212,12 +220,12 @@ export async function rejectWorkspaceProposal(
       return { proposal: toWorkspaceProposalDto(proposal) };
     }
 
-    if (proposal.status === 'applied') {
+    if (proposal.status !== 'pending') {
       throw new WorkspaceError(
-        'REVISION_CONFLICT',
-        'Workspace proposal has already been applied',
+        resolveNonPendingProposalErrorCode(proposal.status),
+        `Cannot reject proposal in status "${proposal.status}"`,
         409,
-        { proposalId: proposal.id, status: proposal.status },
+        { proposalId: proposal.id, proposalStatus: proposal.status, status: proposal.status },
       );
     }
 

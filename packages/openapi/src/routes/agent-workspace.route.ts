@@ -47,7 +47,7 @@ class AgentWorkspaceController extends BaseController {
           success: false,
           timestamp: new Date().toISOString(),
         },
-        error.httpStatus as any,
+        error.httpStatus,
       );
     }
 
