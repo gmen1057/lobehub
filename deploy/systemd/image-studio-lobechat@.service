@@ -7,6 +7,7 @@ Type=simple
 User=lobechat
 Group=lobechat
 WorkingDirectory=/opt/lobechat-next-%i
+Environment=KEEP_ALIVE_TIMEOUT=65000
 EnvironmentFile=/opt/lobechat-next-%i/.env
 EnvironmentFile=/opt/lobechat-next-%i/.slot.env
 ExecStart=/usr/bin/node server.js
