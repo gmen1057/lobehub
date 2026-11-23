@@ -1,7 +1,9 @@
 import { ARCKEP_USER_MCP_PREFIX, isArckepUserMcpId } from '@lobechat/builtin-tools';
-import { desc, like } from 'drizzle-orm';
+import type { UserToolConfig } from '@lobechat/types';
+import { and, desc, eq, like } from 'drizzle-orm';
 
 import { PluginModel } from '@/database/models/plugin';
+import { UserModel } from '@/database/models/user';
 import { userInstalledPlugins } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import {
@@ -34,6 +36,8 @@ export const PUBLIC_SETTING_KEYS = new Set([
   'X-MCP-User',
 ]);
 export const SECRET_SETTING_KEYS = new Set(['X-MCP-Password']);
+
+const SINGLE_SECRET_CONNECTOR_IDS = new Set(['mcp-arckep-figma', 'mcp-arckep-google-sheets']);
 
 export interface ConnectorSummary {
   description: string;
@@ -146,14 +150,33 @@ export const summarizeConnector = (row: ConnectorRow, installed: boolean): Conne
   };
 };
 
+export interface PluginInternalSettings {
+  identifier: string;
+  installed: boolean;
+  settings: Record<string, unknown>;
+}
+
+export const readUserToolConfig = (tool: unknown): UserToolConfig & Record<string, unknown> =>
+  tool && typeof tool === 'object' && !Array.isArray(tool)
+    ? (tool as UserToolConfig & Record<string, unknown>)
+    : {};
+
+export const readUninstalledConnectors = (tool: unknown): string[] => {
+  const raw = readUserToolConfig(tool).uninstalledConnectors;
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+};
+
 export class PluginService {
   private pluginModel: PluginModel;
+  private userModel: UserModel;
 
   constructor(
     private db: LobeChatDatabase,
     private userId: string,
   ) {
     this.pluginModel = new PluginModel(db, userId);
+    this.userModel = new UserModel(db, userId);
   }
 
   async listInstalled(): Promise<ConnectorSummary[]> {
@@ -198,7 +221,35 @@ export class PluginService {
       source: row.source ?? 'custom',
       type: (row.type as 'plugin' | 'customPlugin') ?? 'customPlugin',
     });
+    const settings = await this.userModel.getUserSettings();
+    const prevTool = readUserToolConfig(settings?.tool);
+    const prevUninstalled = readUninstalledConnectors(prevTool);
+    if (prevUninstalled.includes(identifier)) {
+      await this.userModel.updateSetting({
+        tool: {
+          ...prevTool,
+          uninstalledConnectors: prevUninstalled.filter((id) => id !== identifier),
+        },
+      });
+    }
     return summarizeConnector(created as ConnectorRow, true);
+  }
+
+  async getInternalSettings(identifier: string): Promise<PluginInternalSettings | null> {
+    if (isArckepUserMcpId(identifier) || identifier.startsWith(ARCKEP_USER_MCP_PREFIX)) {
+      return null;
+    }
+    const existing = await this.pluginModel.findById(identifier);
+    return {
+      identifier,
+      installed: Boolean(existing),
+      settings:
+        existing?.settings &&
+        typeof existing.settings === 'object' &&
+        !Array.isArray(existing.settings)
+          ? (existing.settings as Record<string, unknown>)
+          : {},
+    };
   }
 
   async updateSettings(
@@ -208,13 +259,69 @@ export class PluginService {
     const existing = await this.pluginModel.findById(identifier);
     if (!existing) return null;
     const prevSettings =
-      existing.settings && typeof existing.settings === 'object'
+      existing.settings &&
+      typeof existing.settings === 'object' &&
+      !Array.isArray(existing.settings)
         ? (existing.settings as Record<string, unknown>)
         : {};
-    const nextSettings: Record<string, unknown> = { ...prevSettings, ...settings };
+    const singleSecretOnly = SINGLE_SECRET_CONNECTOR_IDS.has(identifier);
+    const nextSettings: Record<string, unknown> = singleSecretOnly
+      ? {}
+      : { ...prevSettings, ...settings };
+
+    // Explicit null on any custom key removes it from stored settings
+    if (!singleSecretOnly) {
+      for (const [k, v] of Object.entries(settings)) {
+        if (v === null) delete nextSettings[k];
+      }
+    }
+
+    // Canonicalize case-insensitive PUBLIC_SETTING_KEYS and support explicit removal via null / empty string
+    for (const pubKey of PUBLIC_SETTING_KEYS) {
+      const pubLower = pubKey.toLowerCase();
+      let hasIncoming = false;
+      let incomingVal: unknown;
+      for (const [k, v] of Object.entries(settings)) {
+        if (k.toLowerCase() === pubLower) {
+          if (!hasIncoming || k === pubKey) incomingVal = v;
+          hasIncoming = true;
+          if (k !== pubKey) delete nextSettings[k];
+        }
+      }
+      let prevVal: unknown = prevSettings[pubKey];
+      for (const [k, v] of Object.entries(prevSettings)) {
+        if (k !== pubKey && k.toLowerCase() === pubLower) {
+          if (prevVal === undefined) prevVal = v;
+          delete nextSettings[k];
+        }
+      }
+      if (singleSecretOnly) {
+        delete nextSettings[pubKey];
+        continue;
+      }
+      if (hasIncoming) {
+        const clearRequested =
+          incomingVal === null ||
+          (typeof incomingVal === 'string' && incomingVal.trim().length === 0);
+        if (clearRequested) {
+          delete nextSettings[pubKey];
+        } else {
+          nextSettings[pubKey] = incomingVal;
+        }
+      } else if (
+        prevVal !== undefined &&
+        prevVal !== null &&
+        !(typeof prevVal === 'string' && prevVal.trim().length === 0)
+      ) {
+        nextSettings[pubKey] = prevVal;
+      } else {
+        delete nextSettings[pubKey];
+      }
+    }
+
     for (const secretKey of SECRET_SETTING_KEYS) {
       const secretLower = secretKey.toLowerCase();
-      // Убираем дубликаты в другом регистре (HTTP-заголовки регистронезависимы)
+      // Убираем дубликаты в другом регистре (и во входящем запросе, и в старых сохранённых настройках)
       let incoming: unknown = settings[secretKey];
       for (const [k, v] of Object.entries(settings)) {
         if (k !== secretKey && k.toLowerCase() === secretLower) {
@@ -222,11 +329,17 @@ export class PluginService {
           delete nextSettings[k];
         }
       }
+      let prevSecret: unknown = prevSettings[secretKey];
+      for (const [k, v] of Object.entries(prevSettings)) {
+        if (k !== secretKey && k.toLowerCase() === secretLower) {
+          if (prevSecret === undefined) prevSecret = v;
+          delete nextSettings[k];
+        }
+      }
       // Любой нестроковый или пустой/пробельный секрет (включая false / 0 / null) считаем пустым,
       // чтобы не затереть сохранённый пароль.
       const incomingEmpty = typeof incoming !== 'string' || incoming.trim().length === 0;
       if (incomingEmpty) {
-        const prevSecret = prevSettings[secretKey];
         if (typeof prevSecret === 'string' && prevSecret.trim().length > 0) {
           // Сохраняем прежний секрет нетронутым (совместимо с plaintext и с `enc:v1:...`).
           nextSettings[secretKey] = prevSecret;
@@ -313,22 +426,78 @@ export class PluginService {
     const existing = await this.pluginModel.findById(identifier);
     if (!existing) return false;
     await this.pluginModel.delete(identifier);
+    if (identifier.startsWith(ARCKEP_CONNECTOR_PREFIX) && !isArckepUserMcpId(identifier)) {
+      const settings = await this.userModel.getUserSettings();
+      const prevTool = readUserToolConfig(settings?.tool);
+      const prevUninstalled = readUninstalledConnectors(prevTool);
+      if (!prevUninstalled.includes(identifier)) {
+        await this.userModel.updateSetting({
+          tool: {
+            ...prevTool,
+            uninstalledConnectors: [...prevUninstalled, identifier],
+          },
+        });
+      }
+    }
     return true;
   }
 
-  /** Новому пользователю — весь каталог (как SQL-скрипты делали для существующих). */
-  async installCatalog(): Promise<string[]> {
-    const rows = await this.latestCatalogRows();
-    for (const row of rows) {
-      await this.pluginModel.create({
-        customParams: row.customParams as never,
-        identifier: row.identifier,
-        manifest: row.manifest as never,
-        settings: {},
-        source: row.source ?? 'custom',
-        type: (row.type as 'plugin' | 'customPlugin') ?? 'customPlugin',
+  /**
+   * Идемпотентно доустанавливает дефолтные коннекторы `mcp-arckep-*` из каталога:
+   * - fast-path: 0 записей в БД, если всё нужное уже установлено;
+   * - `ON CONFLICT DO NOTHING` вместо `PluginModel.create` (`onConflictDoUpdate`), чтобы гонки никогда
+   *   не затирали `settings` (включая `enc:v1:` и открытый текст);
+   * - не переустанавливает коннекторы из `userSettings.tool.uninstalledConnectors` и не трогает `umcp-*`.
+   */
+  async ensureCatalogInstalled(): Promise<string[]> {
+    const [catalogRows, installedIds, settings] = await Promise.all([
+      this.latestCatalogRows(),
+      this.installedConnectorIds(),
+      this.userModel.getUserSettings(),
+    ]);
+    const installedSet = new Set(installedIds);
+    const uninstalledSet = new Set(readUninstalledConnectors(settings?.tool));
+    const missingRows = catalogRows.filter(
+      (row) => !installedSet.has(row.identifier) && !uninstalledSet.has(row.identifier),
+    );
+    if (missingRows.length === 0) return [];
+
+    await this.db
+      .insert(userInstalledPlugins)
+      .values(
+        missingRows.map((row) => ({
+          customParams: row.customParams as never,
+          identifier: row.identifier,
+          manifest: row.manifest as never,
+          settings: {},
+          source: row.source ?? 'custom',
+          type: (row.type as 'plugin' | 'customPlugin') ?? 'customPlugin',
+          userId: this.userId,
+        })),
+      )
+      .onConflictDoNothing({
+        target: [userInstalledPlugins.identifier, userInstalledPlugins.userId],
       });
-    }
+
+    return missingRows.map((row) => row.identifier);
+  }
+
+  /** Новому пользователю — весь каталог (делегирует в идемпотентный `ensureCatalogInstalled`). */
+  async installCatalog(): Promise<string[]> {
+    return this.ensureCatalogInstalled();
+  }
+
+  /** Установленные у `this.userId` идентификаторы коннекторов `mcp-arckep-%` (без `umcp-*`). */
+  async installedConnectorIds(): Promise<string[]> {
+    const rows = await this.db
+      .select({ identifier: userInstalledPlugins.identifier })
+      .from(userInstalledPlugins)
+      .where(
+        and(
+          eq(userInstalledPlugins.userId, this.userId),
+          like(userInstalledPlugins.identifier, `${ARCKEP_CONNECTOR_PREFIX}%`),
+        ),
+      );
     return rows.map((row) => row.identifier);
   }
 

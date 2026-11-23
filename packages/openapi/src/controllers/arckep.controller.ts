@@ -1,5 +1,5 @@
 import { ARCKEP_USER_MCP_PREFIX } from '@lobechat/builtin-tools';
-import { DEFAULT_AGENT_CHAT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
+import { DEFAULT_AGENT_CHAT_CONFIG, DEFAULT_AGENT_CONFIG, INBOX_SESSION_ID } from '@lobechat/const';
 import { LayersEnum } from '@lobechat/types';
 import { and, eq } from 'drizzle-orm';
 import type { Context } from 'hono';
@@ -85,6 +85,28 @@ const memorySettingsOf = (memory: unknown): { autoExtract: boolean; enabled: boo
   return { autoExtract: value.autoExtract === true, enabled: value.enabled !== false };
 };
 
+const CONNECTOR_PREFIX = 'mcp-arckep-';
+
+/**
+ * Совпадает ли `agent.plugins` по составу с до-E2 умолчанием `DEFAULT_AGENT_CONFIG.plugins`
+ * (`['lobe-user-memory', 'lobe-artifacts', 'arckep-sites']`, 0 `mcp-arckep-*`).
+ */
+const isPreE2DefaultInboxPlugins = (plugins: unknown): plugins is string[] => {
+  if (!Array.isArray(plugins)) return false;
+  const legacy = DEFAULT_AGENT_CONFIG.plugins ?? [];
+  if (legacy.length === 0 || plugins.length !== legacy.length) return false;
+  if (plugins.some((id) => typeof id !== 'string' || id.startsWith(CONNECTOR_PREFIX))) {
+    return false;
+  }
+  const legacySet = new Set(legacy);
+  const currentSet = new Set(plugins);
+  if (currentSet.size !== legacySet.size) return false;
+  for (const id of legacySet) {
+    if (!currentSet.has(id)) return false;
+  }
+  return true;
+};
+
 export class ArckepController extends BaseController {
   /**
    * GET /api/v1/agents/inbox
@@ -96,18 +118,49 @@ export class ArckepController extends BaseController {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
 
+      // Provision catalog manifests before checking/creating inbox: a failed installation can be retried
+      // without creating a half-provisioned inbox, and existing users also receive missing catalog rows.
+      await new PluginService(db, userId).ensureCatalogInstalled();
+
       const sessionModel = new SessionModel(db, userId);
       const existing = await sessionModel.findByIdOrSlug(INBOX_SESSION_ID);
       if (!existing) {
-        // Provision manifests before the inbox exists: a failed installation can be retried,
-        // and the first response already contains the selection persisted on creation.
-        await new PluginService(db, userId).installCatalog();
         await new ServerAgentService(db, userId).createInbox();
       }
 
       const agentModel = new AgentModel(db, userId);
       const agent = await agentModel.getBuiltinAgent(INBOX_SESSION_ID);
       if (!agent) return this.error(c, 'Inbox agent not found', 404);
+
+      const isNullPlugins = agent.plugins == null;
+      const isLegacyPlugins = !isNullPlugins && isPreE2DefaultInboxPlugins(agent.plugins);
+      if (isNullPlugins || isLegacyPlugins) {
+        const userModel = new UserModel(db, userId);
+        const userSettings = await userModel.getUserSettings();
+        const prevTool =
+          userSettings?.tool &&
+          typeof userSettings.tool === 'object' &&
+          !Array.isArray(userSettings.tool)
+            ? (userSettings.tool as Record<string, unknown>)
+            : {};
+        if (isNullPlugins || prevTool.inboxMcpProvisioned !== true) {
+          const uninstalledSet = new Set(
+            Array.isArray(prevTool.uninstalledConnectors)
+              ? prevTool.uninstalledConnectors.filter(
+                  (id): id is string => typeof id === 'string' && id.length > 0,
+                )
+              : [],
+          );
+          const nextPlugins = [
+            ...new Set([...(agent.plugins ?? []), ...defaultInboxPlugins()]),
+          ].filter((id) => !uninstalledSet.has(id));
+          await agentModel.update(agent.id, { plugins: nextPlugins });
+          await userModel.updateSetting({
+            tool: { ...prevTool, inboxMcpProvisioned: true },
+          });
+          return this.success(c, { ...agent, plugins: nextPlugins }, 'inbox agent');
+        }
+      }
 
       return this.success(c, agent, 'inbox agent');
     } catch (error) {
@@ -127,7 +180,9 @@ export class ArckepController extends BaseController {
     try {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
-      const plugins = await new PluginService(db, userId).listInstalled();
+      const pluginService = new PluginService(db, userId);
+      await pluginService.ensureCatalogInstalled();
+      const plugins = await pluginService.listInstalled();
       return this.success(c, { plugins, total: plugins.length }, 'installed plugins');
     } catch (error) {
       return this.handleError(c, error);
@@ -139,7 +194,9 @@ export class ArckepController extends BaseController {
     try {
       const db = await this.getDatabase();
       const userId = this.getUserId(c)!;
-      const plugins = await new PluginService(db, userId).catalog();
+      const pluginService = new PluginService(db, userId);
+      await pluginService.ensureCatalogInstalled();
+      const plugins = await pluginService.catalog();
       return this.success(c, { plugins, total: plugins.length }, 'plugin catalog');
     } catch (error) {
       return this.handleError(c, error);
@@ -155,6 +212,39 @@ export class ArckepController extends BaseController {
       const plugin = await new PluginService(db, userId).install(identifier);
       if (!plugin) return this.error(c, 'Plugin not found in catalog', 404);
       return this.success(c, plugin, 'plugin installed');
+    } catch (error) {
+      return this.handleError(c, error);
+    }
+  }
+
+  /**
+   * GET /api/v1/plugins/:identifier/internal-settings — сырые настройки подключения для бэкенда студии
+   * (проверка соединения и миграция в `enc:v1:`). Строго служебный вход `arckep-service`.
+   */
+  async getPluginInternalSettings(c: Context): Promise<Response> {
+    try {
+      if (this.getAuthType(c) !== 'arckep-service') {
+        return this.error(c, 'Только служебный вход студии', 403);
+      }
+      const { identifier } = this.getParams<{ identifier: string }>(c);
+      if (identifier.startsWith(ARCKEP_USER_MCP_PREFIX)) {
+        return this.error(
+          c,
+          'У своих подключений нет настроек: удалите подключение и добавьте заново',
+          400,
+        );
+      }
+      const db = await this.getDatabase();
+      const userId = this.getUserId(c)!;
+      const data = await new PluginService(db, userId).getInternalSettings(identifier);
+      if (!data) {
+        return this.error(
+          c,
+          'У своих подключений нет настроек: удалите подключение и добавьте заново',
+          400,
+        );
+      }
+      return this.success(c, data, 'plugin internal settings');
     } catch (error) {
       return this.handleError(c, error);
     }
