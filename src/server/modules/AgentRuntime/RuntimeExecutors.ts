@@ -2211,16 +2211,24 @@ export const createRuntimeExecutors = (
               },
             );
           } else {
+            const deepseekGroundingReasoning = grounding?.deepseek?.reasoning_content;
+            const inlineReasoningContent =
+              typeof deepseekGroundingReasoning === 'string'
+                ? deepseekGroundingReasoning
+                : (provider === 'deepseek' || (provider === 'qwen' && model === 'qwen4-max')) &&
+                    thinkingContent
+                  ? thinkingContent
+                  : undefined;
+
             newState.messages.push({
               content,
-              ...(provider === 'qwen' && model === 'qwen4-max' && thinkingContent
-                ? { reasoning_content: thinkingContent }
+              ...(inlineReasoningContent !== undefined
+                ? { reasoning_content: inlineReasoningContent }
                 : {}),
               search: grounding,
               ...(grounding?.deepseek
                 ? {
                     server_tool_calls: grounding.deepseek.server_tool_calls,
-                    reasoning_content: grounding.deepseek.reasoning_content,
                     annotations: grounding.deepseek.annotations,
                   }
                 : {}),
