@@ -280,7 +280,7 @@ export async function restoreDeletedFile(
         .where(and(eq(agents.id, agentId), eq(agents.userId, userId)));
     }
 
-    if (row.ragEnabled) {
+    if (row.ragEnabled && row.loadMode !== 'disabled') {
       await store.syncRagMembershipInTx(tx, {
         agentId,
         agentTitle: agent.title,

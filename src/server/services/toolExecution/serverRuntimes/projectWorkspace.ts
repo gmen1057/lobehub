@@ -682,6 +682,7 @@ const buildRuntimeMethods = (baseContext: ToolExecutionContext) => {
           limit: args.limit,
           pathPrefix: args.pathPrefix,
           query: args.query ?? '',
+          requireScrubbed: Boolean(ctx.dataGuardProtected),
         });
 
         const content =

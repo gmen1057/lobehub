@@ -6,8 +6,11 @@ import type { LobeChatDatabase } from '@lobechat/database';
 import { idGenerator } from '@lobechat/database';
 import {
   agents,
+  chunks,
+  fileChunks,
   files,
   globalFiles,
+  knowledgeBaseFiles,
   messages,
   messagesFiles,
   projectWorkspaceFiles,
@@ -18,6 +21,11 @@ import { getTestDB } from '@lobechat/database/test-utils';
 import { AgentChatConfigSchema } from '@lobechat/types';
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import {
+  DATA_GUARD_EMPTY_PROTECTED_KB_MESSAGE,
+  knowledgeBaseRuntime,
+} from '@/server/services/toolExecution/serverRuntimes/knowledgeBase';
 
 import { honoApp } from '../../../../../packages/openapi/src/app';
 import {
@@ -47,6 +55,14 @@ import {
 
 const dbHolder = vi.hoisted(() => ({
   currentDb: null as unknown as LobeChatDatabase,
+  semanticSearchForChat: vi.fn(),
+}));
+
+vi.mock('@/server/services/knowledgeRetrieval', () => ({
+  KnowledgeRetrievalService: class {
+    getFileContents = vi.fn(async () => []);
+    semanticSearchForChat = (...args: any[]) => dbHolder.semanticSearchForChat(...args);
+  },
 }));
 
 vi.mock('@/database/core/db-adaptor', () => ({
@@ -646,6 +662,200 @@ describe('ProjectWorkspace Wave 2 Core (Data Guard 2A + Trash / Multipart / Expo
         code: 'TRASH_PATH_CONFLICT',
         httpStatus: 409,
       });
+    });
+
+    it('detaches disabled RAG files from knowledge_base_files (re-attaching on re-enable), prevents disabled/unmasked leaks in searchKnowledgeBase, and enforces requireScrubbed in searchProjectFiles', async () => {
+      const store = new ProjectWorkspaceStore(db, userId, storage);
+
+      // 1. Upload an unmasked RAG document BEFORE enabling Data Guard, then switch loadMode -> 'disabled'
+      const rawDocFileId = idGenerator('files');
+      const rawDocKey = `files/${userId}/uploads/legacy_raw.pdf`;
+      await storage.uploadBuffer(rawDocKey, Buffer.from('%PDF-1.7 raw'), 'application/pdf');
+      await db.insert(files).values({
+        fileType: 'application/pdf',
+        id: rawDocFileId,
+        name: 'legacy_raw.pdf',
+        size: 12,
+        url: rawDocKey,
+        userId,
+      });
+
+      const rawDocWs = await store.registerUploadedFile(agentId, {
+        enableRag: true,
+        fileId: rawDocFileId,
+        kind: 'document',
+        mimeType: 'application/pdf',
+        path: 'docs/legacy_raw.pdf',
+      });
+      const [rawChunk] = await db
+        .insert(chunks)
+        .values({ text: 'СЕКРЕТ: Иванов И.И.', userId })
+        .returning();
+      await db.insert(fileChunks).values({
+        chunkId: rawChunk!.id,
+        fileId: rawDocFileId,
+        userId,
+      });
+
+      const kbLinksBeforeDisable = await db
+        .select()
+        .from(knowledgeBaseFiles)
+        .where(eq(knowledgeBaseFiles.fileId, rawDocFileId));
+      expect(kbLinksBeforeDisable).toHaveLength(1);
+      const managedKbId = kbLinksBeforeDisable[0]!.knowledgeBaseId;
+
+      // Switch loadMode -> 'disabled' (ragEnabled stays true): detaches from knowledge_base_files while preserving chunks!
+      const disabledMeta = await store.updateFileMetadata(agentId, rawDocWs.file.id, {
+        loadMode: 'disabled',
+      });
+      expect(disabledMeta.file.loadMode).toBe('disabled');
+      expect(disabledMeta.file.ragEnabled).toBe(true);
+      expect(
+        await db
+          .select()
+          .from(knowledgeBaseFiles)
+          .where(eq(knowledgeBaseFiles.fileId, rawDocFileId)),
+      ).toHaveLength(0);
+      expect(await db.select().from(chunks).where(eq(chunks.id, rawChunk!.id))).toHaveLength(1);
+
+      // Re-enabling loadMode -> 'on_demand' re-attaches to knowledge_base_files; then disable again for Data Guard test
+      await store.updateFileMetadata(agentId, rawDocWs.file.id, { loadMode: 'on_demand' });
+      expect(
+        await db
+          .select()
+          .from(knowledgeBaseFiles)
+          .where(eq(knowledgeBaseFiles.fileId, rawDocFileId)),
+      ).toHaveLength(1);
+      await store.updateFileMetadata(agentId, rawDocWs.file.id, { loadMode: 'disabled' });
+      expect(
+        await db
+          .select()
+          .from(knowledgeBaseFiles)
+          .where(eq(knowledgeBaseFiles.fileId, rawDocFileId)),
+      ).toHaveLength(0);
+
+      // Also create an unmasked disabled text file (and later simulate an unmasked active row for SQL defense-in-depth)
+      const unmaskedText = await store.putUserTextFile(agentId, {
+        content: 'UNMASKED_NEEDLE: паспорт 4500 123456\n',
+        path: 'notes/unmasked.md',
+      });
+      await store.updateFileMetadata(agentId, unmaskedText.file!.id, { loadMode: 'disabled' });
+
+      // 2. Enable Protected Project on agent -> workspaceDataGuardReady === true (since all unmasked files are disabled)
+      await db
+        .update(agents)
+        .set({
+          chatConfig: {
+            dataGuardCommercial: true,
+            dataGuardProtected: true,
+            dataGuardProtectedSince: new Date().toISOString(),
+          } as any,
+        })
+        .where(eq(agents.id, agentId));
+
+      // Upload an active scrubbed RAG document + an active scrubbed text file
+      const cleanDocFileId = idGenerator('files');
+      const cleanDocKey = `files/${userId}/uploads/clean_offer.pdf`;
+      await storage.uploadBuffer(cleanDocKey, Buffer.from('%PDF-1.7 clean'), 'application/pdf');
+      await db.insert(files).values({
+        fileType: 'application/pdf',
+        id: cleanDocFileId,
+        name: 'clean_offer.pdf',
+        size: 14,
+        url: cleanDocKey,
+        userId,
+      });
+      await store.registerUploadedFile(agentId, {
+        dataGuardStatus: 'scrubbed',
+        enableRag: true,
+        fileId: cleanDocFileId,
+        kind: 'document',
+        mimeType: 'application/pdf',
+        path: 'docs/clean_offer.pdf',
+      });
+      await store.putUserTextFile(agentId, {
+        content: 'SHARED_NEEDLE: [ЛИЦО_1]\n',
+        dataGuardStatus: 'scrubbed',
+        path: 'notes/scrubbed.md',
+      });
+
+      const dgState = await computeWorkspaceDataGuardState({ agentId, db, userId });
+      expect(dgState.workspaceDataGuardReady).toBe(true);
+
+      // Defense-in-depth: even if a legacy row for rawDocFileId still existed in knowledge_base_files,
+      // searchKnowledgeBase MUST only pass [cleanDocFileId] with knowledgeIds: undefined!
+      await db
+        .insert(knowledgeBaseFiles)
+        .values({ fileId: rawDocFileId, knowledgeBaseId: managedKbId, userId })
+        .onConflictDoNothing();
+
+      dbHolder.semanticSearchForChat.mockClear();
+      dbHolder.semanticSearchForChat.mockResolvedValue({ chunks: [], fileResults: [] });
+
+      const kbRt = await knowledgeBaseRuntime.factory({
+        agentId,
+        dataGuardProtected: true,
+        serverDB: db,
+        toolManifestMap: {},
+        topicId: 'tpc-dg-real',
+        userId,
+        workspaceDataGuardReady: true,
+      });
+
+      await kbRt.searchKnowledgeBase({ query: 'условия договора' });
+      expect(dbHolder.semanticSearchForChat).toHaveBeenCalledTimes(1);
+      expect(dbHolder.semanticSearchForChat).toHaveBeenCalledWith(
+        {
+          fileIds: [cleanDocFileId],
+          knowledgeIds: undefined,
+          query: 'условия договора',
+          topK: 20,
+        },
+        undefined,
+      );
+
+      // Passing rawDocFileId explicitly in args.fileIds returns empty message with 0 semanticSearchForChat calls!
+      dbHolder.semanticSearchForChat.mockClear();
+      const blockedRawSearch = await kbRt.searchKnowledgeBase({
+        fileIds: [rawDocFileId],
+        query: 'Иванов',
+      });
+      expect(blockedRawSearch).toEqual({
+        content: DATA_GUARD_EMPTY_PROTECTED_KB_MESSAGE,
+        state: { chunks: [], fileResults: [], totalResults: 0 },
+        success: true,
+      });
+      expect(dbHolder.semanticSearchForChat).not.toHaveBeenCalled();
+
+      // 3. Defense-in-depth in searchProjectFiles(requireScrubbed: true): force an active unmasked row in DB
+      await db
+        .update(projectWorkspaceFiles)
+        .set({
+          dataGuardStatus: 'unmasked',
+          loadMode: 'on_demand',
+        })
+        .where(eq(projectWorkspaceFiles.id, unmaskedText.file!.id));
+      await store.putUserTextFile(agentId, {
+        baseRevision: 1,
+        content: 'SHARED_NEEDLE: [ЛИЦО_1] + UNMASKED_NEEDLE check\n',
+        dataGuardStatus: 'scrubbed',
+        path: 'notes/scrubbed.md',
+      });
+
+      const allMatches = await store.searchProjectFiles(agentId, {
+        query: 'UNMASKED_NEEDLE',
+        requireScrubbed: false,
+      });
+      expect(allMatches.matches.map((m) => m.path).sort()).toEqual([
+        'notes/scrubbed.md',
+        'notes/unmasked.md',
+      ]);
+
+      const scrubbedOnlyMatches = await store.searchProjectFiles(agentId, {
+        query: 'UNMASKED_NEEDLE',
+        requireScrubbed: true,
+      });
+      expect(scrubbedOnlyMatches.matches.map((m) => m.path)).toEqual(['notes/scrubbed.md']);
     });
   });
 

@@ -398,6 +398,7 @@ export class ProjectWorkspaceStore {
       newRagEnabled: boolean;
       oldFileId: string | null;
       oldRagEnabled: boolean;
+      preserveChunks?: boolean;
     },
   ): Promise<void> {
     return this.syncFileRagMembership(tx, params);
@@ -927,9 +928,18 @@ export class ProjectWorkspaceStore {
       newRagEnabled: boolean;
       oldFileId: string | null;
       oldRagEnabled: boolean;
+      preserveChunks?: boolean;
     },
   ): Promise<void> {
-    const { agentId, agentTitle, newFileId, newRagEnabled, oldFileId, oldRagEnabled } = params;
+    const {
+      agentId,
+      agentTitle,
+      newFileId,
+      newRagEnabled,
+      oldFileId,
+      oldRagEnabled,
+      preserveChunks = false,
+    } = params;
 
     const shouldRemoveOld =
       Boolean(oldFileId) && (oldRagEnabled || !newRagEnabled) && oldFileId !== newFileId;
@@ -956,7 +966,7 @@ export class ProjectWorkspaceStore {
         .where(eq(knowledgeBaseFiles.fileId, fileToDetach))
         .limit(1);
 
-      if (otherKbRefs.length === 0) {
+      if (otherKbRefs.length === 0 && !preserveChunks) {
         await new FileModel(this.db, this.userId).deleteFileChunks(tx as any, [fileToDetach]);
       }
     }
@@ -1812,7 +1822,7 @@ export class ProjectWorkspaceStore {
           agentId: params.agentId,
           agentTitle: agent.title,
           newFileId,
-          newRagEnabled: nextRagEnabled,
+          newRagEnabled: effectiveLoadMode === 'disabled' ? false : nextRagEnabled,
           oldFileId: lockedRow?.currentFileId ?? null,
           oldRagEnabled: Boolean(lockedRow?.ragEnabled),
         });
@@ -2300,9 +2310,13 @@ export class ProjectWorkspaceStore {
           agentId,
           agentTitle: agent.title,
           newFileId: uploadedFile.id,
-          newRagEnabled: ragEnabled,
+          newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
           oldFileId: lockedRow?.currentFileId ?? null,
           oldRagEnabled: Boolean(lockedRow?.ragEnabled),
+          preserveChunks:
+            ragEnabled &&
+            effectiveLoadMode === 'disabled' &&
+            lockedRow?.currentFileId === uploadedFile.id,
         });
 
         s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, savedRow.id)));
@@ -2502,9 +2516,13 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: uploadedFile.id,
-        newRagEnabled: ragEnabled,
+        newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
         oldFileId: lockedRow?.currentFileId ?? null,
         oldRagEnabled: Boolean(lockedRow?.ragEnabled),
+        preserveChunks:
+          ragEnabled &&
+          effectiveLoadMode === 'disabled' &&
+          lockedRow?.currentFileId === uploadedFile.id,
       });
 
       s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, savedRow.id)));
@@ -2687,9 +2705,11 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: row.currentFileId,
-        newRagEnabled: nextRagEnabled,
+        newRagEnabled: nextLoadMode === 'disabled' ? false : nextRagEnabled,
         oldFileId: row.currentFileId,
-        oldRagEnabled: row.ragEnabled,
+        oldRagEnabled:
+          row.loadMode === 'disabled' ? !nextRagEnabled && row.ragEnabled : row.ragEnabled,
+        preserveChunks: nextRagEnabled && nextLoadMode === 'disabled',
       });
 
       const [dto] = await this.toFileDtos(tx, [updated!]);
@@ -3190,7 +3210,7 @@ export class ProjectWorkspaceStore {
    */
   public async searchProjectFiles(
     agentId: string,
-    params: { limit?: number; pathPrefix?: string; query: string },
+    params: { limit?: number; pathPrefix?: string; query: string; requireScrubbed?: boolean },
   ): Promise<WorkspaceSearchResult> {
     const trimmedQuery = params.query?.trim() ?? '';
     if (!trimmedQuery) {
@@ -3224,6 +3244,9 @@ export class ProjectWorkspaceStore {
           isNull(projectWorkspaceFiles.deletedAt),
           ne(projectWorkspaceFiles.loadMode, 'disabled'),
           eq(projectWorkspaceFiles.kind, 'text'),
+          params.requireScrubbed
+            ? eq(projectWorkspaceFiles.dataGuardStatus, 'scrubbed')
+            : undefined,
           escapedPrefix
             ? sql`lower(${projectWorkspaceFiles.path}) LIKE lower(${`${escapedPrefix}%`}) ESCAPE '\\'`
             : undefined,
@@ -3584,9 +3607,13 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: targetRevRow.fileId,
-        newRagEnabled: row.ragEnabled,
+        newRagEnabled: row.loadMode === 'disabled' ? false : row.ragEnabled,
         oldFileId: row.currentFileId,
         oldRagEnabled: row.ragEnabled,
+        preserveChunks:
+          row.ragEnabled &&
+          row.loadMode === 'disabled' &&
+          targetRevRow.fileId === row.currentFileId,
       });
 
       s3KeysToPrune.push(...(await this.pruneOldRevisionsInTx(tx, row.id)));
@@ -3994,7 +4021,7 @@ export class ProjectWorkspaceStore {
         agentId,
         agentTitle: agent.title,
         newFileId: proposal.proposedFileId!,
-        newRagEnabled: ragEnabled,
+        newRagEnabled: effectiveLoadMode === 'disabled' ? false : ragEnabled,
         oldFileId: lockedRow?.currentFileId ?? null,
         oldRagEnabled: Boolean(lockedRow?.ragEnabled),
       });

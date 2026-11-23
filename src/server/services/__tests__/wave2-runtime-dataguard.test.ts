@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   agents,
+  knowledgeBaseFiles,
   knowledgeBases,
   messagesFiles,
   projectWorkspaceFiles,
@@ -63,6 +64,7 @@ const mocks = vi.hoisted(() => ({
   maskUnmaskedWorkspaceHistoryForSummarizer: vi.fn(),
   messageQueryWithWhere: vi.fn(),
   patchAgentTextFile: vi.fn(),
+  searchProjectFiles: vi.fn(),
   semanticSearchForChat: vi.fn(),
   upsertRollingCompressionGroup: vi.fn(),
   writeAgentTextFile: vi.fn(),
@@ -126,6 +128,7 @@ vi.mock('@/server/services/projectWorkspace', async (importOriginal) => {
     ...actual,
     ProjectWorkspaceStore: vi.fn().mockImplementation(() => ({
       patchAgentTextFile: mocks.patchAgentTextFile,
+      searchProjectFiles: mocks.searchProjectFiles,
       writeAgentTextFile: mocks.writeAgentTextFile,
     })),
     computeWorkspaceDataGuardState: (...args: any[]) =>
@@ -140,6 +143,7 @@ vi.mock('@/server/services/projectWorkspace/store', async (importOriginal) => {
     ...actual,
     ProjectWorkspaceStore: vi.fn().mockImplementation(() => ({
       patchAgentTextFile: mocks.patchAgentTextFile,
+      searchProjectFiles: mocks.searchProjectFiles,
       writeAgentTextFile: mocks.writeAgentTextFile,
     })),
   };
@@ -498,17 +502,22 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
     expect(twentyFirstRes.content).toContain('maximum 20 file mutations');
   });
 
-  it('4. serverRuntimes/knowledgeBase: allows scrubbed project files + topic attachments in readKnowledge and scopes searchKnowledgeBase strictly to managed project_workspace KB', async () => {
-    let managedKbRows: Array<{ id: string }> = [];
+  it('4. serverRuntimes/knowledgeBase & searchProjectFiles: scopes searchKnowledgeBase strictly to active scrubbed RAG fileIds (knowledgeIds: undefined) and enforces requireScrubbed in searchProjectFiles', async () => {
+    let scrubbedKbFileRows: Array<{ fileId: string }> = [];
+    const joinedTablesPerSelect: unknown[][] = [];
     const fakeDb = {
       select: vi.fn(() => {
         let sourceTable: unknown = null;
+        const joins: unknown[] = [];
         const builder: any = {
           from: vi.fn((tbl: unknown) => {
             sourceTable = tbl;
             return builder;
           }),
-          innerJoin: vi.fn(() => builder),
+          innerJoin: vi.fn((tbl: unknown) => {
+            joins.push(tbl);
+            return builder;
+          }),
           where: vi.fn(async () => {
             if (sourceTable === messagesFiles) {
               return [{ fileId: 'file-topic-att' }];
@@ -516,8 +525,9 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
             if (sourceTable === projectWorkspaceFiles) {
               return [{ fileId: 'file-ws-scrubbed' }];
             }
-            if (sourceTable === knowledgeBases) {
-              return managedKbRows;
+            if (sourceTable === knowledgeBaseFiles) {
+              joinedTablesPerSelect.push([sourceTable, ...joins]);
+              return scrubbedKbFileRows;
             }
             return [];
           }),
@@ -578,8 +588,8 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
     expect(readOut.content).toContain('Scrubbed body of file-ws-scrubbed');
     expect(readOut.content).toContain(DATA_GUARD_FILE_MASKED_CONTENT);
 
-    // 4b. searchKnowledgeBase with 0 managed KBs returns empty message WITHOUT calling semanticSearchForChat!
-    managedKbRows = [];
+    // 4b. searchKnowledgeBase with 0 active scrubbed RAG files returns empty message WITHOUT calling semanticSearchForChat!
+    scrubbedKbFileRows = [];
     const emptySearchOut = await readyKbRuntime.searchKnowledgeBase({ query: 'договор' });
     expect(emptySearchOut).toEqual({
       content: DATA_GUARD_EMPTY_PROTECTED_KB_MESSAGE,
@@ -587,9 +597,14 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
       success: true,
     });
     expect(mocks.semanticSearchForChat).not.toHaveBeenCalled();
+    expect(joinedTablesPerSelect.at(-1)).toEqual([
+      knowledgeBaseFiles,
+      knowledgeBases,
+      projectWorkspaceFiles,
+    ]);
 
-    // 4c. searchKnowledgeBase with managed KB forces knowledgeIds=['kb-managed-1'], ignoring spoofed external knowledgeBaseIds!
-    managedKbRows = [{ id: 'kb-managed-1' }];
+    // 4c. searchKnowledgeBase passes ONLY scrubbedRagFileIds with knowledgeIds: undefined (never leaking disabled/unmasked KB rows via concat!)
+    scrubbedKbFileRows = [{ fileId: 'file-ws-scrubbed' }, { fileId: 'file-ws-scrubbed-2' }];
     const managedSearchOut = await readyKbRuntime.searchKnowledgeBase(
       { query: 'условия' },
       { knowledgeBaseIds: ['kb-spoofed-external'] },
@@ -597,14 +612,47 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
     expect(managedSearchOut.success).toBe(true);
     expect(mocks.semanticSearchForChat).toHaveBeenCalledTimes(1);
     expect(mocks.semanticSearchForChat).toHaveBeenCalledWith(
-      expect.objectContaining({
-        knowledgeIds: ['kb-managed-1'],
+      {
+        fileIds: ['file-ws-scrubbed', 'file-ws-scrubbed-2'],
+        knowledgeIds: undefined,
         query: 'условия',
-      }),
+        topK: 20,
+      },
       undefined,
     );
 
-    // 4d. When workspaceDataGuardReady=false, searchKnowledgeBase stays strictly blocked!
+    // 4d. Explicit params.fileIds intersects with Set(scrubbedRagFileIds) and rejects disabled/unmasked/foreign IDs!
+    mocks.semanticSearchForChat.mockClear();
+    const intersectedOut = await readyKbRuntime.searchKnowledgeBase({
+      fileIds: ['file-disabled-unmasked', 'file-ws-scrubbed', 'file-foreign'],
+      query: 'условия',
+    });
+    expect(intersectedOut.success).toBe(true);
+    expect(mocks.semanticSearchForChat).toHaveBeenCalledTimes(1);
+    expect(mocks.semanticSearchForChat).toHaveBeenCalledWith(
+      {
+        fileIds: ['file-ws-scrubbed'],
+        knowledgeIds: undefined,
+        query: 'условия',
+        topK: 20,
+      },
+      undefined,
+    );
+
+    // If params.fileIds contains ONLY disabled/unmasked/foreign IDs -> immediate empty response, 0 embeddings calls!
+    mocks.semanticSearchForChat.mockClear();
+    const blockedSubsetOut = await readyKbRuntime.searchKnowledgeBase({
+      fileIds: ['file-disabled-unmasked', 'file-foreign'],
+      query: 'условия',
+    });
+    expect(blockedSubsetOut).toEqual({
+      content: DATA_GUARD_EMPTY_PROTECTED_KB_MESSAGE,
+      state: { chunks: [], fileResults: [], totalResults: 0 },
+      success: true,
+    });
+    expect(mocks.semanticSearchForChat).not.toHaveBeenCalled();
+
+    // 4e. When workspaceDataGuardReady=false, searchKnowledgeBase stays strictly blocked!
     const unreadyKbRuntime = await knowledgeBaseRuntime.factory({
       agentId: 'agt-unready',
       dataGuardProtected: true,
@@ -617,6 +665,54 @@ describe('Wave 2: Engine Runtime, writeProjectFilePart, KnowledgeBase, SandboxBr
     const blockedSearch = await unreadyKbRuntime.searchKnowledgeBase({ query: 'условия' });
     expect(blockedSearch.success).toBe(false);
     expect(blockedSearch.content).toBe(DATA_GUARD_SEARCH_BLOCKED_MESSAGE);
+
+    // 4f. projectWorkspaceRuntime.searchProjectFiles forwards requireScrubbed=Boolean(ctx.dataGuardProtected)
+    mocks.searchProjectFiles.mockResolvedValue({
+      formatted: 'notes/clean.md (v1) L1: [КОМПАНИЯ_1]',
+      matches: [
+        {
+          line: 1,
+          path: 'notes/clean.md',
+          preview: '[КОМПАНИЯ_1]',
+          revision: 1,
+          workspaceFileId: 'wf-clean',
+        },
+      ],
+      totalMatchesReturned: 1,
+      truncated: false,
+    });
+    const wsRuntime = await projectWorkspaceRuntime.factory({
+      agentId: 'agt-protected-1',
+      dataGuardProtected: false,
+      serverDB: fakeDb as any,
+      toolManifestMap: {},
+      topicId: 'tpc-1',
+      userId: 'usr-1',
+    } as any);
+
+    await wsRuntime.searchProjectFiles({ query: 'КОМПАНИЯ' });
+    expect(mocks.searchProjectFiles).toHaveBeenLastCalledWith('agt-protected-1', {
+      limit: undefined,
+      pathPrefix: undefined,
+      query: 'КОМПАНИЯ',
+      requireScrubbed: false,
+    });
+
+    await wsRuntime.searchProjectFiles({ limit: 5, pathPrefix: 'notes', query: 'КОМПАНИЯ' }, {
+      agentId: 'agt-protected-1',
+      dataGuardProtected: true,
+      serverDB: fakeDb as any,
+      toolManifestMap: {},
+      topicId: 'tpc-1',
+      userId: 'usr-1',
+      workspaceDataGuardReady: true,
+    } as any);
+    expect(mocks.searchProjectFiles).toHaveBeenLastCalledWith('agt-protected-1', {
+      limit: 5,
+      pathPrefix: 'notes',
+      query: 'КОМПАНИЯ',
+      requireScrubbed: true,
+    });
   });
 
   it('5. sandboxBridge: blocks Zone 2 when dataGuardProtected && !workspaceDataGuardReady, and hydrates + syncs with dataGuardStatus="scrubbed" when workspaceDataGuardReady=true', async () => {
