@@ -17,7 +17,7 @@ export const attachmentsPrompts = (items: AttachmentRef[] | undefined) => {
   if (!items || items.length === 0) return '';
 
   return `<attachments>
-<attachments_docstring>original files of the person: put these addresses into HTML (img src, @font-face) or download them in the sandbox</attachments_docstring>
+<attachments_docstring>original files of the person: put these addresses into HTML (img src, @font-face); in the code sandbox these files are already available in /workspace/<name> (even when internet access is off)</attachments_docstring>
 ${items.map((item) => attachmentLine(item)).join('\n')}
 </attachments>`;
 };
