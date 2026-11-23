@@ -38,7 +38,7 @@ export const KnowledgeBaseManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Read original uploaded files or knowledge-base files in bounded pages. IDs come from attachment/agent context or search. Works without semantic search or embeddings. Follow nextOffset automatically to read further. For literal search supply query; for exhaustive analysis read every page without query or process the full original with a code tool. Never infer whole-file results from a preview or search hits.',
+        'Read original uploaded files or knowledge-base files in bounded pages. IDs come from attachment/agent context or search. Works without semantic search or embeddings. Use startLine/maxLines for line-numbered reading (L<N>: <line>; follow nextStartLine), or offset for character-offset reading (follow nextOffset). For literal search supply query to get an index of up to 50 matching lines/offsets (totalMatches + matches) plus context around the first hit. For exhaustive analysis read every page without query or process the full original with a code tool. Never infer whole-file results from a preview or search hits.',
       name: KnowledgeBaseApiName.readKnowledge,
       parameters: {
         properties: {
@@ -51,6 +51,13 @@ export const KnowledgeBaseManifest: BuiltinToolManifest = {
             maxItems: 8,
             minItems: 1,
           },
+          maxLines: {
+            type: 'integer',
+            minimum: 1,
+            maximum: 500,
+            description:
+              'Optional max lines per page when using startLine (default 250, max 500; also bounded by character limit).',
+          },
           offset: {
             type: 'integer',
             minimum: 0,
@@ -61,7 +68,13 @@ export const KnowledgeBaseManifest: BuiltinToolManifest = {
             type: 'string',
             maxLength: 500,
             description:
-              'Optional case-insensitive literal text search starting at offset. Omit for sequential reading of the entire source.',
+              'Optional case-insensitive literal text search starting at offset (or startLine). Returns totalMatches and up to 50 matches (line, offset, preview). Omit for sequential reading.',
+          },
+          startLine: {
+            type: 'integer',
+            minimum: 1,
+            description:
+              'Optional 1-based start line for line-numbered reading (L<N>: <line>). Follow nextStartLine to continue. Omit for character-offset reading.',
           },
         },
         required: ['fileIds'],

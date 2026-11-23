@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import debug from 'debug';
 
 import type { DocumentPage, FileLoaderInterface } from '../../types';
+import { decodeSourceText, TextEncodingError } from '../../utils/textEncoding';
 
 const log = debug('file-loaders:text');
 
@@ -13,8 +14,30 @@ export class TextLoader implements FileLoaderInterface {
   async loadPages(filePath: string): Promise<DocumentPage[]> {
     log('Loading text file:', filePath);
     try {
-      const fileContent = await readFile(filePath, 'utf8');
-      log('Text file loaded successfully, size:', fileContent.length, 'bytes');
+      const rawBytes = await readFile(filePath);
+      let fileContent: string;
+      try {
+        const decoded = decodeSourceText(rawBytes);
+        fileContent = decoded.text;
+        log(
+          'Text file loaded successfully, encoding:',
+          decoded.encoding,
+          'size:',
+          rawBytes.byteLength,
+          'bytes',
+        );
+      } catch (decodeErr) {
+        if (decodeErr instanceof TextEncodingError) {
+          log(
+            'decodeSourceText rejected file (%s), falling back to utf8:',
+            decodeErr.code,
+            filePath,
+          );
+          fileContent = rawBytes.toString('utf8');
+        } else {
+          throw decodeErr;
+        }
+      }
       const lines = fileContent.split('\n');
       const lineCount = lines.length;
       const charCount = fileContent.length;

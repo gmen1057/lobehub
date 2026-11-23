@@ -89,7 +89,12 @@ class KnowledgeBaseExecutor extends BaseExecutor<{
 
       const fileContents = await ragService.getFileContents(fileIds);
 
-      const formattedContent = promptFileContents(fileContents, params);
+      const formattedContent = promptFileContents(fileContents, {
+        maxLines: params.maxLines,
+        offset: params.offset,
+        query: params.query,
+        startLine: params.startLine,
+      });
 
       const state: ReadKnowledgeState = {
         files: fileContents.map((file): FileContentDetail => ({

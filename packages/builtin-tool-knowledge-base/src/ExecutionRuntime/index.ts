@@ -103,7 +103,12 @@ export class KnowledgeBaseExecutionRuntime {
 
       const fileContents = await this.ragService.getFileContents(fileIds, options?.signal);
 
-      const formattedContent = promptFileContents(fileContents, args);
+      const formattedContent = promptFileContents(fileContents, {
+        maxLines: args.maxLines,
+        offset: args.offset,
+        query: args.query,
+        startLine: args.startLine,
+      });
 
       const state: ReadKnowledgeState = {
         files: fileContents.map((file) => ({

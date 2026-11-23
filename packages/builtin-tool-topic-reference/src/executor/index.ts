@@ -9,10 +9,12 @@ const TopicReferenceApiName = {
 
 export interface GetTopicContextParams {
   fileId?: string;
+  maxLines?: number;
   mode?: 'summary' | 'archive' | 'code_artifacts';
   offset?: number;
   query?: string;
   snapshotAt?: string;
+  startLine?: number;
   topicId: string;
 }
 

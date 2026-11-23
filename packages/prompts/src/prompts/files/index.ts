@@ -7,11 +7,16 @@ import { type LayoutInfo, layoutsPrompts } from './layout';
 import { videosPrompts } from './video';
 
 export { type AttachmentRef, attachmentsPrompts } from './attachments';
-export type { FileReadOptions, FileReadPage } from './context';
+export type { FileReadLineEnding, FileReadMatch, FileReadOptions, FileReadPage } from './context';
 export {
   FILE_CONTEXT_CHARS,
   FILE_PREVIEW_CHARS,
   FILE_READ_CHARS,
+  FILE_READ_DEFAULT_MAX_LINES,
+  FILE_READ_MATCH_PREVIEW_CHARS,
+  FILE_READ_MAX_LINES,
+  FILE_READ_MAX_MATCHES,
+  FILE_READ_MIN_LINES,
   filePreview,
   fileReferences,
   readFilePage,
