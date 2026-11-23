@@ -500,3 +500,195 @@ describe('H4 mid-turn compress_context reconciliation & M2 simultaneous HTML + c
     );
   });
 });
+
+describe('RuntimeExecutors hallucinated [Saved ... — previous code block stored by server.] repair', () => {
+  const HALLUCINATED_SAVED_NOTE = `[Saved "Module2.bas" (vb), fileId=${OLD_VALID_FILE_ID} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${OLD_VALID_FILE_ID}") if you need to inspect it.]`;
+
+  it('intercepts streamed [Saved ...] placeholder before SSE, triggers codeArtifactRepairError with updated prompt, keeps attempt #2 guarded, and saves real code on retry', async () => {
+    uploadFromBuffer.mockReset().mockResolvedValue({ fileId: NEW_SAVED_FILE_ID });
+    createSpreadsheetFile.mockReset();
+
+    const chat = vi
+      .fn()
+      // Attempt 1: emits bare hallucinated [Saved ...] split across chunks
+      .mockImplementationOnce(async (_payload, options) => {
+        await options.callback.onText('Вот модуль:\n[Sav');
+        await options.callback.onText(`ed "Module2.bas" (vb), fileId=${OLD_VALID_FILE_ID}`);
+        await options.callback.onText(
+          ` — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${OLD_VALID_FILE_ID}") if you need to inspect it.]\nГотово.`,
+        );
+        return new Response('data: [DONE]\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      })
+      // Attempt 2: tries backtick-wrapped hallucination — must STILL be blocked even though
+      // Attempt 1's synthetic repair user prompt contains "previous code block stored by server"!
+      .mockImplementationOnce(async (_payload, options) => {
+        await options.callback.onText(`Вот:\n\`${HALLUCINATED_SAVED_NOTE}\``);
+        return new Response('data: [DONE]\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      })
+      // Attempt 3 (after 2nd repair): emits real fenced VBA code
+      .mockImplementationOnce(async (_payload, options) => {
+        await options.callback.onText(LONG_VBA_FENCED);
+        return new Response('data: [DONE]\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' },
+        });
+      });
+
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValue({ chat } as any);
+
+    const state = AgentRuntime.createInitialState({
+      messages: [{ content: 'Выдай полный модуль Module2.bas', role: 'user' }],
+      metadata: { agentId: 'agt_1', studioWebChat: true, topicId: 'tpc_1' },
+      operationId: 'op_saved_note_repair',
+      status: 'running',
+    });
+
+    const { ctx, publishStreamChunk, publishStreamEvent, update } = makeCtx(state, {
+      operationId: 'op_saved_note_repair',
+    });
+    const agent = new GeneralChatAgent({
+      compressionConfig: { enabled: false },
+      modelRuntimeConfig: { model: 'deepseek-flash', provider: 'deepseek' },
+      operationId: 'op_saved_note_repair',
+    });
+
+    // Step 1: bare hallucinated [Saved ...]
+    const step1 = await createRuntimeExecutors(ctx).call_llm!(
+      {
+        payload: {
+          messages: state.messages,
+          model: 'deepseek-flash',
+          provider: 'deepseek',
+          tools: [],
+        },
+        type: 'call_llm',
+      } as any,
+      state,
+    );
+
+    expect((step1.nextContext?.payload as any)?.codeArtifactRepairError).toContain(
+      'hallucinated saved code-artifact placeholder',
+    );
+    expect(step1.newState.metadata?.codeArtifactRepairAttempts).toBe(1);
+    const step1Streamed = publishStreamChunk.mock.calls.map(([, , chunk]) => chunk.content ?? '');
+    expect(step1Streamed.join('')).toBe('Вот модуль:\n');
+    expect(step1Streamed.join('')).not.toContain('previous code block stored by server');
+    expect(step1Streamed.join('')).not.toContain('Файл не сохранён.');
+
+    const repairPrompt = step1.newState.messages.at(-1)?.content;
+    expect(repairPrompt).toContain('<lobeArtifact>');
+    expect(repairPrompt).toContain('[Saved ... — previous code block stored by server.]');
+    expect(repairPrompt).toContain(
+      'В твоём предыдущем ответе вместо реального кода оказался пустой служебный тег',
+    );
+
+    expect(publishStreamEvent).toHaveBeenCalledWith(
+      'op_saved_note_repair',
+      expect.objectContaining({
+        data: expect.objectContaining({ reason: 'code_artifact_repair', resetText: true }),
+        stepIndex: 0,
+        type: 'stream_retry',
+      }),
+    );
+
+    // Step 2: model wraps hallucinated note in backticks — still caught because REAL user didn't quote it
+    const next2 = await agent.runner(step1.nextContext!, step1.newState);
+    const step2 = await createRuntimeExecutors({ ...ctx, stepIndex: 1 }).call_llm!(
+      next2 as any,
+      step1.newState,
+    );
+    expect((step2.nextContext?.payload as any)?.codeArtifactRepairError).toContain(
+      'hallucinated saved code-artifact placeholder',
+    );
+    expect(step2.newState.metadata?.codeArtifactRepairAttempts).toBe(2);
+
+    // Step 3: model finally emits real fenced code
+    const next3 = await agent.runner(step2.nextContext!, step2.newState);
+    const step3 = await createRuntimeExecutors({ ...ctx, stepIndex: 2 }).call_llm!(
+      next3 as any,
+      step2.newState,
+    );
+    expect((step3.nextContext?.payload as any)?.codeArtifactRepairError).toBeUndefined();
+    expect(uploadFromBuffer).toHaveBeenCalledOnce();
+    const finalSaved = update.mock.calls.at(-1)?.[1];
+    expect(finalSaved.content).toContain(`src="/chat/code-artifact/${NEW_SAVED_FILE_ID}/"`);
+  });
+
+  it('allows backtick-quoted [Saved ...] when the active user message literally mentions "previous code block stored by server", but still intercepts bare ones', async () => {
+    uploadFromBuffer.mockReset();
+
+    const userQuestion =
+      'Почему в истории написано "[Saved "Module2.bas" (vb) — previous code block stored by server.]"?';
+
+    // Case A: quoted in inline backticks -> allowed through
+    const quotedAnswer = `Заглушка \`${HALLUCINATED_SAVED_NOTE}\` означает, что сервер сохранил файл.`;
+    const chatQuoted = vi.fn(async (_payload, options) => {
+      await options.callback.onText(quotedAnswer);
+      return new Response('data: [DONE]\n\n', {
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: chatQuoted } as any);
+
+    const stateQuoted = AgentRuntime.createInitialState({
+      messages: [{ content: userQuestion, id: 'u_quote', role: 'user' }],
+      metadata: { agentId: 'agt_1', studioWebChat: true, topicId: 'tpc_1' },
+      operationId: 'op_user_quote_ok',
+      status: 'running',
+    });
+    const { ctx: ctxQuoted, update: updateQuoted } = makeCtx(stateQuoted, {
+      operationId: 'op_user_quote_ok',
+    });
+    const resQuoted = await createRuntimeExecutors(ctxQuoted).call_llm!(
+      {
+        payload: {
+          messages: stateQuoted.messages,
+          model: 'deepseek-flash',
+          provider: 'deepseek',
+          tools: [],
+        },
+        type: 'call_llm',
+      } as any,
+      stateQuoted,
+    );
+
+    expect((resQuoted.nextContext?.payload as any)?.codeArtifactRepairError).toBeUndefined();
+    expect(updateQuoted.mock.calls.at(-1)?.[1]?.content).toBe(quotedAnswer);
+
+    // Case B: bare (not in backticks) -> still intercepted even when user asked about it
+    const chatBare = vi.fn(async (_payload, options) => {
+      await options.callback.onText(`Вот:\n${HALLUCINATED_SAVED_NOTE}`);
+      return new Response('data: [DONE]\n\n', {
+        headers: { 'Content-Type': 'text/event-stream' },
+      });
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: chatBare } as any);
+
+    const stateBare = AgentRuntime.createInitialState({
+      messages: [{ content: userQuestion, id: 'u_quote', role: 'user' }],
+      metadata: { agentId: 'agt_1', studioWebChat: true, topicId: 'tpc_1' },
+      operationId: 'op_user_quote_bare',
+      status: 'running',
+    });
+    const { ctx: ctxBare } = makeCtx(stateBare, { operationId: 'op_user_quote_bare' });
+    const resBare = await createRuntimeExecutors(ctxBare).call_llm!(
+      {
+        payload: {
+          messages: stateBare.messages,
+          model: 'deepseek-flash',
+          provider: 'deepseek',
+          tools: [],
+        },
+        type: 'call_llm',
+      } as any,
+      stateBare,
+    );
+
+    expect((resBare.nextContext?.payload as any)?.codeArtifactRepairError).toContain(
+      'hallucinated saved code-artifact placeholder',
+    );
+  });
+});

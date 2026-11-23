@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { serverMessagesEngine } from '@/server/modules/Mecha/ContextEngineering';
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
 
+import { parseToolCalls } from '../../../../../packages/model-runtime/src/helpers/parseToolCalls';
 import {
   createRuntimeExecutors,
   type RuntimeExecutorContext,
@@ -640,5 +641,93 @@ describe('RuntimeExecutors — unresolved tool calls, diagnostics, feedback & 2-
         source: 'client',
       }),
     ]);
+  });
+
+  it('handles deeply Object.freeze and Immer-frozen parseToolCalls output across both repaired and unresolved branches without TypeError', async () => {
+    // 1. Real Immer-frozen output from parseToolCalls (reproduces production 500 crash)
+    const immerFrozenCalls = parseToolCalls(
+      [],
+      [
+        {
+          function: { arguments: '{"query":"immer"}', name: 'lobe-web-browsing/search' },
+          id: 'call-immer-repaired',
+          index: 0,
+          type: 'function',
+        },
+        {
+          function: { arguments: '{"fileId":"f1"}', name: 'lobe-knowledge-base.readKnowledge' },
+          id: 'call-immer-unresolved',
+          index: 1,
+          type: 'function',
+        },
+      ],
+    );
+    expect(Object.isFrozen(immerFrozenCalls)).toBe(true);
+    expect(Object.isFrozen(immerFrozenCalls[0])).toBe(true);
+    expect(Object.isFrozen(immerFrozenCalls[0].function)).toBe(true);
+    expect(Object.isFrozen(immerFrozenCalls[1].function)).toBe(true);
+
+    const chatImmer = vi.fn(async (_payload: any, options: any) => {
+      await options.callback.onToolsCalling?.({ toolsCalling: immerFrozenCalls });
+      return new Response('done');
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: chatImmer } as any);
+
+    const executors = createRuntimeExecutors(ctx);
+    const state = createBaseState();
+    const immerOut = await executors.call_llm!(
+      {
+        payload: { messages: state.messages, model: 'gpt-4', provider: 'openai' },
+        type: 'call_llm',
+      } as any,
+      state,
+    );
+
+    const immerSavedCalls = immerOut.newState.messages.at(-1)!.tool_calls!;
+    expect(immerSavedCalls[0].function.name).toContain('lobe-web-browsing____search');
+    expect(immerSavedCalls[1].function.name).toMatch(/^__arckep_unresolved_tool______/);
+    // Original frozen inputs remain untouched
+    expect(immerFrozenCalls[0].function.name).toBe('lobe-web-browsing/search');
+    expect(immerFrozenCalls[1].function.name).toBe('lobe-knowledge-base.readKnowledge');
+
+    // 2. Explicitly Object.freeze'd array + objects for both branches
+    const manuallyFrozenCalls = Object.freeze([
+      Object.freeze({
+        function: Object.freeze({
+          arguments: '{"query":"frozen"}',
+          name: 'lobe-web-browsing/search',
+        }),
+        id: 'call-freeze-repaired',
+        type: 'function' as const,
+      }),
+      Object.freeze({
+        function: Object.freeze({
+          arguments: '{}',
+          name: 'arckep-text-file/writePart',
+        }),
+        id: 'call-freeze-unresolved',
+        type: 'function' as const,
+      }),
+    ]);
+
+    const chatFrozen = vi.fn(async (_payload: any, options: any) => {
+      await options.callback.onToolsCalling?.({ toolsCalling: manuallyFrozenCalls });
+      return new Response('done');
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat: chatFrozen } as any);
+
+    const frozenOut = await executors.call_llm!(
+      {
+        payload: { messages: state.messages, model: 'gpt-4', provider: 'openai' },
+        type: 'call_llm',
+      } as any,
+      state,
+    );
+
+    const frozenSavedCalls = frozenOut.newState.messages.at(-1)!.tool_calls!;
+    expect(frozenSavedCalls[0].function.name).toContain('lobe-web-browsing____search');
+    expect(frozenSavedCalls[1].function.name).toMatch(/^__arckep_unresolved_tool______/);
+    expect(manuallyFrozenCalls[0].function.name).toBe('lobe-web-browsing/search');
+    expect(manuallyFrozenCalls[1].function.name).toBe('arckep-text-file/writePart');
   });
 });

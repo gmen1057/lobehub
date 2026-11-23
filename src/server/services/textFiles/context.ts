@@ -102,16 +102,31 @@ export function compactWriterContext(messages: any[], requestId?: string): any[]
       if (!retained.has(call.id)) return [];
       try {
         const args = JSON.parse(call.function.arguments);
-        if (typeof args.text === 'string' && args.text.length > MAX_TAIL)
+        if (
+          args &&
+          typeof args === 'object' &&
+          typeof args.text === 'string' &&
+          args.text.length > MAX_TAIL
+        ) {
+          const { text, ...rest } = args;
+          const compactArgs =
+            args.final === true
+              ? { ...rest, _savedChars: text.length }
+              : {
+                  ...rest,
+                  _continuationTailReadOnly: text.slice(-MAX_TAIL),
+                  _savedChars: text.length,
+                };
           return [
             {
               ...call,
               function: {
                 ...call.function,
-                arguments: JSON.stringify({ ...args, text: args.text.slice(-MAX_TAIL) }),
+                arguments: JSON.stringify(compactArgs),
               },
             },
           ];
+        }
       } catch {
         /* The receipt is still authoritative when historical arguments are unavailable. */
       }

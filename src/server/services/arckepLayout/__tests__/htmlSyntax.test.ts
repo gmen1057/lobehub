@@ -9,6 +9,7 @@ import { activatorRuntime } from '@/server/services/toolExecution/serverRuntimes
 import {
   computeHtmlSha256,
   formatHtmlSyntaxDiagnostics,
+  hasUserQuotedSavedCodeArtifactNote,
   HtmlArtifactStreamGate,
   validateHtmlArtifactSyntax,
 } from '../htmlSyntax';
@@ -414,5 +415,173 @@ describe('HtmlArtifactStreamGate и перехват битого прямого
     expect(deliveredAfter + resAfter.postStreamDelta + resAfter.codeArtifactFallbackDelta).toBe(
       resAfter.codeArtifactFallbackContent,
     );
+  });
+
+  it('перехватывает сгаллюцинированную заглушку [Saved ... — previous code block stored by server.] посимвольно и одним чанком до SSE', async () => {
+    const fileId = '849f7fc2-dd0e-4b18-9aa8-aab327c49b30';
+    const fullNote = `[Saved "Module28.bas" (vb), fileId=${fileId} — previous code block stored by server. Use getTopicContext(mode="code_artifacts", fileId="${fileId}") if you need to inspect it.]`;
+    const shortNote = '[Saved "empty.py" — previous code block stored by server.]';
+    const codeFileNote = `[Saved code file, fileId=${fileId} — previous code block stored by server.]`;
+
+    for (const note of [fullNote, shortNote, codeFileNote]) {
+      // 1-char-at-a-time streaming with repair suppression
+      const gate = new HtmlArtifactStreamGate();
+      let streamed = '';
+      for (const ch of `Вот файл:\n${note}\nГотово.`) {
+        streamed += gate.push(ch);
+      }
+      expect(streamed).toBe('Вот файл:\n');
+      expect(streamed).not.toContain('previous code block stored by server');
+      expect(gate.shouldFinalize()).toBe(true);
+
+      const repaired = await gate.finalize({ suppressCodeArtifactFallback: true });
+      expect(repaired.valid).toBe(false);
+      expect(repaired.hasHtmlArtifacts).toBe(false);
+      expect(repaired.diagnostics).toEqual([]);
+      expect(repaired.codeArtifactDiagnostics).toHaveLength(1);
+      expect(repaired.codeArtifactDiagnostics[0]).toContain('hallucinated saved code-artifact');
+      expect(repaired.finalContent).toBe('Вот файл:\n');
+      expect(repaired.postStreamDelta).toBe('');
+      expect(repaired.codeArtifactFallbackContent).toBe('Вот файл:\nФайл не сохранён.\nГотово.');
+      expect(repaired.codeArtifactFallbackDelta).toBe('Файл не сохранён.\nГотово.');
+      expect(repaired.sanitizedAttemptContent).toBe(
+        'Вот файл:\n[omitted invalid saved code placeholder]\nГотово.',
+      );
+
+      // Single chunk without suppression -> clean fallback
+      const gateFallback = new HtmlArtifactStreamGate();
+      const delivered = gateFallback.push(`Вот файл:\n${note}\nГотово.`);
+      expect(delivered).toBe('Вот файл:\n');
+      const fallbackRes = await gateFallback.finalize();
+      expect(fallbackRes.valid).toBe(false);
+      expect(fallbackRes.finalContent).toBe('Вот файл:\nФайл не сохранён.\nГотово.');
+      expect(delivered + fallbackRes.postStreamDelta).toBe(fallbackRes.finalContent);
+    }
+  });
+
+  it('не тормозит и не режет обычный текст с [Saved ...], немедленно отдавая при первом расхождении', async () => {
+    // Immediate release on first diverging char (`h` after `[Saved c`)
+    const gate = new HtmlArtifactStreamGate();
+    expect(gate.push('Status: [Saved ')).toBe('Status: ');
+    expect(gate.push('c')).toBe(''); // still prefix of `[Saved code file`
+    expect(gate.push('hanges] done.')).toBe('[Saved changes] done.');
+    const res = await gate.finalize();
+    expect(res.valid).toBe(true);
+    expect(res.codeArtifactDiagnostics).toEqual([]);
+    expect(res.finalContent).toBe('Status: [Saved changes] done.');
+
+    // Other ordinary bracketed texts pass through verbatim
+    const plainSamples = [
+      'OK [Saved changes] in repo',
+      'Done [Saved] now',
+      'Count [Saved 3 items]',
+      'Quote [Saved "report" successfully]',
+      `Long unclosed [Saved "${'a'.repeat(300)} still going`,
+      'Broken line [Saved "report"\nNext line',
+    ];
+    for (const sample of plainSamples) {
+      const g = new HtmlArtifactStreamGate();
+      const out = g.push(sample);
+      const fin = await g.finalize();
+      expect(fin.valid).toBe(true);
+      expect(fin.codeArtifactDiagnostics).toEqual([]);
+      expect(out + fin.postStreamDelta).toBe(sample);
+      expect(fin.finalContent).toBe(sample);
+    }
+
+    // Nested real hallucination after a false-positive `[Saved ` is still intercepted
+    const nestedGate = new HtmlArtifactStreamGate();
+    const realNote = '[Saved "Mod.bas" — previous code block stored by server.]';
+    const nestedDelivered = nestedGate.push(`[Saved changes] ${realNote} tail`);
+    expect(nestedDelivered).toBe('[Saved changes] ');
+    const nestedFin = await nestedGate.finalize({ suppressCodeArtifactFallback: true });
+    expect(nestedFin.valid).toBe(false);
+    expect(nestedFin.codeArtifactDiagnostics).toHaveLength(1);
+    expect(nestedFin.finalContent).toBe('[Saved changes] ');
+  });
+
+  it('разрешает цитирование заглушки в бэктиках только при allowQuotedSavedNote=true и перехватывает голое или нецитированное', async () => {
+    const note =
+      '[Saved "Module1.bas" (vb), fileId=abc-123 — previous code block stored by server.]';
+
+    // 1. Default (allowQuotedSavedNote=false): even backtick-quoted & fenced notes are intercepted
+    for (const wrapped of [`Строка \`${note}\` в ответе.`, `\`\`\`text\n${note}\n\`\`\``]) {
+      const gate = new HtmlArtifactStreamGate();
+      let streamed = '';
+      for (const ch of wrapped) streamed += gate.push(ch);
+      const fin = await gate.finalize({ suppressCodeArtifactFallback: true });
+      expect(fin.valid).toBe(false);
+      expect(fin.codeArtifactDiagnostics).toHaveLength(1);
+      expect(streamed).not.toContain('previous code block stored by server');
+    }
+
+    // 2. allowQuotedSavedNote=true: inline single/double backticks and fenced block pass through (1-char streaming)
+    const allowedSamples = [
+      `Строка \`${note}\` означает сохранённый файл.`,
+      `Двойные бэктики \`\`${note}\`\` тоже валидны.`,
+      `Пример блока:\n\`\`\`text\n${note}\n\`\`\`\nКонец.`,
+    ];
+    for (const sample of allowedSamples) {
+      const gate = new HtmlArtifactStreamGate({ allowQuotedSavedNote: true });
+      let streamed = '';
+      for (const ch of sample) streamed += gate.push(ch);
+      const fin = await gate.finalize({ suppressCodeArtifactFallback: true });
+      expect(fin.valid).toBe(true);
+      expect(fin.codeArtifactDiagnostics).toEqual([]);
+      expect(streamed + fin.postStreamDelta).toBe(sample);
+      expect(fin.finalContent).toBe(sample);
+    }
+
+    // 3. allowQuotedSavedNote=true: bare, after closed inline code, after closed fence, or unclosed backtick MUST still be intercepted
+    const blockedSamples = [
+      `Голая заглушка:\n${note}`,
+      `После \`getTopicContext\` идёт ${note}`,
+      `\`\`\`text\nok\n\`\`\`\n${note}`,
+      `Незакрытый бэктик \`${note}\nновая строка`,
+      `Незакрытый бэктик в конце \`${note}`,
+    ];
+    for (const sample of blockedSamples) {
+      const gate = new HtmlArtifactStreamGate({ allowQuotedSavedNote: true });
+      let streamed = '';
+      for (const ch of sample) streamed += gate.push(ch);
+      const fin = await gate.finalize({ suppressCodeArtifactFallback: true });
+      expect(fin.valid).toBe(false);
+      expect(fin.codeArtifactDiagnostics).toHaveLength(1);
+      expect(streamed).not.toContain('previous code block stored by server');
+    }
+  });
+
+  it('hasUserQuotedSavedCodeArtifactNote проверяет только активное сообщение пользователя', () => {
+    expect(
+      hasUserQuotedSavedCodeArtifactNote([
+        { content: 'Почему написано previous code block stored by server?', role: 'user' },
+      ]),
+    ).toBe(true);
+    expect(
+      hasUserQuotedSavedCodeArtifactNote(
+        [
+          {
+            content: 'Почему написано previous code block stored by server?',
+            id: 'u1',
+            role: 'user',
+          },
+          { content: 'Объяснил', id: 'a1', role: 'assistant' },
+          { content: 'Теперь напиши новый модуль', id: 'u2', role: 'user' },
+        ],
+        2,
+      ),
+    ).toBe(false);
+    expect(
+      hasUserQuotedSavedCodeArtifactNote(
+        [
+          { content: 'Напиши модуль', id: 'u1', role: 'user' },
+          {
+            content: 'Не пиши previous code block stored by server.',
+            role: 'user',
+          },
+        ],
+        0,
+      ),
+    ).toBe(false);
   });
 });

@@ -2,6 +2,202 @@ const CODE_ARTIFACT_SRC_PREFIX = '/chat/code-artifact/';
 const OPEN_TAG_LOWER = '<lobeartifact';
 const CLOSE_TAG_LOWER = '</lobeartifact';
 
+export const SAVED_CODE_ARTIFACT_NOTE_MARKER = 'previous code block stored by server';
+export const SAVED_CODE_ARTIFACT_NOTE_PREFIX = '[Saved ';
+
+const SAVED_NOTE_CODE_FILE = 'code file';
+const SAVED_NOTE_FILE_ID_PREFIX = ', fileId=';
+const SAVED_NOTE_SERVER_MARKER = ` — ${SAVED_CODE_ARTIFACT_NOTE_MARKER}.`;
+const SAVED_NOTE_HINT_PREFIX = ' Use getTopicContext(mode="code_artifacts", fileId="';
+const SAVED_NOTE_HINT_SUFFIX = '") if you need to inspect it.]';
+
+/**
+ * Exact signature of the server-generated history placeholder emitted by `formatSavedCodeArtifactNote`.
+ * Used by streaming publication gates to catch models that hallucinate the server placeholder instead
+ * of emitting actual code.
+ */
+export const SAVED_CODE_ARTIFACT_NOTE_RE =
+  /\[Saved (?:"[^"\r\n]{1,260}"|code file)(?: \([\w#+.-]{1,40}\))?(?:, fileId=[\w-]{1,80})? — previous code block stored by server\.(?: Use getTopicContext\(mode="code_artifacts", fileId="[\w-]{1,80}"\) if you need to inspect it\.)?\]/;
+
+export const isSavedCodeArtifactNote = (text: string): boolean => {
+  const match = SAVED_CODE_ARTIFACT_NOTE_RE.exec(text);
+  return match !== null && match.index === 0 && match[0].length === text.length;
+};
+
+export type SavedCodeArtifactNotePrefixResult =
+  { end: number; kind: 'match' } | { kind: 'mismatch' } | { kind: 'pending' };
+
+const isLangChar = (ch: string): boolean => {
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) || // 0-9
+    (code >= 65 && code <= 90) || // A-Z
+    (code >= 97 && code <= 122) || // a-z
+    code === 95 || // _
+    code === 35 || // #
+    code === 43 || // +
+    code === 46 || // .
+    code === 45 // -
+  );
+};
+
+const isFileIdChar = (ch: string): boolean => {
+  const code = ch.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) || // 0-9
+    (code >= 65 && code <= 90) || // A-Z
+    (code >= 97 && code <= 122) || // a-z
+    code === 95 || // _
+    code === 45 // -
+  );
+};
+
+/**
+ * Incremental prefix classifier for `SAVED_CODE_ARTIFACT_NOTE_RE`.
+ * Given a streaming buffer starting with `[Saved `, returns:
+ * - `{ kind: 'match', end }` as soon as a complete placeholder ends at `buf[end - 1] === ']'`;
+ * - `{ kind: 'pending' }` while `buf` is still a valid prefix of a placeholder;
+ * - `{ kind: 'mismatch' }` on the very first diverging character so normal text like
+ *   `[Saved changes]` can be released to SSE immediately.
+ */
+export const classifySavedCodeArtifactNotePrefix = (
+  buf: string,
+): SavedCodeArtifactNotePrefixResult => {
+  if (!buf.startsWith(SAVED_CODE_ARTIFACT_NOTE_PREFIX)) {
+    return SAVED_CODE_ARTIFACT_NOTE_PREFIX.startsWith(buf)
+      ? { kind: 'pending' }
+      : { kind: 'mismatch' };
+  }
+
+  let i = SAVED_CODE_ARTIFACT_NOTE_PREFIX.length;
+  const len = buf.length;
+  if (i >= len) return { kind: 'pending' };
+
+  // 1. Label: "[^"\r\n]{1,260}" | code file
+  if (buf[i] === '"') {
+    i += 1;
+    const titleStart = i;
+    while (i < len && buf[i] !== '"' && buf[i] !== '\r' && buf[i] !== '\n') {
+      if (i - titleStart >= 260) return { kind: 'mismatch' };
+      i += 1;
+    }
+    if (i >= len) return { kind: 'pending' };
+    if (buf[i] === '\r' || buf[i] === '\n' || i === titleStart) return { kind: 'mismatch' };
+    // buf[i] === '"'
+    i += 1;
+  } else if (buf[i] === 'c') {
+    const rest = buf.slice(i);
+    if (rest.length < SAVED_NOTE_CODE_FILE.length) {
+      return SAVED_NOTE_CODE_FILE.startsWith(rest) ? { kind: 'pending' } : { kind: 'mismatch' };
+    }
+    if (!buf.startsWith(SAVED_NOTE_CODE_FILE, i)) return { kind: 'mismatch' };
+    i += SAVED_NOTE_CODE_FILE.length;
+  } else {
+    return { kind: 'mismatch' };
+  }
+
+  if (i >= len) return { kind: 'pending' };
+
+  // 2. Optional language: " ([\w#+.-]{1,40})"
+  if (buf[i] === ' ') {
+    if (i + 1 >= len) return { kind: 'pending' };
+    if (buf[i + 1] === '(') {
+      i += 2;
+      const langStart = i;
+      while (i < len && isLangChar(buf[i])) {
+        if (i - langStart >= 40) return { kind: 'mismatch' };
+        i += 1;
+      }
+      if (i >= len) return { kind: 'pending' };
+      if (buf[i] !== ')' || i === langStart) return { kind: 'mismatch' };
+      i += 1;
+    }
+  }
+
+  if (i >= len) return { kind: 'pending' };
+
+  // 3. Optional fileId: ", fileId=[\w-]{1,80}"
+  if (buf[i] === ',') {
+    const rest = buf.slice(i);
+    if (rest.length < SAVED_NOTE_FILE_ID_PREFIX.length) {
+      return SAVED_NOTE_FILE_ID_PREFIX.startsWith(rest)
+        ? { kind: 'pending' }
+        : { kind: 'mismatch' };
+    }
+    if (!buf.startsWith(SAVED_NOTE_FILE_ID_PREFIX, i)) return { kind: 'mismatch' };
+    i += SAVED_NOTE_FILE_ID_PREFIX.length;
+    const idStart = i;
+    while (i < len && isFileIdChar(buf[i])) {
+      if (i - idStart >= 80) return { kind: 'mismatch' };
+      i += 1;
+    }
+    if (i >= len) return { kind: 'pending' };
+    if (i === idStart) return { kind: 'mismatch' };
+  }
+
+  if (i >= len) return { kind: 'pending' };
+
+  // 4. Required server marker: " — previous code block stored by server."
+  const markerRest = buf.slice(i);
+  if (markerRest.length < SAVED_NOTE_SERVER_MARKER.length) {
+    return SAVED_NOTE_SERVER_MARKER.startsWith(markerRest)
+      ? { kind: 'pending' }
+      : { kind: 'mismatch' };
+  }
+  if (!buf.startsWith(SAVED_NOTE_SERVER_MARKER, i)) return { kind: 'mismatch' };
+  i += SAVED_NOTE_SERVER_MARKER.length;
+
+  if (i >= len) return { kind: 'pending' };
+
+  // 5. Closing "]" or optional read hint + "]"
+  if (buf[i] === ']') return { end: i + 1, kind: 'match' };
+
+  const hintPrefixRest = buf.slice(i);
+  if (hintPrefixRest.length < SAVED_NOTE_HINT_PREFIX.length) {
+    return SAVED_NOTE_HINT_PREFIX.startsWith(hintPrefixRest)
+      ? { kind: 'pending' }
+      : { kind: 'mismatch' };
+  }
+  if (!buf.startsWith(SAVED_NOTE_HINT_PREFIX, i)) return { kind: 'mismatch' };
+  i += SAVED_NOTE_HINT_PREFIX.length;
+
+  const hintIdStart = i;
+  while (i < len && isFileIdChar(buf[i])) {
+    if (i - hintIdStart >= 80) return { kind: 'mismatch' };
+    i += 1;
+  }
+  if (i >= len) return { kind: 'pending' };
+  if (i === hintIdStart) return { kind: 'mismatch' };
+
+  const hintSuffixRest = buf.slice(i);
+  if (hintSuffixRest.length < SAVED_NOTE_HINT_SUFFIX.length) {
+    return SAVED_NOTE_HINT_SUFFIX.startsWith(hintSuffixRest)
+      ? { kind: 'pending' }
+      : { kind: 'mismatch' };
+  }
+  if (!buf.startsWith(SAVED_NOTE_HINT_SUFFIX, i)) return { kind: 'mismatch' };
+  i += SAVED_NOTE_HINT_SUFFIX.length;
+
+  return { end: i, kind: 'match' };
+};
+
+export const messageContentContainsMarker = (
+  content: unknown,
+  marker = SAVED_CODE_ARTIFACT_NOTE_MARKER,
+): boolean => {
+  if (typeof content === 'string') return content.includes(marker);
+  if (Array.isArray(content)) {
+    return content.some(
+      (part) =>
+        Boolean(part) &&
+        typeof part === 'object' &&
+        typeof (part as { text?: unknown }).text === 'string' &&
+        (part as { text: string }).text.includes(marker),
+    );
+  }
+  return false;
+};
+
 interface ParsedAttrSpan {
   name: string;
   spanEnd: number;
