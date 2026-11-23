@@ -38,7 +38,12 @@ import { BuiltinToolsExecutor } from '@/server/services/toolExecution/builtin';
 import { isAbortError, throwIfAborted } from './abort';
 import { seedActivatedStepToolsFromHistory } from './activatedToolsFromHistory';
 import { hookDispatcher } from './hooks';
-import { type OperationInterruption, watchOperationInterruption } from './operationInterruption';
+import {
+  abortLocalOperation,
+  hasLocalOperationAbortController,
+  type OperationInterruption,
+  watchOperationInterruption,
+} from './operationInterruption';
 import {
   findOrphanPlaceholderIdsInTopic,
   markOrphanPlaceholdersInDB,
@@ -214,7 +219,20 @@ export class AgentRuntimeService {
    * @returns true if the operation was interrupted, false if already in a terminal state or not found
    */
   async interruptOperation(operationId: string): Promise<boolean> {
-    return this.coordinator.interruptOperation(operationId);
+    const interrupted = await this.coordinator.interruptOperation(operationId);
+    if (interrupted) {
+      abortLocalOperation(operationId, 'user_cancelled');
+      return true;
+    }
+    // Even if persisted state was already marked user_cancelled (e.g., repeated Stop click
+    // or cross-slot Redis write), still abort any lingering in-process execution.
+    if (hasLocalOperationAbortController(operationId)) {
+      const state = await this.coordinator.loadAgentState(operationId);
+      if (state?.status === 'interrupted' && state.interruption?.reason === 'user_cancelled') {
+        abortLocalOperation(operationId, 'user_cancelled');
+      }
+    }
+    return false;
   }
 
   /**
@@ -804,8 +822,27 @@ export class AgentRuntimeService {
       // Check if the operation was interrupted while the step was executing
       // (e.g., user clicked abort during a long LLM call)
       const latestState = await this.coordinator.loadAgentState(operationId);
-      if (latestState?.status === 'interrupted') {
+      if (latestState?.status === 'interrupted' || interruption?.signal.aborted) {
         stepResult.newState.status = 'interrupted';
+        if (latestState?.interruption) {
+          stepResult.newState.interruption = latestState.interruption;
+        } else if (!stepResult.newState.interruption) {
+          stepResult.newState.interruption = {
+            canResume: false,
+            interruptedAt: new Date().toISOString(),
+            reason: 'user_cancelled',
+          };
+        }
+        if (isAbortError(rawStepError) || Boolean(interruption?.signal.aborted)) {
+          delete stepResult.newState.error;
+          stepResult.events = stepResult.events.filter(
+            (event) =>
+              !(
+                event.type === 'error' &&
+                (isAbortError(event.error) || Boolean(interruption?.signal.aborted))
+              ),
+          );
+        }
         stepResult.newState.lastModified = new Date().toISOString();
         log('[%s][%d] Operation was interrupted during step execution', operationId, stepIndex);
       }
@@ -1274,6 +1311,13 @@ export class AgentRuntimeService {
         const state = await this.coordinator.loadAgentState(operationId);
         if (!state) throw error;
         state.status = 'interrupted';
+        if (!state.interruption) {
+          state.interruption = {
+            canResume: false,
+            interruptedAt: new Date().toISOString(),
+            reason: 'user_cancelled',
+          };
+        }
         await this.coordinator.saveAgentState(operationId, state);
         await this.dispatchCompletionHooks(operationId, state, 'interrupted');
         return { nextStepScheduled: false, state, stepResult: null, success: true };

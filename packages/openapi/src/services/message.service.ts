@@ -691,7 +691,10 @@ export class MessageService extends BaseService {
         if (!row.topicId || seenTopics.has(row.topicId)) continue;
         seenTopics.add(row.topicId);
         const op = responsesStreamHub.findByTopic(this.userId, row.topicId);
-        if ((op && !op.done) || hasInFlightResponseTopic(this.userId, row.topicId)) {
+        if (
+          (op && !op.done && !op.cancelRequested) ||
+          hasInFlightResponseTopic(this.userId, row.topicId)
+        ) {
           throw this.createConflictError('Response is already in progress for this topic');
         }
         if (hasInFlightTopicCompaction(this.userId, row.topicId)) {

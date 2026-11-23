@@ -1448,6 +1448,211 @@ describe('AgentRuntimeService', () => {
         false,
       );
     });
+
+    it('aborts an in-flight step immediately even when cancel uses a different streamEventManager, and cleans up the AbortController registry', async () => {
+      const { hasLocalOperationAbortController } = await import('./operationInterruption');
+      const id = 'running-cancel-cross-stream-manager';
+      await mockCoordinator.saveAgentState(id, { status: 'running', stepCount: 0, messages: [] });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let capturedSignal: AbortSignal | undefined;
+      vi.spyOn(service as any, 'createAgentRuntime').mockImplementation(
+        async ({ signal }: any) => ({
+          runtime: {
+            step: async () => {
+              capturedSignal = signal;
+              entered();
+              await new Promise((_resolve, reject) =>
+                signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+              );
+            },
+          },
+        }),
+      );
+
+      const running = service.executeStep({ operationId: id, stepIndex: 0 });
+      await started;
+      expect(hasLocalOperationAbortController(id)).toBe(true);
+
+      // Simulate cancelResponse instantiating AgentRuntimeService with a DIFFERENT streamManager
+      // (e.g. Redis StreamEventManager while execution listens on ResponsesStreamHub).
+      const { InMemoryStreamEventManager } =
+        await import('@/server/modules/AgentRuntime/InMemoryStreamEventManager');
+      const separateStreamManager = new InMemoryStreamEventManager();
+      const cancelService = new AgentRuntimeService(mockDb, mockUserId, {
+        coordinatorOptions: {
+          stateManager: (mockCoordinator as any).stateManager,
+          streamEventManager: separateStreamManager,
+        },
+        queueService: null,
+        streamEventManager: separateStreamManager,
+      });
+
+      expect(await cancelService.interruptOperation(id)).toBe(true);
+      expect(capturedSignal?.aborted).toBe(true);
+      const result = await running;
+      expect(result.state.status).toBe('interrupted');
+      expect(result.state.interruption?.reason).toBe('user_cancelled');
+      expect(result.nextStepScheduled).toBe(false);
+      // Cleanup: AbortController registry must not leak after step settles
+      expect(hasLocalOperationAbortController(id)).toBe(false);
+    });
+
+    it('clears spurious AbortError when real AgentRuntime.step catches executor abort', async () => {
+      const { AgentRuntime } =
+        await vi.importActual<typeof AgentRuntimeModule>('@lobechat/agent-runtime');
+      const id = 'caught-abort-error';
+      await mockCoordinator.saveAgentState(id, { status: 'running', stepCount: 0, messages: [] });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(service as any, 'createAgentRuntime').mockImplementation(
+        async ({ signal }: any) => ({
+          runtime: new AgentRuntime(
+            {
+              runner: async () => ({ type: 'call_llm', payload: {} }),
+            } as any,
+            {
+              executors: {
+                call_llm: async () => {
+                  entered();
+                  await new Promise((_resolve, reject) =>
+                    signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+                  );
+                  return { events: [], newState: {} as any };
+                },
+              },
+            },
+          ),
+        }),
+      );
+
+      const running = service.executeStep({ operationId: id, stepIndex: 0 });
+      await started;
+      expect(await service.interruptOperation(id)).toBe(true);
+      const result = await running;
+      expect(result.state.status).toBe('interrupted');
+      expect(result.state.interruption?.reason).toBe('user_cancelled');
+      expect(result.state.error).toBeUndefined();
+      expect(result.stepResult?.events.some((event: any) => event.type === 'error')).toBe(false);
+      expect(result.nextStepScheduled).toBe(false);
+    });
+
+    it('strips non-AbortError (APIUserAbortError-shaped) and plain-object error events when step was aborted', async () => {
+      const { AgentRuntime } =
+        await vi.importActual<typeof AgentRuntimeModule>('@lobechat/agent-runtime');
+
+      // Case 1: SDK throws Error with name === 'Error' (like OpenAI.APIUserAbortError) after abort
+      const sdkAbortId = 'caught-sdk-abort-error';
+      await mockCoordinator.saveAgentState(sdkAbortId, {
+        status: 'running',
+        stepCount: 0,
+        messages: [],
+      });
+      let sdkEntered!: () => void;
+      const sdkStarted = new Promise<void>((resolve) => {
+        sdkEntered = resolve;
+      });
+      vi.spyOn(service as any, 'createAgentRuntime').mockImplementationOnce(
+        async ({ signal }: any) => ({
+          runtime: new AgentRuntime(
+            {
+              runner: async () => ({ type: 'call_llm', payload: {} }),
+            } as any,
+            {
+              executors: {
+                call_llm: async () => {
+                  sdkEntered();
+                  await new Promise((_resolve, reject) =>
+                    signal.addEventListener(
+                      'abort',
+                      () => {
+                        const sdkErr = new Error('Request was aborted.');
+                        sdkErr.name = 'Error';
+                        reject(sdkErr);
+                      },
+                      { once: true },
+                    ),
+                  );
+                  return { events: [], newState: {} as any };
+                },
+              },
+            },
+          ),
+        }),
+      );
+
+      const sdkRunning = service.executeStep({ operationId: sdkAbortId, stepIndex: 0 });
+      await sdkStarted;
+      expect(await service.interruptOperation(sdkAbortId)).toBe(true);
+      const sdkResult = await sdkRunning;
+      expect(sdkResult.state.status).toBe('interrupted');
+      expect(sdkResult.state.error).toBeUndefined();
+      expect(sdkResult.stepResult?.events.some((event: any) => event.type === 'error')).toBe(false);
+
+      // Case 2: Normalized plain-object error event emitted during an aborted step
+      const plainErrId = 'caught-plain-object-abort-error';
+      await mockCoordinator.saveAgentState(plainErrId, {
+        status: 'running',
+        stepCount: 0,
+        messages: [],
+      });
+      let plainEntered!: () => void;
+      const plainStarted = new Promise<void>((resolve) => {
+        plainEntered = resolve;
+      });
+      vi.spyOn(service as any, 'createAgentRuntime').mockImplementationOnce(
+        async ({ signal }: any) => ({
+          runtime: {
+            step: async (state: any) => {
+              plainEntered();
+              await new Promise<void>((resolve) =>
+                signal.addEventListener('abort', () => resolve(), { once: true }),
+              );
+              const normalizedError = {
+                body: { message: 'aborted' },
+                message: 'aborted',
+                type: 'ProviderBizError',
+              };
+              return {
+                events: [{ error: normalizedError, type: 'error' }],
+                newState: { ...state, error: normalizedError, status: 'error' },
+                nextContext: undefined,
+              };
+            },
+          },
+        }),
+      );
+
+      const plainRunning = service.executeStep({ operationId: plainErrId, stepIndex: 0 });
+      await plainStarted;
+      expect(await service.interruptOperation(plainErrId)).toBe(true);
+      const plainResult = await plainRunning;
+      expect(plainResult.state.status).toBe('interrupted');
+      expect(plainResult.state.error).toBeUndefined();
+      expect(plainResult.stepResult?.events.some((event: any) => event.type === 'error')).toBe(
+        false,
+      );
+    });
+
+    it('unregisters local AbortController when subscribeStreamEvents throws synchronously', async () => {
+      const { hasLocalOperationAbortController, watchOperationInterruption } =
+        await import('./operationInterruption');
+      const id = 'sync-subscribe-throw';
+      const throwingStreamManager = {
+        subscribeStreamEvents: () => {
+          throw new Error('sync subscribe failure');
+        },
+      } as any;
+
+      await expect(
+        watchOperationInterruption(id, async () => null, throwingStreamManager),
+      ).rejects.toThrow('sync subscribe failure');
+      expect(hasLocalOperationAbortController(id)).toBe(false);
+    });
   });
 
   describe('interruptTopicOperations', () => {

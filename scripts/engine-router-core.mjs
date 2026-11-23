@@ -42,6 +42,176 @@ const IN_FLIGHT_TOPIC_GRACE_MS = Number.parseInt(
   process.env.ROUTER_IN_FLIGHT_TOPIC_GRACE_MS ?? '2000',
   10,
 );
+const UPSTREAM_AGENT_PATCH_SYM = Symbol.for('arckep.engineRouter.upstreamAgentIdlePatch');
+const IDLE_SOCKET_STATE_SYM = Symbol.for('arckep.engineRouter.idleSocketState');
+const UPSTREAM_AGENT_PATCH_VERSION = 1;
+const UPSTREAM_AGENT_MODULE_TAG = Symbol('engineRouterCoreModuleInstance');
+const DEFAULT_IDLE_SOCKET_TIMEOUT_MS = Number.parseInt(
+  process.env.ROUTER_UPSTREAM_IDLE_TIMEOUT_MS ?? '55000',
+  10,
+);
+const MAX_IDLE_SOCKET_TIMEOUT_MS = Number.parseInt(
+  process.env.ROUTER_UPSTREAM_MAX_IDLE_TIMEOUT_MS ?? '60000',
+  10,
+);
+const MIN_IDLE_SOCKET_TIMEOUT_MS = 1000;
+const SERVER_KEEP_ALIVE_BUFFER_MS = 5000;
+
+function parseKeepAliveTimeoutMs(keepAliveHeader) {
+  if (typeof keepAliveHeader !== 'string' || keepAliveHeader.length === 0) return null;
+  const match = /(?:^|,\s*)timeout=(\d+)/i.exec(keepAliveHeader);
+  if (!match) return null;
+  const seconds = Number.parseInt(match[1], 10);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return seconds * 1000;
+}
+
+function computeIdleSocketTimeoutMs(serverHintMs, config) {
+  if (Number.isFinite(serverHintMs) && serverHintMs > 0) {
+    return Math.min(config.maxIdleMs, Math.max(config.minIdleMs, serverHintMs - config.bufferMs));
+  }
+  return config.defaultIdleMs;
+}
+
+function clearSocketIdleTimeout(socket) {
+  if (!socket) return;
+  const state = socket[IDLE_SOCKET_STATE_SYM];
+  if (state) {
+    socket.off('timeout', state.onIdleTimeout);
+    socket.off('close', state.onClose);
+    delete socket[IDLE_SOCKET_STATE_SYM];
+  }
+  if (!socket.destroyed && socket.timeout !== 0) {
+    socket.setTimeout(0);
+  }
+}
+
+function armSocketIdleTimeout(socket, idleMs) {
+  if (!socket || socket.destroyed) return;
+  clearSocketIdleTimeout(socket);
+  if (!Number.isFinite(idleMs) || idleMs <= 0) return;
+
+  const onClose = () => {
+    const current = socket[IDLE_SOCKET_STATE_SYM];
+    if (current && current.onClose === onClose) {
+      socket.off('timeout', current.onIdleTimeout);
+      delete socket[IDLE_SOCKET_STATE_SYM];
+    }
+  };
+
+  const onIdleTimeout = () => {
+    clearSocketIdleTimeout(socket);
+    // Strictly destroy ONLY while socket is idle (never while attached to an active HTTP/SSE request).
+    if (!socket.destroyed && !socket._httpMessage) {
+      socket.destroy();
+    }
+  };
+
+  socket[IDLE_SOCKET_STATE_SYM] = { idleMs, onClose, onIdleTimeout };
+  socket.once('close', onClose);
+  socket.once('timeout', onIdleTimeout);
+  socket.setTimeout(idleMs);
+}
+
+/**
+ * Idempotently wraps `runtime.upstreamAgent` so pooled free sockets are retired by the router
+ * strictly while idle (5s below the slot's `Keep-Alive: timeout=N` hint, capped at 60s, or 55s
+ * default), while active requests and long SSE streams always run with `socket.setTimeout(0)`.
+ *
+ * Keyed by `Symbol.for(...)` so repeated `SIGHUP` hot-reloads of `engine-router-core.mjs` cleanly
+ * upgrade the wrapper in-place without double-wrapping or restarting `engine-router.mjs`.
+ */
+export function ensureUpstreamAgentIdleRetirement(agent, overrides = null) {
+  if (!agent || typeof agent !== 'object') return agent;
+
+  const hasOverrides = Boolean(overrides && typeof overrides === 'object');
+  const existing = agent[UPSTREAM_AGENT_PATCH_SYM];
+  if (
+    !hasOverrides &&
+    existing &&
+    existing.moduleTag === UPSTREAM_AGENT_MODULE_TAG &&
+    existing.version === UPSTREAM_AGENT_PATCH_VERSION
+  ) {
+    return agent;
+  }
+
+  const config = {
+    bufferMs:
+      Number.isFinite(overrides?.bufferMs) && overrides.bufferMs >= 0
+        ? overrides.bufferMs
+        : SERVER_KEEP_ALIVE_BUFFER_MS,
+    defaultIdleMs:
+      Number.isFinite(overrides?.defaultIdleMs) && overrides.defaultIdleMs > 0
+        ? overrides.defaultIdleMs
+        : DEFAULT_IDLE_SOCKET_TIMEOUT_MS,
+    maxIdleMs:
+      Number.isFinite(overrides?.maxIdleMs) && overrides.maxIdleMs > 0
+        ? overrides.maxIdleMs
+        : MAX_IDLE_SOCKET_TIMEOUT_MS,
+    minIdleMs:
+      Number.isFinite(overrides?.minIdleMs) && overrides.minIdleMs > 0
+        ? overrides.minIdleMs
+        : MIN_IDLE_SOCKET_TIMEOUT_MS,
+  };
+
+  const baseKeepSocketAlive =
+    existing?.baseKeepSocketAlive ??
+    (typeof agent.keepSocketAlive === 'function'
+      ? agent.keepSocketAlive
+      : http.Agent.prototype.keepSocketAlive);
+  const baseReuseSocket =
+    existing?.baseReuseSocket ??
+    (typeof agent.reuseSocket === 'function'
+      ? agent.reuseSocket
+      : http.Agent.prototype.reuseSocket);
+
+  agent.keepSocketAlive = function keepSocketAliveWithIdleRetirement(socket) {
+    const keepAliveHeader = socket?._httpMessage?.res?.headers?.['keep-alive'];
+    const serverHintMs = parseKeepAliveTimeoutMs(keepAliveHeader);
+
+    const canKeep = baseKeepSocketAlive.call(this, socket);
+    if (!canKeep) {
+      clearSocketIdleTimeout(socket);
+      return false;
+    }
+
+    if (serverHintMs !== null && serverHintMs <= config.minIdleMs) {
+      clearSocketIdleTimeout(socket);
+      return false;
+    }
+
+    const idleMs = computeIdleSocketTimeoutMs(serverHintMs, config);
+    armSocketIdleTimeout(socket, idleMs);
+    return true;
+  };
+
+  agent.reuseSocket = function reuseSocketWithIdleCleanup(socket, req) {
+    clearSocketIdleTimeout(socket);
+    return baseReuseSocket.call(this, socket, req);
+  };
+
+  agent[UPSTREAM_AGENT_PATCH_SYM] = {
+    baseKeepSocketAlive,
+    baseReuseSocket,
+    config,
+    moduleTag: UPSTREAM_AGENT_MODULE_TAG,
+    version: UPSTREAM_AGENT_PATCH_VERSION,
+  };
+
+  // Arm any already-pooled free sockets left over from before the first SIGHUP hot-reload.
+  if (agent.freeSockets && typeof agent.freeSockets === 'object') {
+    for (const socketList of Object.values(agent.freeSockets)) {
+      if (!Array.isArray(socketList)) continue;
+      for (const sock of socketList) {
+        if (sock && !sock.destroyed && !sock._httpMessage && !sock[IDLE_SOCKET_STATE_SYM]) {
+          armSocketIdleTimeout(sock, config.defaultIdleMs);
+        }
+      }
+    }
+  }
+
+  return agent;
+}
 
 function rememberTopicOnActive(runtime, topicId) {
   if (!topicId) return;
@@ -226,6 +396,7 @@ function normalizeLoadedState(raw) {
 }
 
 export function reloadState(runtime, force = false) {
+  ensureUpstreamAgentIdleRetirement(runtime?.upstreamAgent);
   const now = Date.now();
   if (!force && now - runtime.lastStatCheckAt < STAT_CHECK_INTERVAL_MS) {
     return runtime.state;
@@ -326,6 +497,7 @@ function requestSlotJson(
   runtime,
   { port, method, path: reqPath, headers = {}, body = null, timeoutMs = STATUS_TIMEOUT_MS },
 ) {
+  ensureUpstreamAgentIdleRetirement(runtime?.upstreamAgent);
   return new Promise((resolve) => {
     let settled = false;
     let timer = null;
@@ -351,78 +523,14 @@ function requestSlotJson(
       reqHeaders['content-length'] = String(bodyBuffer.length);
     }
 
-    const req = http.request(
-      {
-        agent: runtime.upstreamAgent,
-        headers: reqHeaders,
-        host: ROUTER_UPSTREAM_HOST,
-        method,
-        path: reqPath,
-        port,
-      },
-      (res) => {
-        const chunks = [];
-        let total = 0;
-        res.on('data', (chunk) => {
-          total += chunk.length;
-          if (total <= 4 * 1024 * 1024) {
-            chunks.push(chunk);
-          } else {
-            req.destroy(new Error('Upstream JSON response exceeded 4MB'));
-            done({
-              errorCode: 'RESPONSE_TOO_LARGE',
-              headers: {},
-              json: null,
-              ok: false,
-              rawBody: Buffer.alloc(0),
-              statusCode: 0,
-            });
-          }
-        });
-        res.on('end', () => {
-          const rawBody = Buffer.concat(chunks);
-          let json = null;
-          let validJson = false;
-          try {
-            if (rawBody.length > 0) {
-              json = JSON.parse(rawBody.toString('utf8'));
-              validJson = true;
-            }
-          } catch {
-            json = null;
-            validJson = false;
-          }
-          done({
-            errorCode: null,
-            headers: res.headers,
-            json,
-            ok: true,
-            rawBody,
-            statusCode: res.statusCode || 500,
-            validJson,
-          });
-        });
-        res.on('error', (err) => {
-          done({
-            errorCode: err?.code || 'RESPONSE_ERROR',
-            headers: {},
-            json: null,
-            ok: false,
-            rawBody: Buffer.alloc(0),
-            statusCode: 0,
-          });
-        });
-      },
-    );
-
-    req.on('socket', (sock) => {
-      sock.setNoDelay(true);
-    });
+    const methodUpper = String(method || 'GET').toUpperCase();
+    const isIdempotentRead = methodUpper === 'GET' || methodUpper === 'HEAD';
+    let activeReq = null;
 
     timer = setTimeout(() => {
       const timeoutErr = new Error('Upstream JSON timeout');
       timeoutErr.code = 'TIMEOUT';
-      req.destroy(timeoutErr);
+      activeReq?.destroy(timeoutErr);
       done({
         errorCode: 'TIMEOUT',
         headers: {},
@@ -433,22 +541,111 @@ function requestSlotJson(
       });
     }, timeoutMs);
 
-    req.on('error', (err) => {
-      done({
-        errorCode: err?.code || 'REQUEST_ERROR',
-        headers: {},
-        json: null,
-        ok: false,
-        rawBody: Buffer.alloc(0),
-        statusCode: 0,
-      });
-    });
+    const runAttempt = (allowStaleSocketRetry, useFreshSocket = false) => {
+      if (settled) return;
+      let upstreamResponded = false;
 
-    if (bodyBuffer) {
-      req.end(bodyBuffer);
-    } else {
-      req.end();
-    }
+      const req = http.request(
+        {
+          agent: useFreshSocket ? false : runtime.upstreamAgent,
+          headers: reqHeaders,
+          host: ROUTER_UPSTREAM_HOST,
+          method,
+          path: reqPath,
+          port,
+        },
+        (res) => {
+          upstreamResponded = true;
+          const chunks = [];
+          let total = 0;
+          res.on('data', (chunk) => {
+            total += chunk.length;
+            if (total <= 4 * 1024 * 1024) {
+              chunks.push(chunk);
+            } else {
+              req.destroy(new Error('Upstream JSON response exceeded 4MB'));
+              done({
+                errorCode: 'RESPONSE_TOO_LARGE',
+                headers: {},
+                json: null,
+                ok: false,
+                rawBody: Buffer.alloc(0),
+                statusCode: 0,
+              });
+            }
+          });
+          res.on('end', () => {
+            const rawBody = Buffer.concat(chunks);
+            let json = null;
+            let validJson = false;
+            try {
+              if (rawBody.length > 0) {
+                json = JSON.parse(rawBody.toString('utf8'));
+                validJson = true;
+              }
+            } catch {
+              json = null;
+              validJson = false;
+            }
+            done({
+              errorCode: null,
+              headers: res.headers,
+              json,
+              ok: true,
+              rawBody,
+              statusCode: res.statusCode || 500,
+              validJson,
+            });
+          });
+          res.on('error', (err) => {
+            done({
+              errorCode: err?.code || 'RESPONSE_ERROR',
+              headers: {},
+              json: null,
+              ok: false,
+              rawBody: Buffer.alloc(0),
+              statusCode: 0,
+            });
+          });
+        },
+      );
+      activeReq = req;
+
+      req.on('socket', (sock) => {
+        clearSocketIdleTimeout(sock);
+        sock.setNoDelay(true);
+      });
+
+      req.on('error', (err) => {
+        if (
+          !settled &&
+          isIdempotentRead &&
+          allowStaleSocketRetry &&
+          !upstreamResponded &&
+          req.reusedSocket &&
+          (err?.code === 'ECONNRESET' || err?.code === 'EPIPE')
+        ) {
+          runAttempt(false, true);
+          return;
+        }
+        done({
+          errorCode: err?.code || 'REQUEST_ERROR',
+          headers: {},
+          json: null,
+          ok: false,
+          rawBody: Buffer.alloc(0),
+          statusCode: 0,
+        });
+      });
+
+      if (bodyBuffer) {
+        req.end(bodyBuffer);
+      } else {
+        req.end();
+      }
+    };
+
+    runAttempt(isIdempotentRead, false);
   });
 }
 
@@ -864,6 +1061,8 @@ function pipeUpstreamResponse(runtime, req, res, upstreamReq, upstreamRes, slotN
 function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName, fallback = null) {
   if (requestCtx.isDisconnected()) return;
 
+  ensureUpstreamAgentIdleRetirement(runtime?.upstreamAgent);
+
   let upstreamFinished = false;
   let upstreamResponded = false;
   const methodUpper = (req.method || 'GET').toUpperCase();
@@ -871,14 +1070,20 @@ function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName,
 
   const forwardHeaders = buildForwardHeaders(req.headers, null);
 
-  const startAttempt = (port, slot, allowFallback) => {
+  const startAttempt = (
+    port,
+    slot,
+    allowFallback,
+    allowStaleSocketRetry = isIdempotentRead,
+    useFreshSocket = false,
+  ) => {
     if (requestCtx.isDisconnected()) return;
 
     let currentUpstreamRes = null;
 
     const upstreamReq = http.request(
       {
-        agent: runtime.upstreamAgent,
+        agent: useFreshSocket ? false : runtime.upstreamAgent,
         headers: forwardHeaders,
         host: ROUTER_UPSTREAM_HOST,
         method: req.method,
@@ -902,6 +1107,7 @@ function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName,
     );
 
     upstreamReq.on('socket', (sock) => {
+      clearSocketIdleTimeout(sock);
       sock.setNoDelay(true);
     });
 
@@ -943,6 +1149,21 @@ function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName,
         return;
       }
 
+      const isStaleReusedSocketError =
+        (err?.code === 'ECONNRESET' || err?.code === 'EPIPE') && Boolean(upstreamReq.reusedSocket);
+
+      if (
+        isIdempotentRead &&
+        allowStaleSocketRetry &&
+        isStaleReusedSocketError &&
+        !upstreamResponded &&
+        !res.headersSent &&
+        !res.writableEnded
+      ) {
+        startAttempt(port, slot, allowFallback, false, true);
+        return;
+      }
+
       if (
         isIdempotentRead &&
         allowFallback &&
@@ -952,7 +1173,7 @@ function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName,
         !res.headersSent &&
         !res.writableEnded
       ) {
-        startAttempt(fallback.fallbackPort, fallback.fallbackSlot, false);
+        startAttempt(fallback.fallbackPort, fallback.fallbackSlot, false, isIdempotentRead, false);
         return;
       }
 
@@ -983,7 +1204,13 @@ function proxyStreamRequest(runtime, req, res, requestCtx, targetPort, slotName,
     }
   };
 
-  startAttempt(targetPort, slotName, Boolean(fallback) && isIdempotentRead);
+  startAttempt(
+    targetPort,
+    slotName,
+    Boolean(fallback) && isIdempotentRead,
+    isIdempotentRead,
+    false,
+  );
 }
 
 /**
@@ -1033,6 +1260,8 @@ function proxyBufferedRequest(
     return;
   }
 
+  ensureUpstreamAgentIdleRetirement(runtime?.upstreamAgent);
+
   let upstreamFinished = false;
   let currentUpstreamRes = null;
   const contentLength = payload ? payload.length : 0;
@@ -1072,6 +1301,7 @@ function proxyBufferedRequest(
   );
 
   upstreamReq.on('socket', (sock) => {
+    clearSocketIdleTimeout(sock);
     sock.setNoDelay(true);
   });
 
@@ -1511,6 +1741,7 @@ export async function handleRequest(req, res, runtime) {
 
   req.socket?.setNoDelay?.(true);
   res.on('error', () => undefined);
+  ensureUpstreamAgentIdleRetirement(runtime?.upstreamAgent);
 
   const method = (req.method || 'GET').toUpperCase();
   let pathname;
