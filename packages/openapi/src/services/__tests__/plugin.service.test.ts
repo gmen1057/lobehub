@@ -7,12 +7,45 @@ import {
   summarizeConnector,
 } from '../plugin.service';
 
-const { mockCreate, mockDelete, mockFindById, mockQuery, mockUpdate } = vi.hoisted(() => ({
+interface StoredPluginRow {
+  customParams?: unknown;
+  identifier: string;
+  manifest?: unknown;
+  settings?: unknown;
+  source?: string | null;
+  type?: string | null;
+  userId?: string;
+}
+
+const {
+  mockCreate,
+  mockDelete,
+  mockFindById,
+  mockGetUserSettings,
+  mockInsert,
+  mockOnConflictDoNothing,
+  mockQuery,
+  mockSelectWhere,
+  mockUpdate,
+  mockUpdateSetting,
+  mockValues,
+  store,
+} = vi.hoisted(() => ({
   mockCreate: vi.fn(),
   mockDelete: vi.fn(),
   mockFindById: vi.fn(),
+  mockGetUserSettings: vi.fn(),
+  mockInsert: vi.fn(),
+  mockOnConflictDoNothing: vi.fn(),
   mockQuery: vi.fn(),
+  mockSelectWhere: vi.fn(),
   mockUpdate: vi.fn(),
+  mockUpdateSetting: vi.fn(),
+  mockValues: vi.fn(),
+  store: {
+    rows: new Map<string, StoredPluginRow>(),
+    tool: undefined as Record<string, unknown> | undefined,
+  },
 }));
 
 vi.mock('@/database/schemas', () => ({
@@ -23,6 +56,7 @@ vi.mock('@/database/schemas', () => ({
     source: 'source',
     type: 'type',
     updatedAt: 'updated_at',
+    userId: 'user_id',
   },
 }));
 
@@ -33,6 +67,13 @@ vi.mock('@/database/models/plugin', () => ({
     findById = mockFindById;
     query = mockQuery;
     update = mockUpdate;
+  },
+}));
+
+vi.mock('@/database/models/user', () => ({
+  UserModel: class {
+    getUserSettings = mockGetUserSettings;
+    updateSetting = mockUpdateSetting;
   },
 }));
 
@@ -53,6 +94,22 @@ const postgres = {
   manifest: { api: [{ name: 'query' }], meta: { title: 'PostgreSQL' } },
   source: 'custom',
   type: 'customPlugin',
+};
+
+const customUserMcp: StoredPluginRow = {
+  customParams: {
+    arckepUserMcp: {
+      display: { host: 'mcp.example.com' },
+      kind: 'remote',
+      sealed: 'enc:v1:user-mcp-sealed',
+    },
+  },
+  identifier: 'umcp-abc123def456',
+  manifest: { api: [{ name: 'ping' }], meta: { title: 'My MCP' } },
+  settings: {},
+  source: 'custom',
+  type: 'customPlugin',
+  userId: 'user-1',
 };
 
 describe('summarizeConnector (arckep: карточка подключения)', () => {
@@ -156,14 +213,68 @@ describe('PluginService (arckep: подключения по REST)', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new PluginService({} as any, 'user-1');
+    store.rows.clear();
+    store.tool = undefined;
+
+    mockGetUserSettings.mockImplementation(async () =>
+      store.tool === undefined ? undefined : { tool: store.tool },
+    );
+    mockUpdateSetting.mockImplementation(async (patch: { tool?: Record<string, unknown> }) => {
+      if (patch.tool !== undefined) {
+        store.tool = patch.tool;
+      }
+    });
+
+    mockSelectWhere.mockImplementation(async () =>
+      [...store.rows.values()]
+        .filter((r) => r.identifier.startsWith('mcp-arckep-'))
+        .map((r) => ({ identifier: r.identifier })),
+    );
+
+    mockOnConflictDoNothing.mockImplementation(async () => undefined);
+    mockValues.mockImplementation((items: StoredPluginRow[]) => {
+      return {
+        onConflictDoNothing: async (conflictOpts: unknown) => {
+          await mockOnConflictDoNothing(conflictOpts);
+          // Симуляция ON CONFLICT DO NOTHING: уже существующие строки и их settings не трогаем
+          for (const item of items) {
+            if (!store.rows.has(item.identifier)) {
+              store.rows.set(item.identifier, { ...item });
+            }
+          }
+        },
+      };
+    });
+    mockInsert.mockImplementation(() => ({
+      values: mockValues,
+    }));
+
+    const mockDb = {
+      insert: mockInsert,
+      select: () => ({
+        from: () => ({
+          where: mockSelectWhere,
+        }),
+      }),
+    };
+
+    service = new PluginService(mockDb as never, 'user-1');
     vi.spyOn(service, 'latestCatalogRows').mockResolvedValue([postgres, wordstat]);
-    mockQuery.mockResolvedValue([{ ...wordstat, settings: {} }]);
-    mockCreate.mockImplementation(async (params) => ({ ...params }));
+
+    mockQuery.mockImplementation(async () => [...store.rows.values()]);
+    mockFindById.mockImplementation(async (id: string) => store.rows.get(id));
+    mockCreate.mockImplementation(async (params: StoredPluginRow) => {
+      const next = { ...params, userId: 'user-1' };
+      store.rows.set(params.identifier, next);
+      return next;
+    });
+    mockDelete.mockImplementation(async (id: string) => {
+      store.rows.delete(id);
+    });
   });
 
   it('каталог отмечает установленные и подставляет settings текущего пользователя (не зануляет в null)', async () => {
-    mockQuery.mockResolvedValue([
+    mockQuery.mockResolvedValueOnce([
       {
         ...postgres,
         settings: {
@@ -176,15 +287,7 @@ describe('PluginService (arckep: подключения по REST)', () => {
         },
       },
       {
-        customParams: {
-          arckepUserMcp: {
-            display: { host: 'mcp.example.com' },
-            kind: 'remote',
-            sealed: 'enc:v1:user-mcp-sealed',
-          },
-        },
-        identifier: 'umcp-abc123def456',
-        manifest: { api: [{ name: 'ping' }], meta: { title: 'My MCP' } },
+        ...customUserMcp,
         settings: { 'X-MCP-Host': 'ignored.example.com', 'X-MCP-Password': 'ignored' },
       },
     ]);
@@ -358,7 +461,6 @@ describe('PluginService (arckep: подключения по REST)', () => {
   });
 
   it('установка копирует manifest и customParams из каталога, настройки пустые', async () => {
-    mockFindById.mockResolvedValue(undefined);
     const installed = await service.install('mcp-arckep-postgres');
     expect(mockCreate).toHaveBeenCalledWith({
       customParams: postgres.customParams,
@@ -376,9 +478,14 @@ describe('PluginService (arckep: подключения по REST)', () => {
   });
 
   it('повторная установка не теряет сохранённые настройки', async () => {
-    mockFindById.mockResolvedValue({ ...wordstat, settings: { token: 'secret' } });
+    store.rows.set('mcp-arckep-wordstat', {
+      ...wordstat,
+      settings: { 'X-MCP-Password': 'enc:v1:secret-token' },
+    });
     await service.install('mcp-arckep-wordstat');
-    expect(mockCreate.mock.calls[0][0].settings).toEqual({ token: 'secret' });
+    expect(mockCreate.mock.calls[0][0].settings).toEqual({
+      'X-MCP-Password': 'enc:v1:secret-token',
+    });
   });
 
   it('неизвестный коннектор не ставится', async () => {
@@ -387,27 +494,233 @@ describe('PluginService (arckep: подключения по REST)', () => {
   });
 
   it('настройки и удаление — только для установленных', async () => {
-    mockFindById.mockResolvedValueOnce(undefined);
     expect(await service.updateSettings('mcp-arckep-postgres', { host: 'db' })).toBeNull();
-    mockFindById.mockResolvedValueOnce({ ...postgres, settings: {} });
+    store.rows.set('mcp-arckep-postgres', { ...postgres, settings: {} });
     const updated = await service.updateSettings('mcp-arckep-postgres', { host: 'db' });
     expect(mockUpdate).toHaveBeenCalledWith('mcp-arckep-postgres', { settings: { host: 'db' } });
     expect(updated?.settingsFilled).toBe(true);
 
-    mockFindById.mockResolvedValueOnce(undefined);
-    expect(await service.uninstall('mcp-arckep-postgres')).toBe(false);
-    mockFindById.mockResolvedValueOnce(postgres);
+    expect(await service.uninstall('mcp-arckep-wordstat')).toBe(false);
     expect(await service.uninstall('mcp-arckep-postgres')).toBe(true);
     expect(mockDelete).toHaveBeenCalledWith('mcp-arckep-postgres');
   });
 
-  it('новому пользователю ставится весь каталог', async () => {
+  it('новому пользователю ставится весь каталог через ON CONFLICT DO NOTHING (installCatalog -> ensureCatalogInstalled)', async () => {
     expect(await service.installCatalog()).toEqual(['mcp-arckep-postgres', 'mcp-arckep-wordstat']);
-    expect(mockCreate).toHaveBeenCalledTimes(2);
-    expect(
-      mockCreate.mock.calls.every(
-        (call) => call[0].settings && Object.keys(call[0].settings).length === 0,
-      ),
-    ).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    expect(mockValues).toHaveBeenCalledWith([
+      {
+        customParams: postgres.customParams,
+        identifier: 'mcp-arckep-postgres',
+        manifest: postgres.manifest,
+        settings: {},
+        source: 'custom',
+        type: 'customPlugin',
+        userId: 'user-1',
+      },
+      {
+        customParams: wordstat.customParams,
+        identifier: 'mcp-arckep-wordstat',
+        manifest: wordstat.manifest,
+        settings: {},
+        source: 'custom',
+        type: 'customPlugin',
+        userId: 'user-1',
+      },
+    ]);
+    expect(mockOnConflictDoNothing).toHaveBeenCalledWith({
+      target: ['identifier', 'user_id'],
+    });
+  });
+
+  it('ensureCatalogInstalled: fast-path (0 записей в БД), когда весь каталог уже установлен', async () => {
+    store.rows.set('mcp-arckep-postgres', {
+      ...postgres,
+      settings: { 'X-MCP-Password': 'enc:v1:pg-secret' },
+    });
+    store.rows.set('mcp-arckep-wordstat', {
+      ...wordstat,
+      settings: { 'X-MCP-Password': 'plain-ws-secret' },
+    });
+    store.rows.set(customUserMcp.identifier, { ...customUserMcp });
+
+    const added = await service.ensureCatalogInstalled();
+    expect(added).toEqual([]);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockUpdateSetting).not.toHaveBeenCalled();
+    // Существующие enc:v1:, plaintext и кастомные umcp-* нетронуты
+    expect(store.rows.get('mcp-arckep-postgres')?.settings).toEqual({
+      'X-MCP-Password': 'enc:v1:pg-secret',
+    });
+    expect(store.rows.get('mcp-arckep-wordstat')?.settings).toEqual({
+      'X-MCP-Password': 'plain-ws-secret',
+    });
+    expect(store.rows.get(customUserMcp.identifier)).toEqual(customUserMcp);
+  });
+
+  it('ensureCatalogInstalled: параллельная гонка (ON CONFLICT DO NOTHING) не затирает enc:v1:, plaintext и umcp-*', async () => {
+    store.rows.set(customUserMcp.identifier, { ...customUserMcp });
+
+    // Оба параллельных запроса видят пустой список установленных до вставки,
+    // но в БД уже записались enc:v1: и plaintext настройки от конкурирующего запроса.
+    mockSelectWhere.mockImplementationOnce(async () => []);
+    mockSelectWhere.mockImplementationOnce(async () => []);
+    store.rows.set('mcp-arckep-postgres', {
+      ...postgres,
+      settings: { 'X-MCP-Host': 'db.prod.ru', 'X-MCP-Password': 'enc:v1:winner-cipher' },
+    });
+    store.rows.set('mcp-arckep-wordstat', {
+      ...wordstat,
+      settings: { 'X-MCP-Password': 'winner-plaintext-password' },
+    });
+
+    const [resA, resB] = await Promise.all([
+      service.ensureCatalogInstalled(),
+      service.ensureCatalogInstalled(),
+    ]);
+
+    expect(resA).toEqual(['mcp-arckep-postgres', 'mcp-arckep-wordstat']);
+    expect(resB).toEqual(['mcp-arckep-postgres', 'mcp-arckep-wordstat']);
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockOnConflictDoNothing).toHaveBeenCalledTimes(2);
+    expect(store.rows.get('mcp-arckep-postgres')?.settings).toEqual({
+      'X-MCP-Host': 'db.prod.ru',
+      'X-MCP-Password': 'enc:v1:winner-cipher',
+    });
+    expect(store.rows.get('mcp-arckep-wordstat')?.settings).toEqual({
+      'X-MCP-Password': 'winner-plaintext-password',
+    });
+    expect(store.rows.get(customUserMcp.identifier)).toEqual(customUserMcp);
+  });
+
+  it('uninstall запоминает удалённый коннектор в userSettings.tool.uninstalledConnectors (не переустанавливается), а install возвращает его', async () => {
+    store.tool = {
+      humanIntervention: { approvalMode: 'auto' },
+      inboxMcpProvisioned: true,
+      uninstalledBuiltinTools: ['lobe-browsing'],
+    };
+    await service.ensureCatalogInstalled();
+    expect([...store.rows.keys()].sort()).toEqual(['mcp-arckep-postgres', 'mcp-arckep-wordstat']);
+
+    // Удаление готового коннектора мёржит uninstalledConnectors с существующим userSettings.tool
+    expect(await service.uninstall('mcp-arckep-postgres')).toBe(true);
+    expect(store.tool).toEqual({
+      humanIntervention: { approvalMode: 'auto' },
+      inboxMcpProvisioned: true,
+      uninstalledBuiltinTools: ['lobe-browsing'],
+      uninstalledConnectors: ['mcp-arckep-postgres'],
+    });
+
+    // Повторный ensureCatalogInstalled не возвращает удалённый коннектор (fast-path: 0 вставок)
+    mockInsert.mockClear();
+    expect(await service.ensureCatalogInstalled()).toEqual([]);
+    expect(mockInsert).not.toHaveBeenCalled();
+    expect(store.rows.has('mcp-arckep-postgres')).toBe(false);
+
+    // Удаление кастомного umcp-* НЕ пишет в uninstalledConnectors
+    store.rows.set(customUserMcp.identifier, { ...customUserMcp });
+    mockUpdateSetting.mockClear();
+    expect(await service.uninstall(customUserMcp.identifier)).toBe(true);
+    expect(mockUpdateSetting).not.toHaveBeenCalled();
+    expect(store.tool.uninstalledConnectors).toEqual(['mcp-arckep-postgres']);
+
+    // Ручная установка install() убирает коннектор из uninstalledConnectors, сохраняя остальные поля tool
+    await service.install('mcp-arckep-postgres');
+    expect(store.tool).toEqual({
+      humanIntervention: { approvalMode: 'auto' },
+      inboxMcpProvisioned: true,
+      uninstalledBuiltinTools: ['lobe-browsing'],
+      uninstalledConnectors: [],
+    });
+  });
+
+  it('getInternalSettings отдаёт сырые settings для mcp-arckep-* (или пустые при отсутствии) и отказывает для umcp-*', async () => {
+    expect(await service.getInternalSettings('umcp-abc123def456')).toBeNull();
+    expect(await service.getInternalSettings('umcp-short')).toBeNull();
+
+    expect(await service.getInternalSettings('mcp-arckep-postgres')).toEqual({
+      identifier: 'mcp-arckep-postgres',
+      installed: false,
+      settings: {},
+    });
+
+    store.rows.set('mcp-arckep-postgres', {
+      ...postgres,
+      settings: {
+        'X-MCP-Host': 'db.example.ru',
+        'X-MCP-Password': 'enc:v1:internal-cipher',
+      },
+    });
+    expect(await service.getInternalSettings('mcp-arckep-postgres')).toEqual({
+      identifier: 'mcp-arckep-postgres',
+      installed: true,
+      settings: {
+        'X-MCP-Host': 'db.example.ru',
+        'X-MCP-Password': 'enc:v1:internal-cipher',
+      },
+    });
+
+    // Обычные listInstalled() и catalog() при этом никогда не светят X-MCP-Password / enc:v1:
+    const listed = JSON.stringify(await service.listInstalled());
+    const catalogJson = JSON.stringify(await service.catalog());
+    expect(listed).not.toContain('X-MCP-Password');
+    expect(listed).not.toContain('enc:v1:');
+    expect(catalogJson).not.toContain('X-MCP-Password');
+    expect(catalogJson).not.toContain('enc:v1:');
+  });
+
+  it('updateSettings: удаляет публичные ключи по null/пустой строке, схлопывает регистровые дубли и чистит single-secret коннекторы', async () => {
+    store.rows.set('mcp-arckep-postgres', {
+      ...postgres,
+      settings: {
+        'X-MCP-Database': 'corp_a_db',
+        'x-mcp-host': 'old-lower.example.ru',
+        'X-MCP-Password': 'enc:v1:old-secret',
+        'X-MCP-Port': 15432,
+        'X-MCP-User': 'corp_a_user',
+      },
+    });
+
+    // Смена сервера с явной очисткой старых опциональных полей (null) и канонизацией регистра
+    const updated = await service.updateSettings('mcp-arckep-postgres', {
+      'X-MCP-Database': 'corp_b_db',
+      'X-MCP-Host': 'new.example.ru',
+      'X-MCP-Password': 'enc:v1:new-secret',
+      'X-MCP-Port': null,
+      'X-MCP-User': 'corp_b_user',
+    });
+    expect(mockUpdate).toHaveBeenLastCalledWith('mcp-arckep-postgres', {
+      settings: {
+        'X-MCP-Database': 'corp_b_db',
+        'X-MCP-Host': 'new.example.ru',
+        'X-MCP-Password': 'enc:v1:new-secret',
+        'X-MCP-User': 'corp_b_user',
+      },
+    });
+    expect(updated?.publicSettings).toEqual({
+      'X-MCP-Database': 'corp_b_db',
+      'X-MCP-Host': 'new.example.ru',
+      'X-MCP-User': 'corp_b_user',
+    });
+
+    // Single-secret коннекторы (Figma / Google Sheets) вычищают любые старые посторонние публичные поля
+    store.rows.set('mcp-arckep-figma', {
+      identifier: 'mcp-arckep-figma',
+      manifest: { api: [{ name: 'whoami' }], meta: { title: 'Figma' } },
+      settings: {
+        'X-MCP-Host': 'stale-host.example.com',
+        'x-mcp-password': 'legacy-lower-secret',
+      },
+    });
+    await service.updateSettings('mcp-arckep-figma', {
+      'X-MCP-Password': 'enc:v1:figma-user-bound',
+    });
+    expect(mockUpdate).toHaveBeenLastCalledWith('mcp-arckep-figma', {
+      settings: {
+        'X-MCP-Password': 'enc:v1:figma-user-bound',
+      },
+    });
   });
 });

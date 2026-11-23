@@ -36,7 +36,10 @@ export const UserMcpCreateSchema = z
     }),
     identifier: z.string().regex(/^umcp-[a-z0-9]{12}$/),
     kind: z.enum(['remote', 'catalog', 'github']),
-    sealed: z.string().max(8000).regex(/^enc:v1:[\w-]+$/),
+    sealed: z
+      .string()
+      .max(8000)
+      .regex(/^enc:v1:[\w-]+$/),
     title: z.string().trim().min(1).max(80),
   })
   .strict();
@@ -54,15 +57,10 @@ PluginsRoutes.get('/catalog', requireAuth, async (c) => {
 });
 
 // POST /api/v1/plugins/user-mcp — своё подключение человека (только служебный вход студии)
-PluginsRoutes.post(
-  '/user-mcp',
-  requireAuth,
-  zValidator('json', UserMcpCreateSchema),
-  async (c) => {
-    const controller = new ArckepController();
-    return await controller.createUserMcp(c);
-  },
-);
+PluginsRoutes.post('/user-mcp', requireAuth, zValidator('json', UserMcpCreateSchema), async (c) => {
+  const controller = new ArckepController();
+  return await controller.createUserMcp(c);
+});
 
 // POST /api/v1/plugins/user-mcp/:identifier/refresh — перечитать tools/list своего подключения
 PluginsRoutes.post(
@@ -83,6 +81,17 @@ PluginsRoutes.post(
   async (c) => {
     const controller = new ArckepController();
     return await controller.installPlugin(c);
+  },
+);
+
+// GET /api/v1/plugins/:identifier/internal-settings — сырые настройки подключения (только arckep-service)
+PluginsRoutes.get(
+  '/:identifier/internal-settings',
+  requireAuth,
+  zValidator('param', PluginIdentifierSchema),
+  async (c) => {
+    const controller = new ArckepController();
+    return await controller.getPluginInternalSettings(c);
   },
 );
 
