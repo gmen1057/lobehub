@@ -1,9 +1,10 @@
-import { and, count, desc, eq, ilike, or } from 'drizzle-orm';
+import { and, count, desc, eq, ilike, isNull, ne, or } from 'drizzle-orm';
 
 import { KnowledgeBaseModel } from '@/database/models/knowledgeBase';
 import type { KnowledgeBaseItem } from '@/database/schemas';
 import { knowledgeBases } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
+import { isWorkspaceEnabled } from '@/server/services/projectWorkspace';
 
 import { BaseService } from '../common/base.service';
 import { processPaginationConditions } from '../helpers/pagination';
@@ -50,6 +51,12 @@ export class KnowledgeBaseService extends BaseService {
       const { keyword } = request;
 
       const conditions = [eq(knowledgeBases.userId, this.userId)];
+
+      if (isWorkspaceEnabled()) {
+        conditions.push(
+          or(isNull(knowledgeBases.type), ne(knowledgeBases.type, 'project_workspace'))!,
+        );
+      }
 
       if (keyword) {
         conditions.push(
@@ -196,6 +203,12 @@ export class KnowledgeBaseService extends BaseService {
         throw this.createNotFoundError('Knowledge base not found or access denied');
       }
 
+      if (isWorkspaceEnabled() && existingKb.type === 'project_workspace') {
+        throw this.createConflictError(
+          'Managed project workspace knowledge base cannot be updated directly',
+        );
+      }
+
       // Update knowledge base
       await this.knowledgeBaseModel.update(id, request);
 
@@ -235,6 +248,12 @@ export class KnowledgeBaseService extends BaseService {
 
       if (!existingKb) {
         throw this.createNotFoundError('Knowledge base not found or access denied');
+      }
+
+      if (isWorkspaceEnabled() && existingKb.type === 'project_workspace') {
+        throw this.createConflictError(
+          'Managed project workspace knowledge base cannot be deleted directly',
+        );
       }
 
       // Delete knowledge base

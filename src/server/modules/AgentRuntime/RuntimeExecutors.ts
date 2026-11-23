@@ -25,7 +25,7 @@ import { ArckepLayoutIdentifier } from '@lobechat/builtin-tool-arckep-layout';
 import { LocalSystemManifest } from '@lobechat/builtin-tool-local-system';
 import { SkillsIdentifier } from '@lobechat/builtin-tool-skills';
 import { TopicReferenceIdentifier } from '@lobechat/builtin-tool-topic-reference';
-import { TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
+import { PROJECT_WORKSPACE_TOOL, TEXT_FILE_TOOL } from '@lobechat/builtin-tools';
 import {
   AGENT_DOCUMENT_INJECTION_POSITIONS,
   type AgentContextDocument,
@@ -777,9 +777,24 @@ export const createRuntimeExecutors = (
       operationManifestMap: operationToolSet.manifestMap,
     });
 
+    const upgradedActivatedIds = new Set(
+      (state.activatedStepTools ?? [])
+        .filter((a) => a.id === PROJECT_WORKSPACE_TOOL && a.manifest)
+        .map((a) => a.id),
+    );
+    const resolverOperationToolSet: OperationToolSet =
+      upgradedActivatedIds.size > 0
+        ? {
+            ...operationToolSet,
+            enabledToolIds: (operationToolSet.enabledToolIds ?? []).filter(
+              (id) => !upgradedActivatedIds.has(id),
+            ),
+          }
+        : operationToolSet;
+
     const toolResolver = new ToolResolver();
     const resolved: ResolvedToolSet = toolResolver.resolve(
-      operationToolSet,
+      resolverOperationToolSet,
       stepDelta,
       state.activatedStepTools ?? [],
     );
@@ -912,10 +927,15 @@ export const createRuntimeExecutors = (
           );
         }
 
-        // Fetch agent documents for context injection
+        const effectiveAgentConfig = state.metadata?.agentConfig ?? agentConfig;
+        const dataGuardProtected =
+          effectiveAgentConfig?.chatConfig?.deepseekDataGuardProtected === true;
+        const workspaceActive = state.metadata?.workspaceActive === true;
+
+        // Fetch agent documents for context injection (skipped when Project Workspace or Data Guard is active)
         let agentDocuments: AgentContextDocument[] | undefined;
         const agentId = state.metadata?.agentId;
-        if (agentId && ctx.serverDB && ctx.userId) {
+        if (agentId && ctx.serverDB && ctx.userId && !workspaceActive && !dataGuardProtected) {
           try {
             const agentDocService = new AgentDocumentsService(ctx.serverDB, ctx.userId);
             const docs = await agentDocService.getAgentDocuments(agentId);
@@ -981,31 +1001,40 @@ export const createRuntimeExecutors = (
             },
           },
           botPlatformContext: ctx.botPlatformContext,
+          deepseekDataGuardProtected: dataGuardProtected,
           discordContext: ctx.discordContext,
+          dynamicSystemAppend: state.metadata?.dynamicSystemAppend,
           enableHistoryCount: agentConfig.chatConfig?.enableHistoryCount ?? undefined,
           evalContext: ctx.evalContext,
           forceFinish: state.forceFinish,
           ...(forceFinishPrompt ? { forceFinishPrompt } : {}),
           historyCount: agentConfig.chatConfig?.historyCount ?? undefined,
           knowledge: {
-            fileContents: agentConfig.files
-              ?.filter((f: { enabled?: boolean | null }) => f.enabled === true)
-              .map((f: { content?: string | null; id?: string; name?: string }) => ({
-                content: f.content ?? '',
-                fileId: f.id ?? '',
-                filename: f.name ?? '',
-              })),
-            knowledgeBases: agentConfig.knowledgeBases
-              ?.filter((kb: { enabled?: boolean | null }) => kb.enabled === true)
-              .map((kb: { id?: string; name?: string }) => ({
-                id: kb.id ?? '',
-                name: kb.name ?? '',
-              })),
+            fileContents:
+              workspaceActive || dataGuardProtected
+                ? undefined
+                : agentConfig.files
+                    ?.filter((f: { enabled?: boolean | null }) => f.enabled === true)
+                    .map((f: { content?: string | null; id?: string; name?: string }) => ({
+                      content: f.content ?? '',
+                      fileId: f.id ?? '',
+                      filename: f.name ?? '',
+                    })),
+            knowledgeBases: dataGuardProtected
+              ? undefined
+              : agentConfig.knowledgeBases
+                  ?.filter((kb: { enabled?: boolean | null }) => kb.enabled === true)
+                  .map((kb: { id?: string; name?: string }) => ({
+                    id: kb.id ?? '',
+                    name: kb.name ?? '',
+                  })),
           },
           messages: llmPayload.messages as UIChatMessage[],
           model,
           provider,
           systemRole: agentConfig.systemRole ?? undefined,
+          workspaceIndexBlock: state.metadata?.workspaceIndexBlock,
+          workspaceRulesBlock: state.metadata?.workspaceRulesBlock,
           toolDiscoveryConfig,
           toolsConfig: {
             ...(disabledToolIdentifiers !== undefined && { disabledToolIdentifiers }),

@@ -714,6 +714,13 @@
       "when": 1789500000000,
       "tag": "0101_add_bot_access_codes",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "7",
+      "when": 1789600000000,
+      "tag": "0102_add_project_workspace",
+      "breakpoints": true
     }
   ],
   "version": "6"

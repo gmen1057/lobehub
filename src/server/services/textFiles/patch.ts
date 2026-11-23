@@ -43,6 +43,7 @@ export interface ApplyAtomicPatchOptions {
   fileName?: string;
   maxOutputBytes?: number;
   sourceEncoding?: string;
+  targetEncoding?: string;
 }
 
 export type ApplyAtomicPatchResult =
@@ -450,6 +451,7 @@ const formatDiffSummary = ({
   lineEnding,
   patchedNormalized,
   sourceEncoding,
+  targetEncoding,
 }: {
   allSpans: ResolvedSpan[];
   appliedEdits: number;
@@ -458,6 +460,7 @@ const formatDiffSummary = ({
   lineEnding: SourceLineEnding;
   patchedNormalized: string;
   sourceEncoding: string;
+  targetEncoding?: string;
 }): { diffSummary: string; linesAfter: number; linesBefore: number } => {
   const { lineEnds, lineStarts, lines, logicalLineCount: totalOldLines, normalized } = index;
   const sourceHasTrailingNl = normalized.endsWith('\n');
@@ -706,7 +709,9 @@ const formatDiffSummary = ({
   const linesAfter = linesBefore + totalAdded - totalDeleted;
   const occurrenceSuffix =
     appliedOccurrences !== appliedEdits ? ` (${appliedOccurrences} replacements)` : '';
-  const statsLine = `Patch applied: ${appliedEdits} edit${appliedEdits === 1 ? '' : 's'}${occurrenceSuffix}, lines ${linesBefore} -> ${linesAfter} (+${totalAdded} / -${totalDeleted}), encoding ${sourceEncoding} -> utf-8, lineEnding ${lineEnding}.`;
+  // eslint-disable-next-line unicorn/text-encoding-identifier-case
+  const resolvedTargetEncoding = targetEncoding ?? 'utf-8';
+  const statsLine = `Patch applied: ${appliedEdits} edit${appliedEdits === 1 ? '' : 's'}${occurrenceSuffix}, lines ${linesBefore} -> ${linesAfter} (+${totalAdded} / -${totalDeleted}), encoding ${sourceEncoding} -> ${resolvedTargetEncoding}, lineEnding ${lineEnding}.`;
 
   if (hunkBlocks.length === 0) {
     return {
@@ -1068,6 +1073,7 @@ export function applyAtomicPatch(
     lineEnding,
     patchedNormalized,
     sourceEncoding,
+    targetEncoding: options.targetEncoding,
   });
 
   return {

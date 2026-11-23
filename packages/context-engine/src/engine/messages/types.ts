@@ -240,6 +240,14 @@ export interface MessagesEngineParams {
   inputTemplate?: string;
   /** System role */
   systemRole?: string;
+  /** Pre-formatted `<project_rules>` block injected in Breakpoint 1 right after systemRole */
+  workspaceRulesBlock?: string;
+  /** Per-turn dynamic system additions (`instructions`, `resumeRule`, `setupHints`, `codeSourceRules`) injected after `<project_rules>` */
+  dynamicSystemAppend?: string;
+  /** Pre-formatted `<project_workspace_index>` block injected in Phase 3 after KnowledgeInjector */
+  workspaceIndexBlock?: string;
+  /** When true, suppresses unmasked workspace rules/index/deltas and masks historical workspace & searchKnowledgeBase tool outputs */
+  deepseekDataGuardProtected?: boolean;
 
   // ========== Capability injection (dependency injection) ==========
   /** Model capability checker */
@@ -355,6 +363,10 @@ export interface MessagesEngineResult {
 
 export { type ArckepToolResultTrimConfig } from '../../processors/ArckepToolResultTrim';
 export { type AgentInfo } from '../../processors/GroupRoleTransform';
+export {
+  type WorkspaceDeltaItem,
+  type WorkspaceDeltaPayload,
+} from '../../processors/MessageContent';
 export { type AgentBuilderContext } from '../../providers/AgentBuilderContextInjector';
 export { type AgentManagementContext } from '../../providers/AgentManagementContextInjector';
 export { type BotPlatformContext } from '../../providers/BotPlatformContextInjector';
@@ -363,6 +375,15 @@ export { type EvalContext } from '../../providers/EvalContextSystemInjector';
 export { type GroupAgentBuilderContext } from '../../providers/GroupAgentBuilderContextInjector';
 export { type GTDPlan } from '../../providers/GTDPlanInjector';
 export { type GTDTodoItem, type GTDTodoList } from '../../providers/GTDTodoInjector';
+export {
+  type ProjectWorkspaceIndexInjectorConfig,
+  type WorkspaceIndexEntryInput,
+} from '../../providers/ProjectWorkspaceIndexInjector';
+export {
+  type DynamicSystemAppendInjectorConfig,
+  type ProjectWorkspaceRulesInjectorConfig,
+  type WorkspaceRuleFileInput,
+} from '../../providers/ProjectWorkspaceRulesInjector';
 export { type SkillMeta } from '../../providers/SkillContextProvider';
 export { type ToolDiscoveryMeta } from '../../providers/ToolDiscoveryProvider';
 export { type TopicReferenceItem } from '../../providers/TopicReferenceContextInjector';

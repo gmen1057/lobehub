@@ -42,7 +42,120 @@ export interface FileContextConfig {
   includeFileUrl?: boolean;
 }
 
+export interface WorkspaceDeltaItem {
+  action: string;
+  path: string;
+  prevRevision?: number;
+  revision?: number;
+}
+
+export type WorkspaceDeltaPayload =
+  | string
+  | {
+      items?: WorkspaceDeltaItem[];
+      rulesBlock?: string;
+      summary?: string;
+    };
+
+const stripDeltaInlineControls = (raw: string): string => {
+  let out = '';
+  for (const ch of raw) {
+    const cp = ch.codePointAt(0) ?? 0;
+    if (ch === '\r' || ch === '\n' || ch === '\t' || ch === '<' || ch === '>') {
+      out += ' ';
+      continue;
+    }
+    if (cp <= 0x1f || (cp >= 0x7f && cp <= 0x9f)) {
+      continue;
+    }
+    out += ch;
+  }
+  return out
+    .replaceAll(/\p{Cf}/gu, '')
+    .replaceAll(/\s+/g, ' ')
+    .trim();
+};
+
+const escapeClosingWorkspaceUpdatesTag = (raw: string): string =>
+  raw.replaceAll(/<\/\s*workspace_updates\s*>/gi, '&lt;/workspace_updates&gt;');
+
+/**
+ * Deterministically formats a persisted `message.metadata.workspaceDelta` into a
+ * `<workspace_updates trust="untrusted_workspace_data">` block (or `null` when empty).
+ */
+export const formatWorkspaceUpdates = (delta: unknown): string | null => {
+  if (delta === null || delta === undefined) return null;
+
+  if (typeof delta === 'string') {
+    const trimmed = delta.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('<workspace_updates')) {
+      return trimmed;
+    }
+    return `<workspace_updates trust="untrusted_workspace_data">\n${escapeClosingWorkspaceUpdatesTag(trimmed)}\n</workspace_updates>`;
+  }
+
+  if (typeof delta === 'object' && !Array.isArray(delta)) {
+    const record = delta as Record<string, unknown>;
+    const summaryRaw = typeof record.summary === 'string' ? record.summary.trim() : '';
+    const summary = summaryRaw ? escapeClosingWorkspaceUpdatesTag(summaryRaw) : '';
+    const itemsRaw = Array.isArray(record.items) ? record.items : [];
+    const itemLines: string[] = [];
+
+    for (const item of itemsRaw) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as Record<string, unknown>;
+      const cleanPath = typeof entry.path === 'string' ? stripDeltaInlineControls(entry.path) : '';
+      if (!cleanPath) continue;
+      const cleanAction =
+        typeof entry.action === 'string' && stripDeltaInlineControls(entry.action)
+          ? stripDeltaInlineControls(entry.action)
+          : 'updated';
+
+      const prevRev =
+        typeof entry.prevRevision === 'number' && Number.isFinite(entry.prevRevision)
+          ? Math.floor(entry.prevRevision)
+          : undefined;
+      const rev =
+        typeof entry.revision === 'number' && Number.isFinite(entry.revision)
+          ? Math.floor(entry.revision)
+          : undefined;
+
+      let revSuffix = '';
+      if (prevRev !== undefined && rev !== undefined) {
+        revSuffix = ` (v${prevRev} -> v${rev})`;
+      } else if (rev !== undefined) {
+        revSuffix = ` (v${rev})`;
+      }
+
+      itemLines.push(`- ${cleanPath}: ${cleanAction}${revSuffix}`);
+    }
+
+    const rulesBlockRaw = typeof record.rulesBlock === 'string' ? record.rulesBlock.trim() : '';
+    let updatedRulesSection = '';
+    if (rulesBlockRaw) {
+      const safeRules = escapeClosingWorkspaceUpdatesTag(rulesBlockRaw);
+      updatedRulesSection = safeRules.startsWith('<updated_project_rules')
+        ? safeRules
+        : `<updated_project_rules>\n${safeRules}\n</updated_project_rules>`;
+    }
+
+    const sections: string[] = [];
+    if (summary) sections.push(summary);
+    if (itemLines.length > 0) sections.push(itemLines.join('\n'));
+    if (updatedRulesSection) sections.push(updatedRulesSection);
+
+    if (sections.length === 0) return null;
+
+    return `<workspace_updates trust="untrusted_workspace_data">\n${sections.join('\n')}\n</workspace_updates>`;
+  }
+
+  return null;
+};
+
 export interface MessageContentConfig {
+  /** Suppresses unmasked workspaceDelta rendering when Data Guard protected mode is active */
+  deepseekDataGuardProtected?: boolean;
   /** File context configuration */
   fileContext?: FileContextConfig;
   /** Function to check if video is supported */
@@ -178,12 +291,40 @@ export class MessageContentProcessor extends BaseProcessor {
       fileList = await this.hydrateSvgFileContents(fileList);
     }
     const hasFiles = fileList && fileList.length > 0;
+    const updatesBlock = !this.config.deepseekDataGuardProtected
+      ? formatWorkspaceUpdates(message.metadata?.workspaceDelta)
+      : null;
 
-    // If no images, videos and files, return plain text content directly
+    // If no images, videos and files, return plain text content (with deterministic workspaceDelta if present)
     if (!hasImages && !hasVideos && !hasFiles) {
+      if (!updatesBlock) {
+        return {
+          ...message,
+          content: message.content,
+        };
+      }
+
+      if (Array.isArray(message.content)) {
+        const nextParts = [...message.content];
+        const lastTextIdx = nextParts.findLastIndex((part: any) => part?.type === 'text');
+        if (lastTextIdx !== -1) {
+          const prevText = nextParts[lastTextIdx].text || '';
+          nextParts[lastTextIdx] = {
+            ...nextParts[lastTextIdx],
+            text: prevText ? `${prevText}\n\n${updatesBlock}` : updatesBlock,
+          };
+        } else {
+          nextParts.push({ text: updatesBlock, type: 'text' });
+        }
+        return {
+          ...message,
+          content: nextParts,
+        };
+      }
+
       return {
         ...message,
-        content: message.content,
+        content: message.content ? `${message.content}\n\n${updatesBlock}` : updatesBlock,
       };
     }
 
@@ -218,6 +359,10 @@ export class MessageContentProcessor extends BaseProcessor {
       if (filesContext) {
         textContent = (textContent + '\n\n' + filesContext).trim();
       }
+    }
+
+    if (updatesBlock) {
+      textContent = textContent ? `${textContent}\n\n${updatesBlock}` : updatesBlock;
     }
 
     // Add text part

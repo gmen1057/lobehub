@@ -26,6 +26,7 @@ import { localSystemRuntime } from './localSystem';
 import { memoryRuntime } from './memory';
 import { messageRuntime } from './message';
 import { notebookRuntime } from './notebook';
+import { projectWorkspaceRuntime } from './projectWorkspace';
 import { remoteDeviceRuntime } from './remoteDevice';
 import { skillsRuntime } from './skills';
 import { skillStoreRuntime } from './skillStore';
@@ -65,6 +66,7 @@ registerRuntimes([
   calculatorRuntime,
   agentDocumentsRuntime,
   notebookRuntime,
+  projectWorkspaceRuntime,
   skillStoreRuntime,
   skillsRuntime,
   memoryRuntime,

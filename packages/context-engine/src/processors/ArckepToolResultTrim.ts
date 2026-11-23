@@ -20,8 +20,31 @@ const DEFAULT_WARM_BREAK_EVEN_RATIO = 0.35;
 const DEFAULT_WARM_MAX_DEFERRED_TURNS = 3;
 
 const TEXT_FILE_RECEIPT_PREFIX = 'ARCKEP_TEXT_FILE_V1\n';
+const WORKSPACE_CHANGE_PREFIX = 'ARCKEP_WORKSPACE_CHANGE ';
+const WORKSPACE_PROPOSAL_PREFIX = 'ARCKEP_WORKSPACE_PROPOSAL ';
+const DATA_GUARD_MASKED_TOOL_CONTENT =
+  '[Содержимое незащищённого файла проекта скрыто в защищённом режиме]';
+const WORKSPACE_WRITE_ARG_COMPACT_CHARS = 600;
+const WORKSPACE_SEARCH_OLD_COMPACT_CHARS = 800;
 const LOADING_FLAT = '...';
 const PLUGIN_SCHEMA_SEPARATOR = '____';
+
+type WorkspaceToolApiName =
+  | 'deleteProjectFile'
+  | 'listProjectFiles'
+  | 'patchProjectFile'
+  | 'readProjectFile'
+  | 'searchProjectFiles'
+  | 'writeProjectFile';
+
+const WORKSPACE_TOOL_APIS = new Set<WorkspaceToolApiName>([
+  'deleteProjectFile',
+  'listProjectFiles',
+  'patchProjectFile',
+  'readProjectFile',
+  'searchProjectFiles',
+  'writeProjectFile',
+]);
 
 const ARTIFACT_BLOCK_RE = /(<lobeArtifact\b([^>]*)(?<!\/)>)([\s\S]*?)(<\/lobeArtifact>)/g;
 const IDENTIFIER_ATTR_RE = /\bidentifier\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
@@ -99,6 +122,11 @@ interface IndexedToolMessage {
   listModelsKey?: string;
   parsedArgs: Record<string, unknown> | null;
   readKnowledgeKey?: string;
+  workspaceMutationPaths?: string[];
+  workspacePath?: string;
+  workspaceRead?: boolean;
+  workspaceReadKey?: string;
+  workspaceToolApi?: WorkspaceToolApiName;
 }
 
 interface PrefixEvalResult {
@@ -167,6 +195,114 @@ const isProtectedTextFileTool = (
     return true;
   if (typeof rawName === 'string' && rawName.startsWith('arckep-text-file____')) return true;
   return false;
+};
+
+const resolveWorkspaceToolApi = (
+  identifier: string,
+  apiName: string,
+  rawName?: string,
+): WorkspaceToolApiName | null => {
+  if (
+    identifier === 'arckep-workspace' &&
+    WORKSPACE_TOOL_APIS.has(apiName as WorkspaceToolApiName)
+  ) {
+    return apiName as WorkspaceToolApiName;
+  }
+  if (typeof rawName === 'string' && rawName.includes('arckep-workspace')) {
+    for (const sep of [PLUGIN_SCHEMA_SEPARATOR, '.', '/', '__']) {
+      const prefix = `arckep-workspace${sep}`;
+      if (rawName.startsWith(prefix)) {
+        const rest = rawName.slice(prefix.length).split(PLUGIN_SCHEMA_SEPARATOR)[0] ?? '';
+        if (WORKSPACE_TOOL_APIS.has(rest as WorkspaceToolApiName)) {
+          return rest as WorkspaceToolApiName;
+        }
+      }
+    }
+  }
+  return null;
+};
+
+const normalizeWorkspacePathKey = (rawPath: unknown): string | undefined => {
+  if (typeof rawPath !== 'string') return undefined;
+  const normalized = rawPath.normalize('NFC').trim().replaceAll('\\', '/').replace(/^\/+/, '');
+  return normalized || undefined;
+};
+
+const extractWorkspaceReceiptLines = (content: string): string[] => {
+  if (!content.includes(WORKSPACE_CHANGE_PREFIX) && !content.includes(WORKSPACE_PROPOSAL_PREFIX)) {
+    return [];
+  }
+  const receipts: string[] = [];
+  for (const rawLine of content.split('\n')) {
+    const line = rawLine.trim();
+    if (line.startsWith(WORKSPACE_CHANGE_PREFIX) || line.startsWith(WORKSPACE_PROPOSAL_PREFIX)) {
+      receipts.push(line);
+    }
+  }
+  return receipts;
+};
+
+const extractMutatedPathsFromReceipts = (content: string): string[] => {
+  if (!content.includes(WORKSPACE_CHANGE_PREFIX)) return [];
+  const paths: string[] = [];
+  for (const line of extractWorkspaceReceiptLines(content)) {
+    if (!line.startsWith(WORKSPACE_CHANGE_PREFIX)) continue;
+    const jsonPart = line.slice(WORKSPACE_CHANGE_PREFIX.length).trim();
+    const parsed = safeParseJsonObject(jsonPart);
+    const p = normalizeWorkspacePathKey(parsed?.path);
+    if (p && !paths.includes(p)) paths.push(p);
+  }
+  return paths;
+};
+
+const ensureWorkspaceReceiptsPreserved = (replacement: string, originalContent: string): string => {
+  const receipts = extractWorkspaceReceiptLines(originalContent);
+  if (receipts.length === 0) return replacement;
+  const missing = receipts.filter((r) => !replacement.includes(r));
+  if (missing.length === 0) return replacement;
+  return `${replacement}\n${missing.join('\n')}`;
+};
+
+const compactWorkspaceWriterArgumentsJson = (
+  wsApi: WorkspaceToolApiName,
+  rawArgs: string,
+): string => {
+  if (wsApi !== 'writeProjectFile' && wsApi !== 'patchProjectFile') return rawArgs;
+  if (rawArgs.length <= WORKSPACE_WRITE_ARG_COMPACT_CHARS) return rawArgs;
+
+  try {
+    const parsed = JSON.parse(rawArgs);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return rawArgs;
+    const nextObj: Record<string, unknown> = { ...(parsed as Record<string, unknown>) };
+    let changed = false;
+
+    if (
+      wsApi === 'writeProjectFile' &&
+      typeof nextObj.content === 'string' &&
+      nextObj.content.length > WORKSPACE_WRITE_ARG_COMPACT_CHARS
+    ) {
+      const orig = nextObj.content;
+      nextObj.content = `${orig.slice(0, 120)}\n…[содержимое writeProjectFile (${orig.length} знаков) из прежнего хода сокращено]…\n${orig.slice(-80)}`;
+      changed = true;
+    } else if (wsApi === 'patchProjectFile' && Array.isArray(nextObj.edits)) {
+      const editsJsonLen = JSON.stringify(nextObj.edits).length;
+      if (editsJsonLen > WORKSPACE_WRITE_ARG_COMPACT_CHARS) {
+        nextObj.edits = [
+          {
+            newText: `[содержимое ${nextObj.edits.length} правок patchProjectFile (${editsJsonLen} знаков) из прежнего хода сокращено]`,
+            oldText: '[прежний фрагмент сокращён]',
+          },
+        ];
+        changed = true;
+      }
+    }
+
+    if (!changed) return rawArgs;
+    const serialized = JSON.stringify(nextObj);
+    return serialized.length < rawArgs.length ? serialized : rawArgs;
+  } catch {
+    return rawArgs;
+  }
 };
 
 const compactToolArgumentsJson = (rawArgs: string): string => {
@@ -578,6 +714,8 @@ const buildPagedHeadTailTrim = (content: string): string => {
   if (headerJson) {
     for (const key of [
       'fileId',
+      'path',
+      'revision',
       'startOffset',
       'endOffset',
       'nextOffset',
@@ -600,6 +738,145 @@ const buildPagedHeadTailTrim = (content: string): string => {
   }
   const cursorSuffix = Object.keys(cursor).length > 0 ? ` ${JSON.stringify(cursor)}` : '';
   return `${content.slice(0, TOOL_CONTENT_HEAD_CHARS)}\n…[вывод инструмента (${content.length} знаков) из прежнего шага сокращён${cursorSuffix}]…\n${content.slice(-TOOL_CONTENT_TAIL_CHARS)}`;
+};
+
+const WORKSPACE_ATTR_PATH_RE = /\bpath\s*=\s*(?:"([^"]+)"|'([^']+)')/i;
+const WORKSPACE_ATTR_REV_RE = /\brevision\s*=\s*(?:"(\d+)"|'(\d+)'|(\d+))/i;
+const WORKSPACE_NEXT_LINE_RE = /"nextStartLine"\s*:\s*(\d+|null)|\bnextStartLine\s*=\s*(\d+|null)/;
+
+const extractWorkspaceToolMeta = (
+  msg: any,
+  args: Record<string, unknown> | null,
+): {
+  cursor: Record<string, unknown>;
+  path?: string;
+  readKey?: string;
+  revision?: number;
+} => {
+  const content = typeof msg?.content === 'string' ? msg.content : '';
+  const headerJson = extractFirstLineJson(content);
+  const covMatch = COVERAGE_BLOCK_RE.exec(content);
+  const covJson = covMatch?.[1] ? safeParseJsonObject(covMatch[1]) : null;
+  const state = msg?.pluginState && typeof msg.pluginState === 'object' ? msg.pluginState : null;
+
+  let path =
+    normalizeWorkspacePathKey(args?.path) ??
+    normalizeWorkspacePathKey(headerJson?.path) ??
+    normalizeWorkspacePathKey(covJson?.path) ??
+    normalizeWorkspacePathKey(state?.path);
+
+  if (!path) {
+    const firstSlice = content.slice(0, 600);
+    const attrMatch = WORKSPACE_ATTR_PATH_RE.exec(firstSlice);
+    path = normalizeWorkspacePathKey(attrMatch?.[1] ?? attrMatch?.[2]);
+  }
+
+  let revision: number | undefined;
+  for (const candidate of [
+    headerJson?.revision,
+    headerJson?.currentRevision,
+    covJson?.revision,
+    state?.revision,
+    state?.currentRevision,
+    args?.revision,
+  ]) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      revision = Math.floor(candidate);
+      break;
+    }
+  }
+  if (revision === undefined) {
+    const firstSlice = content.slice(0, 600);
+    const revMatch = WORKSPACE_ATTR_REV_RE.exec(firstSlice);
+    const rawRev = revMatch?.[1] ?? revMatch?.[2] ?? revMatch?.[3];
+    if (rawRev) revision = Number(rawRev);
+  }
+
+  const pickNumberOrNull = (key: string): number | null | undefined => {
+    for (const src of [headerJson, covJson, state]) {
+      if (!src) continue;
+      if (typeof src[key] === 'number' && Number.isFinite(src[key] as number)) {
+        return Math.floor(src[key] as number);
+      }
+      if (src[key] === null) return null;
+    }
+    return undefined;
+  };
+
+  let nextStartLine = pickNumberOrNull('nextStartLine');
+  if (nextStartLine === undefined) {
+    const nlMatch = WORKSPACE_NEXT_LINE_RE.exec(content.slice(0, 1200));
+    const rawNl = nlMatch?.[1] ?? nlMatch?.[2];
+    if (rawNl === 'null') nextStartLine = null;
+    else if (rawNl) nextStartLine = Number(rawNl);
+  }
+
+  const startLine = pickNumberOrNull('startLine');
+  const endLine = pickNumberOrNull('endLine');
+  const totalLines = pickNumberOrNull('totalLines');
+  const startOffset = pickNumberOrNull('startOffset');
+  const endOffset = pickNumberOrNull('endOffset');
+  const nextOffset = pickNumberOrNull('nextOffset');
+
+  const cursor: Record<string, unknown> = {};
+  if (path) cursor.path = path;
+  if (revision !== undefined) cursor.revision = revision;
+  if (typeof startLine === 'number') cursor.startLine = startLine;
+  if (typeof endLine === 'number') cursor.endLine = endLine;
+  if (nextStartLine !== undefined) cursor.nextStartLine = nextStartLine;
+  if (typeof totalLines === 'number') cursor.totalLines = totalLines;
+  if (typeof startOffset === 'number') cursor.startOffset = startOffset;
+  if (typeof endOffset === 'number') cursor.endOffset = endOffset;
+  if (nextOffset !== undefined) cursor.nextOffset = nextOffset;
+  if (typeof args?.query === 'string' && args.query.trim() && args.query.trim().length < 120) {
+    cursor.query = args.query.trim();
+  }
+
+  let readKey: string | undefined;
+  if (path) {
+    const normOffset = normalizeNonNegativeInt(args?.offset, 0);
+    const normQuery = typeof args?.query === 'string' ? args.query.trim() : '';
+    const normStartLine =
+      normalizeOptionalInt(args?.startLine) ?? (args?.offset !== undefined ? null : 1);
+    const normMaxLines = normalizeOptionalInt(args?.maxLines ?? args?.limit);
+    readKey = JSON.stringify({
+      maxLines: normMaxLines,
+      offset: normOffset,
+      path,
+      query: normQuery,
+      startLine: normStartLine,
+    });
+  }
+
+  return { cursor, path, readKey, revision };
+};
+
+const buildWorkspaceReadStub = (
+  content: string,
+  cursor: Record<string, unknown>,
+  superseded: boolean,
+): string => {
+  const payload: Record<string, unknown> = {
+    ...cursor,
+    ...(superseded ? { superseded: true } : {}),
+  };
+  const label = typeof cursor.path === 'string' ? `"${cursor.path}"` : 'workspace file';
+  const base = superseded
+    ? `Original workspace file read (${content.length} chars) omitted: superseded by a newer read or edit of ${label}. Repeat readProjectFile if needed. ${JSON.stringify(payload)}`
+    : `Original workspace file page retained (${content.length} chars). Repeat readProjectFile to retrieve ${label}. ${JSON.stringify(payload)}`;
+  return ensureWorkspaceReceiptsPreserved(base, content);
+};
+
+const buildWorkspaceSearchOrListTrim = (
+  content: string,
+  apiName: string,
+  cursor: Record<string, unknown>,
+): string => {
+  const headChars = 360;
+  const tailChars = 180;
+  const cursorSuffix = Object.keys(cursor).length > 0 ? ` ${JSON.stringify(cursor)}` : '';
+  const base = `${content.slice(0, headChars)}\n…[вывод ${apiName} (${content.length} знаков) из прежнего хода сокращён${cursorSuffix}]…\n${content.slice(-tailChars)}`;
+  return ensureWorkspaceReceiptsPreserved(base, content);
 };
 
 const extractAgentDocMeta = (
@@ -1045,6 +1322,7 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
         (typeof msg.content === 'string' && msg.content.startsWith(TEXT_FILE_RECEIPT_PREFIX));
 
       const isError = detectToolMessageError(msg);
+      const workspaceToolApi = resolveWorkspaceToolApi(identifier, apiName, msg.name) ?? undefined;
 
       const entry: IndexedToolMessage = {
         apiName,
@@ -1056,10 +1334,38 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
         isError,
         isProtectedTextFile,
         parsedArgs,
+        ...(workspaceToolApi ? { workspaceToolApi } : {}),
       };
 
       if (!isError && !isProtectedTextFile) {
-        if (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') {
+        const msgContentStr = typeof msg.content === 'string' ? msg.content : '';
+        const receiptPaths = extractMutatedPathsFromReceipts(msgContentStr);
+        if (receiptPaths.length > 0) {
+          entry.workspaceMutationPaths = receiptPaths;
+        }
+
+        if (workspaceToolApi) {
+          const meta = extractWorkspaceToolMeta(msg, parsedArgs);
+          if (meta.path) entry.workspacePath = meta.path;
+
+          if (workspaceToolApi === 'readProjectFile') {
+            entry.workspaceRead = true;
+            entry.workspaceReadKey = meta.readKey;
+          } else if (
+            workspaceToolApi === 'writeProjectFile' ||
+            workspaceToolApi === 'patchProjectFile' ||
+            workspaceToolApi === 'deleteProjectFile'
+          ) {
+            const isProposalOnly =
+              msgContentStr.includes(WORKSPACE_PROPOSAL_PREFIX) &&
+              !msgContentStr.includes(WORKSPACE_CHANGE_PREFIX);
+            if (!isProposalOnly && meta.path) {
+              const paths = entry.workspaceMutationPaths ? [...entry.workspaceMutationPaths] : [];
+              if (!paths.includes(meta.path)) paths.push(meta.path);
+              entry.workspaceMutationPaths = paths;
+            }
+          }
+        } else if (identifier === 'lobe-knowledge-base' && apiName === 'readKnowledge') {
           entry.readKnowledgeKey = extractReadKnowledgeKey(parsedArgs);
         } else if (identifier === 'lobe-agent-documents') {
           if (apiName === 'readDocument' || apiName === 'readDocumentByFilename') {
@@ -1157,6 +1463,7 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
     const latestActivateSkill = new Map<string, number>();
     const latestListModels = new Map<string, number>();
     const docEventsInBound: IndexedToolMessage[] = [];
+    const workspaceEventsInBound: IndexedToolMessage[] = [];
 
     orderedToolsInBound.forEach((info, rank) => {
       canonicalRankByMsgIndex.set(info.index, rank);
@@ -1172,7 +1479,35 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
       if (info.agentDocRead || info.agentDocMutation) {
         docEventsInBound.push(info);
       }
+      if (
+        info.workspaceRead ||
+        (info.workspaceMutationPaths && info.workspaceMutationPaths.length > 0)
+      ) {
+        workspaceEventsInBound.push(info);
+      }
     });
+
+    const supersededWorkspaceReads = new Set<number>();
+    for (let a = 0; a < workspaceEventsInBound.length; a++) {
+      const earlier = workspaceEventsInBound[a];
+      if (!earlier.workspaceRead || !earlier.workspacePath) continue;
+
+      for (let b = a + 1; b < workspaceEventsInBound.length; b++) {
+        const later = workspaceEventsInBound[b];
+        if (later.workspaceMutationPaths?.includes(earlier.workspacePath)) {
+          supersededWorkspaceReads.add(earlier.index);
+          break;
+        }
+        if (
+          later.workspaceRead &&
+          earlier.workspaceReadKey &&
+          later.workspaceReadKey === earlier.workspaceReadKey
+        ) {
+          supersededWorkspaceReads.add(earlier.index);
+          break;
+        }
+      }
+    }
 
     const supersededAgentDocReads = new Set<number>();
     for (let a = 0; a < docEventsInBound.length; a++) {
@@ -1309,10 +1644,34 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
             let tcChanged = false;
             const nextToolCalls = nextMsg.tool_calls.map((tc: any, idx: number) => {
               const rawArgs = tc?.function?.arguments;
-              if (typeof rawArgs !== 'string' || rawArgs.length <= MAX_OLD_TOOL_ARGUMENTS_CHARS) {
+              if (typeof rawArgs !== 'string') {
                 return tc;
               }
               const parsedName = parseToolName(tc.function?.name);
+              const wsApi = resolveWorkspaceToolApi(
+                parsedName?.identifier ?? '',
+                parsedName?.apiName ?? '',
+                tc.function?.name,
+              );
+              if (wsApi === 'writeProjectFile' || wsApi === 'patchProjectFile') {
+                const compactedWsArgs = compactWorkspaceWriterArgumentsJson(wsApi, rawArgs);
+                if (compactedWsArgs !== rawArgs) {
+                  tcChanged = true;
+                  const key = typeof tc.id === 'string' && tc.id ? tc.id : `idx:${idx}`;
+                  trimmedCallIds.add(key);
+                  charsSavedInCalls += rawArgs.length - compactedWsArgs.length;
+                  return {
+                    ...tc,
+                    function: {
+                      ...tc.function,
+                      arguments: compactedWsArgs,
+                    },
+                  };
+                }
+              }
+              if (rawArgs.length <= MAX_OLD_TOOL_ARGUMENTS_CHARS) {
+                return tc;
+              }
               if (
                 isProtectedTextFileTool(
                   parsedName?.identifier ?? '',
@@ -1348,15 +1707,28 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
             let toolsChanged = false;
             const nextTools = nextMsg.tools.map((tool: any, idx: number) => {
               const rawArgs = tool?.arguments;
-              if (typeof rawArgs !== 'string' || rawArgs.length <= MAX_OLD_TOOL_ARGUMENTS_CHARS) {
+              if (typeof rawArgs !== 'string') {
                 return tool;
               }
-              if (
-                isProtectedTextFileTool(
-                  typeof tool.identifier === 'string' ? tool.identifier : '',
-                  typeof tool.apiName === 'string' ? tool.apiName : '',
-                )
-              ) {
+              const toolId = typeof tool.identifier === 'string' ? tool.identifier : '';
+              const toolApi = typeof tool.apiName === 'string' ? tool.apiName : '';
+              const wsApi = resolveWorkspaceToolApi(toolId, toolApi);
+              if (wsApi === 'writeProjectFile' || wsApi === 'patchProjectFile') {
+                const compactedWsArgs = compactWorkspaceWriterArgumentsJson(wsApi, rawArgs);
+                if (compactedWsArgs !== rawArgs) {
+                  toolsChanged = true;
+                  const key = typeof tool.id === 'string' && tool.id ? tool.id : `idx:${idx}`;
+                  if (!trimmedCallIds.has(key)) {
+                    trimmedCallIds.add(key);
+                    charsSavedInCalls += rawArgs.length - compactedWsArgs.length;
+                  }
+                  return { ...tool, arguments: compactedWsArgs };
+                }
+              }
+              if (rawArgs.length <= MAX_OLD_TOOL_ARGUMENTS_CHARS) {
+                return tool;
+              }
+              if (isProtectedTextFileTool(toolId, toolApi)) {
                 return tool;
               }
               const compactedArgs = compactToolArgumentsJson(rawArgs);
@@ -1399,8 +1771,12 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
           continue;
         }
 
-        // Rule (6): NEVER touch arckep-text-file / writePart or ARCKEP_TEXT_FILE_V1\n receipts
-        if (info.isProtectedTextFile || content.startsWith(TEXT_FILE_RECEIPT_PREFIX)) {
+        // Rule (6): NEVER touch arckep-text-file / writePart, ARCKEP_TEXT_FILE_V1\n receipts, or Data Guard masked messages
+        if (
+          info.isProtectedTextFile ||
+          content.startsWith(TEXT_FILE_RECEIPT_PREFIX) ||
+          content === DATA_GUARD_MASKED_TOOL_CONTENT
+        ) {
           nextMessages[i] = nextMsg;
           continue;
         }
@@ -1414,8 +1790,65 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
         let replacement: string | undefined;
         let isDeduplicated = false;
 
+        // Rule (0): arckep-workspace tools (readProjectFile, searchProjectFiles, listProjectFiles, mutations)
+        if (info.workspaceToolApi) {
+          const wsApi = info.workspaceToolApi;
+          const meta = extractWorkspaceToolMeta(nextMsg, info.parsedArgs);
+
+          if (wsApi === 'readProjectFile') {
+            const isSuperseded = toolInDedupWindow && supersededWorkspaceReads.has(i);
+            if (isSuperseded || (toolIsOld && !info.isError)) {
+              const stub = buildWorkspaceReadStub(content, meta.cursor, isSuperseded);
+              if (stub.length < content.length) {
+                replacement = stub;
+                isDeduplicated = isSuperseded;
+              }
+            } else if (toolIsOld && content.length > MAX_OLD_TOOL_CONTENT_CHARS) {
+              replacement = ensureWorkspaceReceiptsPreserved(
+                compactStringValue(
+                  content,
+                  TOOL_CONTENT_HEAD_CHARS,
+                  TOOL_CONTENT_TAIL_CHARS,
+                  'вывод инструмента',
+                ),
+                content,
+              );
+            }
+          } else if (wsApi === 'searchProjectFiles' || wsApi === 'listProjectFiles') {
+            if (toolIsOld && !info.isError && content.length > WORKSPACE_SEARCH_OLD_COMPACT_CHARS) {
+              const trimmed = buildWorkspaceSearchOrListTrim(content, wsApi, meta.cursor);
+              if (trimmed.length < content.length) {
+                replacement = trimmed;
+              }
+            } else if (toolIsOld && content.length > MAX_OLD_TOOL_CONTENT_CHARS) {
+              replacement = ensureWorkspaceReceiptsPreserved(
+                compactStringValue(
+                  content,
+                  TOOL_CONTENT_HEAD_CHARS,
+                  TOOL_CONTENT_TAIL_CHARS,
+                  'вывод инструмента',
+                ),
+                content,
+              );
+            }
+          } else if (toolIsOld && content.length > MAX_OLD_TOOL_CONTENT_CHARS) {
+            // Mutation tools (writeProjectFile / patchProjectFile / deleteProjectFile): trim oversized body, keep receipts!
+            const trimmed = ensureWorkspaceReceiptsPreserved(
+              compactStringValue(
+                content,
+                TOOL_CONTENT_HEAD_CHARS,
+                TOOL_CONTENT_TAIL_CHARS,
+                'вывод инструмента',
+              ),
+              content,
+            );
+            if (trimmed.length < content.length) {
+              replacement = trimmed;
+            }
+          }
+        }
         // Rule (4): lobe-activator / activateSkill — ALWAYS keep the latest successful activation per skillName intact!
-        if (identifier === 'lobe-activator' && apiName === 'activateSkill' && !info.isError) {
+        else if (identifier === 'lobe-activator' && apiName === 'activateSkill' && !info.isError) {
           const skillName = info.activateSkillName;
           if (skillName && toolInDedupWindow && myRank >= 0) {
             const latestRank = latestActivateSkill.get(skillName);
@@ -1516,11 +1949,14 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
         }
         // Rule (5b): mcp-arckep-studio-web / web_search, mcp-arckep-e2b-sandbox / execute_code, and all other old > 4000 tool outputs
         else if (toolIsOld && content.length > MAX_OLD_TOOL_CONTENT_CHARS) {
-          const trimmed = compactStringValue(
+          const trimmed = ensureWorkspaceReceiptsPreserved(
+            compactStringValue(
+              content,
+              TOOL_CONTENT_HEAD_CHARS,
+              TOOL_CONTENT_TAIL_CHARS,
+              'вывод инструмента',
+            ),
             content,
-            TOOL_CONTENT_HEAD_CHARS,
-            TOOL_CONTENT_TAIL_CHARS,
-            'вывод инструмента',
           );
           if (trimmed.length < content.length) {
             replacement = trimmed;

@@ -41,6 +41,7 @@ import {
   runAutoExtract,
   runDailyDigest,
 } from '@/server/services/memory/userMemory/arckepAutoExtract';
+import { isWorkspaceEnabled } from '@/server/services/projectWorkspace';
 import { resolveArckepUserId } from '@/server/services/toolExecution/serverRuntimes/arckepStudio';
 import { UserMcpGatewayError } from '@/server/services/userMcp/gateway';
 import type { ProviderConfig } from '@/types/user/settings';
@@ -683,7 +684,14 @@ export class ArckepController extends BaseController {
       const agentId = c.req.param('id');
       if (!agentId) return this.error(c, 'Agent id is required', 400);
       const knowledge = await new AgentModel(db, userId).getAgentAssignedKnowledge(agentId);
-      return this.success(c, knowledge, 'agent knowledge');
+      const filteredKnowledgeBases = isWorkspaceEnabled()
+        ? knowledge.knowledgeBases.filter((kb) => kb?.type !== 'project_workspace')
+        : knowledge.knowledgeBases;
+      return this.success(
+        c,
+        { ...knowledge, knowledgeBases: filteredKnowledgeBases },
+        'agent knowledge',
+      );
     } catch (error) {
       return this.handleError(c, error);
     }
@@ -711,11 +719,18 @@ export class ArckepController extends BaseController {
         .limit(1);
       if (!agent) return this.error(c, 'Agent not found', 404);
       const [kb] = await db
-        .select({ id: knowledgeBases.id })
+        .select({ id: knowledgeBases.id, type: knowledgeBases.type })
         .from(knowledgeBases)
         .where(and(eq(knowledgeBases.id, knowledgeBaseId), eq(knowledgeBases.userId, userId)))
         .limit(1);
       if (!kb) return this.error(c, 'Knowledge base not found', 404);
+      if (isWorkspaceEnabled() && kb.type === 'project_workspace') {
+        return this.error(
+          c,
+          'Managed project workspace knowledge base cannot be linked manually',
+          409,
+        );
+      }
 
       await agentModel.deleteAgentKnowledgeBase(agentId, knowledgeBaseId);
       await agentModel.createAgentKnowledgeBase(agentId, knowledgeBaseId, body?.enabled ?? true);
@@ -740,6 +755,18 @@ export class ArckepController extends BaseController {
       const knowledgeBaseId = c.req.param('kbId');
       if (!agentId || !knowledgeBaseId) {
         return this.error(c, 'agentId and kbId are required', 400);
+      }
+      const [kb] = await db
+        .select({ id: knowledgeBases.id, type: knowledgeBases.type })
+        .from(knowledgeBases)
+        .where(and(eq(knowledgeBases.id, knowledgeBaseId), eq(knowledgeBases.userId, userId)))
+        .limit(1);
+      if (isWorkspaceEnabled() && kb?.type === 'project_workspace') {
+        return this.error(
+          c,
+          'Managed project workspace knowledge base cannot be unlinked manually',
+          409,
+        );
       }
       await new AgentModel(db, userId).deleteAgentKnowledgeBase(agentId, knowledgeBaseId);
       return this.success(c, { agentId, knowledgeBaseId }, 'unlinked');

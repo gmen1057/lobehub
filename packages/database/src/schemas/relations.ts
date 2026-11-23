@@ -15,6 +15,11 @@ import { chatGroups, chatGroupsAgents } from './chatGroup';
 import { documents, files, knowledgeBases } from './file';
 import { generationBatches, generations, generationTopics } from './generation';
 import { messageGroups, messages, messagesFiles, messageTranslates } from './message';
+import {
+  projectFileProposals,
+  projectFileRevisions,
+  projectWorkspaceFiles,
+} from './projectWorkspace';
 import { chunks, documentChunks, unstructuredChunks } from './rag';
 import { sessionGroups, sessions } from './session';
 import { threads, topicDocuments, topics } from './topic';
@@ -402,5 +407,81 @@ export const agentEvalRunTopicsRelations = relations(agentEvalRunTopics, ({ one 
   testCase: one(agentEvalTestCases, {
     fields: [agentEvalRunTopics.testCaseId],
     references: [agentEvalTestCases.id],
+  }),
+}));
+
+// Project Workspace-related relation definitions
+export const projectWorkspaceFilesRelations = relations(projectWorkspaceFiles, ({ one, many }) => ({
+  user: one(users, {
+    fields: [projectWorkspaceFiles.userId],
+    references: [users.id],
+  }),
+  agent: one(agents, {
+    fields: [projectWorkspaceFiles.agentId],
+    references: [agents.id],
+  }),
+  currentFile: one(files, {
+    fields: [projectWorkspaceFiles.currentFileId],
+    references: [files.id],
+  }),
+  currentDocument: one(documents, {
+    fields: [projectWorkspaceFiles.currentDocumentId],
+    references: [documents.id],
+  }),
+  lastTopic: one(topics, {
+    fields: [projectWorkspaceFiles.lastTopicId],
+    references: [topics.id],
+  }),
+  revisions: many(projectFileRevisions),
+  proposals: many(projectFileProposals),
+}));
+
+export const projectFileRevisionsRelations = relations(projectFileRevisions, ({ one }) => ({
+  workspaceFile: one(projectWorkspaceFiles, {
+    fields: [projectFileRevisions.workspaceFileId],
+    references: [projectWorkspaceFiles.id],
+  }),
+  user: one(users, {
+    fields: [projectFileRevisions.userId],
+    references: [users.id],
+  }),
+  agent: one(agents, {
+    fields: [projectFileRevisions.agentId],
+    references: [agents.id],
+  }),
+  file: one(files, {
+    fields: [projectFileRevisions.fileId],
+    references: [files.id],
+  }),
+  document: one(documents, {
+    fields: [projectFileRevisions.documentId],
+    references: [documents.id],
+  }),
+  topic: one(topics, {
+    fields: [projectFileRevisions.topicId],
+    references: [topics.id],
+  }),
+}));
+
+export const projectFileProposalsRelations = relations(projectFileProposals, ({ one }) => ({
+  workspaceFile: one(projectWorkspaceFiles, {
+    fields: [projectFileProposals.workspaceFileId],
+    references: [projectWorkspaceFiles.id],
+  }),
+  user: one(users, {
+    fields: [projectFileProposals.userId],
+    references: [users.id],
+  }),
+  agent: one(agents, {
+    fields: [projectFileProposals.agentId],
+    references: [agents.id],
+  }),
+  proposedFile: one(files, {
+    fields: [projectFileProposals.proposedFileId],
+    references: [files.id],
+  }),
+  topic: one(topics, {
+    fields: [projectFileProposals.topicId],
+    references: [topics.id],
   }),
 }));
