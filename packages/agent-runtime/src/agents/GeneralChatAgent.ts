@@ -377,7 +377,8 @@ export class GeneralChatAgent implements Agent {
 
     const useMidTurnEmergencyThreshold =
       options?.midTurn === true &&
-      (compressionConfig?.physicalWindowToken !== undefined ||
+      (compressionConfig?.midTurnWindowToken !== undefined ||
+        compressionConfig?.physicalWindowToken !== undefined ||
         compressionConfig?.midTurnThresholdRatio !== undefined);
 
     const compressionCheck = shouldCompress(
@@ -385,7 +386,9 @@ export class GeneralChatAgent implements Agent {
       useMidTurnEmergencyThreshold
         ? {
             maxWindowToken:
-              compressionConfig?.physicalWindowToken ?? compressionConfig?.maxWindowToken,
+              compressionConfig?.midTurnWindowToken ??
+              compressionConfig?.physicalWindowToken ??
+              compressionConfig?.maxWindowToken,
             thresholdRatio:
               compressionConfig?.midTurnThresholdRatio ?? DEFAULT_MID_TURN_THRESHOLD_RATIO,
           }

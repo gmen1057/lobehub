@@ -89,11 +89,18 @@ export interface GeneralAgentConfig {
     maxWindowToken?: number;
     /**
      * Emergency-only threshold ratio for mid-turn (Step > 0, tool loop) compression against
-     * `physicalWindowToken` (e.g. 0.85 => 850K on a 1M model). Prevents interrupting large
-     * in-flight requests that fit inside the model's real window and avoids mid-turn cache breaks.
+     * `midTurnWindowToken ?? physicalWindowToken` (e.g. 0.85 => 850K on a 1M flat model, or
+     * 0.92 => 92K on a 100K price-cliff model). Prevents interrupting large in-flight requests
+     * while protecting price cliffs and smaller physical windows.
      */
     midTurnThresholdRatio?: number;
-    /** Real physical context window of the model card (e.g. 1_000_000) used for mid-turn emergency check */
+    /**
+     * Context window ceiling for mid-turn (Step > 0) emergency compression.
+     * Equals `min(physicalWindowToken, priceCliffTokens)` for price-cliff models so mid-turn
+     * tool loops never cross a provider pricing cliff; falls back to `physicalWindowToken`.
+     */
+    midTurnWindowToken?: number;
+    /** Real physical context window of the model card (e.g. 1_000_000) used for summarizer budget & mid-turn fallback */
     physicalWindowToken?: number;
     /** Explicit threshold after a compression summary exists; default 0.65 reserves prompt headroom. */
     recompressionThresholdRatio?: number;

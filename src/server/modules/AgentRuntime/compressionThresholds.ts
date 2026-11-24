@@ -1,28 +1,31 @@
 import * as modelBank from 'model-bank';
 
 /**
- * Working auto-compression thresholds for flat-priced 1M-context models (no long-context price cliff):
- * - Initial auto-compression triggers above 345,000 tokens
- * - Subsequent recompression triggers above 415,000 tokens
+ * Unified auto-compression policy across all models:
+ * - Quality + budget ceiling: 350,000 tokens for flat-priced 500K–1M+ models
+ * - Step-0 initial auto-compression: 80% of effective ceiling
+ * - Step-0 recompression (with existing summary): 88% of effective ceiling (hysteresis)
+ * - Mid-turn emergency (Step > 0 tool loop):
+ *   - 92% of `min(cardWindow, priceCliff)` for price-cliff models and physical windows <= 350K
+ *     (strictly above 88% recompression, safely below 100% cliff / 413)
+ *   - 85% of real physical window for flat-priced models with physical window > 350K
+ *     (e.g. 850K on 1M models), so active tool loops finish on warm cache and compress at Step 0.
+ *
+ * NOTE: Do NOT pin `deepseek/deepseek-flash` to 32,768 here. `api.deepseek.com` accepts the full
+ * 1M total context window; DeepSeek's 32,768-token error (`user input too long, N tokens exceeds
+ * max 32768 tokens`) is a per-user-turn limit, not a total context window ceiling.
  */
-export const EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP = 1_000_000;
-export const FLAT_LONG_CONTEXT_MIN_WINDOW = 500_000;
-export const FLAT_LONG_CONTEXT_INITIAL_RATIO = 0.345;
-export const FLAT_LONG_CONTEXT_RECOMPRESSION_RATIO = 0.415;
-
+export const EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP = 350_000;
 export const DEFAULT_AUTO_COMPRESS_WINDOW = 128_000;
-export const DEFAULT_INITIAL_THRESHOLD_RATIO = 0.5;
-export const DEFAULT_RECOMPRESSION_THRESHOLD_RATIO = 0.65;
-/**
- * Mid-turn compression only fires as an emergency safety net near the model's real physical window
- * (e.g. 850K on a 1M model), so large active requests that fit inside the model's window finish
- * uninterrupted on warm prompt cache and compress cleanly at the next turn boundary (Step 0).
- */
+export const DEFAULT_INITIAL_THRESHOLD_RATIO = 0.8;
+export const DEFAULT_RECOMPRESSION_THRESHOLD_RATIO = 0.88;
+export const DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO = 0.92;
 export const DEFAULT_MID_TURN_EMERGENCY_RATIO = 0.85;
 
 export interface CompressionWindowPolicy {
   maxWindowToken: number;
   midTurnThresholdRatio?: number;
+  midTurnWindowToken?: number;
   physicalWindowToken?: number;
   recompressionThresholdRatio: number;
   thresholdRatio: number;
@@ -78,51 +81,45 @@ export const resolveCompressionModelConfig = (params?: {
   return { ...DEFAULT_COMPRESSION_MODEL };
 };
 
-const OPENAI_272K_CLIFF_POLICY: CompressionWindowPolicy = {
-  // OpenAI 1M/1.05M models double input/cache price (2x in, 1.5x out) strictly above 272K tokens.
-  // Match OpenAI Codex (~240K initial, 255K recompression) to compress before the 272K cliff.
-  maxWindowToken: 1_000_000,
-  recompressionThresholdRatio: 0.255,
-  thresholdRatio: 0.24,
-};
-
-/**
- * Explicit model/route auto-compression policies for models with hard provider long-context
- * pricing cliffs below the flat 1M default (345K / 415K).
- *
- * NOTE: Do NOT pin `deepseek/deepseek-flash` to 32,768 here. `api.deepseek.com` accepts the full
- * 1M total context window; DeepSeek's 32,768-token error (`user input too long, N tokens exceeds
- * max 32768 tokens`) is a per-user-turn limit, not a total context window ceiling.
- */
-export const ROUTE_INPUT_LIMIT_OVERRIDES: Readonly<Record<string, CompressionWindowPolicy>> = {
-  // Claude Haiku 5.5 charges 5x across the entire request above 100K input+cache tokens.
-  'anthropic/claude-haiku-5-5': {
-    maxWindowToken: 100_000,
-    recompressionThresholdRatio: 0.92,
-    thresholdRatio: 0.85,
-  },
-  // OpenAI 1M/1.05M lineup (>272K => 2x input/cache, 1.5x output)
-  'openai/gpt-5.4': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-5.5': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6-astra': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6-luna': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6-sol': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6.1-sol': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6.1-terra': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6.2-astra': OPENAI_272K_CLIFF_POLICY,
-  'openai/gpt-6.2-sol': OPENAI_272K_CLIFF_POLICY,
-  // xAI Grok 4.7 (500K window) doubles upstream cost at >=200K tokens.
-  'xai/grok-4.7': {
-    maxWindowToken: 200_000,
-    recompressionThresholdRatio: 0.95,
-    thresholdRatio: 0.9,
-  },
-};
-
 const isOpenAI272kCliffModel = (model: string, provider?: string): boolean => {
   if (provider && provider !== 'openai') return false;
   if (/-(?:mini|nano)(?:-|$)/i.test(model)) return false;
   return /^gpt-(?:5\.[456]|6(?:\.[12])?)(?:-|$)/i.test(model);
+};
+
+const resolvePriceCliffTokens = (
+  model: string,
+  provider: string | undefined,
+  cardWindow: number,
+  hasMatchedCardWindow: boolean,
+): number | undefined => {
+  const priceCliffMap =
+    (modelBank.ARCKEP_STUDIO_PRICE_CLIFF_TOKENS as
+      Record<string, Readonly<Record<string, number>>> | undefined) ?? {};
+
+  if (provider) {
+    const providerCliffs = priceCliffMap[provider];
+    if (providerCliffs && Object.hasOwn(providerCliffs, model)) {
+      const cliff = providerCliffs[model];
+      if (typeof cliff === 'number' && cliff > 0) return cliff;
+    }
+  } else {
+    for (const providerCliffs of Object.values(priceCliffMap)) {
+      if (providerCliffs && Object.hasOwn(providerCliffs, model)) {
+        const cliff = providerCliffs[model];
+        if (typeof cliff === 'number' && cliff > 0) return cliff;
+      }
+    }
+  }
+
+  // Fallback for legacy/retired models not listed in active ARCKEP_STUDIO_PRICE_CLIFF_TOKENS
+  if (model === 'claude-haiku-5-5' && (!provider || provider === 'anthropic')) return 100_000;
+  if (model === 'grok-4.7' && (!provider || provider === 'xai')) return 200_000;
+  if (isOpenAI272kCliffModel(model, provider) && (!hasMatchedCardWindow || cardWindow > 272_000)) {
+    return 272_000;
+  }
+
+  return undefined;
 };
 
 export const resolveCompressionThresholds = (
@@ -132,7 +129,8 @@ export const resolveCompressionThresholds = (
   if (!model) {
     return {
       maxWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
-      midTurnThresholdRatio: DEFAULT_MID_TURN_EMERGENCY_RATIO,
+      midTurnThresholdRatio: DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO,
+      midTurnWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
       physicalWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
       recompressionThresholdRatio: DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
       thresholdRatio: DEFAULT_INITIAL_THRESHOLD_RATIO,
@@ -157,43 +155,23 @@ export const resolveCompressionThresholds = (
     ? matchedCard!.contextWindowTokens!
     : DEFAULT_AUTO_COMPRESS_WINDOW;
 
-  const routeKey = provider ? `${provider}/${model}` : model;
-  const routeOverride =
-    ROUTE_INPUT_LIMIT_OVERRIDES[routeKey] ??
-    ROUTE_INPUT_LIMIT_OVERRIDES[model] ??
-    (model === 'claude-haiku-5-5'
-      ? ROUTE_INPUT_LIMIT_OVERRIDES['anthropic/claude-haiku-5-5']
-      : model === 'grok-4.7'
-        ? ROUTE_INPUT_LIMIT_OVERRIDES['xai/grok-4.7']
-        : isOpenAI272kCliffModel(model, provider) &&
-            (!hasMatchedCardWindow || cardWindow >= FLAT_LONG_CONTEXT_MIN_WINDOW)
-          ? OPENAI_272K_CLIFF_POLICY
-          : undefined);
-
-  if (routeOverride) {
-    return {
-      ...routeOverride,
-      midTurnThresholdRatio:
-        routeOverride.midTurnThresholdRatio ?? DEFAULT_MID_TURN_EMERGENCY_RATIO,
-      physicalWindowToken: hasMatchedCardWindow
-        ? cardWindow
-        : Math.max(cardWindow, routeOverride.maxWindowToken),
-    };
-  }
-
-  if (cardWindow >= FLAT_LONG_CONTEXT_MIN_WINDOW) {
-    return {
-      maxWindowToken: EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
-      midTurnThresholdRatio: DEFAULT_MID_TURN_EMERGENCY_RATIO,
-      physicalWindowToken: cardWindow,
-      recompressionThresholdRatio: FLAT_LONG_CONTEXT_RECOMPRESSION_RATIO,
-      thresholdRatio: FLAT_LONG_CONTEXT_INITIAL_RATIO,
-    };
-  }
+  const priceCliff = resolvePriceCliffTokens(model, provider, cardWindow, hasMatchedCardWindow);
+  const effectiveCeiling = Math.min(
+    cardWindow,
+    priceCliff ?? Number.POSITIVE_INFINITY,
+    EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
+  );
+  const midTurnWindowToken =
+    priceCliff !== undefined ? Math.min(cardWindow, priceCliff) : cardWindow;
+  const midTurnThresholdRatio =
+    priceCliff !== undefined || cardWindow <= EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP
+      ? DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO
+      : DEFAULT_MID_TURN_EMERGENCY_RATIO;
 
   return {
-    maxWindowToken: Math.min(cardWindow, EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP),
-    midTurnThresholdRatio: DEFAULT_MID_TURN_EMERGENCY_RATIO,
+    maxWindowToken: effectiveCeiling,
+    midTurnThresholdRatio,
+    midTurnWindowToken,
     physicalWindowToken: cardWindow,
     recompressionThresholdRatio: DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
     thresholdRatio: DEFAULT_INITIAL_THRESHOLD_RATIO,

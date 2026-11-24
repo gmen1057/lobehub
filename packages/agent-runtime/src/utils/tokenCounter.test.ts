@@ -1,3 +1,4 @@
+import { estimateTokenCount } from 'tokenx';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -72,6 +73,20 @@ describe('tokenCounter', () => {
     it('should handle array content', () => {
       const tokens = estimateTokens(['item1', 'item2', 'item3']);
       expect(tokens).toBeGreaterThan(0);
+    });
+
+    it('should estimate Cyrillic prose ~2x higher than tokenx default Latin fallback', () => {
+      const russianProse =
+        'Привет! Пожалуйста, проанализируй архитектуру нашей системы управления контекстом и предложи оптимальные пороги автосжатия для длинных диалогов на русском языке. '.repeat(
+          20,
+        );
+      const defaultTokens = estimateTokenCount(russianProse);
+      const cyrillicAwareTokens = estimateTokens(russianProse);
+
+      expect(cyrillicAwareTokens).toBeGreaterThan(defaultTokens * 1.9);
+      const charsPerToken = russianProse.length / cyrillicAwareTokens;
+      expect(charsPerToken).toBeGreaterThan(1.8);
+      expect(charsPerToken).toBeLessThan(2.6);
     });
   });
 
@@ -346,6 +361,250 @@ describe('tokenCounter', () => {
         },
       ]);
       expect(compareTokens).toBe(estimateTokens('Selected concise answer'));
+    });
+
+    it('should anchor on latest top-level assistant totalInputTokens and add only post-anchor delta', () => {
+      const replyText = 'Short answer';
+      const followUpUser = 'А теперь разбери следующий шаг подробнее.';
+      const toolOutput = 'Tool payload line '.repeat(40);
+      const toolCalls = [{ function: { arguments: '{"path":"a.ts"}', name: 'read' }, id: 'tc1' }];
+
+      const tokens = calculateMessageTokens([
+        // Huge earlier history is superseded by provider-reported totalInputTokens on the anchor
+        { content: 'Old user turn '.repeat(5_000), role: 'user' },
+        {
+          content: 'Old assistant turn '.repeat(5_000),
+          metadata: { totalOutputTokens: 20_000 },
+          role: 'assistant',
+        },
+        {
+          content: replyText,
+          // Archived reasoning object & totalOutputTokens (including thinking) must NOT inflate the delta
+          metadata: {
+            usage: {
+              outputTextTokens: 120,
+              totalInputTokens: 150_000,
+              totalOutputTokens: 25_000,
+            },
+          },
+          reasoning: { content: 'Archived reasoning '.repeat(5_000), duration: 12_000 },
+          role: 'assistant',
+          tool_calls: toolCalls,
+        },
+        { content: toolOutput, role: 'tool' },
+        { content: followUpUser, role: 'user' },
+      ]);
+
+      const expected =
+        150_000 +
+        Math.max(120, estimateTokens(replyText) + estimateTokens(toolCalls)) +
+        estimateTokens(toolOutput) +
+        estimateTokens(followUpUser);
+
+      expect(tokens).toBe(expected);
+    });
+
+    it('should not double-count large tool_calls payload when outputTextTokens already includes tool-call tokens', () => {
+      const largeArtifactArgs = JSON.stringify({
+        content: 'const row = { value: "artifact payload line" };\n'.repeat(1_500),
+        identifier: 'dashboard',
+        title: 'Dashboard',
+      });
+      const largeToolCalls = [
+        {
+          function: { arguments: largeArtifactArgs, name: 'writeArtifact' },
+          id: 'tc-large-1',
+          type: 'function',
+        },
+      ];
+      const estimatedToolTokens = estimateTokens(largeToolCalls);
+      // Simulate OpenAI/Google usage where outputTextTokens (= totalOutputTokens - outputReasoningTokens)
+      // already accounts for the tool-call JSON arguments (~slightly above heuristic estimate).
+      const providerOutputTextTokens = estimatedToolTokens + 250;
+
+      const tokens = calculateMessageTokens([
+        { content: 'Build a full interactive dashboard', role: 'user' },
+        {
+          content: 'Writing artifact...',
+          role: 'assistant',
+          tool_calls: largeToolCalls,
+          usage: {
+            outputTextTokens: providerOutputTextTokens,
+            totalInputTokens: 200_000,
+            totalOutputTokens: providerOutputTextTokens + 8_000,
+          },
+        },
+        { content: 'Artifact saved.', role: 'tool' },
+      ]);
+
+      const expected =
+        200_000 +
+        Math.max(
+          providerOutputTextTokens,
+          estimateTokens('Writing artifact...') + estimatedToolTokens,
+        ) +
+        estimateTokens('Artifact saved.');
+      expect(tokens).toBe(expected);
+      // Confirm no double-counting: must stay far below 200_000 + 2 * estimatedToolTokens
+      expect(tokens).toBeLessThan(200_000 + providerOutputTextTokens + 500);
+    });
+
+    it('should include explicit inline reasoning_content on active anchored assistant message', () => {
+      const inlineThought = 'Step-by-step reasoning kept in DeepSeek mid-turn context. '.repeat(20);
+      const tokens = calculateMessageTokens([
+        { content: 'Question', role: 'user' },
+        {
+          content: 'Answer',
+          reasoning_content: inlineThought,
+          role: 'assistant',
+          usage: { totalInputTokens: 40_000 },
+        },
+      ]);
+
+      expect(tokens).toBe(40_000 + estimateTokens('Answer') + estimateTokens(inlineThought));
+    });
+
+    it('should anchor on latest assistantGroup/supervisor child totalInputTokens, include child tool results and trailing children, and ignore aggregated top-level usage', () => {
+      const child0ToolCall = {
+        apiName: 'search',
+        arguments: '{"q":"context"}',
+        id: 'tc-1',
+        identifier: 'web',
+        type: 'builtin',
+      };
+      const child0ToolResult = 'Search result body '.repeat(60);
+      const child1Content = 'Final synthesis after tool call.';
+      const trailingUser = 'Follow-up user question';
+
+      const tokens = calculateMessageTokens([
+        { content: 'Initial huge prompt '.repeat(3_000), role: 'user' },
+        {
+          children: [
+            {
+              content: 'Running search...',
+              metadata: { totalInputTokens: 90_000 },
+              tools: [
+                {
+                  ...child0ToolCall,
+                  result: {
+                    content: child0ToolResult,
+                    id: 'tm-1',
+                    // Internal UI/plugin state must never be counted
+                    state: { blob: 'x'.repeat(200_000) },
+                  },
+                },
+              ],
+            },
+            {
+              content: child1Content,
+              usage: { totalOutputTokens: 45 },
+            },
+          ],
+          content: '',
+          role: 'assistantGroup',
+          // Aggregated top-level usage across all children must NOT be used as anchor
+          usage: { totalInputTokens: 999_999, totalOutputTokens: 999_999 },
+        },
+        { content: trailingUser, role: 'user' },
+      ]);
+
+      const expectedChild0ToolCallTokens = estimateTokens([child0ToolCall]);
+      const expected =
+        90_000 +
+        estimateTokens('Running search...') +
+        expectedChild0ToolCallTokens +
+        estimateTokens(child0ToolResult) +
+        Math.max(45, estimateTokens(child1Content)) +
+        estimateTokens(trailingUser);
+
+      expect(tokens).toBe(expected);
+    });
+
+    it('should reject stale pre-/compact totalInputTokens via compressedGroup timestamp and accept fresh post-compaction anchors', () => {
+      const compactedAt = Date.parse('2026-11-24T12:00:00.000Z');
+      const beforeCompaction = Date.parse('2026-11-24T11:55:00.000Z');
+      const afterCompaction = Date.parse('2026-11-24T12:05:00.000Z');
+
+      // Manual /compact kept a recent pre-compaction exchange whose usage.totalInputTokens reflects pre-compact 320K context
+      const staleMessages = [
+        {
+          content: 'Concise compacted summary.',
+          createdAt: compactedAt,
+          role: 'compressedGroup',
+          updatedAt: compactedAt,
+        },
+        { content: 'Recent user prompt', createdAt: beforeCompaction, role: 'user' },
+        {
+          content: 'Recent assistant reply',
+          createdAt: beforeCompaction,
+          role: 'assistant',
+          usage: { totalInputTokens: 320_000, totalOutputTokens: 30 },
+        },
+        { content: 'New follow-up after compact', createdAt: afterCompaction, role: 'user' },
+      ];
+
+      const staleCount = calculateMessageTokens(staleMessages);
+      expect(staleCount).toBeLessThan(1_000);
+
+      // Unstamped assistant message after a timestamped compressedGroup must also be rejected as stale
+      const unstampedAfterCompressed = calculateMessageTokens([
+        {
+          content: 'Concise compacted summary.',
+          createdAt: compactedAt,
+          role: 'compressedGroup',
+          updatedAt: compactedAt,
+        },
+        {
+          content: 'Ambiguous assistant reply',
+          role: 'assistant',
+          usage: { totalInputTokens: 320_000, totalOutputTokens: 30 },
+        },
+      ]);
+      expect(unstampedAfterCompressed).toBeLessThan(1_000);
+
+      // Once a post-compaction LLM call completes (createdAt >= lastCompressedAt), anchor on its exact totalInputTokens
+      const freshMessages = [
+        ...staleMessages,
+        {
+          content: 'Post-compaction reply',
+          createdAt: afterCompaction + 1_000,
+          role: 'assistant',
+          usage: { totalInputTokens: 14_500 },
+        },
+      ];
+      expect(calculateMessageTokens(freshMessages)).toBe(
+        14_500 + estimateTokens('Post-compaction reply'),
+      );
+    });
+
+    it('should never use totalInputTokens from messages before the last compressedGroup', () => {
+      const tokens = calculateMessageTokens([
+        {
+          content: 'Ancient reply',
+          role: 'assistant',
+          usage: { totalInputTokens: 500_000 },
+        },
+        { content: 'Summary only.', role: 'compressedGroup' },
+        { content: 'Fresh short turn', role: 'user' },
+      ]);
+      expect(tokens).toBe(
+        estimateTokens('Ancient reply') +
+          estimateTokens('Summary only.') +
+          estimateTokens('Fresh short turn'),
+      );
+    });
+
+    it('should keep calculatePromptTokens on heuristic counting without anchor interference', () => {
+      const russianText = 'Проверка расчёта токенов собранного промпта на русском языке.';
+      const promptTokens = calculatePromptTokens([
+        {
+          content: russianText,
+          metadata: { totalInputTokens: 500_000 },
+          role: 'assistant',
+          usage: { totalInputTokens: 500_000 },
+        },
+      ]);
+      expect(promptTokens).toBe(estimateTokens(russianText) + 4);
     });
   });
 
