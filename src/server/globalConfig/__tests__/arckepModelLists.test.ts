@@ -286,5 +286,17 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'chat',
       'image',
     ]);
+
+    // Price cliff map is re-exported from root 'model-bank'
+    expect(AiModels.ARCKEP_STUDIO_PRICE_CLIFF_TOKENS).toMatchObject({
+      anthropic: { 'claude-haiku-5-5': 100_000 },
+      openai: {
+        'gpt-6-luna': 272_000,
+        'gpt-6.1-terra': 272_000,
+        'gpt-6.2-astra': 272_000,
+        'gpt-6.2-sol': 272_000,
+      },
+      xai: { 'grok-4.7': 200_000 },
+    });
   });
 });

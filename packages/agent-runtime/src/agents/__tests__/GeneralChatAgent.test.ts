@@ -2158,6 +2158,98 @@ describe('GeneralChatAgent', () => {
         type: 'compress_context',
       });
     });
+
+    it('uses midTurnWindowToken over physicalWindowToken for price-cliff models and falls back when omitted', async () => {
+      // Price-cliff model (e.g. Claude Haiku 5.5: 1M physical window, 100K price cliff, 80K/88K/92K)
+      const cliffAgent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 100 },
+        compressionConfig: {
+          enabled: true,
+          maxWindowToken: 100_000,
+          midTurnThresholdRatio: 0.92,
+          midTurnWindowToken: 100_000,
+          physicalWindowToken: 1_000_000,
+          recompressionThresholdRatio: 0.88,
+          thresholdRatio: 0.8,
+        },
+        modelRuntimeConfig: { model: 'claude-haiku-5-5', provider: 'anthropic' },
+        operationId: 'test-cliff-midturn',
+      });
+
+      const makeMultiTurnState = (tokens: number) =>
+        createMockState({
+          messages: [
+            { content: 'Turn 1', id: 'u1', role: 'user' },
+            {
+              content: '',
+              id: 'a1',
+              metadata: { usage: { totalOutputTokens: tokens } },
+              role: 'assistant',
+            },
+            { content: 'Turn 2', id: 'u2', role: 'user' },
+            { content: 'Tool output', id: 't2', role: 'tool' },
+          ] as any,
+        });
+
+      // Step 0 at 82K (> 80K): compresses
+      await expect(
+        cliffAgent.runner(
+          createMockContext('user_input', { parentMessageId: 'u2' }),
+          makeMultiTurnState(82_000),
+        ),
+      ).resolves.toMatchObject({ type: 'compress_context' });
+
+      // Mid-turn at 90K (< 92K = 92% of 100K cliff): proceeds without breaking cache
+      await expect(
+        cliffAgent.runner(
+          createMockContext('tool_result', { parentMessageId: 't2' }),
+          makeMultiTurnState(90_000),
+        ),
+      ).resolves.toMatchObject({ type: 'call_llm' });
+
+      // Mid-turn at 93K (> 92K = 92% of 100K cliff, even though physicalWindowToken is 1M!): emergency compresses
+      await expect(
+        cliffAgent.runner(
+          createMockContext('tool_result', { parentMessageId: 't2' }),
+          makeMultiTurnState(93_000),
+        ),
+      ).resolves.toMatchObject({
+        payload: { parentMessageId: 't2' },
+        type: 'compress_context',
+      });
+
+      // When only midTurnWindowToken is set (without physicalWindowToken), mid-turn still activates
+      const midTurnOnlyAgent = new GeneralChatAgent({
+        agentConfig: { maxSteps: 100 },
+        compressionConfig: {
+          enabled: true,
+          maxWindowToken: 272_000,
+          midTurnThresholdRatio: 0.92,
+          midTurnWindowToken: 272_000,
+          recompressionThresholdRatio: 0.88,
+          thresholdRatio: 0.8,
+        },
+        modelRuntimeConfig: { model: 'gpt-6-luna', provider: 'openai' },
+        operationId: 'test-midturn-only',
+      });
+
+      await expect(
+        midTurnOnlyAgent.runner(
+          createMockContext('tool_result', { parentMessageId: 't2' }),
+          makeMultiTurnState(245_000),
+        ),
+      ).resolves.toMatchObject({ type: 'call_llm' });
+
+      await expect(
+        midTurnOnlyAgent.runner(
+          createMockContext('tool_result', { parentMessageId: 't2' }),
+          makeMultiTurnState(255_000),
+        ),
+      ).resolves.toMatchObject({
+        payload: { parentMessageId: 't2' },
+        type: 'compress_context',
+      });
+    });
   });
 
   describe('unknown phase', () => {

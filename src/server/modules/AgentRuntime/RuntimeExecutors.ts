@@ -1133,24 +1133,53 @@ export const createRuntimeExecutors = (
           type: 'context_engine_result',
         } as any);
       } else if (state.forceFinish && forceFinishPrompt) {
+        const stripInternalWireFields = (message: any) => {
+          if (!message || typeof message !== 'object') return message;
+          const {
+            createdAt: _createdAt,
+            id: _id,
+            metadata: _metadata,
+            search: _search,
+            updatedAt: _updatedAt,
+            usage: _usage,
+            ...wireMessage
+          } = message;
+          return wireMessage;
+        };
+        wireSourceIds = llmPayload.messages.map((m: any) => m?.id);
         const systemMsgIndex = llmPayload.messages.findIndex((m: any) => m.role === 'system');
         if (systemMsgIndex >= 0) {
           processedMessages = llmPayload.messages.map((m: any, index: number) => {
-            if (index !== systemMsgIndex) return m;
-            const existingContent = typeof m.content === 'string' ? m.content : '';
+            const cleaned = stripInternalWireFields(m);
+            if (index !== systemMsgIndex) return cleaned;
+            const existingContent = typeof cleaned.content === 'string' ? cleaned.content : '';
             return {
-              ...m,
+              ...cleaned,
               content: [existingContent, forceFinishPrompt].filter(Boolean).join('\n\n'),
             };
           });
         } else {
           processedMessages = [
-            ...llmPayload.messages,
+            ...llmPayload.messages.map(stripInternalWireFields),
             { content: forceFinishPrompt, role: 'system' },
           ];
+          wireSourceIds.push(undefined);
         }
       } else {
-        processedMessages = llmPayload.messages;
+        wireSourceIds = llmPayload.messages.map((m: any) => m?.id);
+        processedMessages = llmPayload.messages.map((message: any) => {
+          if (!message || typeof message !== 'object') return message;
+          const {
+            createdAt: _createdAt,
+            id: _id,
+            metadata: _metadata,
+            search: _search,
+            updatedAt: _updatedAt,
+            usage: _usage,
+            ...wireMessage
+          } = message;
+          return wireMessage;
+        });
       }
 
       // Initialize ModelRuntime (read user's keyVaults from database).
@@ -2173,9 +2202,11 @@ export const createRuntimeExecutors = (
                   codeArtifactGateDiagnostics.length > 0
                     ? (codeArtifactSanitizedAttempt ?? rawContent)
                     : rawContent,
+                createdAt: Date.now(),
                 id: assistantMessageItem.id,
                 metadata: { internalRepairAttempt: true },
                 role: 'assistant',
+                ...(currentStepUsage ? { usage: currentStepUsage } : {}),
               },
               {
                 content: `${htmlArtifactSyntaxError}\n\nИсправь синтаксическую ошибку и пересоздай артефакт через writeArtifact({ identifier, title, content }) либо выдай полный исправленный <lobeArtifact type="text/html"> без экранирования кавычек и переносов.`,
@@ -2201,9 +2232,11 @@ export const createRuntimeExecutors = (
             newState.messages.push(
               {
                 content: codeArtifactSanitizedAttempt ?? content,
+                createdAt: Date.now(),
                 id: assistantMessageItem.id,
                 metadata: { internalRepairAttempt: true },
                 role: 'assistant',
+                ...(currentStepUsage ? { usage: currentStepUsage } : {}),
               },
               {
                 content: `${codeArtifactRepairError}\n\nВ твоём предыдущем ответе вместо реального кода оказался пустой служебный тег ссылки на файл (/chat/code-artifact/...) или текстовая заглушка [Saved ... — previous code block stored by server.]. Такие теги и заглушки создаёт только сервер автоматически — никогда не пиши <lobeArtifact> с /chat/code-artifact/ и не имитируй [Saved ... — previous code block stored by server.]. Повтори ответ целиком, выдав запрошенный код обычным Markdown-блоком кода с языком и именем файла (например \`\`\`vba Module1.bas) или через инструмент arckep-text-file/writePart (для нового файла) либо arckep-text-file/patchFile (для правок существующего файла).`,
@@ -2222,6 +2255,7 @@ export const createRuntimeExecutors = (
 
             newState.messages.push({
               content,
+              createdAt: Date.now(),
               ...(inlineReasoningContent !== undefined
                 ? { reasoning_content: inlineReasoningContent }
                 : {}),
@@ -2234,6 +2268,7 @@ export const createRuntimeExecutors = (
                 : {}),
               role: 'assistant',
               tool_calls: tool_calls.length > 0 ? tool_calls : undefined,
+              ...(currentStepUsage ? { usage: currentStepUsage } : {}),
             });
           }
 

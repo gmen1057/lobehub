@@ -9,6 +9,8 @@ import {
 import { LOADING_FLAT } from '@lobechat/const';
 import { type ChatStreamPayload } from '@lobechat/model-runtime';
 import { chainCompressContext } from '@lobechat/prompts';
+import * as modelBank from 'model-bank';
+import { estimateTokenCount } from 'tokenx';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initModelRuntimeFromDB } from '@/server/modules/ModelRuntime';
@@ -17,10 +19,13 @@ import { MessageService } from '@/server/services/message';
 import { buildDefaultAnthropicPayload } from '../../../../../packages/model-runtime/src/core/anthropicCompatibleFactory';
 import {
   DATA_GUARD_COMPRESSION_MODEL,
+  DEFAULT_AUTO_COMPRESS_WINDOW,
   DEFAULT_COMPRESSION_MODEL,
+  DEFAULT_INITIAL_THRESHOLD_RATIO,
+  DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO,
+  DEFAULT_MID_TURN_EMERGENCY_RATIO,
+  DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
   EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
-  FLAT_LONG_CONTEXT_INITIAL_RATIO,
-  FLAT_LONG_CONTEXT_RECOMPRESSION_RATIO,
   resolveCompressionModelConfig,
   resolveCompressionThresholds,
 } from '../compressionThresholds';
@@ -60,28 +65,29 @@ const makeMessagesWithTokens = (approxTokens: number) => [
 ];
 
 describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limits', () => {
-  it('resolves deepseek/deepseek-flash to the flat 1M policy (345K initial, 415K recompression, 850K mid-turn emergency)', async () => {
+  it('resolves deepseek/deepseek-flash to the unified flat 1M policy (350K cap -> 280K initial, 308K recompression, 850K mid-turn emergency)', async () => {
     const policy = resolveCompressionThresholds('deepseek-flash', 'deepseek');
     expect(policy).toEqual({
       maxWindowToken: EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
-      midTurnThresholdRatio: 0.85,
+      midTurnThresholdRatio: DEFAULT_MID_TURN_EMERGENCY_RATIO,
+      midTurnWindowToken: 1_000_000,
       physicalWindowToken: 1_000_000,
-      recompressionThresholdRatio: FLAT_LONG_CONTEXT_RECOMPRESSION_RATIO,
-      thresholdRatio: FLAT_LONG_CONTEXT_INITIAL_RATIO,
+      recompressionThresholdRatio: DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
+      thresholdRatio: DEFAULT_INITIAL_THRESHOLD_RATIO,
     });
     expect(resolveCompressionThresholds('deepseek-flash')).toEqual(policy);
 
-    // Must NOT prematurely compress below 345K (regression: 32_768 override caused 22K/26K loops)
-    for (const tokens of [24_000, 35_000, 70_000, 150_000, 340_000]) {
+    // Must NOT prematurely compress below 280K (regression: 32_768 override caused 22K/26K loops)
+    for (const tokens of [24_000, 35_000, 70_000, 150_000, 275_000]) {
       expect(shouldCompress(makeMessagesWithTokens(tokens), policy).needsCompression).toBe(false);
     }
 
-    // Triggers above 345K
-    const check350k = shouldCompress(makeMessagesWithTokens(350_000), policy);
-    expect(check350k.threshold).toBe(345_000);
-    expect(check350k.needsCompression).toBe(true);
+    // Triggers above 280K (80% of 350K cap)
+    const check285k = shouldCompress(makeMessagesWithTokens(285_000), policy);
+    expect(check285k.threshold).toBe(280_000);
+    expect(check285k.needsCompression).toBe(true);
 
-    // Hysteresis after first compression holds until 415K
+    // Hysteresis after first compression holds until 308K (88% of 350K cap)
     const agent = new GeneralChatAgent({
       compressionConfig: { ...policy, enabled: true },
       modelRuntimeConfig: { model: 'deepseek-flash', provider: 'deepseek' },
@@ -90,7 +96,7 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
     const stateAfterFirstCompress = AgentRuntime.createInitialState({
       messages: [
         { content: 'Summary of earlier turns', id: 'grp-1', role: 'compressedGroup' },
-        ...makeMessagesWithTokens(390_000),
+        ...makeMessagesWithTokens(300_000),
       ] as any,
       operationId: 'op-ds-flash',
       status: 'running',
@@ -99,9 +105,21 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
       agent.runner({ payload: {}, phase: 'user_input' }, stateAfterFirstCompress),
     ).resolves.toMatchObject({ type: 'call_llm' });
 
-    // Mid-turn (tool_result) uses emergency physical window (850K), NOT Step-0 working threshold (345K):
+    const stateOver308k = AgentRuntime.createInitialState({
+      messages: [
+        { content: 'Summary of earlier turns', id: 'grp-1', role: 'compressedGroup' },
+        ...makeMessagesWithTokens(312_000),
+      ] as any,
+      operationId: 'op-ds-flash',
+      status: 'running',
+    });
+    await expect(
+      agent.runner({ payload: {}, phase: 'user_input' }, stateOver308k),
+    ).resolves.toMatchObject({ type: 'compress_context' });
+
+    // Mid-turn (tool_result) uses emergency physical window (850K), NOT Step-0 working threshold (280K):
     // 450K mid-turn finishes uninterrupted on warm cache, while 860K mid-turn emergency-compresses
-    // and 360K at Step 0 compresses normally.
+    // and 285K at Step 0 compresses normally.
     const makeMidTurnState = (tokens: number) =>
       AgentRuntime.createInitialState({
         messages: [
@@ -127,7 +145,7 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
       agent.runner(
         { payload: { parentMessageId: 'msg-user-latest' }, phase: 'user_input' },
         AgentRuntime.createInitialState({
-          messages: makeMessagesWithTokens(360_000) as any,
+          messages: makeMessagesWithTokens(285_000) as any,
           operationId: 'op-ds-flash',
           status: 'running',
         }),
@@ -144,57 +162,59 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
     ['deepseek', 'deepseek-v4-pro'],
     ['qwen', 'qwen4-max'],
   ])(
-    'resolves flat 1M model %s/%s to 345K initial / 415K recompression',
+    'resolves flat 1M model %s/%s to 280K initial / 308K recompression (350K cap) and 85% physical mid-turn',
     async (provider, model) => {
       const policy = resolveCompressionThresholds(model, provider);
       expect(policy).toEqual({
-        maxWindowToken: 1_000_000,
+        maxWindowToken: 350_000,
         midTurnThresholdRatio: 0.85,
+        midTurnWindowToken: expect.any(Number),
         physicalWindowToken: expect.any(Number),
-        recompressionThresholdRatio: 0.415,
-        thresholdRatio: 0.345,
+        recompressionThresholdRatio: 0.88,
+        thresholdRatio: 0.8,
       });
       expect(policy.physicalWindowToken).toBeGreaterThanOrEqual(1_000_000);
+      expect(policy.midTurnWindowToken).toBe(policy.physicalWindowToken);
 
       expect(shouldCompress(makeMessagesWithTokens(70_000), policy).needsCompression).toBe(false);
-      expect(shouldCompress(makeMessagesWithTokens(340_000), policy).needsCompression).toBe(false);
+      expect(shouldCompress(makeMessagesWithTokens(275_000), policy).needsCompression).toBe(false);
 
-      const over345k = shouldCompress(makeMessagesWithTokens(350_000), policy);
-      expect(over345k.threshold).toBe(345_000);
-      expect(over345k.needsCompression).toBe(true);
+      const over280k = shouldCompress(makeMessagesWithTokens(285_000), policy);
+      expect(over280k.threshold).toBe(280_000);
+      expect(over280k.needsCompression).toBe(true);
 
       const agent = new GeneralChatAgent({
         compressionConfig: { ...policy, enabled: true },
         modelRuntimeConfig: { model, provider },
         operationId: 'op-1m',
       });
-      const at390kWithSummary = AgentRuntime.createInitialState({
+      const at300kWithSummary = AgentRuntime.createInitialState({
         messages: [
           { content: 'Prior summary', id: 'grp-1', role: 'compressedGroup' },
-          ...makeMessagesWithTokens(390_000),
+          ...makeMessagesWithTokens(300_000),
         ] as any,
         operationId: 'op-1m',
         status: 'running',
       });
-      const stepAt390k = await agent.runner(
+      const stepAt300k = await agent.runner(
         { payload: {}, phase: 'user_input' },
-        at390kWithSummary,
+        at300kWithSummary,
       );
-      expect((stepAt390k as any).type).toBe('call_llm');
+      expect((stepAt300k as any).type).toBe('call_llm');
 
-      const at420kWithSummary = AgentRuntime.createInitialState({
+      const at315kWithSummary = AgentRuntime.createInitialState({
         messages: [
           { content: 'Prior summary', id: 'grp-1', role: 'compressedGroup' },
-          ...makeMessagesWithTokens(420_000),
+          ...makeMessagesWithTokens(315_000),
         ] as any,
         operationId: 'op-1m',
         status: 'running',
       });
-      const stepAt420k = await agent.runner(
+      const stepAt315k = await agent.runner(
         { payload: {}, phase: 'user_input' },
-        at420kWithSummary,
+        at315kWithSummary,
       );
-      expect((stepAt420k as any).type).toBe('compress_context');
+      expect((stepAt315k as any).type).toBe('compress_context');
     },
   );
 
@@ -204,92 +224,202 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
     ['openai', 'gpt-6.2-sol'],
     ['openai', 'gpt-6.2-astra'],
   ])(
-    'resolves OpenAI 1M model %s/%s to 240K initial / 255K recompression (below 272K cliff)',
+    'resolves OpenAI 1.05M model %s/%s to 272K cliff (217.6K initial / 239.36K recompression / 250.24K mid-turn)',
     async (provider, model) => {
       const policy = resolveCompressionThresholds(model, provider);
       expect(policy).toEqual({
-        maxWindowToken: 1_000_000,
-        midTurnThresholdRatio: 0.85,
+        maxWindowToken: 272_000,
+        midTurnThresholdRatio: 0.92,
+        midTurnWindowToken: 272_000,
         physicalWindowToken: expect.any(Number),
-        recompressionThresholdRatio: 0.255,
-        thresholdRatio: 0.24,
+        recompressionThresholdRatio: 0.88,
+        thresholdRatio: 0.8,
       });
       expect(policy.physicalWindowToken).toBeGreaterThanOrEqual(1_000_000);
-      expect(shouldCompress(makeMessagesWithTokens(235_000), policy).needsCompression).toBe(false);
-      const over240k = shouldCompress(makeMessagesWithTokens(245_000), policy);
-      expect(over240k.threshold).toBe(240_000);
-      expect(over240k.needsCompression).toBe(true);
+      expect(shouldCompress(makeMessagesWithTokens(215_000), policy).needsCompression).toBe(false);
+      const over217k = shouldCompress(makeMessagesWithTokens(220_000), policy);
+      expect(over217k.threshold).toBe(217_600);
+      expect(over217k.needsCompression).toBe(true);
+
+      // Mid-turn protects the 272K cliff at 92% (250,240), NOT 85% of 1.05M!
+      const agent = new GeneralChatAgent({
+        compressionConfig: { ...policy, enabled: true },
+        modelRuntimeConfig: { model, provider },
+        operationId: `op-${model}`,
+      });
+      const makeMidTurnState = (tokens: number) =>
+        AgentRuntime.createInitialState({
+          messages: [
+            ...makeMessagesWithTokens(tokens),
+            { content: 'Tool result', id: 'msg-t1', role: 'tool' },
+          ] as any,
+          operationId: `op-${model}`,
+          status: 'running',
+        });
+      await expect(
+        agent.runner(
+          { payload: { parentMessageId: 'msg-t1' }, phase: 'tool_result' },
+          makeMidTurnState(245_000),
+        ),
+      ).resolves.toMatchObject({ type: 'call_llm' });
+      await expect(
+        agent.runner(
+          { payload: { parentMessageId: 'msg-t1' }, phase: 'tool_result' },
+          makeMidTurnState(255_000),
+        ),
+      ).resolves.toMatchObject({ type: 'compress_context' });
     },
   );
 
-  it('resolves claude-haiku-5-5 (85K/92K), grok-4.7 (180K/190K), and smaller models (50%/65%)', () => {
+  it('resolves claude-haiku-5-5 (80K/88K/92K), grok-4.7 (160K/176K/184K), <=350K models, and !model default', () => {
     const haikuPolicy = resolveCompressionThresholds('claude-haiku-5-5', 'anthropic');
     expect(haikuPolicy).toEqual({
       maxWindowToken: 100_000,
-      midTurnThresholdRatio: 0.85,
+      midTurnThresholdRatio: 0.92,
+      midTurnWindowToken: 100_000,
       physicalWindowToken: 1_000_000,
-      recompressionThresholdRatio: 0.92,
-      thresholdRatio: 0.85,
+      recompressionThresholdRatio: 0.88,
+      thresholdRatio: 0.8,
     });
-    expect(shouldCompress(makeMessagesWithTokens(84_000), haikuPolicy).needsCompression).toBe(
+    expect(shouldCompress(makeMessagesWithTokens(79_000), haikuPolicy).needsCompression).toBe(
       false,
     );
-    expect(shouldCompress(makeMessagesWithTokens(86_000), haikuPolicy)).toMatchObject({
+    expect(shouldCompress(makeMessagesWithTokens(81_000), haikuPolicy)).toMatchObject({
       needsCompression: true,
-      threshold: 85_000,
+      threshold: 80_000,
     });
 
     const grokPolicy = resolveCompressionThresholds('grok-4.7', 'xai');
     expect(grokPolicy).toEqual({
       maxWindowToken: 200_000,
-      midTurnThresholdRatio: 0.85,
+      midTurnThresholdRatio: 0.92,
+      midTurnWindowToken: 200_000,
       physicalWindowToken: 500_000,
-      recompressionThresholdRatio: 0.95,
-      thresholdRatio: 0.9,
+      recompressionThresholdRatio: 0.88,
+      thresholdRatio: 0.8,
     });
-    expect(shouldCompress(makeMessagesWithTokens(175_000), grokPolicy).needsCompression).toBe(
+    expect(shouldCompress(makeMessagesWithTokens(159_000), grokPolicy).needsCompression).toBe(
       false,
     );
-    expect(shouldCompress(makeMessagesWithTokens(185_000), grokPolicy)).toMatchObject({
+    expect(shouldCompress(makeMessagesWithTokens(161_000), grokPolicy)).toMatchObject({
       needsCompression: true,
-      threshold: 180_000,
+      threshold: 160_000,
     });
 
-    // Smaller 200K model uses standard 50%/65% ratios (100K/130K)
+    // <=350K models use unified 80%/88%/92% against their real window
     const openRouterFreePolicy = resolveCompressionThresholds('openrouter/free', 'openrouter');
     expect(openRouterFreePolicy).toEqual({
       maxWindowToken: 200_000,
-      midTurnThresholdRatio: 0.85,
+      midTurnThresholdRatio: 0.92,
+      midTurnWindowToken: 200_000,
       physicalWindowToken: 200_000,
-      recompressionThresholdRatio: 0.65,
-      thresholdRatio: 0.5,
+      recompressionThresholdRatio: 0.88,
+      thresholdRatio: 0.8,
     });
-    expect(shouldCompress(makeMessagesWithTokens(105_000), openRouterFreePolicy)).toMatchObject({
+    expect(shouldCompress(makeMessagesWithTokens(161_000), openRouterFreePolicy)).toMatchObject({
       needsCompression: true,
-      threshold: 100_000,
+      threshold: 160_000,
     });
+
+    const grokBuildPolicy = resolveCompressionThresholds('grok-build-0.1', 'xai');
+    expect(grokBuildPolicy).toEqual({
+      maxWindowToken: 256_000,
+      midTurnThresholdRatio: 0.92,
+      midTurnWindowToken: 256_000,
+      physicalWindowToken: 256_000,
+      recompressionThresholdRatio: 0.88,
+      thresholdRatio: 0.8,
+    });
+
+    const kimiCodePolicy = resolveCompressionThresholds('moonshotai/kimi-k2.7-code', 'openrouter');
+    expect(kimiCodePolicy).toEqual({
+      maxWindowToken: 262_144,
+      midTurnThresholdRatio: 0.92,
+      midTurnWindowToken: 262_144,
+      physicalWindowToken: 262_144,
+      recompressionThresholdRatio: 0.88,
+      thresholdRatio: 0.8,
+    });
+
+    // Missing model falls back cleanly to 128K unified policy
+    expect(resolveCompressionThresholds(undefined)).toEqual({
+      maxWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
+      midTurnThresholdRatio: DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO,
+      midTurnWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
+      physicalWindowToken: DEFAULT_AUTO_COMPRESS_WINDOW,
+      recompressionThresholdRatio: DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
+      thresholdRatio: DEFAULT_INITIAL_THRESHOLD_RATIO,
+    });
+  });
+
+  it('enforces unified 80%/88% ratios and valid mid-turn caps across ALL active studio models in ARCKEP_STUDIO_MODEL_CARDS', () => {
+    expect(modelBank.ARCKEP_STUDIO_PRICE_CLIFF_TOKENS).toBeDefined();
+
+    for (const provider of modelBank.ARCKEP_STUDIO_PROVIDER_IDS) {
+      const cards = modelBank.ARCKEP_STUDIO_MODEL_CARDS[provider];
+      const providerCliffs = modelBank.ARCKEP_STUDIO_PRICE_CLIFF_TOKENS[provider];
+
+      for (const card of cards) {
+        const policy = resolveCompressionThresholds(card.id, provider);
+        const cardWindow = card.contextWindowTokens!;
+        const cliff = providerCliffs[card.id];
+        const expectedCeiling = Math.min(
+          cardWindow,
+          cliff ?? Number.POSITIVE_INFINITY,
+          EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP,
+        );
+        const expectedMidTurnWindow =
+          cliff !== undefined ? Math.min(cardWindow, cliff) : cardWindow;
+        const expectedMidTurnRatio =
+          cliff !== undefined || cardWindow <= EFFECTIVE_AUTO_COMPRESS_WINDOW_CAP
+            ? DEFAULT_MID_TURN_CLIFF_EMERGENCY_RATIO
+            : DEFAULT_MID_TURN_EMERGENCY_RATIO;
+
+        expect(policy, `${provider}/${card.id}`).toEqual({
+          maxWindowToken: expectedCeiling,
+          midTurnThresholdRatio: expectedMidTurnRatio,
+          midTurnWindowToken: expectedMidTurnWindow,
+          physicalWindowToken: cardWindow,
+          recompressionThresholdRatio: DEFAULT_RECOMPRESSION_THRESHOLD_RATIO,
+          thresholdRatio: DEFAULT_INITIAL_THRESHOLD_RATIO,
+        });
+
+        // Strict ordering: initial < recompression < mid-turn emergency < ceiling/physical limit
+        const initialThreshold = Math.floor(policy.maxWindowToken * policy.thresholdRatio);
+        const recompressionThreshold = Math.floor(
+          policy.maxWindowToken * policy.recompressionThresholdRatio,
+        );
+        const midTurnThreshold = Math.floor(
+          policy.midTurnWindowToken! * policy.midTurnThresholdRatio!,
+        );
+        expect(initialThreshold, `${provider}/${card.id}`).toBeLessThan(recompressionThreshold);
+        expect(recompressionThreshold, `${provider}/${card.id}`).toBeLessThan(midTurnThreshold);
+        expect(midTurnThreshold, `${provider}/${card.id}`).toBeLessThan(policy.midTurnWindowToken!);
+      }
+    }
   });
 
   it.each([
     ['openai', 'gpt-5.4-mini'],
     ['openai', 'gpt-5.4-nano'],
   ])(
-    'does NOT apply the 272K cliff or inflate physicalWindowToken to 1M for %s/%s (400K fixed-price window: 200K/260K/340K)',
+    'does NOT apply the 272K cliff or inflate physicalWindowToken to 1M for %s/%s (400K flat window: 280K/308K/340K)',
     async (provider, model) => {
       const policy = resolveCompressionThresholds(model, provider);
       expect(policy).toEqual({
-        maxWindowToken: 400_000,
+        maxWindowToken: 350_000,
         midTurnThresholdRatio: 0.85,
+        midTurnWindowToken: 400_000,
         physicalWindowToken: 400_000,
-        recompressionThresholdRatio: 0.65,
-        thresholdRatio: 0.5,
+        recompressionThresholdRatio: 0.88,
+        thresholdRatio: 0.8,
       });
 
-      // Step-0 initial threshold = 200K (50% of 400K), NOT 240K
-      expect(shouldCompress(makeMessagesWithTokens(195_000), policy).needsCompression).toBe(false);
-      expect(shouldCompress(makeMessagesWithTokens(205_000), policy)).toMatchObject({
+      // Step-0 initial threshold = 280K (80% of 350K cap), NOT 217.6K (272K cliff)
+      expect(shouldCompress(makeMessagesWithTokens(275_000), policy).needsCompression).toBe(false);
+      expect(shouldCompress(makeMessagesWithTokens(285_000), policy)).toMatchObject({
         needsCompression: true,
-        threshold: 200_000,
+        threshold: 280_000,
       });
 
       const agent = new GeneralChatAgent({
@@ -298,29 +428,29 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
         operationId: `op-${model}`,
       });
 
-      // Step-0 recompression threshold = 260K (65% of 400K)
-      const at255kWithSummary = AgentRuntime.createInitialState({
+      // Step-0 recompression threshold = 308K (88% of 350K cap)
+      const at300kWithSummary = AgentRuntime.createInitialState({
         messages: [
           { content: 'Prior summary', id: 'grp-1', role: 'compressedGroup' },
-          ...makeMessagesWithTokens(255_000),
+          ...makeMessagesWithTokens(300_000),
         ] as any,
         operationId: `op-${model}`,
         status: 'running',
       });
       await expect(
-        agent.runner({ payload: {}, phase: 'user_input' }, at255kWithSummary),
+        agent.runner({ payload: {}, phase: 'user_input' }, at300kWithSummary),
       ).resolves.toMatchObject({ type: 'call_llm' });
 
-      const at265kWithSummary = AgentRuntime.createInitialState({
+      const at312kWithSummary = AgentRuntime.createInitialState({
         messages: [
           { content: 'Prior summary', id: 'grp-1', role: 'compressedGroup' },
-          ...makeMessagesWithTokens(265_000),
+          ...makeMessagesWithTokens(312_000),
         ] as any,
         operationId: `op-${model}`,
         status: 'running',
       });
       await expect(
-        agent.runner({ payload: {}, phase: 'user_input' }, at265kWithSummary),
+        agent.runner({ payload: {}, phase: 'user_input' }, at312kWithSummary),
       ).resolves.toMatchObject({ type: 'compress_context' });
 
       // Mid-turn emergency threshold = 340K (85% of real 400K window), NOT 850K!
@@ -1381,8 +1511,10 @@ describe('ENG-2A: RuntimeExecutors.compress_context cache disable & LOADING_FLAT
       .repeat(Math.ceil(85_000 / russianSentence.length))
       .slice(0, 85_000);
     expect(russian85k.length).toBe(85_000);
-    // Proves tokenx alone would have underestimated Cyrillic below the 20K budget and skipped chunking!
-    expect(estimateTokens(russian85k)).toBeLessThanOrEqual(20_000);
+    // Proves raw tokenx alone would have underestimated Cyrillic below the 20K budget,
+    // while Cyrillic-aware estimateTokens and estimateDeepSeekUserTurnTokens both trigger chunking!
+    expect(estimateTokenCount(russian85k)).toBeLessThanOrEqual(20_000);
+    expect(estimateTokens(russian85k)).toBeGreaterThan(20_000);
     expect(estimateDeepSeekUserTurnTokens(russian85k)).toBeGreaterThan(20_000);
 
     const dbMessages = [
@@ -2080,5 +2212,201 @@ describe('ENG-2A: RuntimeExecutors.compress_context cache disable & LOADING_FLAT
       tool_call_id: 'tc-syn-flat',
     });
     expect(outB.some((m) => m.tool_call_id === 'tc-orphan-none')).toBe(false);
+  });
+
+  it('attaches usage (totalInputTokens) and createdAt to in-memory assistant messages pushed by call_llm', async () => {
+    const { calculateMessageTokens } = await import('@lobechat/agent-runtime');
+    const { serverMessagesEngine } = await import('@/server/modules/Mecha/ContextEngineering');
+
+    vi.mocked(serverMessagesEngine).mockResolvedValueOnce([
+      { content: 'User turn', role: 'user' },
+    ] as any);
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({
+      chat: vi.fn(async (_payload: ChatStreamPayload, options: any) => {
+        await options?.callback?.onText?.('Mid-turn reply');
+        await options?.callback?.onUsage?.({
+          outputTextTokens: 12,
+          totalInputTokens: 245_000,
+          totalOutputTokens: 120,
+        });
+        return new Response('');
+      }),
+    } as any);
+
+    const compactedAt = Date.now() - 5_000;
+    const state = AgentRuntime.createInitialState({
+      messages: [
+        {
+          content: 'Summary',
+          createdAt: compactedAt,
+          id: 'grp-1',
+          role: 'compressedGroup',
+          updatedAt: compactedAt,
+        },
+        { content: 'User turn', id: 'msg-u1', role: 'user' },
+      ] as any,
+      metadata: { agentId: 'agent-1', topicId: 'topic-1' },
+      modelRuntimeConfig: { model: 'gpt-6-luna', provider: 'openai' },
+      operationId: 'op-usage-anchor',
+      status: 'running',
+    });
+
+    const ctx: any = {
+      messageModel: {
+        create: vi.fn(async () => ({ id: 'msg-asst-1' })),
+        query: vi.fn(async () => []),
+        update: vi.fn(async () => undefined),
+      },
+      operationId: 'op-usage-anchor',
+      serverDB: {},
+      stepIndex: 0,
+      streamManager: { publishStreamChunk: vi.fn(), publishStreamEvent: vi.fn() },
+      toolExecutionService: { executeTool: vi.fn() },
+      userId: 'user-1',
+    };
+
+    const res = await createRuntimeExecutors(ctx).call_llm!(
+      {
+        payload: {
+          messages: state.messages,
+          model: 'gpt-6-luna',
+          parentMessageId: 'msg-u1',
+          provider: 'openai',
+          tools: [],
+        },
+        type: 'call_llm',
+      },
+      state,
+    );
+
+    const pushedAssistant = res.newState.messages.at(-1) as any;
+    expect(pushedAssistant.role).toBe('assistant');
+    expect(pushedAssistant.usage).toMatchObject({
+      outputTextTokens: 12,
+      totalInputTokens: 245_000,
+      totalOutputTokens: 120,
+    });
+    expect(typeof pushedAssistant.createdAt).toBe('number');
+    expect(pushedAssistant.createdAt).toBeGreaterThanOrEqual(compactedAt);
+
+    // calculateMessageTokens immediately anchors on the fresh post-compaction in-memory assistant message
+    const anchoredCount = calculateMessageTokens(res.newState.messages as any);
+    expect(anchoredCount).toBe(245_000 + Math.max(12, estimateTokens('Mid-turn reply')));
+  });
+
+  it('strips internal createdAt/usage/metadata/id/search from wire payload.messages in !agentConfig fallback', async () => {
+    let capturedWirePayload: ChatStreamPayload | undefined;
+    const chat = vi.fn(async (payload: ChatStreamPayload, options: any) => {
+      capturedWirePayload = payload;
+      await options?.callback?.onText?.('Follow-up ok');
+      return new Response('');
+    });
+    vi.mocked(initModelRuntimeFromDB).mockResolvedValueOnce({ chat } as any);
+
+    const rawMessages = [
+      {
+        content: 'First question',
+        createdAt: 1_700_000_000_000,
+        id: 'msg-u1',
+        metadata: { source: 'test' },
+        role: 'user',
+        updatedAt: 1_700_000_000_000,
+      },
+      {
+        content: 'First reply',
+        createdAt: 1_700_000_001_000,
+        id: 'msg-a1',
+        metadata: { internalRepairAttempt: true },
+        reasoning_content: 'inline thought',
+        role: 'assistant',
+        search: { citations: [] },
+        tool_calls: [
+          {
+            function: { arguments: '{}', name: 'readFile' },
+            id: 'tc-1',
+            type: 'function',
+          },
+        ],
+        updatedAt: 1_700_000_001_000,
+        usage: { outputTextTokens: 10, totalInputTokens: 120_000, totalOutputTokens: 20 },
+      },
+      {
+        content: 'file contents',
+        createdAt: 1_700_000_002_000,
+        id: 'msg-t1',
+        name: 'readFile',
+        role: 'tool',
+        tool_call_id: 'tc-1',
+      },
+    ];
+
+    const state = AgentRuntime.createInitialState({
+      messages: rawMessages as any,
+      metadata: { agentId: 'agent-1', topicId: 'topic-1' },
+      modelRuntimeConfig: { model: 'gpt-6-luna', provider: 'openai' },
+      operationId: 'op-no-agent-config',
+      status: 'running',
+    });
+
+    // No ctx.agentConfig -> exercises the raw-message fallback branch in call_llm
+    const ctx: any = {
+      messageModel: {
+        create: vi.fn(async () => ({ id: 'msg-asst-2' })),
+        query: vi.fn(async () => []),
+        update: vi.fn(async () => undefined),
+      },
+      operationId: 'op-no-agent-config',
+      serverDB: {},
+      stepIndex: 1,
+      streamManager: { publishStreamChunk: vi.fn(), publishStreamEvent: vi.fn() },
+      toolExecutionService: { executeTool: vi.fn() },
+      userId: 'user-1',
+    };
+
+    await createRuntimeExecutors(ctx).call_llm!(
+      {
+        payload: {
+          messages: rawMessages,
+          model: 'gpt-6-luna',
+          parentMessageId: 'msg-t1',
+          provider: 'openai',
+          tools: [],
+        },
+        type: 'call_llm',
+      },
+      state,
+    );
+
+    expect(chat).toHaveBeenCalledOnce();
+    expect(capturedWirePayload).toBeDefined();
+    expect(capturedWirePayload!.messages).toEqual([
+      { content: 'First question', role: 'user' },
+      {
+        content: 'First reply',
+        reasoning_content: 'inline thought',
+        role: 'assistant',
+        tool_calls: [
+          {
+            function: { arguments: '{}', name: 'readFile' },
+            id: 'tc-1',
+            type: 'function',
+          },
+        ],
+      },
+      {
+        content: 'file contents',
+        name: 'readFile',
+        role: 'tool',
+        tool_call_id: 'tc-1',
+      },
+    ]);
+    for (const msg of capturedWirePayload!.messages as Record<string, unknown>[]) {
+      expect(msg).not.toHaveProperty('createdAt');
+      expect(msg).not.toHaveProperty('updatedAt');
+      expect(msg).not.toHaveProperty('usage');
+      expect(msg).not.toHaveProperty('metadata');
+      expect(msg).not.toHaveProperty('id');
+      expect(msg).not.toHaveProperty('search');
+    }
   });
 });

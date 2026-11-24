@@ -1147,3 +1147,25 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
     'grok-build-0.1': { auto: null, kind: null, levels: [] },
   },
 };
+
+export const ARCKEP_STUDIO_PRICE_CLIFF_TOKENS: Record<
+  ArckepStudioProviderId,
+  Readonly<Record<string, number>>
+> = {
+  anthropic: {
+    'claude-haiku-5-5': 100_000,
+  },
+  deepseek: {},
+  google: {},
+  openai: {
+    'gpt-6-luna': 272_000,
+    'gpt-6.1-terra': 272_000,
+    'gpt-6.2-astra': 272_000,
+    'gpt-6.2-sol': 272_000,
+  },
+  openrouter: {},
+  qwen: {},
+  xai: {
+    'grok-4.7': 200_000,
+  },
+};
