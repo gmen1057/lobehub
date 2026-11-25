@@ -26,10 +26,13 @@ import { MODEL_LIST_CONFIGS, processModelList } from '../../utils/modelParse';
 import { StreamingResponse } from '../../utils/response';
 import type { LobeRuntimeAI } from '../BaseAI';
 import {
+  ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS,
+  type AnthropicCacheControlOptions,
   buildAnthropicCacheControl,
   buildAnthropicMessages,
   buildAnthropicTools,
   buildSearchTool,
+  capAnthropicMessageCacheControlBlocks,
 } from '../contextBuilders/anthropic';
 import { resolveModelSamplingParameters } from '../parameterResolver';
 import { AnthropicStream } from '../streams';
@@ -88,6 +91,7 @@ export interface AnthropicCompatibleFactoryOptions<T extends Record<string, any>
     handlePayload?: (
       payload: ChatStreamPayload,
       options: ConstructorOptions<T>,
+      requestOptions?: Pick<ChatMethodOptions, 'signal'>,
     ) => Promise<Anthropic.MessageCreateParams> | Anthropic.MessageCreateParams;
     handleStream?: (
       stream: Stream<Anthropic.MessageStreamEvent> | ReadableStream,
@@ -136,6 +140,8 @@ export interface AnthropicCompatibleParamsInput<T extends Record<string, any> = 
  */
 export const buildDefaultAnthropicPayload = async (
   payload: AnthropicCachePayload,
+  _options?: Record<string, any>,
+  requestOptions?: Pick<ChatMethodOptions, 'signal'>,
 ): Promise<Anthropic.MessageCreateParams> => {
   const {
     messages,
@@ -163,8 +169,11 @@ export const buildDefaultAnthropicPayload = async (
   // Anthropic never rejects a request for placing a '1h' breakpoint after '5m'.
   const cacheTTL = selectAnthropicCacheTTL({ ...payload, enabledContextCaching });
   const cacheControl = cacheTTL ? buildAnthropicCacheControl(cacheTTL) : undefined;
-  const cacheOptions =
+  const cacheOptions: AnthropicCacheControlOptions =
     cacheTTL === '1h' ? { cacheTTL, enabledContextCaching } : { enabledContextCaching };
+  const messageBuildOptions: AnthropicCacheControlOptions = requestOptions?.signal
+    ? { ...cacheOptions, signal: requestOptions.signal }
+    : cacheOptions;
 
   // Filter out empty/whitespace-only system prompts — Anthropic API rejects them
   const systemMessage = messages.find((message) => message.role === 'system');
@@ -184,7 +193,7 @@ export const buildDefaultAnthropicPayload = async (
       ] as Anthropic.TextBlockParam[])
     : undefined;
 
-  const postMessages = await buildAnthropicMessages(userMessages, cacheOptions);
+  const postMessages = await buildAnthropicMessages(userMessages, messageBuildOptions);
 
   // Claude 4.6+ and Claude 5.x models reject trailing assistant prefill with HTTP 400
   if (
@@ -215,6 +224,15 @@ export const buildDefaultAnthropicPayload = async (
       return true;
     });
   }
+
+  const systemCacheBreakpoints =
+    systemPrompts?.filter((block) => Boolean(block.cache_control)).length ?? 0;
+  const toolCacheBreakpoints =
+    postTools?.filter((tool) => 'cache_control' in tool && Boolean(tool.cache_control)).length ?? 0;
+  capAnthropicMessageCacheControlBlocks(
+    postMessages,
+    ANTHROPIC_MAX_CACHE_CONTROL_BLOCKS - systemCacheBreakpoints - toolCacheBreakpoints,
+  );
 
   // Claude 5.x adaptive-only models: legacy budgets and sampling (temperature/top_p) are rejected.
   // In Fable 5.2 thinking.display defaults to "omitted" unless "summarized" is explicitly requested.
@@ -558,7 +576,11 @@ export const createAnthropicCompatibleRuntime = <T extends Record<string, any> =
 
         log('chat called with model: %s, stream: %s', payload.model, payload.stream ?? true);
 
-        const postPayload = await chatCompletion.handlePayload(payload, this._options);
+        const postPayload = await chatCompletion.handlePayload(
+          payload,
+          this._options,
+          options?.signal ? { signal: options.signal } : undefined,
+        );
         const shouldStream = postPayload.stream ?? payload.stream ?? true;
         const finalPayload = { ...postPayload, stream: shouldStream };
 
@@ -779,7 +801,15 @@ export const createAnthropicCompatibleRuntime = <T extends Record<string, any> =
           return innerError;
         }
 
-        return { headers: error?.headers, stack: error?.stack, status: error?.status };
+        return {
+          ...(error?.cause ? { cause: error.cause } : {}),
+          headers: error?.headers,
+          ...(typeof error?.message === 'string' && error.message
+            ? { message: error.message }
+            : {}),
+          stack: error?.stack,
+          status: error?.status,
+        };
       })();
 
       const errorMsg = errorResult.message || errorResult.error?.message;

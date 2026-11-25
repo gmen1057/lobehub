@@ -642,4 +642,26 @@ describe('classifyLLMError', () => {
       },
     );
   });
+
+  describe('permanent image URL / SSRF validation errors during payload build', () => {
+    it.each([
+      'SSRF blocked: DNS lookup 10.0.0.1 is not allowed',
+      'Invalid image URL: data:image/png;base64,',
+      'Fetch failed: Only HTTP(S) protocols are supported',
+      'Fetch failed: Only absolute URLs are supported',
+    ])('stops without retrying on "%s" both raw and wrapped in ProviderBizError', (msg) => {
+      const rawError = new Error(msg);
+      expect(classifyLLMError(rawError).kind).toBe('stop');
+
+      const { errorResult } = handleAnthropicError(rawError);
+      expect(
+        classifyLLMError({
+          endpoint: 'https://api.anthropic.com',
+          error: errorResult,
+          errorType: 'ProviderBizError',
+          provider: 'anthropic',
+        }).kind,
+      ).toBe('stop');
+    });
+  });
 });

@@ -426,5 +426,73 @@ describe('ssrfSafeFetch', () => {
       expect(response.status).toBe(200);
       expect(mockFetch.mock.calls[0][1].signal?.aborted).toBe(false);
     });
+
+    it('marks timeout cause as TimeoutError and distinguishes external caller AbortSignal as AbortError', async () => {
+      mockFetch.mockImplementation(
+        (_url: string, init: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            init.signal?.addEventListener('abort', () => {
+              const err = new Error('The operation was aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }),
+      );
+
+      let caughtTimeout: any;
+      try {
+        await ssrfSafeFetch('https://example.com/timeout-cause', { timeoutMs: 25 });
+      } catch (err) {
+        caughtTimeout = err;
+      }
+      expect(caughtTimeout).toBeInstanceOf(Error);
+      expect(caughtTimeout.message).toContain('Request timed out after 25ms');
+      expect(caughtTimeout.cause?.name).toBe('TimeoutError');
+      expect(caughtTimeout.isCallerAbort).toBeUndefined();
+
+      const callerController = new AbortController();
+      const pending = ssrfSafeFetch('https://example.com/caller-abort', {
+        signal: callerController.signal,
+        timeoutMs: 5000,
+      });
+      callerController.abort();
+
+      let caughtAbort: any;
+      try {
+        await pending;
+      } catch (err) {
+        caughtAbort = err;
+      }
+      expect(caughtAbort).toBeInstanceOf(Error);
+      expect(caughtAbort.name).toBe('AbortError');
+      expect(caughtAbort.isCallerAbort).toBe(true);
+      expect(caughtAbort.cause?.name).toBe('AbortError');
+    });
+
+    it('reuses pooled keepAlive HTTP/HTTPS agents across identical SSRF settings and isolates distinct settings', async () => {
+      mockFetch.mockResolvedValue(createMockResponse());
+
+      await ssrfSafeFetch('https://example.com/a');
+      await ssrfSafeFetch('https://example.com/b');
+      process.env.SSRF_ALLOW_PRIVATE_IP_ADDRESS = '1';
+      await ssrfSafeFetch('https://example.com/c');
+
+      const agentFn1 = mockFetch.mock.calls[0][1].agent;
+      const agentFn2 = mockFetch.mock.calls[1][1].agent;
+      const agentFn3 = mockFetch.mock.calls[2][1].agent;
+
+      const httpsUrl = new URL('https://example.com');
+      const httpUrl = new URL('http://example.com');
+
+      const httpsAgent1 = agentFn1(httpsUrl);
+      const httpsAgent2 = agentFn2(httpsUrl);
+      const httpsAgent3 = agentFn3(httpsUrl);
+
+      expect(httpsAgent1).toBe(httpsAgent2);
+      expect(agentFn1(httpUrl)).toBe(agentFn2(httpUrl));
+      expect(httpsAgent1.keepAlive).toBe(true);
+      expect(agentFn1(httpUrl).keepAlive).toBe(true);
+      expect(httpsAgent3).not.toBe(httpsAgent1);
+    });
   });
 });

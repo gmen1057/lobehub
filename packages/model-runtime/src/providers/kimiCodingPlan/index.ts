@@ -14,6 +14,8 @@ const DEFAULT_KIMI_CODING_BASE_URL = 'https://api.kimi.com/coding';
 
 const buildKimiCodingPlanAnthropicPayload = async (
   payload: ChatStreamPayload,
+  _options?: Record<string, any>,
+  requestOptions?: { signal?: AbortSignal },
 ): Promise<Anthropic.MessageCreateParams> => {
   const resolvedMaxTokens =
     payload.max_tokens ??
@@ -24,10 +26,14 @@ const buildKimiCodingPlanAnthropicPayload = async (
     )) ??
     8192;
 
-  return buildDefaultAnthropicPayload({
-    ...payload,
-    max_tokens: resolvedMaxTokens,
-  });
+  return buildDefaultAnthropicPayload(
+    {
+      ...payload,
+      max_tokens: resolvedMaxTokens,
+    },
+    _options,
+    requestOptions,
+  );
 };
 
 export const params = createAnthropicCompatibleParams({

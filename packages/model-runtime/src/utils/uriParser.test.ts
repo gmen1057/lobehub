@@ -37,17 +37,28 @@ describe('parseDataUri', () => {
     });
   });
 
-  it('should handle data URI without MIME type', () => {
+  it('should parse data URI without MIME type as base64 with null mimeType', () => {
     const dataUri = 'data:;base64,abc';
     const result = parseDataUri(dataUri);
-    // No MIME type between "data:" and ";base64," should fail
-    expect(result).toEqual({ base64: null, mimeType: null, type: 'url' });
+    expect(result).toEqual({ base64: 'abc', mimeType: null, type: 'base64' });
   });
 
-  it('should handle data URI with empty base64 content', () => {
-    const dataUri = 'data:image/png;base64,';
-    const result = parseDataUri(dataUri);
-    expect(result).toEqual({ base64: null, mimeType: null, type: 'url' });
+  it('should return null type (never url) for data URI with empty base64 content or non-base64 data URI', () => {
+    expect(parseDataUri('data:image/png;base64,')).toEqual({
+      base64: null,
+      mimeType: null,
+      type: null,
+    });
+    expect(parseDataUri('data:;base64,')).toEqual({
+      base64: null,
+      mimeType: null,
+      type: null,
+    });
+    expect(parseDataUri('data:text/plain,hello')).toEqual({
+      base64: null,
+      mimeType: null,
+      type: null,
+    });
   });
 
   it('should handle large data URIs without stack overflow', () => {

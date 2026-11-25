@@ -30,7 +30,10 @@ export const createAnthropicGenerateObject = async (
   const systemPromptText =
     typeof system_message === 'string' && system_message.trim() ? system_message : undefined;
   const user_messages = messages.filter((m) => m.role !== 'system');
-  const anthropicMessages = await buildAnthropicMessages(user_messages);
+  const anthropicMessages = await buildAnthropicMessages(
+    user_messages,
+    options?.signal ? { signal: options.signal } : undefined,
+  );
 
   log('converted %d messages to Anthropic format', anthropicMessages.length);
 
