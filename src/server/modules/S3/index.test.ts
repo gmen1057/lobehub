@@ -1,4 +1,8 @@
 // @vitest-environment node
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import {
   DeleteObjectCommand,
   DeleteObjectsCommand,
@@ -8,7 +12,11 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  clearMediaUrlCacheForTest,
+  resetS3BreakerForTest,
+} from '@lobechat/utils/arckepMediaMirror';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FileS3, S3 } from './index';
 
@@ -46,6 +54,13 @@ describe('S3', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetS3BreakerForTest();
+    clearMediaUrlCacheForTest();
+    delete process.env.S3_LOCAL_MIRROR_DIR;
+    delete process.env.S3_LOCAL_SPOOL_DIR;
+    delete process.env.MEDIA_LINKS_MODE;
+    delete process.env.LOBECHAT_BACKEND_KEY;
+    delete process.env.LOBECHAT_BACKEND_INTERNAL_URL;
 
     // Setup S3Client mock
     mockS3ClientSend = vi.fn();
@@ -135,6 +150,13 @@ describe('FileS3', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    resetS3BreakerForTest();
+    clearMediaUrlCacheForTest();
+    delete process.env.S3_LOCAL_MIRROR_DIR;
+    delete process.env.S3_LOCAL_SPOOL_DIR;
+    delete process.env.MEDIA_LINKS_MODE;
+    delete process.env.LOBECHAT_BACKEND_KEY;
+    delete process.env.LOBECHAT_BACKEND_INTERNAL_URL;
 
     // Setup S3Client mock
     mockS3ClientSend = vi.fn();
@@ -565,6 +587,138 @@ describe('FileS3', () => {
           ContentType: 'image/gif',
           Key: 'animation.gif',
         }),
+      );
+    });
+  });
+
+  describe('S3 outage circuit breaker, local mirror fallback, and media.arckep.ru links', () => {
+    let mirrorDir: string | undefined;
+
+    afterEach(async () => {
+      vi.restoreAllMocks();
+      if (mirrorDir) {
+        await rm(mirrorDir, { force: true, recursive: true });
+        mirrorDir = undefined;
+      }
+    });
+
+    it('falls back to local mirror on S3 outage error, opens breaker after 3 failures, and closes on recovery', async () => {
+      mirrorDir = await mkdtemp(path.join(tmpdir(), 'lc-s3-mirror-'));
+      process.env.S3_LOCAL_MIRROR_DIR = mirrorDir;
+      process.env.LOBECHAT_BACKEND_KEY = 'internal-test-key';
+      process.env.LOBECHAT_BACKEND_INTERNAL_URL = 'http://127.0.0.1:8202';
+
+      const key = 'files/user_1/outage-doc.txt';
+      await mkdir(path.join(mirrorDir, 'files/user_1'), { recursive: true });
+      await writeFile(path.join(mirrorDir, key), 'mirrored-text-content');
+
+      const binKey = 'files/user_1/UT0gLmAa/image';
+      const binBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      await mkdir(path.join(mirrorDir, 'files/user_1/UT0gLmAa'), { recursive: true });
+      await writeFile(path.join(mirrorDir, binKey), binBytes);
+
+      const s3 = new FileS3();
+      const outageError = Object.assign(new Error('ServiceUnavailable'), {
+        $metadata: { httpStatusCode: 503 },
+        name: 'ServiceUnavailable',
+      });
+      mockS3ClientSend.mockRejectedValue(outageError);
+
+      // Failure 1, 2, 3 -> each falls back to local mirror and opens circuit breaker
+      expect(await s3.getFileContent(key)).toBe('mirrored-text-content');
+      expect(await s3.getFileByteArray(binKey)).toEqual(new Uint8Array(binBytes));
+      expect(await s3.getFileContent(key)).toBe('mirrored-text-content');
+      expect(mockS3ClientSend).toHaveBeenCalledTimes(3);
+
+      // Breaker is now OPEN: reads serve directly from local mirror with 0 S3 calls
+      expect(await s3.getFileContent(key)).toBe('mirrored-text-content');
+      expect(await s3.getFileByteArray(binKey)).toEqual(new Uint8Array(binBytes));
+      expect(mockS3ClientSend).toHaveBeenCalledTimes(3);
+
+      // Breaker OPEN -> createPreSignedUrlForPreview switches to signed media.arckep.ru URL
+      const futureExp = Math.floor(Date.now() / 1000) + 7200;
+      const signedMediaUrl = `https://media.arckep.ru/m/${binKey}?exp=${futureExp}&sig=deadbeef`;
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            mirrored: { [binKey]: true },
+            s3_down: true,
+            urls: { [binKey]: signedMediaUrl },
+          }),
+          { headers: { 'content-type': 'application/json' }, status: 200 },
+        ),
+      );
+
+      const previewUrl = await s3.createPreSignedUrlForPreview(binKey);
+      expect(previewUrl).toBe(signedMediaUrl);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+
+      // responseContentDisposition forces S3 presigned URL even while breaker is open
+      const downloadUrl = await s3.createPreSignedUrlForPreview(binKey, 7200, {
+        responseContentDisposition: 'attachment; filename="shot.png"',
+      });
+      expect(downloadUrl).toBe('https://presigned-url.example.com');
+      expect(mockGetSignedUrl).toHaveBeenCalledTimes(1);
+
+      // When S3 recovers (e.g. a non-mirrored key succeeds via S3), breaker closes
+      mockS3ClientSend.mockResolvedValueOnce({
+        Body: {
+          transformToString: vi.fn().mockResolvedValue('fresh-from-s3'),
+        },
+      });
+      expect(await s3.getFileContent('files/user_1/not-in-mirror.txt')).toBe('fresh-from-s3');
+
+      // Now breaker is CLOSED again -> preview URL uses standard hour-rounded S3 presign
+      const healthyPreviewUrl = await s3.createPreSignedUrlForPreview(binKey);
+      expect(healthyPreviewUrl).toBe('https://presigned-url.example.com');
+      expect(mockGetSignedUrl).toHaveBeenCalledTimes(2);
+    });
+
+    it('uses signed media.arckep.ru URL when MEDIA_LINKS_MODE=always', async () => {
+      process.env.MEDIA_LINKS_MODE = 'always';
+      process.env.LOBECHAT_BACKEND_KEY = 'internal-test-key';
+
+      const key = 'files/user_1/always.png';
+      const exp = Math.floor(Date.now() / 1000) + 7200;
+      const signed = `https://media.arckep.ru/m/${key}?exp=${exp}&sig=123456`;
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            mirrored: { [key]: true },
+            s3_down: false,
+            urls: { [key]: signed },
+          }),
+          { headers: { 'content-type': 'application/json' }, status: 200 },
+        ),
+      );
+
+      const s3 = new FileS3();
+      expect(await s3.createPreSignedUrlForPreview(key)).toBe(signed);
+      expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('does not swallow 404/NoSuchKey errors or trip circuit breaker on them', async () => {
+      mirrorDir = await mkdtemp(path.join(tmpdir(), 'lc-s3-mirror-'));
+      process.env.S3_LOCAL_MIRROR_DIR = mirrorDir;
+      await mkdir(path.join(mirrorDir, 'files/user_1'), { recursive: true });
+      await writeFile(path.join(mirrorDir, 'files/user_1/deleted.txt'), 'stale');
+
+      const s3 = new FileS3();
+      const noSuchKey = Object.assign(new Error('NoSuchKey'), {
+        $metadata: { httpStatusCode: 404 },
+        name: 'NoSuchKey',
+      });
+      mockS3ClientSend.mockRejectedValue(noSuchKey);
+
+      await expect(s3.getFileContent('files/user_1/deleted.txt')).rejects.toThrow('NoSuchKey');
+      await expect(s3.getFileContent('files/user_1/deleted.txt')).rejects.toThrow('NoSuchKey');
+      await expect(s3.getFileContent('files/user_1/deleted.txt')).rejects.toThrow('NoSuchKey');
+
+      // Breaker remains closed after 404s
+      expect(await s3.createPreSignedUrlForPreview('files/user_1/deleted.txt')).toBe(
+        'https://presigned-url.example.com',
       );
     });
   });

@@ -7,6 +7,14 @@ import {
   S3Client,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import {
+  isS3BreakerOpen,
+  isS3OutageError,
+  readLocalMirrorFile,
+  recordS3Failure,
+  recordS3Success,
+  signMediaUrlViaStudio,
+} from '@lobechat/utils/arckepMediaMirror';
 import mime from 'mime';
 import { z } from 'zod';
 
@@ -86,33 +94,65 @@ export class S3 {
   }
 
   public async getFileContent(key: string): Promise<string> {
+    if (isS3BreakerOpen()) {
+      const mirrored = await readLocalMirrorFile(key);
+      if (mirrored) return mirrored.buffer.toString('utf8');
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    const response = await this.client.send(command);
+    try {
+      const response = await this.client.send(command);
 
-    if (!response.Body) {
-      throw new Error(`No body in response with ${key}`);
+      if (!response.Body) {
+        throw new Error(`No body in response with ${key}`);
+      }
+
+      const content = await response.Body.transformToString();
+      recordS3Success();
+      return content;
+    } catch (error) {
+      if (isS3OutageError(error)) {
+        recordS3Failure(error);
+        const mirrored = await readLocalMirrorFile(key);
+        if (mirrored) return mirrored.buffer.toString('utf8');
+      }
+      throw error;
     }
-
-    return response.Body.transformToString();
   }
 
   public async getFileByteArray(key: string): Promise<Uint8Array> {
+    if (isS3BreakerOpen()) {
+      const mirrored = await readLocalMirrorFile(key);
+      if (mirrored) return new Uint8Array(mirrored.buffer);
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,
     });
 
-    const response = await this.client.send(command);
+    try {
+      const response = await this.client.send(command);
 
-    if (!response.Body) {
-      throw new Error(`No body in response with ${key}`);
+      if (!response.Body) {
+        throw new Error(`No body in response with ${key}`);
+      }
+
+      const bytes = await response.Body.transformToByteArray();
+      recordS3Success();
+      return bytes;
+    } catch (error) {
+      if (isS3OutageError(error)) {
+        recordS3Failure(error);
+        const mirrored = await readLocalMirrorFile(key);
+        if (mirrored) return new Uint8Array(mirrored.buffer);
+      }
+      throw error;
     }
-
-    return response.Body.transformToByteArray();
   }
 
   /**
@@ -150,6 +190,17 @@ export class S3 {
     expiresIn?: number,
     options?: { responseContentDisposition?: string },
   ): Promise<string> {
+    if (
+      !options?.responseContentDisposition &&
+      (isS3BreakerOpen() || process.env.MEDIA_LINKS_MODE === 'always')
+    ) {
+      const mediaUrl = await signMediaUrlViaStudio(
+        key,
+        expiresIn ?? fileEnv.S3_PREVIEW_URL_EXPIRE_IN,
+      );
+      if (mediaUrl) return mediaUrl;
+    }
+
     const command = new GetObjectCommand({
       Bucket: this.bucket,
       Key: key,

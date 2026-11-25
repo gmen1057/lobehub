@@ -8,6 +8,8 @@ export const MIN_ARTIFACT_BODY_TO_COMPACT = 800;
 export const MAX_OLD_TOOL_CONTENT_CHARS = 4000;
 export const MAX_OLD_TOOL_ARGUMENTS_CHARS = 4000;
 export const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
+export const LONG_CACHE_TTL_MS = 60 * 60 * 1000;
+export const IMAGE_EQUIV_CHARS = 6400; // ~1,600 tokens * 4 chars/token (matches IMAGE_TOKEN_ESTIMATE in resolveCacheTTL.ts)
 
 const TOOL_CONTENT_HEAD_CHARS = 1200;
 const TOOL_CONTENT_TAIL_CHARS = 400;
@@ -17,7 +19,10 @@ const TOOL_ARG_TAIL_CHARS = 200;
 
 const DEFAULT_WARM_MIN_SAVED_CHARS = 4000;
 const DEFAULT_WARM_BREAK_EVEN_RATIO = 0.35;
+const DEFAULT_LONG_CACHE_WARM_BREAK_EVEN_RATIO = 0.55;
 const DEFAULT_WARM_MAX_DEFERRED_TURNS = 3;
+const LARGE_WARM_PREFIX_CHARS = 120_000; // ~30K tokens: above this, never turn-count force-wipe a warm cache
+const DEFAULT_WARM_MAX_DEFERRED_BLOAT_CHARS = 200_000; // ~50K tokens of accumulated stale bloat safety valve
 
 const TEXT_FILE_RECEIPT_PREFIX = 'ARCKEP_TEXT_FILE_V1\n';
 const WORKSPACE_CHANGE_PREFIX = 'ARCKEP_WORKSPACE_CHANGE ';
@@ -64,6 +69,7 @@ export interface ArckepToolResultTrimConfig {
   enabled?: boolean;
   recentUserTurns?: number;
   warmBreakEvenRatio?: number;
+  warmMaxDeferredBloatChars?: number;
   warmMaxDeferredTurns?: number;
   warmMinSavedChars?: number;
 }
@@ -468,9 +474,16 @@ const isLoadingPlaceholder = (msg: any): boolean =>
   !(Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) &&
   !(Array.isArray(msg.tools) && msg.tools.length > 0);
 
+const isImageContentPart = (part: any): boolean => {
+  if (!part || typeof part !== 'object') return false;
+  const rawType = typeof part.type === 'string' ? part.type.toLowerCase() : '';
+  return rawType === 'image_url' || rawType === 'image' || rawType === 'input_image';
+};
+
 const estimateMessageChars = (msg: any): number => {
   if (!msg || typeof msg !== 'object') return 0;
   let total = 0;
+  let contentImageCount = 0;
 
   if (typeof msg.content === 'string') {
     total += msg.content.length;
@@ -478,7 +491,15 @@ const estimateMessageChars = (msg: any): number => {
     for (const part of msg.content) {
       if (typeof part?.text === 'string') total += part.text.length;
       else if (typeof part?.thinking === 'string') total += part.thinking.length;
+      else if (isImageContentPart(part)) {
+        total += IMAGE_EQUIV_CHARS;
+        contentImageCount += 1;
+      }
     }
+  }
+
+  if (contentImageCount === 0 && Array.isArray(msg.imageList) && msg.imageList.length > 0) {
+    total += msg.imageList.length * IMAGE_EQUIV_CHARS;
   }
 
   if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
@@ -1083,13 +1104,20 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
       0,
       this.config.recentUserTurns ?? RECENT_UNCOMPACTED_USER_TURNS,
     );
-    const warmMinSavedChars = this.config.warmMinSavedChars ?? DEFAULT_WARM_MIN_SAVED_CHARS;
-    const warmBreakEvenRatio = this.config.warmBreakEvenRatio ?? DEFAULT_WARM_BREAK_EVEN_RATIO;
-    const warmMaxDeferredTurns = Math.max(
-      1,
-      this.config.warmMaxDeferredTurns ?? DEFAULT_WARM_MAX_DEFERRED_TURNS,
-    );
     const cacheTtlMs = this.config.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    const isLongCacheTtl = cacheTtlMs >= LONG_CACHE_TTL_MS;
+    const warmMinSavedChars = this.config.warmMinSavedChars ?? DEFAULT_WARM_MIN_SAVED_CHARS;
+    const warmBreakEvenRatio =
+      this.config.warmBreakEvenRatio ??
+      (isLongCacheTtl ? DEFAULT_LONG_CACHE_WARM_BREAK_EVEN_RATIO : DEFAULT_WARM_BREAK_EVEN_RATIO);
+    const hasExplicitMaxDeferredTurns = this.config.warmMaxDeferredTurns !== undefined;
+    const warmMaxDeferredTurns = hasExplicitMaxDeferredTurns
+      ? Math.max(1, this.config.warmMaxDeferredTurns!)
+      : isLongCacheTtl
+        ? Number.POSITIVE_INFINITY
+        : DEFAULT_WARM_MAX_DEFERRED_TURNS;
+    const warmMaxDeferredBloatChars =
+      this.config.warmMaxDeferredBloatChars ?? DEFAULT_WARM_MAX_DEFERRED_BLOAT_CHARS;
 
     const totalRealTurns = realUserIndices.length;
 
@@ -1176,20 +1204,32 @@ export class ArckepToolResultTrimProcessor extends BaseProcessor {
         continue;
       }
 
-      if (deferredTurns + 1 >= warmMaxDeferredTurns) {
-        appliedCutoff = nextCutoff;
-        effectiveDedupBound = curUserIndex;
-        deferredTurns = 0;
-        continue;
+      // In Anthropic, the only cache breakpoint inside `messages` sits on `messages.at(-1)`
+      // (prior breakpoints are `tools` and `system`). Mutating ANY message at `firstDiffIdx`
+      // invalidates the entire non-system message prefix `0 .. curUserIndex - 1`, not just the tail.
+      let cachedPrefixChars = 0;
+      for (let k = 0; k < curUserIndex; k++) {
+        const msg = oldEval.messages[k];
+        if (!msg || msg.role === 'system') continue;
+        cachedPrefixChars += estimateMessageChars(msg);
       }
+      const breakEvenThreshold = Math.max(
+        warmMinSavedChars,
+        cachedPrefixChars * warmBreakEvenRatio,
+      );
+      const exceedsDeferredBloatCap = deltaSavedChars >= warmMaxDeferredBloatChars;
+      const forceFlushByTurnCount =
+        deferredTurns + 1 >= warmMaxDeferredTurns &&
+        (hasExplicitMaxDeferredTurns ||
+          (!isLongCacheTtl &&
+            cachedPrefixChars < LARGE_WARM_PREFIX_CHARS &&
+            deltaSavedChars >= warmMinSavedChars));
 
-      let cachedTailChars = 0;
-      for (let k = firstDiffIdx; k < curUserIndex; k++) {
-        cachedTailChars += estimateMessageChars(oldEval.messages[k]);
-      }
-      const breakEvenThreshold = Math.max(warmMinSavedChars, cachedTailChars * warmBreakEvenRatio);
-
-      if (deltaSavedChars >= breakEvenThreshold) {
+      if (
+        deltaSavedChars >= breakEvenThreshold ||
+        exceedsDeferredBloatCap ||
+        forceFlushByTurnCount
+      ) {
         appliedCutoff = nextCutoff;
         effectiveDedupBound = curUserIndex;
         deferredTurns = 0;

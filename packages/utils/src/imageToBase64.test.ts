@@ -88,4 +88,16 @@ describe('imageUrlToBase64', () => {
 
     await expect(imageUrlToBase64('https://example.com/image.jpg')).rejects.toThrow('Fetch failed');
   });
+
+  it('should throw on non-2xx HTTP response instead of returning XML/HTML as base64', async () => {
+    mockFetch.mockResolvedValue(
+      new Response('<Error><Code>ServiceUnavailable</Code></Error>', {
+        headers: { 'content-type': 'application/xml' },
+        status: 503,
+        statusText: 'Service Unavailable',
+      }),
+    );
+
+    await expect(imageUrlToBase64('https://example.com/image.jpg')).rejects.toThrow(/HTTP 503/);
+  });
 });

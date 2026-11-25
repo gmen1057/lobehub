@@ -140,6 +140,7 @@ const log = debug('lobe-server:ai-agent-service');
 
 export const DEFAULT_CHAT_MAX_STEPS = 60;
 export const LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS = 30_000;
+export const IMAGE_TOKEN_ESTIMATE = 1_600; // Matches IMAGE_TOKEN_ESTIMATE in model-runtime resolveCacheTTL.ts
 
 interface FileAttachmentContentLike {
   content?: string | null;
@@ -2301,9 +2302,30 @@ export class AiAgentService {
       for (const m of allMessages) {
         if (estimatedInputTokens >= LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS) break;
         if (!m) continue;
-        const msgText =
-          typeof m.content === 'string' ? m.content : m.content ? JSON.stringify(m.content) : '';
-        if (msgText) estimatedInputTokens += estimateWorkspaceTokens(msgText);
+        let contentImageCount = 0;
+        if (typeof m.content === 'string') {
+          if (m.content) estimatedInputTokens += estimateWorkspaceTokens(m.content);
+        } else if (Array.isArray(m.content)) {
+          for (const part of m.content) {
+            if (!part || typeof part !== 'object') continue;
+            const rawType = typeof part.type === 'string' ? part.type.toLowerCase() : '';
+            if (rawType === 'image_url' || rawType === 'image' || rawType === 'input_image') {
+              estimatedInputTokens += IMAGE_TOKEN_ESTIMATE;
+              contentImageCount += 1;
+            } else if (typeof part.text === 'string' && part.text) {
+              estimatedInputTokens += estimateWorkspaceTokens(part.text);
+            } else if (typeof part.thinking === 'string' && part.thinking) {
+              estimatedInputTokens += estimateWorkspaceTokens(part.thinking);
+            } else {
+              estimatedInputTokens += estimateWorkspaceTokens(JSON.stringify(part));
+            }
+          }
+        } else if (m.content) {
+          estimatedInputTokens += estimateWorkspaceTokens(JSON.stringify(m.content));
+        }
+        if (contentImageCount === 0 && Array.isArray(m.imageList) && m.imageList.length > 0) {
+          estimatedInputTokens += m.imageList.length * IMAGE_TOKEN_ESTIMATE;
+        }
         if (Array.isArray(m.fileList)) {
           for (const f of m.fileList) {
             if (typeof f?.content === 'string' && f.content) {

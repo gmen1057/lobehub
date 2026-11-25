@@ -331,4 +331,100 @@ describe('ssrfSafeFetch', () => {
       );
     });
   });
+
+  describe('timeoutMs and AbortSignal handling', () => {
+    it('should abort hung fetch when timeoutMs expires and pass signal to node-fetch', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      mockFetch.mockImplementation(
+        (_url: string, init: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            capturedSignal = init.signal;
+            init.signal?.addEventListener('abort', () => {
+              const err = new Error('The operation was aborted');
+              err.name = 'AbortError';
+              reject(err);
+            });
+          }),
+      );
+
+      await expect(
+        ssrfSafeFetch('https://storage.yandexcloud.net/imagestudio/slow.png', { timeoutMs: 30 }),
+      ).rejects.toThrow(/Request timed out after 30ms/);
+
+      expect(capturedSignal).toBeDefined();
+      expect(capturedSignal?.aborted).toBe(true);
+      // timeoutMs itself must not leak into node-fetch options
+      expect(mockFetch.mock.calls[0][1]).not.toHaveProperty('timeoutMs');
+    });
+
+    it('should abort hung response.arrayBuffer() under the same timeoutMs budget', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      mockFetch.mockImplementation(async (_url: string, init: { signal?: AbortSignal }) => {
+        capturedSignal = init.signal;
+        return {
+          arrayBuffer: () => new Promise<ArrayBuffer>(() => {}),
+          headers: new Map([['content-type', 'image/png']]),
+          status: 200,
+          statusText: 'OK',
+        };
+      });
+
+      await expect(
+        ssrfSafeFetch('https://storage.yandexcloud.net/imagestudio/stalled-body.png', {
+          timeoutMs: 35,
+        }),
+      ).rejects.toThrow(/Request timed out after 35ms/);
+
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('should forward caller AbortSignal when combined with timeoutMs', async () => {
+      const callerController = new AbortController();
+      let capturedSignal: AbortSignal | undefined;
+
+      mockFetch.mockImplementation(
+        (_url: string, init: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            capturedSignal = init.signal;
+            init.signal?.addEventListener('abort', () => {
+              reject(new Error('Caller cancelled'));
+            });
+          }),
+      );
+
+      const pending = ssrfSafeFetch('https://example.com/cancel', {
+        signal: callerController.signal,
+        timeoutMs: 5000,
+      });
+
+      callerController.abort(new Error('Caller cancelled'));
+
+      await expect(pending).rejects.toThrow(/Caller cancelled/);
+      expect(capturedSignal?.aborted).toBe(true);
+    });
+
+    it('should reject immediately when caller signal is already aborted', async () => {
+      const callerController = new AbortController();
+      callerController.abort(new Error('Already aborted'));
+
+      await expect(
+        ssrfSafeFetch('https://example.com/already-aborted', {
+          signal: callerController.signal,
+          timeoutMs: 5000,
+        }),
+      ).rejects.toThrow(/Already aborted/);
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('should resolve normally and clear timer when fetch finishes before timeoutMs', async () => {
+      const mockResponse = createMockResponse({
+        headers: new Map([['content-type', 'image/png']]),
+      });
+      mockFetch.mockResolvedValue(mockResponse);
+
+      const response = await ssrfSafeFetch('https://example.com/fast.png', { timeoutMs: 2000 });
+      expect(response.status).toBe(200);
+      expect(mockFetch.mock.calls[0][1].signal?.aborted).toBe(false);
+    });
+  });
 });

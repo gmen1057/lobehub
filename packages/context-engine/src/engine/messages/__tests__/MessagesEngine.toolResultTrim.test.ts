@@ -617,4 +617,111 @@ describe('MessagesEngine + ArckepToolResultTrimProcessor invariants', () => {
     );
     expect(JSON.stringify(step0.messages)).toContain('"thoughtSignature":"sig-gemini-1"');
   });
+
+  it('1-hour warm cache with imageList attachments (via MessageContentProcessor) preserves byte-identical prefix across 6+ warm turns', async () => {
+    const t0 = 1_762_000_000_000;
+    const oneHourMs = 60 * 60 * 1000;
+    const tinyPngDataUri =
+      'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+    // Turn 1: user uploads 25 screenshots (25 * 6,400 = 160K equiv chars ≈ 40K tokens)
+    const rawHistory: any[] = [
+      {
+        content: 'Analyze these 25 screenshots from the dashboard.',
+        createdAt: t0,
+        id: 'user-t1',
+        imageList: Array.from({ length: 25 }, (_, idx) => ({
+          alt: `screen-${idx}.png`,
+          id: `img-${idx}`,
+          url: tinyPngDataUri,
+        })),
+        parentId: null,
+        role: 'user',
+        updatedAt: t0,
+      },
+      {
+        content: 'Reviewed all 25 screenshots.',
+        createdAt: t0 + 10_000,
+        id: 'asst-reply-t1',
+        parentId: 'user-t1',
+        role: 'assistant',
+        updatedAt: t0 + 10_000,
+      },
+    ];
+
+    let lastParentId = 'asst-reply-t1';
+    // Turns 2..6: each 4 minutes apart (warm within 1h TTL) with a 10 KB readKnowledge tool output
+    for (let turn = 2; turn <= 6; turn++) {
+      const built = buildHistoricalTurn({
+        baseTs: t0 + (turn - 1) * 240_000,
+        fileId: `report-${turn}`,
+        knowledgeChars: 10_000,
+        parentId: lastParentId,
+        turn,
+      });
+      rawHistory.push(...built.messages);
+      lastParentId = built.lastId;
+    }
+
+    const runWarm1h = (messages: any[]) =>
+      new MessagesEngine({
+        capabilities: {
+          isCanUseFC: () => true,
+          isCanUseVision: () => true,
+        },
+        enableSystemDate: false,
+        messages: parse(messages as unknown as UIChatMessage[])
+          .flatList as unknown as UIChatMessage[],
+        model: 'claude-sonnet-4-5',
+        provider: 'anthropic',
+        systemRole: 'You are Arckép assistant.',
+        toolResultTrim: {
+          cacheTtlMs: oneHourMs,
+          cacheWarm: true,
+        },
+      }).process();
+
+    // Turns 7..10: 4 consecutive warm follow-ups (exceeding the old 3-turn deferred cap!)
+    let prevOut: Awaited<ReturnType<typeof runWarm1h>> | null = null;
+    const running = [...rawHistory];
+    for (let turn = 7; turn <= 10; turn++) {
+      const ts = t0 + (turn - 1) * 240_000;
+      const uId = `user-t${turn}`;
+      running.push({
+        content: `Warm follow-up ${turn}`,
+        createdAt: ts,
+        id: uId,
+        parentId: lastParentId,
+        role: 'user',
+        updatedAt: ts,
+      });
+
+      const out = await runWarm1h(running);
+      expect(out.metadata.arckepToolResultTrim?.cacheWarm).toBe(true);
+      // Every earlier 10 KB tool result MUST stay untrimmed so the 1h Anthropic cache is never busted!
+      for (let t = 2; t <= 6; t++) {
+        const toolMsg = out.messages.find(
+          (m) => m.role === 'tool' && m.tool_call_id === `call-read-t${t}`,
+        );
+        expect((toolMsg?.content as string).length).toBeGreaterThan(10_000);
+      }
+      if (prevOut) {
+        expect(JSON.stringify(out.messages.slice(0, prevOut.messages.length))).toBe(
+          JSON.stringify(prevOut.messages),
+        );
+      }
+      prevOut = out;
+
+      const aId = `asst-reply-t${turn}`;
+      running.push({
+        content: `Reply ${turn}`,
+        createdAt: ts + 5000,
+        id: aId,
+        parentId: uId,
+        role: 'assistant',
+        updatedAt: ts + 5000,
+      });
+      lastParentId = aId;
+    }
+  });
 });
