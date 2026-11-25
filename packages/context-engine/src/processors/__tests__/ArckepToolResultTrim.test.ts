@@ -4,6 +4,8 @@ import type { PipelineContext } from '../../types';
 import {
   ArckepToolResultTrimProcessor,
   DEFAULT_CACHE_TTL_MS,
+  IMAGE_EQUIV_CHARS,
+  LONG_CACHE_TTL_MS,
   MAX_OLD_TOOL_ARGUMENTS_CHARS,
   MAX_OLD_TOOL_CONTENT_CHARS,
   MIN_ARTIFACT_BODY_TO_COMPACT,
@@ -135,6 +137,8 @@ describe('ArckepToolResultTrimProcessor', () => {
     expect(MAX_OLD_TOOL_CONTENT_CHARS).toBe(4000);
     expect(MAX_OLD_TOOL_ARGUMENTS_CHARS).toBe(4000);
     expect(DEFAULT_CACHE_TTL_MS).toBe(300_000);
+    expect(LONG_CACHE_TTL_MS).toBe(3_600_000);
+    expect(IMAGE_EQUIV_CHARS).toBe(6400);
   });
 
   it('acts as no-op when enabled is false', async () => {
@@ -929,6 +933,351 @@ describe('ArckepToolResultTrimProcessor', () => {
       const out = await processor.process(makeContext(messages));
       expect(out.messages.find((m) => m.id === 't-real')?.content).toBe(realXml);
       expect(out.messages.find((m) => m.id === 'a1-reply-null')?.content).toBe('');
+    });
+
+    it('measures cachedPrefixChars across the full non-system prefix 0..curUserIndex-1 and excludes system messages', async () => {
+      const t0 = 1_760_600_000_000;
+      const tool14KB = 'W'.repeat(14_000); // saves ~12.3 KB
+      const earlyCached120KB = 'E'.repeat(120_000);
+
+      const buildHistory = (includeEarlyLargePrefix: boolean) => [
+        { content: 'S'.repeat(150_000), id: 'sys', role: 'system' },
+        {
+          content: includeEarlyLargePrefix ? `u1 ${earlyCached120KB}` : 'u1',
+          createdAt: t0,
+          id: 'u1',
+          role: 'user',
+        },
+        { content: 'a1', createdAt: t0 + 1000, id: 'a1', role: 'assistant' },
+        { content: 'u2', createdAt: t0 + 600_000, id: 'u2', role: 'user' },
+        { content: 'a2', createdAt: t0 + 601_000, id: 'a2', role: 'assistant' },
+        { content: 'u3', createdAt: t0 + 1_200_000, id: 'u3', role: 'user' },
+        { content: 'a3', createdAt: t0 + 1_201_000, id: 'a3', role: 'assistant' },
+        // Turn 4: 14 KB tool output; Turns 5 & 6 are tiny, so tail [firstDiffIdx..curUserIndex-1] is only ~14 KB
+        { content: 'u4', createdAt: t0 + 1_800_000, id: 'u4', role: 'user' },
+        ...makeToolPair({
+          apiName: 'web_search',
+          args: { q: 'late' },
+          assistantId: 'a4',
+          content: tool14KB,
+          createdAt: t0 + 1_801_000,
+          identifier: 'mcp-arckep-studio-web',
+          toolCallId: 'tc4',
+          toolMsgId: 't4',
+        }),
+        { content: 'u5', createdAt: t0 + 1_830_000, id: 'u5', role: 'user' },
+        { content: 'a5', createdAt: t0 + 1_831_000, id: 'a5', role: 'assistant' },
+        { content: 'u6', createdAt: t0 + 1_860_000, id: 'u6', role: 'user' },
+        { content: 'a6', createdAt: t0 + 1_861_000, id: 'a6', role: 'assistant' },
+        // Turn 7 warm: ages out Turn 4
+        { content: 'u7', createdAt: t0 + 1_890_000, id: 'u7', role: 'user' },
+      ];
+
+      const processor = new ArckepToolResultTrimProcessor({ cacheWarm: true });
+
+      // With 120 KB in Turn 1 (before firstDiffIdx=t4): full non-system prefix ~134 KB, 12.3 KB < 35% (~47 KB) -> DEFERRED!
+      const withEarlyPrefix = await processor.process(makeContext(buildHistory(true)));
+      expect(withEarlyPrefix.messages.find((m) => m.id === 't4')?.content).toBe(tool14KB);
+
+      // Without 120 KB in Turn 1 (still has 150 KB system prompt): system has its own breakpoint and is excluded,
+      // so non-system prefix is only ~14.4 KB, 12.3 KB >= 35% (~5 KB) -> TRIMMED!
+      const systemOnlyLarge = await processor.process(makeContext(buildHistory(false)));
+      expect(
+        (systemOnlyLarge.messages.find((m) => m.id === 't4')?.content as string).length,
+      ).toBeLessThan(2000);
+    });
+
+    it('counts image_url/image content parts and imageList via IMAGE_EQUIV_CHARS without double-counting', async () => {
+      const t0 = 1_760_700_000_000;
+      const tool15KB = 'M'.repeat(15_000); // saves ~13.3 KB
+
+      const buildWithTurn1Msg = (u1Msg: Record<string, any>) => [
+        u1Msg,
+        { content: 'a1', createdAt: t0 + 1000, id: 'a1', role: 'assistant' },
+        { content: 'u2', createdAt: t0 + 600_000, id: 'u2', role: 'user' },
+        ...makeToolPair({
+          apiName: 'web_search',
+          args: { q: 'imgs' },
+          assistantId: 'a2',
+          content: tool15KB,
+          createdAt: t0 + 601_000,
+          identifier: 'mcp-arckep-studio-web',
+          toolCallId: 'tc2',
+          toolMsgId: 't2',
+        }),
+        { content: 'u3', createdAt: t0 + 1_200_000, id: 'u3', role: 'user' },
+        { content: 'a3', createdAt: t0 + 1_201_000, id: 'a3', role: 'assistant' },
+        { content: 'u4', createdAt: t0 + 1_800_000, id: 'u4', role: 'user' },
+        { content: 'a4', createdAt: t0 + 1_801_000, id: 'a4', role: 'assistant' },
+        { content: 'u5 warm', createdAt: t0 + 1_830_000, id: 'u5', role: 'user' },
+      ];
+
+      const processor = new ArckepToolResultTrimProcessor({ cacheWarm: true });
+
+      // 1. 15 image_url parts in content -> 15 * 6,400 = 96,000 equiv chars -> 111K prefix -> 13.3K < 38.9K -> DEFERRED
+      const imageParts = [
+        { text: 'screenshots', type: 'text' },
+        ...Array.from({ length: 15 }, (_, idx) => ({
+          image_url: { url: `https://cdn.example.com/s-${idx}.png` },
+          type: 'image_url',
+        })),
+      ];
+      const outParts = await processor.process(
+        makeContext(
+          buildWithTurn1Msg({ content: imageParts, createdAt: t0, id: 'u1', role: 'user' }),
+        ),
+      );
+      expect(outParts.messages.find((m) => m.id === 't2')?.content).toBe(tool15KB);
+
+      // 2. 15 items in raw imageList (no image parts in content) -> also DEFERRED
+      const imageList = Array.from({ length: 15 }, (_, idx) => ({
+        alt: `img-${idx}.png`,
+        id: `img-${idx}`,
+        url: `https://cdn.example.com/s-${idx}.png`,
+      }));
+      const outImageList = await processor.process(
+        makeContext(
+          buildWithTurn1Msg({
+            content: 'screenshots',
+            createdAt: t0,
+            id: 'u1',
+            imageList,
+            role: 'user',
+          }),
+        ),
+      );
+      expect(outImageList.messages.find((m) => m.id === 't2')?.content).toBe(tool15KB);
+
+      // 3. Anti-double-count: 3 images present in BOTH content (image_url) and imageList:
+      // Single-counted: 3 * 6,400 + 15,000 = 34,200 -> 35% = 11,970 <= 13,300 -> TRIMS!
+      // If double-counted: 6 * 6,400 + 15,000 = 53,400 -> 35% = 18,690 > 13,300 -> would falsely defer!
+      const threeParts = [
+        { text: '3 shots', type: 'text' },
+        ...Array.from({ length: 3 }, (_, idx) => ({
+          image_url: { url: `https://cdn.example.com/d-${idx}.png` },
+          type: 'image_url',
+        })),
+      ];
+      const outNoDouble = await processor.process(
+        makeContext(
+          buildWithTurn1Msg({
+            content: threeParts,
+            createdAt: t0,
+            id: 'u1',
+            imageList: imageList.slice(0, 3),
+            role: 'user',
+          }),
+        ),
+      );
+      expect(
+        (outNoDouble.messages.find((m) => m.id === 't2')?.content as string).length,
+      ).toBeLessThan(2000);
+    });
+
+    it('never wipes a 140K-token warm 1-hour cache every 3rd turn for 5-15 KB savings, enforces 55% 1h break-even, and flushes on cold gap / bloat cap / explicit override', async () => {
+      const t0 = 1_760_800_000_000;
+      const screenshots34 = [
+        { text: `Initial analysis ${'C'.repeat(340_000)}`, type: 'text' },
+        ...Array.from({ length: 34 }, (_, idx) => ({
+          image_url: { url: `https://cdn.example.com/shot-${idx}.png` },
+          type: 'image_url',
+        })),
+      ]; // 340K text + 34 * 6.4K images = 557.6K equiv chars (~140K tokens)
+
+      // Build Turn 1 (cold) + Turns 2..9 spaced 3 minutes apart (all warm within 1h TTL!),
+      // where Turns 2..7 each produce a 10 KB tool result (saves ~8.3 KB each).
+      const history: any[] = [
+        { content: screenshots34, createdAt: t0, id: 'u1', role: 'user' },
+        { content: 'a1', createdAt: t0 + 10_000, id: 'a1', role: 'assistant' },
+      ];
+      for (let turn = 2; turn <= 7; turn++) {
+        const ts = t0 + (turn - 1) * 180_000; // 3 min apart
+        history.push(
+          { content: `u${turn}`, createdAt: ts, id: `u${turn}`, role: 'user' },
+          ...makeToolPair({
+            apiName: 'web_search',
+            args: { q: `turn-${turn}` },
+            assistantId: `a${turn}`,
+            content: `T${turn}_`.padEnd(10_000, 'X'),
+            createdAt: ts + 5000,
+            identifier: 'mcp-arckep-studio-web',
+            toolCallId: `tc${turn}`,
+            toolMsgId: `t${turn}`,
+          }),
+        );
+      }
+
+      const longCacheProcessor = new ArckepToolResultTrimProcessor({
+        cacheTtlMs: LONG_CACHE_TTL_MS,
+      });
+
+      // Run consecutive warm turns 8, 9, 10, 11 (4+ turns past recent window -> 6 consecutive deferred turns!)
+      let prevMessages: any[] | null = null;
+      const running = [...history];
+      for (let turn = 8; turn <= 11; turn++) {
+        const ts = t0 + (turn - 1) * 180_000;
+        running.push({ content: `u${turn} warm`, createdAt: ts, id: `u${turn}`, role: 'user' });
+        const out = await longCacheProcessor.process(makeContext(running));
+
+        expect(out.metadata.arckepToolResultTrim?.cacheWarm).toBe(true);
+        // None of Turns 2..7 may be trimmed during warm 1h session!
+        for (let oldTurn = 2; oldTurn <= 7; oldTurn++) {
+          expect((out.messages.find((m) => m.id === `t${oldTurn}`)?.content as string).length).toBe(
+            10_000,
+          );
+        }
+        if (prevMessages) {
+          // Byte-identical cached prefix across consecutive warm turns!
+          expect(JSON.stringify(out.messages.slice(0, prevMessages.length))).toBe(
+            JSON.stringify(prevMessages),
+          );
+        }
+        prevMessages = out.messages;
+        running.push({
+          content: `a${turn}`,
+          createdAt: ts + 5000,
+          id: `a${turn}`,
+          role: 'assistant',
+        });
+      }
+
+      // 1. Cold turn (>= 1h later): flushes ALL deferred tool outputs for free!
+      const coldTs = t0 + 11 * 180_000 + LONG_CACHE_TTL_MS + 60_000;
+      const coldOut = await longCacheProcessor.process(
+        makeContext([
+          ...running,
+          { content: 'u12 cold', createdAt: coldTs, id: 'u12', role: 'user' },
+        ]),
+      );
+      expect(coldOut.metadata.arckepToolResultTrim?.cacheWarm).toBe(false);
+      for (let oldTurn = 2; oldTurn <= 7; oldTurn++) {
+        expect(
+          (coldOut.messages.find((m) => m.id === `t${oldTurn}`)?.content as string).length,
+        ).toBeLessThan(2000);
+      }
+
+      // 2. Explicit warmMaxDeferredTurns override is still respected even on 1h cache
+      const explicitOverrideProcessor = new ArckepToolResultTrimProcessor({
+        cacheTtlMs: LONG_CACHE_TTL_MS,
+        warmMaxDeferredTurns: 3,
+      });
+      const overrideOut = await explicitOverrideProcessor.process(makeContext(running));
+      expect(
+        (overrideOut.messages.find((m) => m.id === 't2')?.content as string).length,
+      ).toBeLessThan(2000);
+
+      // 3. Accumulated stale bloat safety valve (>= 200K chars): flushes even on huge 1h prefix
+      const bloatedHistory = history.map((m) =>
+        m.id === 't2' || m.id === 't3' || m.id === 't4'
+          ? { ...m, content: 'B'.repeat(75_000) } // 3 * ~73.3K = ~220K saved >= 200K bloat cap
+          : m,
+      );
+      const bloatOut = await longCacheProcessor.process(
+        makeContext([
+          ...bloatedHistory,
+          { content: 'u8 warm', createdAt: t0 + 7 * 180_000, id: 'u8', role: 'user' },
+        ]),
+      );
+      expect((bloatOut.messages.find((m) => m.id === 't2')?.content as string).length).toBeLessThan(
+        2000,
+      );
+
+      // 4. 1h default break-even ratio (55%) vs 5m default (35%):
+      // 48 KB tool output (saves ~46.3 KB) inside ~100 KB total prefix (~46% savings):
+      // - 5m cache (35% ratio) -> TRIMS
+      // - 1h cache (55% ratio) -> DEFERS
+      const midPrefixMessages = [
+        { content: `u1 ${'P'.repeat(52_000)}`, createdAt: t0, id: 'u1', role: 'user' },
+        { content: 'a1', createdAt: t0 + 1000, id: 'a1', role: 'assistant' },
+        { content: 'u2', createdAt: t0 + 4_000_000, id: 'u2', role: 'user' },
+        ...makeToolPair({
+          apiName: 'web_search',
+          args: { q: 'mid' },
+          assistantId: 'a2',
+          content: 'Q'.repeat(48_000),
+          createdAt: t0 + 4_001_000,
+          identifier: 'mcp-arckep-studio-web',
+          toolCallId: 'tc2',
+          toolMsgId: 't2',
+        }),
+        { content: 'u3', createdAt: t0 + 8_000_000, id: 'u3', role: 'user' },
+        { content: 'a3', createdAt: t0 + 8_001_000, id: 'a3', role: 'assistant' },
+        { content: 'u4', createdAt: t0 + 12_000_000, id: 'u4', role: 'user' },
+        { content: 'a4', createdAt: t0 + 12_001_000, id: 'a4', role: 'assistant' },
+        { content: 'u5 warm', createdAt: t0 + 12_030_000, id: 'u5', role: 'user' },
+      ];
+      const fiveMinOut = await new ArckepToolResultTrimProcessor({
+        cacheTtlMs: DEFAULT_CACHE_TTL_MS,
+        cacheWarm: true,
+      }).process(makeContext(midPrefixMessages));
+      expect(
+        (fiveMinOut.messages.find((m) => m.id === 't2')?.content as string).length,
+      ).toBeLessThan(2000);
+
+      const oneHourOut = await new ArckepToolResultTrimProcessor({
+        cacheTtlMs: LONG_CACHE_TTL_MS,
+        cacheWarm: true,
+      }).process(makeContext(midPrefixMessages));
+      expect((oneHourOut.messages.find((m) => m.id === 't2')?.content as string).length).toBe(
+        48_000,
+      );
+
+      // 65 KB tool output inside ~117 KB prefix (saves ~63.3 KB -> 54.1% < 55%), vs 70 KB inside ~122 KB (saves ~68.3 KB -> 56% >= 55%) -> TRIMS!
+      const largeSavingsMessages = midPrefixMessages.map((m) =>
+        m.id === 't2' ? { ...m, content: 'Q'.repeat(70_000) } : m,
+      );
+      const oneHourFlushOut = await new ArckepToolResultTrimProcessor({
+        cacheTtlMs: LONG_CACHE_TTL_MS,
+        cacheWarm: true,
+      }).process(makeContext(largeSavingsMessages));
+      expect(
+        (oneHourFlushOut.messages.find((m) => m.id === 't2')?.content as string).length,
+      ).toBeLessThan(2000);
+    });
+
+    it('guards large (>=120K chars) 5m warm caches against 3-turn force-wipes while keeping 3-turn flush on small 5m caches', async () => {
+      const t0 = 1_760_900_000_000;
+      const tool8KB = 'K'.repeat(8000); // saves ~6.3 KB (>= warmMinSavedChars 4000)
+
+      const buildFiveMinChain = (turn1PaddingChars: number) => [
+        { content: `u1 ${'P'.repeat(turn1PaddingChars)}`, createdAt: t0, id: 'u1', role: 'user' },
+        { content: 'a1', createdAt: t0 + 1000, id: 'a1', role: 'assistant' },
+        { content: 'u2', createdAt: t0 + 600_000, id: 'u2', role: 'user' },
+        ...makeToolPair({
+          apiName: 'web_search',
+          args: { q: '2' },
+          assistantId: 'a2',
+          content: tool8KB,
+          createdAt: t0 + 601_000,
+          identifier: 'mcp-arckep-studio-web',
+          toolCallId: 'tc2',
+          toolMsgId: 't2',
+        }),
+        { content: 'u3', createdAt: t0 + 1_200_000, id: 'u3', role: 'user' },
+        { content: 'a3', createdAt: t0 + 1_201_000, id: 'a3', role: 'assistant' },
+        { content: 'u4', createdAt: t0 + 1_800_000, id: 'u4', role: 'user' },
+        { content: 'a4', createdAt: t0 + 1_801_000, id: 'a4', role: 'assistant' },
+        // Turn 5 warm (deferredTurns -> 1)
+        { content: 'u5', createdAt: t0 + 1_830_000, id: 'u5', role: 'user' },
+        { content: 'a5', createdAt: t0 + 1_831_000, id: 'a5', role: 'assistant' },
+        // Turn 6 warm (deferredTurns -> 2)
+        { content: 'u6', createdAt: t0 + 1_860_000, id: 'u6', role: 'user' },
+        { content: 'a6', createdAt: t0 + 1_861_000, id: 'a6', role: 'assistant' },
+        // Turn 7 warm (3rd deferred turn)
+        { content: 'u7', createdAt: t0 + 1_890_000, id: 'u7', role: 'user' },
+      ];
+
+      const processor = new ArckepToolResultTrimProcessor({ cacheTtlMs: DEFAULT_CACHE_TTL_MS });
+
+      // Large 5m prefix (130K chars >= 120K): 3rd deferred turn must NOT wipe cache to save 6.3 KB!
+      const largeOut = await processor.process(makeContext(buildFiveMinChain(130_000)));
+      expect(largeOut.messages.find((m) => m.id === 't2')?.content).toBe(tool8KB);
+
+      // Small 5m prefix (40K chars < 120K, savings 6.3 KB >= 4K min): 3rd deferred turn flushes cleanly!
+      const smallOut = await processor.process(makeContext(buildFiveMinChain(40_000)));
+      expect((smallOut.messages.find((m) => m.id === 't2')?.content as string).length).toBeLessThan(
+        2000,
+      );
     });
   });
 });

@@ -619,6 +619,128 @@ describe('Project Workspace integration: execAgent, RuntimeExecutors, projectWor
       expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheTtlMs).toBe(60 * 60 * 1000);
       expect(createServerAgentToolsEngine).toHaveBeenCalledOnce();
     });
+
+    it('counts imageList and multimodal image_url parts toward Anthropic 1h cache TTL without double-counting', async () => {
+      const now = new Date('2026-11-22T15:10:00.000Z');
+      const tenMinutesAgo = new Date('2026-11-22T15:00:00.000Z');
+      const text20kTokens = 'a'.repeat(80_000); // 80,000 ASCII chars -> 20,000 tokens
+      const makeImages = (count: number) =>
+        Array.from({ length: count }, (_, idx) => ({
+          alt: `shot-${idx}.png`,
+          id: `img-${idx}`,
+          url: `https://cdn.example.com/shot-${idx}.png`,
+        }));
+
+      const setupAnthropicMocks = (history: any[]) => {
+        vi.clearAllMocks();
+        mockMessageCreate.mockReset();
+        mockGetAgentConfig.mockResolvedValue({
+          chatConfig: {},
+          files: [],
+          id: 'agent-1',
+          knowledgeBases: [],
+          model: 'claude-sonnet-4-5',
+          plugins: [],
+          provider: 'anthropic',
+          systemRole: '',
+        });
+        mockResolveTopicWorkspaceSnapshot.mockResolvedValue(makeSnapshot({ pinnedTokens: 0 }));
+        mockMessageQuery.mockResolvedValue(history);
+        mockMessageCreate
+          .mockResolvedValueOnce({ createdAt: now, id: 'u-curr' })
+          .mockResolvedValueOnce({ id: 'a-curr' });
+        mockCreateOperation.mockResolvedValue({
+          autoStarted: true,
+          operationId: 'op-img-ttl',
+          success: true,
+        });
+      };
+
+      // 1. 20K text + 8 images in imageList (20K + 8 * 1,600 = 32,800 >= 30K) -> 1h TTL & warm at 10m gap!
+      setupAnthropicMocks([
+        {
+          content: text20kTokens,
+          createdAt: tenMinutesAgo,
+          id: 'u-1',
+          imageList: makeImages(8),
+          role: 'user',
+          updatedAt: tenMinutesAgo,
+        },
+      ]);
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-claude-images-1h' },
+        prompt: 'Compare screenshot #3 and #7',
+      });
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheTtlMs).toBe(60 * 60 * 1000);
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheWarm).toBe(true);
+
+      // 2. Same 20K text WITHOUT images (< 30K) -> stays 5m TTL & cold at 10m gap
+      setupAnthropicMocks([
+        {
+          content: text20kTokens,
+          createdAt: tenMinutesAgo,
+          id: 'u-1',
+          role: 'user',
+          updatedAt: tenMinutesAgo,
+        },
+      ]);
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-claude-text-5m' },
+        prompt: 'Follow up',
+      });
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheTtlMs).toBe(5 * 60 * 1000);
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheWarm).toBe(false);
+
+      // 3. 20K text + 8 image_url parts in array content -> 1h TTL
+      setupAnthropicMocks([
+        {
+          content: [
+            { text: text20kTokens, type: 'text' },
+            ...Array.from({ length: 8 }, (_, idx) => ({
+              image_url: { url: `https://cdn.example.com/part-${idx}.png` },
+              type: 'image_url',
+            })),
+          ],
+          createdAt: tenMinutesAgo,
+          id: 'u-1',
+          role: 'user',
+          updatedAt: tenMinutesAgo,
+        },
+      ]);
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-claude-parts-1h' },
+        prompt: 'Follow up on parts',
+      });
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheTtlMs).toBe(60 * 60 * 1000);
+
+      // 4. Anti-double-count: 20K text + 4 images in BOTH content (image_url) and imageList:
+      // 20,000 + 4 * 1,600 = 26,400 < 30,000 -> stays 5m TTL (would be 32,800 if double-counted!)
+      setupAnthropicMocks([
+        {
+          content: [
+            { text: text20kTokens, type: 'text' },
+            ...Array.from({ length: 4 }, (_, idx) => ({
+              image_url: { url: `https://cdn.example.com/dup-${idx}.png` },
+              type: 'image_url',
+            })),
+          ],
+          createdAt: tenMinutesAgo,
+          id: 'u-1',
+          imageList: makeImages(4),
+          role: 'user',
+          updatedAt: tenMinutesAgo,
+        },
+      ]);
+      await service.execAgent({
+        agentId: 'agent-1',
+        appContext: { topicId: 'topic-claude-no-double-count' },
+        prompt: 'Follow up',
+      });
+      expect(mockCreateOperation.mock.calls[0][0].appContext.topicCacheTtlMs).toBe(5 * 60 * 1000);
+    });
   });
 
   describe('3. B-3 / H-2 / H-3: Persist-Once workspaceDelta & compressionSignature propagation', () => {

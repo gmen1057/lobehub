@@ -15,6 +15,11 @@ export interface SSRFOptions {
   allowPrivateIPAddress?: boolean;
 }
 
+export interface SSRFSafeFetchOptions extends RequestInit {
+  /** Optional request timeout in milliseconds */
+  timeoutMs?: number;
+}
+
 /**
  * Browser-safe fetch implementation
  * Uses native fetch API in browser environments
@@ -24,10 +29,38 @@ export interface SSRFOptions {
  */
 export const ssrfSafeFetch = async (
   url: string,
-
-  options?: RequestInit,
-
+  options?: SSRFSafeFetchOptions,
   _ssrfOptions?: SSRFOptions,
 ): Promise<Response> => {
-  return fetch(url, options);
+  if (!options || options.timeoutMs === undefined) {
+    return fetch(url, options);
+  }
+  const { timeoutMs, signal: callerSignal, ...restOptions } = options;
+  if (!(typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0)) {
+    return fetch(url, callerSignal ? { ...restOptions, signal: callerSignal } : restOptions);
+  }
+
+  const controller = new AbortController();
+  let onCallerAbort: (() => void) | undefined;
+  if (callerSignal) {
+    if (callerSignal.aborted) {
+      controller.abort(callerSignal.reason);
+    } else {
+      onCallerAbort = () => controller.abort(callerSignal.reason);
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+  }
+
+  const timeoutId = setTimeout(() => {
+    controller.abort(new Error(`Request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
+
+  try {
+    return await fetch(url, { ...restOptions, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+    if (callerSignal && onCallerAbort) {
+      callerSignal.removeEventListener('abort', onCallerAbort);
+    }
+  }
 };
