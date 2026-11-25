@@ -5,10 +5,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OpenAIChatMessage, UserMessageContentPart } from '../../types/chat';
 import { parseDataUri } from '../../utils/uriParser';
 import {
+  ANTHROPIC_MAX_IMAGE_BASE64_CHARS,
   buildAnthropicBlock,
   buildAnthropicMessage,
   buildAnthropicMessages,
   buildAnthropicTools,
+  clearAnthropicImageCacheForTest,
+  MAX_CONCURRENT_IMAGE_LOADS,
 } from './anthropic';
 
 // Mock the parseDataUri function since it's an implementation detail
@@ -75,7 +78,7 @@ describe('anthropicHelpers', () => {
       expect(result).toEqual({
         source: {
           data: 'convertedBase64String',
-          media_type: 'image/jpg',
+          media_type: 'image/jpeg',
           type: 'base64',
         },
         type: 'image',
@@ -381,7 +384,7 @@ describe('anthropicHelpers', () => {
       ]);
     });
 
-    it('messages should dont need end with user', async () => {
+    it('messages should dont need end with user and should merge adjacent user messages', async () => {
       const messages: OpenAIChatMessage[] = [
         { content: 'Hello', role: 'user' },
         { content: 'Hello', role: 'user' },
@@ -390,10 +393,15 @@ describe('anthropicHelpers', () => {
 
       const contents = await buildAnthropicMessages(messages);
 
-      expect(contents).toHaveLength(3);
+      expect(contents).toHaveLength(2);
       expect(contents).toEqual([
-        { content: 'Hello', role: 'user' },
-        { content: 'Hello', role: 'user' },
+        {
+          content: [
+            { text: 'Hello', type: 'text' },
+            { text: 'Hello', type: 'text' },
+          ],
+          role: 'user',
+        },
         { content: 'Hi', role: 'assistant' },
       ]);
     });
@@ -541,10 +549,13 @@ describe('anthropicHelpers', () => {
                 tool_use_id: 'toolu_018VQTQ6fwAEC3eppuEfMxPp',
                 type: 'tool_result',
               },
+              {
+                text: '继续',
+                type: 'text',
+              },
             ],
             role: 'user',
           },
-          { content: '继续', role: 'user' },
         ]);
       });
       it('should handle user messages with tool correctly', async () => {
@@ -884,11 +895,10 @@ describe('anthropicHelpers', () => {
 
         expect(contents).toEqual([
           {
-            content: '<empty_content>',
-            role: 'user',
-          },
-          {
-            content: 'Continue',
+            content: [
+              { text: '<empty_content>', type: 'text' },
+              { text: 'Continue', type: 'text' },
+            ],
             role: 'user',
           },
         ]);
@@ -913,11 +923,10 @@ describe('anthropicHelpers', () => {
 
         expect(contents).toEqual([
           {
-            content: '<empty_content>',
-            role: 'user',
-          },
-          {
-            content: 'Continue',
+            content: [
+              { text: '<empty_content>', type: 'text' },
+              { text: 'Continue', type: 'text' },
+            ],
             role: 'user',
           },
         ]);
@@ -1100,10 +1109,13 @@ describe('anthropicHelpers', () => {
               tool_use_id: 'toolu_018VQTQ6fwAEC3eppuEfMxPp',
               type: 'tool_result',
             },
+            {
+              text: '继续',
+              type: 'text',
+            },
           ],
           role: 'user',
         },
-        { content: '继续', role: 'user' },
       ]);
     });
 
@@ -1116,10 +1128,15 @@ describe('anthropicHelpers', () => {
 
       const contents = await buildAnthropicMessages(messages, { enabledContextCaching: true });
 
-      expect(contents).toHaveLength(3);
+      expect(contents).toHaveLength(2);
       expect(contents).toEqual([
-        { content: 'Hello', role: 'user' },
-        { content: 'Hello', role: 'user' },
+        {
+          content: [
+            { text: 'Hello', type: 'text' },
+            { text: 'Hello', type: 'text' },
+          ],
+          role: 'user',
+        },
         {
           content: [{ cache_control: { type: 'ephemeral' }, text: 'Hi', type: 'text' }],
           role: 'assistant',
@@ -1314,6 +1331,388 @@ describe('anthropicHelpers', () => {
       });
       expect(disabled?.[0].cache_control).toBeUndefined();
       expect(disabled?.[1].cache_control).toBeUndefined();
+    });
+  });
+
+  describe('Image resilience: MIME magic bytes, server sharp compression, immutability, concurrency, and tool_result ordering', () => {
+    const REAL_PNG_BASE64 = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+      0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00,
+    ]).toString('base64');
+    const REAL_JPEG_BASE64 = Buffer.from([
+      0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+    ]).toString('base64');
+
+    it('detects magic bytes for data:;base64, application/octet-stream, and mismatched image/* headers, and drops unknown empty media_type', async () => {
+      // 1. data:;base64,<PNG> -> mimeType: null -> magic bytes resolve to image/png
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: REAL_PNG_BASE64,
+        mimeType: null,
+        type: 'base64',
+      });
+      expect(
+        await buildAnthropicBlock({
+          image_url: { url: `data:;base64,${REAL_PNG_BASE64}` },
+          type: 'image_url',
+        }),
+      ).toEqual({
+        source: { data: REAL_PNG_BASE64, media_type: 'image/png', type: 'base64' },
+        type: 'image',
+      });
+
+      // 2. data:application/octet-stream;base64,<PNG> -> image/png
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: REAL_PNG_BASE64,
+        mimeType: 'application/octet-stream',
+        type: 'base64',
+      });
+      expect(
+        await buildAnthropicBlock({
+          image_url: { url: `data:application/octet-stream;base64,${REAL_PNG_BASE64}` },
+          type: 'image_url',
+        }),
+      ).toEqual({
+        source: { data: REAL_PNG_BASE64, media_type: 'image/png', type: 'base64' },
+        type: 'image',
+      });
+
+      // 3. Mismatched header (image/png on real JPEG bytes) -> magic bytes win -> image/jpeg
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: REAL_JPEG_BASE64,
+        mimeType: 'image/png; charset=binary',
+        type: 'base64',
+      });
+      expect(
+        await buildAnthropicBlock({
+          image_url: { url: `data:image/png;base64,${REAL_JPEG_BASE64}` },
+          type: 'image_url',
+        }),
+      ).toEqual({
+        source: { data: REAL_JPEG_BASE64, media_type: 'image/jpeg', type: 'base64' },
+        type: 'image',
+      });
+
+      // 4. Null/generic MIME with no magic bytes -> undefined (never passes invalid media_type to Anthropic)
+      vi.mocked(parseDataUri).mockReturnValueOnce({
+        base64: Buffer.from('not-an-image').toString('base64'),
+        mimeType: null,
+        type: 'base64',
+      });
+      expect(
+        await buildAnthropicBlock({
+          image_url: { url: 'data:;base64,bm90LWFuLWltYWdl' },
+          type: 'image_url',
+        }),
+      ).toBeUndefined();
+    });
+
+    it('auto-compresses >5MB base64 images and converts image/avif & image/bmp via sharp on server', async () => {
+      clearAnthropicImageCacheForTest();
+      const savedWindow = (globalThis as any).window;
+      delete (globalThis as any).window;
+
+      try {
+        const { createRequire } = await import('node:module');
+        const sharp = createRequire(`${process.cwd()}/package.json`)('sharp');
+        const { randomBytes } = await import('node:crypto');
+
+        // 1. Noisy 1600x1600 PNG whose base64 exceeds 5 MiB (5_242_880 chars)
+        const rawNoise = randomBytes(1600 * 1600 * 3);
+        const hugePngBuf: Buffer = await sharp(rawNoise, {
+          raw: { channels: 3, height: 1600, width: 1600 },
+        })
+          .png({ compressionLevel: 0 })
+          .toBuffer();
+        const hugePngBase64 = hugePngBuf.toString('base64');
+        expect(hugePngBase64.length).toBeGreaterThan(ANTHROPIC_MAX_IMAGE_BASE64_CHARS);
+
+        vi.mocked(parseDataUri).mockReturnValueOnce({
+          base64: hugePngBase64,
+          mimeType: 'image/png',
+          type: 'base64',
+        });
+
+        const compressedBlock = (await buildAnthropicBlock({
+          image_url: { url: 'data:image/png;base64,huge' },
+          type: 'image_url',
+        })) as any;
+
+        expect(compressedBlock).toBeDefined();
+        expect(compressedBlock.type).toBe('image');
+        expect(['image/jpeg', 'image/webp']).toContain(compressedBlock.source.media_type);
+        expect(compressedBlock.source.data.length).toBeLessThanOrEqual(
+          ANTHROPIC_MAX_IMAGE_BASE64_CHARS,
+        );
+
+        // Second call hits server LRU cache and returns byte-identical base64 (preserving 1h prompt cache)
+        vi.mocked(parseDataUri).mockReturnValueOnce({
+          base64: hugePngBase64,
+          mimeType: 'image/png',
+          type: 'base64',
+        });
+        const cachedBlock = (await buildAnthropicBlock({
+          image_url: { url: 'data:image/png;base64,huge' },
+          type: 'image_url',
+        })) as any;
+        expect(cachedBlock.source.data).toBe(compressedBlock.source.data);
+
+        // 2. AVIF -> PNG conversion on server
+        const avifBuf: Buffer = await sharp({
+          create: { background: { b: 200, g: 100, r: 50 }, channels: 3, height: 16, width: 16 },
+        })
+          .avif()
+          .toBuffer();
+        const avifBase64 = avifBuf.toString('base64');
+
+        vi.mocked(parseDataUri).mockReturnValueOnce({
+          base64: avifBase64,
+          mimeType: 'image/avif',
+          type: 'base64',
+        });
+        const convertedAvif = (await buildAnthropicBlock({
+          image_url: { url: `data:image/avif;base64,${avifBase64}` },
+          type: 'image_url',
+        })) as any;
+        expect(convertedAvif?.source.media_type).toBe('image/png');
+
+        // 3. Minimal uncompressed 2x2 24-bit BMP -> PNG conversion on server
+        const bmpBuf = Buffer.alloc(70);
+        bmpBuf.write('BM', 0, 'ascii');
+        bmpBuf.writeUInt32LE(70, 2); // file size
+        bmpBuf.writeUInt32LE(54, 10); // pixel data offset
+        bmpBuf.writeUInt32LE(40, 14); // BITMAPINFOHEADER size
+        bmpBuf.writeInt32LE(2, 18); // width
+        bmpBuf.writeInt32LE(2, 22); // height
+        bmpBuf.writeUInt16LE(1, 26); // planes
+        bmpBuf.writeUInt16LE(24, 28); // bpp
+        const bmpBase64 = bmpBuf.toString('base64');
+
+        vi.mocked(parseDataUri).mockReturnValueOnce({
+          base64: bmpBase64,
+          mimeType: 'image/bmp',
+          type: 'base64',
+        });
+        const convertedBmp = (await buildAnthropicBlock({
+          image_url: { url: `data:image/bmp;base64,${bmpBase64}` },
+          type: 'image_url',
+        })) as any;
+        expect(convertedBmp?.source.media_type).toBe('image/png');
+      } finally {
+        (globalThis as any).window = savedWindow;
+      }
+    });
+
+    it('does not mutate caller oaiMessages objects when enabledContextCaching is true', async () => {
+      const textBlock: UserMessageContentPart = { text: 'Immutable user text', type: 'text' };
+      const thinkingBlock: UserMessageContentPart = {
+        signature: 'sig',
+        thinking: 'Immutable thought',
+        type: 'thinking',
+      };
+      const inputMessages: OpenAIChatMessage[] = [
+        { content: [thinkingBlock, { text: 'Assistant reply', type: 'text' }], role: 'assistant' },
+        { content: [textBlock], role: 'user' },
+      ];
+
+      await buildAnthropicMessages(inputMessages, {
+        cacheTTL: '1h',
+        enabledContextCaching: true,
+      });
+
+      expect('cache_control' in (textBlock as any)).toBe(false);
+      expect('cache_control' in (thinkingBlock as any)).toBe(false);
+    });
+
+    it('bounds concurrent imageUrlToBase64 calls to 6, deduplicates duplicate URLs, and forwards signal only when set', async () => {
+      vi.mocked(parseDataUri).mockReturnValue({
+        base64: null,
+        mimeType: null,
+        type: 'url',
+      });
+
+      let inFlight = 0;
+      let maxInFlight = 0;
+      vi.mocked(imageUrlToBase64).mockImplementation(async (_url: string) => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 15));
+        inFlight -= 1;
+        return { base64: REAL_PNG_BASE64, mimeType: `image/png` };
+      });
+
+      const urls = Array.from({ length: 15 }, (_, idx) => `https://cdn.example.com/img-${idx}.png`);
+      // Include duplicate URLs across messages to verify request-local deduplication
+      const messages: OpenAIChatMessage[] = [
+        {
+          content: urls.slice(0, 8).map((url) => ({ image_url: { url }, type: 'image_url' })),
+          role: 'user',
+        },
+        { content: 'Ack', role: 'assistant' },
+        {
+          content: [
+            ...urls.slice(8).map((url) => ({ image_url: { url }, type: 'image_url' as const })),
+            { image_url: { url: urls[0] }, type: 'image_url' as const },
+          ],
+          role: 'user',
+        },
+      ];
+
+      const controller = new AbortController();
+      const built = await buildAnthropicMessages(messages, { signal: controller.signal });
+
+      expect(built).toHaveLength(3);
+      expect(maxInFlight).toBeLessThanOrEqual(MAX_CONCURRENT_IMAGE_LOADS);
+      expect(maxInFlight).toBeGreaterThan(1);
+      // 15 unique URLs (duplicate urls[0] was deduplicated)
+      expect(imageUrlToBase64).toHaveBeenCalledTimes(15);
+      expect(imageUrlToBase64).toHaveBeenCalledWith(urls[0], { signal: controller.signal });
+    });
+
+    it('merges tool_result + subsequent user image message keeping tool_result first and converts orphan tool images without JSON base64 leak', async () => {
+      vi.mocked(parseDataUri).mockReturnValue({
+        base64: REAL_PNG_BASE64,
+        mimeType: 'image/png',
+        type: 'base64',
+      });
+
+      const messages: OpenAIChatMessage[] = [
+        {
+          content: [
+            { text: 'Orphan screenshot', type: 'text' },
+            { image_url: { url: `data:image/png;base64,${REAL_PNG_BASE64}` }, type: 'image_url' },
+          ] as any,
+          role: 'tool',
+          tool_call_id: 'orphan_call_id',
+        },
+        {
+          content: '',
+          role: 'assistant',
+          tool_calls: [
+            {
+              function: { arguments: '{}', name: 'take_screenshot' },
+              id: 'paired_call_1',
+              type: 'function',
+            },
+          ],
+        },
+        {
+          content: 'Screenshot saved',
+          role: 'tool',
+          tool_call_id: 'paired_call_1',
+        },
+        {
+          content: [
+            { text: 'Images returned by tool:', type: 'text' },
+            { image_url: { url: `data:image/png;base64,${REAL_PNG_BASE64}` }, type: 'image_url' },
+          ],
+          role: 'user',
+        },
+      ];
+
+      const result = await buildAnthropicMessages(messages);
+
+      // Strictly alternates: user (orphan converted blocks) -> assistant (tool_use) -> user (tool_result FIRST, then text + image)
+      expect(result.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
+
+      // Orphan tool message converted to structured text + image blocks (NOT JSON.stringify!)
+      expect(result[0].content).toEqual([
+        { text: 'Orphan screenshot', type: 'text' },
+        {
+          source: { data: REAL_PNG_BASE64, media_type: 'image/png', type: 'base64' },
+          type: 'image',
+        },
+      ]);
+
+      // Merged post-tool user message has tool_result strictly at index 0
+      const postToolBlocks = result[2].content as any[];
+      expect(postToolBlocks[0]).toMatchObject({
+        tool_use_id: 'paired_call_1',
+        type: 'tool_result',
+      });
+      expect(postToolBlocks[1]).toEqual({ text: 'Images returned by tool:', type: 'text' });
+      expect(postToolBlocks[2]).toMatchObject({ type: 'image' });
+    });
+
+    it('parses magic bytes and raster dimensions in pure browser mode without global Buffer, preserves image cache_control, and caps cache_control blocks to 4', async () => {
+      const savedWindow = (globalThis as any).window;
+      const savedBuffer = (globalThis as any).Buffer;
+      (globalThis as any).window = {};
+      (globalThis as any).Buffer = undefined;
+
+      try {
+        vi.mocked(parseDataUri).mockReturnValue({
+          base64: REAL_PNG_BASE64,
+          mimeType: null,
+          type: 'base64',
+        });
+
+        // Browser mode without global Buffer still detects PNG magic bytes + dimensions and preserves cache_control
+        const messages: OpenAIChatMessage[] = [
+          {
+            content: [
+              {
+                cache_control: { type: 'ephemeral' },
+                text: 'Block 1',
+                type: 'text',
+              } as any,
+            ],
+            role: 'user',
+          },
+          {
+            content: [
+              {
+                cache_control: { type: 'ephemeral' },
+                text: 'Block 2',
+                type: 'text',
+              } as any,
+            ],
+            role: 'user',
+          },
+          {
+            content: [
+              {
+                cache_control: { type: 'ephemeral' },
+                text: 'Block 3',
+                type: 'text',
+              } as any,
+              {
+                cache_control: { type: 'ephemeral' },
+                image_url: { url: `data:;base64,${REAL_PNG_BASE64}` },
+                type: 'image_url',
+              } as any,
+              {
+                text: 'Final block',
+                type: 'text',
+              },
+            ],
+            role: 'user',
+          },
+        ];
+
+        const merged = await buildAnthropicMessages(messages, { enabledContextCaching: true });
+        expect(merged).toHaveLength(1);
+        const blocks = merged[0].content as any[];
+        expect(blocks).toHaveLength(5);
+        expect(blocks[3]).toEqual({
+          cache_control: { type: 'ephemeral' },
+          source: { data: REAL_PNG_BASE64, media_type: 'image/png', type: 'base64' },
+          type: 'image',
+        });
+        expect(blocks[4]).toEqual({
+          cache_control: { type: 'ephemeral' },
+          text: 'Final block',
+          type: 'text',
+        });
+
+        // Total cache_control markers across the merged message never exceed Anthropic's 4-block limit
+        const markedCount = blocks.filter((b) => Boolean(b.cache_control)).length;
+        expect(markedCount).toBe(4);
+        // Earliest excess marker on Block 1 was trimmed so the latest 4 breakpoints win
+        expect(blocks[0].cache_control).toBeUndefined();
+      } finally {
+        (globalThis as any).window = savedWindow;
+        (globalThis as any).Buffer = savedBuffer;
+      }
     });
   });
 });

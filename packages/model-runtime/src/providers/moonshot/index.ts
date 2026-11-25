@@ -106,6 +106,8 @@ const normalizeMessagesForOpenAI = (
  */
 const buildMoonshotAnthropicPayload = async (
   payload: ChatStreamPayload,
+  _options?: Record<string, any>,
+  requestOptions?: { signal?: AbortSignal },
 ): Promise<Anthropic.MessageCreateParams> => {
   const resolvedMaxTokens =
     payload.max_tokens ??
@@ -120,12 +122,16 @@ const buildMoonshotAnthropicPayload = async (
   const isNativeThinking = isKimiNativeThinkingModel(payload.model);
   const isThinkingEnabled = isNativeThinking || (isK25 && payload.thinking?.type !== 'disabled');
 
-  const basePayload = await buildDefaultAnthropicPayload({
-    ...payload,
-    enabledSearch: false,
-    max_tokens: resolvedMaxTokens,
-    messages: normalizeMessagesForAnthropic(payload.messages, isThinkingEnabled),
-  });
+  const basePayload = await buildDefaultAnthropicPayload(
+    {
+      ...payload,
+      enabledSearch: false,
+      max_tokens: resolvedMaxTokens,
+      messages: normalizeMessagesForAnthropic(payload.messages, isThinkingEnabled),
+    },
+    _options,
+    requestOptions,
+  );
 
   const tools = appendSearchTool(basePayload.tools, payload.enabledSearch);
   const basePayloadWithSearch = { ...basePayload, tools };

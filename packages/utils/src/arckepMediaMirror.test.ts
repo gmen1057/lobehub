@@ -1,14 +1,19 @@
 // @vitest-environment node
+import { createHash, createHmac } from 'node:crypto';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  buildServerImageCacheKey,
   clearMediaUrlCacheForTest,
   detectImageMimeType,
   extractOwnBucketKey,
+  isAuthorizedOwnBucketUrl,
   isMediaPublicUrl,
   isS3BreakerOpen,
   isS3OutageError,
@@ -28,12 +33,20 @@ const WEBP_BYTES = Buffer.from([
 const GIF_BYTES = Buffer.from('GIF89a\x01\x00\x01\x00', 'binary');
 
 const ENV_KEYS = [
+  'APP_URL',
   'ARCKEP_INTERNAL_TOKEN',
+  'INTERNAL_APP_URL',
+  'MEDIA_URL_SECRET',
+  'NEXT_PUBLIC_APP_URL',
+  'S3_ACCESS_KEY_ID',
   'S3_ENDPOINT',
   'S3_BUCKET',
   'S3_PUBLIC_DOMAIN',
   'NEXT_PUBLIC_S3_DOMAIN',
   'S3_ENABLE_PATH_STYLE',
+  'S3_REGION',
+  'S3_SECRET_ACCESS_KEY',
+  'S3_SET_ACL',
   'MEDIA_PUBLIC_BASE',
   'S3_LOCAL_MIRROR_DIR',
   'S3_LOCAL_SPOOL_DIR',
@@ -491,6 +504,335 @@ describe('arckepMediaMirror', () => {
           headers: expect.objectContaining({ 'X-Arckep-Token': 'arckep-primary-token' }),
         }),
       );
+    });
+
+    it('returns null when S3 breaker is open (or s3_down=true) and Studio reports mirrored[key] === false', async () => {
+      process.env.LOBECHAT_BACKEND_KEY = 'secret-internal-token';
+      const exp = Math.floor(Date.now() / 1000) + 7200;
+      const key = 'files/user_1/unmirrored.png';
+      const signed = `https://media.arckep.ru/m/${key}?exp=${exp}&sig=abcd1234`;
+
+      vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            mirrored: { [key]: false },
+            s3_down: true,
+            urls: { [key]: signed },
+          }),
+          { headers: { 'content-type': 'application/json' }, status: 200 },
+        ),
+      );
+
+      expect(await signMediaUrlViaStudio(key)).toBeNull();
+    });
+  });
+
+  describe('s3-proxy, URL authorization, MIME overrides, and cacheKey normalization', () => {
+    const signSigV4Url = ({
+      accessKeyId,
+      secretAccessKey,
+      host,
+      pathname,
+      amzDate,
+      expiresSec,
+      region = 'ru-central1',
+    }: {
+      accessKeyId: string;
+      amzDate: string;
+      expiresSec: number;
+      host: string;
+      pathname: string;
+      region?: string;
+      secretAccessKey: string;
+    }): string => {
+      const datestamp = amzDate.slice(0, 8);
+      const scope = `${datestamp}/${region}/s3/aws4_request`;
+      const queryPairs: Array<[string, string]> = [
+        ['X-Amz-Algorithm', 'AWS4-HMAC-SHA256'],
+        ['X-Amz-Content-Sha256', 'UNSIGNED-PAYLOAD'],
+        ['X-Amz-Credential', `${accessKeyId}/${scope}`],
+        ['X-Amz-Date', amzDate],
+        ['X-Amz-Expires', String(expiresSec)],
+        ['X-Amz-SignedHeaders', 'host'],
+      ];
+      const enc = (s: string) =>
+        encodeURIComponent(s).replaceAll(
+          /[!'()*]/g,
+          (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`,
+        );
+      const canonicalQuery = queryPairs
+        .map(([k, v]) => [enc(k), enc(v)] as const)
+        .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+        .map(([k, v]) => `${k}=${v}`)
+        .join('&');
+      const canonicalUri = pathname
+        .split('/')
+        .map((seg) => enc(decodeURIComponent(seg)))
+        .join('/');
+      const canonicalRequest = [
+        'GET',
+        canonicalUri,
+        canonicalQuery,
+        `host:${host.toLowerCase()}\n`,
+        'host',
+        'UNSIGNED-PAYLOAD',
+      ].join('\n');
+      const stringToSign = [
+        'AWS4-HMAC-SHA256',
+        amzDate,
+        scope,
+        createHash('sha256').update(canonicalRequest).digest('hex'),
+      ].join('\n');
+      const hmac = (k: Buffer | string, d: string) => createHmac('sha256', k).update(d).digest();
+      const signingKey = hmac(
+        hmac(hmac(hmac(`AWS4${secretAccessKey}`, datestamp), region), 's3'),
+        'aws4_request',
+      );
+      const sig = createHmac('sha256', signingKey).update(stringToSign).digest('hex');
+      return `https://${host}${pathname}?${canonicalQuery}&X-Amz-Signature=${sig}`;
+    };
+
+    it('extracts key from Studio /chat/s3-proxy/<bucket>/<key> on APP_URL and rejects wrong bucket', () => {
+      process.env.APP_URL = 'https://arckep.ru/chat';
+      process.env.S3_BUCKET = 'imagestudio';
+
+      expect(
+        extractOwnBucketKey(
+          'https://arckep.ru/chat/s3-proxy/imagestudio/files/user_1/UT0gLmAa/image?X-Amz-Signature=abc',
+        ),
+      ).toBe('files/user_1/UT0gLmAa/image');
+
+      expect(
+        extractOwnBucketKey('https://arckep.ru/chat/s3-proxy/other-bucket/files/user_1/image'),
+      ).toBeNull();
+      expect(
+        extractOwnBucketKey(
+          'https://evil.example.com/chat/s3-proxy/imagestudio/files/user_1/image',
+        ),
+      ).toBeNull();
+    });
+
+    it('verifies SigV4 & media.arckep.ru signatures and blocks unsigned/forged/expired private URLs', async () => {
+      process.env.APP_URL = 'https://arckep.ru/chat';
+      process.env.S3_ENDPOINT = 'https://storage.yandexcloud.net';
+      process.env.S3_BUCKET = 'imagestudio';
+      process.env.S3_ACCESS_KEY_ID = 'YCAJE_TEST_KEY';
+      process.env.S3_SECRET_ACCESS_KEY = 'super-secret-s3-key';
+
+      const nowMs = Date.UTC(2026, 10, 25, 15, 0, 0); // 20261125T150000Z
+      const amzDate = '20261125T143000Z';
+      const validS3Url = signSigV4Url({
+        accessKeyId: 'YCAJE_TEST_KEY',
+        amzDate,
+        expiresSec: 3600,
+        host: 'storage.yandexcloud.net',
+        pathname: '/imagestudio/files/user_1/photo%201.png',
+        secretAccessKey: 'super-secret-s3-key',
+      });
+
+      expect(await isAuthorizedOwnBucketUrl(validS3Url, nowMs)).toBe(true);
+
+      // Rewritten /chat/s3-proxy/ URL carrying the upstream S3 signature is also verified
+      const proxyRewritten = validS3Url.replace(
+        'https://storage.yandexcloud.net/imagestudio/',
+        'https://arckep.ru/chat/s3-proxy/imagestudio/',
+      );
+      expect(await isAuthorizedOwnBucketUrl(proxyRewritten, nowMs)).toBe(true);
+
+      // Tampered key with victim's path fails HMAC check
+      const tamperedVictimUrl = validS3Url.replace('user_1', 'user_victim');
+      expect(await isAuthorizedOwnBucketUrl(tamperedVictimUrl, nowMs)).toBe(false);
+
+      // Expired presigned URL fails expiry check
+      expect(await isAuthorizedOwnBucketUrl(validS3Url, nowMs + 7200 * 1000)).toBe(false);
+
+      // Bare URL without signature fails
+      expect(
+        await isAuthorizedOwnBucketUrl(
+          'https://storage.yandexcloud.net/imagestudio/files/user_victim/x/image',
+          nowMs,
+        ),
+      ).toBe(false);
+
+      // Wrong access key fails
+      const wrongKeyUrl = signSigV4Url({
+        accessKeyId: 'ATTACKER_KEY',
+        amzDate,
+        expiresSec: 3600,
+        host: 'storage.yandexcloud.net',
+        pathname: '/imagestudio/files/user_victim/photo%201.png',
+        secretAccessKey: 'super-secret-s3-key',
+      });
+      expect(await isAuthorizedOwnBucketUrl(wrongKeyUrl, nowMs)).toBe(false);
+
+      // media.arckep.ru without sig/exp or expired exp fails
+      expect(
+        await isAuthorizedOwnBucketUrl('https://media.arckep.ru/m/files/user_victim/img', nowMs),
+      ).toBe(false);
+      expect(
+        await isAuthorizedOwnBucketUrl(
+          `https://media.arckep.ru/m/files/user_1/img?exp=${Math.floor(nowMs / 1000) - 10}&sig=deadbeef`,
+          nowMs,
+        ),
+      ).toBe(false);
+      expect(
+        await isAuthorizedOwnBucketUrl(
+          `https://media.arckep.ru/m/files/user_1/img?exp=${Math.floor(nowMs / 1000) + 600}&sig=deadbeef`,
+          nowMs,
+        ),
+      ).toBe(true);
+    });
+
+    it('normalizes internal /chat/f/<id>/ cache keys and preserves external query strings', () => {
+      process.env.APP_URL = 'https://arckep.ru/chat';
+
+      expect(buildServerImageCacheKey('https://arckep.ru/chat/f/file_abc123/#preview', null)).toBe(
+        'https://arckep.ru/chat/f/file_abc123',
+      );
+      expect(buildServerImageCacheKey('https://arckep.ru/chat/f/file_abc123', null)).toBe(
+        'https://arckep.ru/chat/f/file_abc123',
+      );
+      expect(buildServerImageCacheKey('/chat/f/file_abc123/', null)).toBe('/chat/f/file_abc123');
+      expect(buildServerImageCacheKey('/f/file_abc123/', null)).toBe('/f/file_abc123');
+
+      // External third-party URLs preserve query strings and strip #hash only
+      expect(buildServerImageCacheKey('https://cdn.other.io/p.png?sig=111#frag', null)).not.toBe(
+        buildServerImageCacheKey('https://cdn.other.io/p.png?sig=222', null),
+      );
+    });
+
+    it('lets raster magic bytes win over legacy/wrong image/* headers without masking XML/HTML', () => {
+      expect(detectImageMimeType(JPEG_BYTES, 'image/png', 'wrong.png')).toBe('image/jpeg');
+      expect(detectImageMimeType(PNG_BYTES, 'image/jpg', 'files/noext')).toBe('image/png');
+      expect(detectImageMimeType(Buffer.from('no-magic'), 'image/jpg')).toBe('image/jpeg');
+      expect(detectImageMimeType(Buffer.from('no-magic'), 'image/pjpeg')).toBe('image/jpeg');
+      expect(detectImageMimeType(Buffer.from('no-magic'), 'image/x-png')).toBe('image/png');
+      expect(detectImageMimeType(PNG_BYTES, 'application/xml', 'err.xml')).toBe('application/xml');
+    });
+
+    it('does not treat external caller AbortSignal as S3 outage', () => {
+      const domAbort = new DOMException('This operation was aborted', 'AbortError');
+      expect(isS3OutageError(domAbort)).toBe(false);
+
+      const wrappedCallerAbort = Object.assign(new Error('Fetch failed: Caller cancelled'), {
+        cause: Object.assign(new Error('Caller cancelled'), {
+          isCallerAbort: true,
+          name: 'AbortError',
+        }),
+        isCallerAbort: true,
+        name: 'AbortError',
+      });
+      expect(isS3OutageError(wrappedCallerAbort)).toBe(false);
+
+      // TimeoutError still counts as S3 outage
+      const wrappedTimeout = new Error('Fetch failed: Request timed out after 8000ms', {
+        cause: Object.assign(new Error('Request timed out after 8000ms'), {
+          name: 'TimeoutError',
+        }),
+      });
+      expect(isS3OutageError(wrappedTimeout)).toBe(true);
+    });
+
+    it('verifies real @aws-sdk/s3-request-presigner URLs under exact prod env (with NEXT_PUBLIC_S3_DOMAIN and hour-floored signingDate) and blocks unsigned private prefixes', async () => {
+      process.env.APP_URL = 'https://arckep.ru/chat';
+      process.env.INTERNAL_APP_URL = 'http://127.0.0.1:3403/chat';
+      process.env.NEXT_PUBLIC_S3_DOMAIN = 'storage.yandexcloud.net/imagestudio';
+      process.env.S3_ACCESS_KEY_ID = 'YCAJE_REAL_SDK_TEST_KEY_ID';
+      process.env.S3_SECRET_ACCESS_KEY = 'YCAJE_REAL_SDK_TEST_SECRET_KEY_0123456789';
+      process.env.S3_ENDPOINT = 'https://storage.yandexcloud.net';
+      process.env.S3_BUCKET = 'imagestudio';
+      process.env.S3_ENABLE_PATH_STYLE = '1';
+      process.env.S3_REGION = 'ru-central1';
+
+      const client = new S3Client({
+        credentials: {
+          accessKeyId: process.env.S3_ACCESS_KEY_ID,
+          secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+        },
+        endpoint: process.env.S3_ENDPOINT,
+        forcePathStyle: true,
+        region: process.env.S3_REGION,
+        requestChecksumCalculation: 'WHEN_REQUIRED',
+        responseChecksumValidation: 'WHEN_REQUIRED',
+      });
+
+      // Simulate FileS3.createPreSignedUrlForPreview: signingDate rounded down to start of hour,
+      // evaluated 59m30s into that hour.
+      const presignWindowMs = 60 * 60 * 1000;
+      const nowMs = Date.UTC(2026, 10, 25, 14, 59, 30);
+      const signingDate = new Date(Math.floor(nowMs / presignWindowMs) * presignWindowMs);
+      const expiresIn = 7200 + presignWindowMs / 1000;
+
+      const keys = [
+        'files/user_1/UT0gLmAa/image',
+        'files/user_1/project.js (builder_proj).md',
+        'files/user_1/Сборщик 1.png',
+        "generated/42/result !'()*+&,;=~ 1.png",
+      ];
+
+      for (const key of keys) {
+        const signedUrl = await getSignedUrl(
+          client,
+          new GetObjectCommand({ Bucket: 'imagestudio', Key: key }),
+          { expiresIn, signingDate },
+        );
+
+        expect(signedUrl).toContain('x-id=GetObject');
+        expect(extractOwnBucketKey(signedUrl)).toBe(key);
+        expect(await isAuthorizedOwnBucketUrl(signedUrl, nowMs)).toBe(true);
+
+        const proxyRewritten = signedUrl.replace(
+          'https://storage.yandexcloud.net/imagestudio/',
+          'https://arckep.ru/chat/s3-proxy/imagestudio/',
+        );
+        expect(extractOwnBucketKey(proxyRewritten)).toBe(key);
+        expect(await isAuthorizedOwnBucketUrl(proxyRewritten, nowMs)).toBe(true);
+      }
+
+      // Real presigned URL with ResponseContentDisposition (including Cyrillic & parentheses)
+      const dispositionSigned = await getSignedUrl(
+        client,
+        new GetObjectCommand({
+          Bucket: 'imagestudio',
+          Key: 'files/user_1/Сборщик 1.png',
+          ResponseContentDisposition: 'attachment; filename="preset (1).png"',
+        }),
+        { expiresIn, signingDate },
+      );
+      expect(await isAuthorizedOwnBucketUrl(dispositionSigned, nowMs)).toBe(true);
+
+      // Expired real SDK presigned URL must be rejected even when NEXT_PUBLIC_S3_DOMAIN is set
+      expect(
+        await isAuthorizedOwnBucketUrl(dispositionSigned, signingDate.getTime() + expiresIn * 1000),
+      ).toBe(false);
+
+      // Tampered victim key on real SDK presigned URL must be rejected
+      const tamperedSdkUrl = dispositionSigned.replace('user_1', 'user_victim');
+      expect(await isAuthorizedOwnBucketUrl(tamperedSdkUrl, nowMs)).toBe(false);
+
+      // Bare unsigned URLs across ALL user-owned prefixes (files/, generated/, documents/, videos/)
+      // must be rejected when S3_SET_ACL !== '1', even when NEXT_PUBLIC_S3_DOMAIN matches S3_ENDPOINT
+      for (const bareUrl of [
+        'https://storage.yandexcloud.net/imagestudio/files/victim/x/image',
+        'https://storage.yandexcloud.net/imagestudio/generated/42/secret.png',
+        'https://storage.yandexcloud.net/imagestudio/documents/42/passport.png',
+        'https://storage.yandexcloud.net/imagestudio/videos/42/clip.mp4',
+        'https://media.arckep.ru/m/generated/42/secret.png',
+      ]) {
+        expect(await isAuthorizedOwnBucketUrl(bareUrl, nowMs)).toBe(false);
+      }
+
+      // Explicit public-read ACL bucket mode (S3_SET_ACL=1) allows unsigned S3 URLs while media.arckep.ru still requires sig+exp
+      process.env.S3_SET_ACL = '1';
+      expect(
+        await isAuthorizedOwnBucketUrl(
+          'https://storage.yandexcloud.net/imagestudio/files/public/img.png',
+          nowMs,
+        ),
+      ).toBe(true);
+      expect(
+        await isAuthorizedOwnBucketUrl('https://media.arckep.ru/m/files/public/img.png', nowMs),
+      ).toBe(false);
     });
   });
 });

@@ -149,27 +149,37 @@ const STOP_KEYWORDS = [
   'context window',
   'api key',
   'billing',
+  'err_invalid_url',
   'forbidden',
   'insufficient quota',
+  'invalid image url:',
   'invalid json schema',
   'invalid_json_schema',
   'invalid request',
   'maximum context length',
   'model not found',
+  'only absolute urls are supported',
+  'only http(s) protocols are supported',
   'permission denied',
   'payload',
+  'ssrf blocked:',
   'too many tokens',
   'unauthorized',
 ];
 
 const NON_RETRYABLE_PROVIDER_BIZ_SUBSTRINGS = [
+  'err_invalid_url',
   'field required',
   'input_schema',
+  'invalid image url:',
   'invalid json schema',
   'invalid request',
   'invalid_json_schema',
   'invalid_request_error',
   'missing required',
+  'only absolute urls are supported',
+  'only http(s) protocols are supported',
+  'ssrf blocked:',
 ];
 
 const hasAnyKeyword = (text: string, keywords: string[]) =>
@@ -318,6 +328,11 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
     const bodyError = asRecord(body?.error);
     const nested = asRecord(raw.error);
     const nestedError = asRecord(nested?.error);
+    const rawCause = asRecord(raw.cause);
+    const nestedCause = asRecord(nested?.cause);
+    const stackFirstLine = (stack: unknown): string | undefined =>
+      typeof stack === 'string' && stack.length > 0 ? stack.split('\n', 1)[0]?.trim() : undefined;
+
     const message = (
       pickString(
         raw.message,
@@ -325,6 +340,10 @@ const normalizeSignal = (error: unknown): LLMErrorSignal => {
         nestedError?.message,
         body?.message,
         bodyError?.message,
+        rawCause?.message,
+        nestedCause?.message,
+        stackFirstLine(nested?.stack),
+        stackFirstLine(raw.stack),
         raw.name,
       ) || 'unknown error'
     ).toLowerCase();

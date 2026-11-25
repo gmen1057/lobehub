@@ -193,10 +193,14 @@ export class LobeGithubCopilotAI implements LobeRuntimeAI {
           timeout: this.timeout ?? DEFAULT_LLM_REQUEST_TIMEOUT_MS,
         });
 
-        const anthropicPayload = await buildDefaultAnthropicPayload({
-          ...(rest as ChatStreamPayload),
-          model,
-        });
+        const anthropicPayload = await buildDefaultAnthropicPayload(
+          {
+            ...(rest as ChatStreamPayload),
+            model,
+          },
+          undefined,
+          options?.signal ? { signal: options.signal } : undefined,
+        );
 
         const finalPayload = { ...anthropicPayload, stream: shouldStream };
 

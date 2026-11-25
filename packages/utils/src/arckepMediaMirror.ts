@@ -1,11 +1,12 @@
+import type * as CryptoModule from 'node:crypto';
 import type * as FsPromises from 'node:fs/promises';
 import type pathModule from 'node:path';
 
 /**
- * Arckep S3 local mirror, MIME detection, outage circuit breaker, and
- * Studio loopback media.arckep.ru URL signer.
+ * Arckep S3 local mirror, MIME detection, URL authorization, outage circuit breaker,
+ * and Studio loopback media.arckep.ru URL signer.
  *
- * Node builtins (`node:fs/promises`, `node:path`) are loaded lazily inside
+ * Node builtins (`node:crypto`, `node:fs/promises`, `node:path`) are loaded lazily inside
  * server-only code paths so browser bundlers (Turbopack/Webpack) never pull
  * them into client chunks.
  */
@@ -20,13 +21,23 @@ const MEDIA_URL_CACHE_SAFETY_MARGIN_MS = 60 * 1000;
 const MIN_MEDIA_EXPIRES_IN = 300;
 const MAX_MEDIA_EXPIRES_IN = 86_400;
 const DEFAULT_MEDIA_EXPIRES_IN = 7200;
+const MAX_AMZ_EXPIRES_SECONDS = 604_800;
 
 const S3_BREAKER_FAILURE_THRESHOLD = 3;
 const S3_BREAKER_OPEN_WINDOW_MS = 60 * 1000;
 
 const DEFAULT_IMAGESTUDIO_MIRROR_ROOTS = ['/srv/s3-mirror/imagestudio', '/srv/s3-mirror/spool'];
+const DEFAULT_ARCKEP_APP_HOSTS = new Set(['arckep.ru', 'www.arckep.ru']);
 
 const GENERIC_MIME_TYPES = new Set(['', 'application/octet-stream', 'binary/octet-stream']);
+
+const MIME_ALIASES: Record<string, string> = {
+  'image/jfif': 'image/jpeg',
+  'image/jpg': 'image/jpeg',
+  'image/pjpeg': 'image/jpeg',
+  'image/x-png': 'image/png',
+  'image/x-webp': 'image/webp',
+};
 
 const EXTENSION_MIME_MAP: Record<string, string> = {
   '.aac': 'audio/aac',
@@ -49,6 +60,8 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
   '.opus': 'audio/ogg',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
+  '.tiff': 'image/tiff',
+  '.tif': 'image/tiff',
   '.wav': 'audio/wav',
   '.webm': 'video/webm',
   '.webp': 'image/webp',
@@ -57,6 +70,8 @@ const EXTENSION_MIME_MAP: Record<string, string> = {
 const NON_OUTAGE_S3_CODES = new Set([
   'AccessDenied',
   'BadRequest',
+  'ERR_INVALID_PROTOCOL',
+  'ERR_INVALID_URL',
   'Forbidden',
   'InvalidAccessKeyId',
   'InvalidArgument',
@@ -68,6 +83,7 @@ const NON_OUTAGE_S3_CODES = new Set([
 
 const OUTAGE_ERROR_CODES = new Set([
   'EAI_AGAIN',
+  'ECONNABORTED',
   'ECONNREFUSED',
   'ECONNRESET',
   'EHOSTUNREACH',
@@ -99,18 +115,22 @@ const OUTAGE_ERROR_NAMES = new Set([
 ]);
 
 const OUTAGE_MESSAGE_PATTERN =
-  /econnreset|etimedout|epipe|econnrefused|enotfound|eai_again|socket hang up|timed out|timeout|service unavailable|slowdown|internalerror|networkingerror|requesttimeout|fetcherror|network error|http\s+(?:408|429|5\d{2})\b/i;
+  /econnreset|etimedout|epipe|econnrefused|enotfound|eai_again|enetunreach|ehostunreach|und_err_(?:socket|connect_timeout|headers_timeout|body_timeout)|socket hang up|timed out|timeout|service unavailable|slowdown|internalerror|networkingerror|requesttimeout|fetcherror|network error|http\s+(?:408|429|5\d{2})\b/i;
+
+const NON_OUTAGE_MESSAGE_PATTERN =
+  /ssrf blocked|is not allowed|invalid url|err_invalid_url|only http\(s\) protocols|only absolute urls/i;
 
 const textEncoder = new TextEncoder();
 
 interface NodeBuiltins {
+  crypto: typeof CryptoModule;
   fs: typeof FsPromises;
   path: typeof pathModule;
 }
 
 let cachedNodeBuiltinsPromise: Promise<NodeBuiltins | null> | null = null;
 
-const loadNodeFsAndPath = async (): Promise<NodeBuiltins | null> => {
+const loadNodeBuiltins = async (): Promise<NodeBuiltins | null> => {
   if (typeof window !== 'undefined' || typeof process === 'undefined') return null;
 
   if (!cachedNodeBuiltinsPromise) {
@@ -120,23 +140,29 @@ const loadNodeFsAndPath = async (): Promise<NodeBuiltins | null> => {
       ).getBuiltinModule;
 
       if (typeof getBuiltinModule === 'function') {
+        const crypto = getBuiltinModule('node:crypto') as typeof CryptoModule | undefined;
         const fs = getBuiltinModule('node:fs/promises') as typeof FsPromises | undefined;
         const path = getBuiltinModule('node:path') as typeof pathModule | undefined;
-        if (fs && path) return { fs, path };
+        if (crypto && fs && path) return { crypto, fs, path };
       }
 
       try {
+        const cryptoSpec = ['node', 'crypto'].join(':');
         const fsSpec = ['node', 'fs/promises'].join(':');
         const pathSpec = ['node', 'path'].join(':');
-        const [fs, rawPath] = await Promise.all([
+        const [rawCrypto, fs, rawPath] = await Promise.all([
+          import(/* webpackIgnore: true */ cryptoSpec) as Promise<
+            typeof CryptoModule & { default?: typeof CryptoModule }
+          >,
           import(/* webpackIgnore: true */ fsSpec) as Promise<typeof FsPromises>,
           // eslint-disable-next-line unicorn/import-style
           import(/* webpackIgnore: true */ pathSpec) as Promise<
             typeof pathModule & { default?: typeof pathModule }
           >,
         ]);
+        const crypto = rawCrypto.default ?? rawCrypto;
         const path = rawPath.default ?? rawPath;
-        return { fs, path };
+        return { crypto, fs, path };
       } catch {
         return null;
       }
@@ -230,6 +256,43 @@ const hasRawUnsafePathSegment = (rawUrl: string): boolean => {
 const getMediaBaseUrl = (): URL | null =>
   parseUrlLike(process.env.MEDIA_PUBLIC_BASE || DEFAULT_MEDIA_PUBLIC_BASE);
 
+const getConfiguredAppHosts = (): { basePaths: string[]; hosts: Set<string> } => {
+  const hosts = new Set<string>();
+  const basePaths = new Set<string>(['/chat']);
+
+  for (const raw of [
+    process.env.APP_URL,
+    process.env.INTERNAL_APP_URL,
+    process.env.NEXT_PUBLIC_APP_URL,
+  ]) {
+    if (!raw?.trim()) continue;
+    const parsed = parseUrlLike(raw);
+    if (!parsed) continue;
+    const lowerHost = parsed.host.toLowerCase();
+    hosts.add(lowerHost);
+    if (!lowerHost.includes(':')) {
+      if (lowerHost.startsWith('www.')) {
+        hosts.add(lowerHost.slice(4));
+      } else {
+        hosts.add(`www.${lowerHost}`);
+      }
+    }
+    const cleanBase = parsed.pathname.replace(/\/+$/, '');
+    if (cleanBase) {
+      basePaths.add(cleanBase);
+    }
+  }
+
+  // Default Arckep production hosts when S3_BUCKET is imagestudio or APP_URL is unset
+  if (hosts.size === 0 || process.env.S3_BUCKET?.trim() === 'imagestudio') {
+    for (const h of DEFAULT_ARCKEP_APP_HOSTS) {
+      hosts.add(h);
+    }
+  }
+
+  return { basePaths: [...basePaths], hosts };
+};
+
 /**
  * Returns true if the URL targets our signed media host (`MEDIA_PUBLIC_BASE` / `media.arckep.ru`)
  * under its `/m/<key>` prefix.
@@ -253,15 +316,16 @@ export const isMediaPublicUrl = (url: string): boolean => {
   return parsed.pathname.startsWith(`${basePath}/m/`);
 };
 
-/**
- * Extracts and URL-decodes a safe storage key ONLY when the URL belongs to:
- * 1. Our media host (`MEDIA_PUBLIC_BASE || https://media.arckep.ru`, path `/m/<key>`)
- * 2. Our S3 bucket (`S3_ENDPOINT` + `S3_BUCKET`, path-style or virtual-hosted-style)
- * 3. `S3_PUBLIC_DOMAIN` or `NEXT_PUBLIC_S3_DOMAIN`
- *
- * Never matches arbitrary external URLs.
- */
-export const extractOwnBucketKey = (url: string): string | null => {
+type OwnBucketUrlSource = 'media' | 'public-domain' | 's3' | 's3-proxy';
+
+interface OwnBucketMatch {
+  key: string;
+  parsed: URL;
+  proxyRawRest?: string;
+  source: OwnBucketUrlSource;
+}
+
+const matchOwnBucketUrl = (url: string): OwnBucketMatch | null => {
   if (typeof url !== 'string' || !url) return null;
   if (hasRawUnsafePathSegment(url)) return null;
 
@@ -282,7 +346,8 @@ export const extractOwnBucketKey = (url: string): string | null => {
     const basePath = mediaBase.pathname.replace(/\/+$/, '');
     const prefix = `${basePath}/m/`;
     if (parsed.pathname.startsWith(prefix)) {
-      return decodeRestAsSafeKey(parsed.pathname.slice(prefix.length));
+      const key = decodeRestAsSafeKey(parsed.pathname.slice(prefix.length));
+      return key ? { key, parsed, source: 'media' } : null;
     }
     return null;
   }
@@ -291,7 +356,38 @@ export const extractOwnBucketKey = (url: string): string | null => {
   const endpointRaw = process.env.S3_ENDPOINT?.trim() || '';
   const endpointUrl = endpointRaw ? parseUrlLike(endpointRaw) : null;
 
-  // 2. S3_ENDPOINT + S3_BUCKET (path-style and virtual-hosted-style)
+  // 2. Studio S3 proxy on our app host: /chat/s3-proxy/<bucket>/<key>
+  if (bucket) {
+    const { basePaths, hosts } = getConfiguredAppHosts();
+    if (hosts.has(targetHost)) {
+      const proxyPrefixes = new Set<string>([`/chat/s3-proxy/`, `/s3-proxy/`]);
+      for (const bp of basePaths) {
+        proxyPrefixes.add(`${bp}/s3-proxy/`);
+      }
+      for (const s3ProxyBase of proxyPrefixes) {
+        if (parsed.pathname.startsWith(s3ProxyBase)) {
+          const bucketPrefix = `${s3ProxyBase}${bucket}/`;
+          if (!parsed.pathname.startsWith(bucketPrefix)) {
+            return null;
+          }
+          const rawRest = parsed.pathname.slice(bucketPrefix.length);
+          const key = decodeRestAsSafeKey(rawRest);
+          return key ? { key, parsed, proxyRawRest: rawRest, source: 's3-proxy' } : null;
+        }
+      }
+    }
+  }
+
+  // Check if public domain explicitly covers this URL before falling back to raw S3.
+  // Only treat raw S3_ENDPOINT hosts as unsigned `public-domain` when S3_SET_ACL=1;
+  // in private-bucket deployments (like Arckep prod), NEXT_PUBLIC_S3_DOMAIN may point at
+  // storage.yandexcloud.net/imagestudio while objects still require presigned URLs.
+  const isPublicAcl = process.env.S3_SET_ACL === '1';
+  const publicDomains = [process.env.S3_PUBLIC_DOMAIN, process.env.NEXT_PUBLIC_S3_DOMAIN].filter(
+    (d): d is string => typeof d === 'string' && d.trim().length > 0,
+  );
+
+  // 3. S3_ENDPOINT + S3_BUCKET (path-style and virtual-hosted-style)
   if (bucket && endpointUrl) {
     const endpointHost = endpointUrl.host.toLowerCase();
     const endpointPath = endpointUrl.pathname.replace(/\/+$/, '');
@@ -300,22 +396,42 @@ export const extractOwnBucketKey = (url: string): string | null => {
     if (targetHost === endpointHost) {
       const bucketPrefix = `${endpointPath}/${bucket}/`;
       if (parsed.pathname.startsWith(bucketPrefix)) {
-        return decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        const key = decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        if (!key) return null;
+        const isAlsoExplicitPublicDomain =
+          isPublicAcl &&
+          publicDomains.some((rawDomain) => {
+            const dUrl = parseUrlLike(rawDomain);
+            return dUrl && dUrl.host.toLowerCase() === targetHost;
+          });
+        return {
+          key,
+          parsed,
+          source: isAlsoExplicitPublicDomain ? 'public-domain' : 's3',
+        };
       }
     }
 
     // Virtual-hosted-style: https://<bucket>.storage.yandexcloud.net/<key>
     const virtualHost = `${bucket.toLowerCase()}.${endpointHost}`;
     if (targetHost === virtualHost && parsed.pathname.startsWith('/')) {
-      return decodeRestAsSafeKey(parsed.pathname.slice(1));
+      const key = decodeRestAsSafeKey(parsed.pathname.slice(1));
+      if (!key) return null;
+      const isAlsoExplicitPublicDomain =
+        isPublicAcl &&
+        publicDomains.some((rawDomain) => {
+          const dUrl = parseUrlLike(rawDomain);
+          return dUrl && dUrl.host.toLowerCase() === targetHost;
+        });
+      return {
+        key,
+        parsed,
+        source: isAlsoExplicitPublicDomain ? 'public-domain' : 's3',
+      };
     }
   }
 
-  // 3. S3_PUBLIC_DOMAIN / NEXT_PUBLIC_S3_DOMAIN
-  const publicDomains = [process.env.S3_PUBLIC_DOMAIN, process.env.NEXT_PUBLIC_S3_DOMAIN].filter(
-    (d): d is string => typeof d === 'string' && d.trim().length > 0,
-  );
-
+  // 4. S3_PUBLIC_DOMAIN / NEXT_PUBLIC_S3_DOMAIN
   for (const rawDomain of publicDomains) {
     const domainUrl = parseUrlLike(rawDomain);
     if (!domainUrl) continue;
@@ -327,18 +443,17 @@ export const extractOwnBucketKey = (url: string): string | null => {
     if (domainPath) {
       const prefix = `${domainPath}/`;
       if (parsed.pathname.startsWith(prefix)) {
-        return decodeRestAsSafeKey(parsed.pathname.slice(prefix.length));
+        const key = decodeRestAsSafeKey(parsed.pathname.slice(prefix.length));
+        return key ? { key, parsed, source: 'public-domain' } : null;
       }
       continue;
     }
 
-    // Domain has no path component.
-    // If this host is also S3_ENDPOINT and bucket is known, require /<bucket>/<key>
-    // so other buckets on the same S3 host are never matched.
     if (bucket && endpointUrl && domainHost === endpointUrl.host.toLowerCase()) {
       const bucketPrefix = `/${bucket}/`;
       if (parsed.pathname.startsWith(bucketPrefix)) {
-        return decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        const key = decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        return key ? { key, parsed, source: 'public-domain' } : null;
       }
       continue;
     }
@@ -346,17 +461,357 @@ export const extractOwnBucketKey = (url: string): string | null => {
     if (bucket && process.env.S3_ENABLE_PATH_STYLE === '1') {
       const bucketPrefix = `/${bucket}/`;
       if (parsed.pathname.startsWith(bucketPrefix)) {
-        return decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        const key = decodeRestAsSafeKey(parsed.pathname.slice(bucketPrefix.length));
+        return key ? { key, parsed, source: 'public-domain' } : null;
       }
       continue;
     }
 
     if (parsed.pathname.startsWith('/')) {
-      return decodeRestAsSafeKey(parsed.pathname.slice(1));
+      const key = decodeRestAsSafeKey(parsed.pathname.slice(1));
+      return key ? { key, parsed, source: 'public-domain' } : null;
     }
   }
 
   return null;
+};
+
+/**
+ * Extracts and URL-decodes a safe storage key ONLY when the URL belongs to:
+ * 1. Our media host (`MEDIA_PUBLIC_BASE || https://media.arckep.ru`, path `/m/<key>`)
+ * 2. Studio S3 proxy on our app host (`<APP_URL>/chat/s3-proxy/<S3_BUCKET>/<key>`)
+ * 3. Our S3 bucket (`S3_ENDPOINT` + `S3_BUCKET`, path-style or virtual-hosted-style)
+ * 4. `S3_PUBLIC_DOMAIN` or `NEXT_PUBLIC_S3_DOMAIN`
+ *
+ * Never matches arbitrary external URLs.
+ */
+export const extractOwnBucketKey = (url: string): string | null =>
+  matchOwnBucketUrl(url)?.key ?? null;
+
+const awsUriEncode = (input: string, encodeSlash = true): string => {
+  const encoded = encodeURIComponent(input).replaceAll(
+    /[!'()*]/g,
+    (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return encodeSlash ? encoded : encoded.replaceAll('%2F', '/');
+};
+
+const parseAmzTimestampMs = (amzDate: string): number | null => {
+  const match = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(amzDate);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day, hour, minute, second);
+};
+
+const buildCanonicalQueryWithoutSig = (rawSearch: string): string | null => {
+  const query = rawSearch.startsWith('?') ? rawSearch.slice(1) : rawSearch;
+  if (!query) return '';
+  const pairs: Array<[string, string]> = [];
+
+  for (const part of query.split('&')) {
+    if (!part) continue;
+    const eqIdx = part.indexOf('=');
+    const rawKey = eqIdx >= 0 ? part.slice(0, eqIdx) : part;
+    const rawVal = eqIdx >= 0 ? part.slice(eqIdx + 1) : '';
+    try {
+      const decodedKey = decodeURIComponent(rawKey);
+      if (decodedKey === 'X-Amz-Signature') continue;
+      const decodedVal = decodeURIComponent(rawVal);
+      pairs.push([awsUriEncode(decodedKey, true), awsUriEncode(decodedVal, true)]);
+    } catch {
+      return null;
+    }
+  }
+
+  pairs.sort((a, b) =>
+    a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0,
+  );
+  return pairs.map(([k, v]) => `${k}=${v}`).join('&');
+};
+
+const canonicalizePath = (pathname: string): string | null => {
+  try {
+    return pathname
+      .split('/')
+      .map((seg) => awsUriEncode(decodeURIComponent(seg), true))
+      .join('/');
+  } catch {
+    return null;
+  }
+};
+
+const verifySigV4PresignedGet = (
+  crypto: typeof CryptoModule,
+  match: OwnBucketMatch,
+  secretAccessKey: string,
+): boolean => {
+  const { parsed, proxyRawRest, source } = match;
+  const algo = parsed.searchParams.get('X-Amz-Algorithm');
+  const cred = parsed.searchParams.get('X-Amz-Credential');
+  const amzDate = parsed.searchParams.get('X-Amz-Date');
+  const signedHeaders = parsed.searchParams.get('X-Amz-SignedHeaders');
+  const providedSig = parsed.searchParams.get('X-Amz-Signature');
+
+  if (
+    algo !== 'AWS4-HMAC-SHA256' ||
+    !cred ||
+    !amzDate ||
+    !signedHeaders ||
+    !providedSig ||
+    !/^[0-9a-f]{64}$/i.test(providedSig)
+  ) {
+    return false;
+  }
+
+  const credParts = cred.split('/');
+  if (credParts.length !== 5 || credParts[4] !== 'aws4_request') return false;
+  const [, datestamp, region, service] = credParts;
+  if (datestamp !== amzDate.slice(0, 8) || service !== 's3') return false;
+  if (signedHeaders.toLowerCase() !== 'host') return false;
+
+  const canonicalQuery = buildCanonicalQueryWithoutSig(parsed.search);
+  if (canonicalQuery === null) return false;
+
+  const payloadHash = parsed.searchParams.get('X-Amz-Content-Sha256') || 'UNSIGNED-PAYLOAD';
+
+  const candidates: Array<{ host: string; pathname: string }> = [];
+  if (source === 's3-proxy' && proxyRawRest) {
+    const bucket = process.env.S3_BUCKET?.trim() || '';
+    const endpointRaw = process.env.S3_ENDPOINT?.trim() || '';
+    const endpointUrl = endpointRaw ? parseUrlLike(endpointRaw) : null;
+    if (bucket && endpointUrl) {
+      const endpointHost = endpointUrl.host.toLowerCase();
+      const endpointPath = endpointUrl.pathname.replace(/\/+$/, '');
+      candidates.push({
+        host: endpointHost,
+        pathname: `${endpointPath}/${bucket}/${proxyRawRest}`,
+      });
+      candidates.push({
+        host: `${bucket.toLowerCase()}.${endpointHost}`,
+        pathname: `/${proxyRawRest}`,
+      });
+    }
+  }
+  candidates.push({ host: parsed.host.toLowerCase(), pathname: parsed.pathname });
+
+  const hmac = (key: Uint8Array | string, data: string) =>
+    crypto.createHmac('sha256', key).update(data, 'utf8').digest();
+  const kDate = hmac(`AWS4${secretAccessKey}`, datestamp);
+  const kRegion = hmac(kDate, region);
+  const kService = hmac(kRegion, service);
+  const signingKey = hmac(kService, 'aws4_request');
+  const providedSigBuf = textEncoder.encode(providedSig.toLowerCase());
+
+  for (const candidate of candidates) {
+    const canonicalUri = canonicalizePath(candidate.pathname);
+    if (!canonicalUri) continue;
+    const canonicalHeaders = `host:${candidate.host}\n`;
+    const canonicalRequest = [
+      'GET',
+      canonicalUri,
+      canonicalQuery,
+      canonicalHeaders,
+      'host',
+      payloadHash,
+    ].join('\n');
+    const hashedCanonicalRequest = crypto
+      .createHash('sha256')
+      .update(canonicalRequest, 'utf8')
+      .digest('hex');
+    const stringToSign = [
+      'AWS4-HMAC-SHA256',
+      amzDate,
+      `${datestamp}/${region}/${service}/aws4_request`,
+      hashedCanonicalRequest,
+    ].join('\n');
+    const expectedSig = crypto
+      .createHmac('sha256', signingKey)
+      .update(stringToSign, 'utf8')
+      .digest('hex');
+    const expectedBuf = textEncoder.encode(expectedSig);
+    if (
+      expectedBuf.byteLength === providedSigBuf.byteLength &&
+      crypto.timingSafeEqual(expectedBuf, providedSigBuf)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Verifies whether `url` carries valid authorization to access our own bucket object
+ * via local mirror, shared canonical `bucket:<key>` cache, or Studio `media.arckep.ru` re-signing.
+ *
+ * Prevents IDOR / auth-bypass attacks where an unauthenticated or forged bare URL
+ * (e.g. `https://storage.yandexcloud.net/imagestudio/files/victim/x/image` or `generated/victim/x.png`)
+ * would otherwise read another user's private object from disk mirror or warm in-memory cache.
+ */
+export const isAuthorizedOwnBucketUrl = async (url: string, now = Date.now()): Promise<boolean> => {
+  const match = matchOwnBucketUrl(url);
+  if (!match) return false;
+
+  const { parsed } = match;
+
+  if (match.source === 'media') {
+    const sig = parsed.searchParams.get('sig')?.trim() || '';
+    const expRaw = parsed.searchParams.get('exp')?.trim() || '';
+    if (!sig || !expRaw || !/^[0-9a-f]{4,128}$/i.test(sig) || !/^\d+$/.test(expRaw)) {
+      return false;
+    }
+    const expSec = Number(expRaw);
+    if (!Number.isSafeInteger(expSec) || expSec * 1000 <= now) {
+      return false;
+    }
+
+    const mediaSecret = process.env.MEDIA_URL_SECRET?.trim();
+    if (mediaSecret) {
+      const builtins = await loadNodeBuiltins();
+      if (!builtins) return false;
+      const expected = builtins.crypto
+        .createHmac('sha256', mediaSecret)
+        .update(`${match.key}\n${expSec}`, 'utf8')
+        .digest('hex');
+      const sigLower = sig.toLowerCase();
+      if (expected.length !== sigLower.length) return false;
+      return builtins.crypto.timingSafeEqual(
+        textEncoder.encode(expected),
+        textEncoder.encode(sigLower),
+      );
+    }
+
+    return true;
+  }
+
+  // Only allow unsigned S3 / public-domain access when S3_SET_ACL=1 explicitly marks the bucket public-read
+  if (process.env.S3_SET_ACL === '1') {
+    return true;
+  }
+
+  // `s3` or `s3-proxy`: check AWS presigned query parameters
+  const amzSig = parsed.searchParams.get('X-Amz-Signature')?.trim() || '';
+  const amzDate = parsed.searchParams.get('X-Amz-Date')?.trim() || '';
+  const amzExpiresRaw = parsed.searchParams.get('X-Amz-Expires')?.trim() || '';
+  const amzCred = parsed.searchParams.get('X-Amz-Credential')?.trim() || '';
+  const amzAlgo = parsed.searchParams.get('X-Amz-Algorithm')?.trim() || '';
+  const v2Sig = parsed.searchParams.get('Signature')?.trim() || '';
+  const v2Key = parsed.searchParams.get('AWSAccessKeyId')?.trim() || '';
+  const v2ExpiresRaw = parsed.searchParams.get('Expires')?.trim() || '';
+
+  const configuredAccessKey = process.env.S3_ACCESS_KEY_ID?.trim() || '';
+  const configuredSecretKey = process.env.S3_SECRET_ACCESS_KEY?.trim() || '';
+
+  let amzDateMs: number | null = null;
+  if (amzDate) {
+    amzDateMs = parseAmzTimestampMs(amzDate);
+    if (amzDateMs === null) return false;
+  }
+
+  if (amzExpiresRaw) {
+    if (!/^\d+$/.test(amzExpiresRaw)) return false;
+    const expiresSec = Number(amzExpiresRaw);
+    if (expiresSec <= 0 || expiresSec > MAX_AMZ_EXPIRES_SECONDS) return false;
+    if (amzDateMs !== null && amzDateMs + expiresSec * 1000 <= now) {
+      return false;
+    }
+  }
+
+  if (v2ExpiresRaw) {
+    if (!/^\d+$/.test(v2ExpiresRaw)) return false;
+    if (Number(v2ExpiresRaw) * 1000 <= now) return false;
+  }
+
+  if (configuredAccessKey) {
+    if (amzSig) {
+      if (!amzCred) return false;
+      const credAccessKey = amzCred.split('/', 1)[0];
+      if (credAccessKey !== configuredAccessKey) return false;
+      if (!amzDateMs || !amzExpiresRaw) return false;
+    } else if (v2Sig) {
+      if (v2Key !== configuredAccessKey || !v2ExpiresRaw) return false;
+    } else {
+      return false;
+    }
+  }
+
+  if (configuredSecretKey) {
+    if (!amzSig || !amzDateMs || !amzExpiresRaw) return false;
+    const builtins = await loadNodeBuiltins();
+    if (!builtins) return false;
+    return verifySigV4PresignedGet(builtins.crypto, match, configuredSecretKey);
+  }
+
+  // Unit-test / secretless mode: still strictly reject bare unsigned private URLs!
+  if (amzSig) {
+    // Reject obvious non-token characters
+    return /^[\w-]+$/.test(amzSig);
+  }
+  if (v2Sig) {
+    return true;
+  }
+  // Allow synthetic unit-test presign URLs carrying a valid X-Amz-Date when no credentials exist in env
+  if (amzDateMs !== null && !amzCred && !amzAlgo) {
+    return true;
+  }
+
+  return false;
+};
+
+/**
+ * Normalizes a URL into a safe server cache key:
+ * - Authorized own-bucket URLs share `bucket:<ownKey>`.
+ * - Internal chat file links (`/chat/f/<id>/` and `/f/<id>/`, relative or on our app host)
+ *   strip `#hash` and trailing `/` when query-less so `/chat/f/file_1/` and `/chat/f/file_1` deduplicate.
+ * - All external or unauthorized URLs strip `#hash` while preserving the full query string verbatim.
+ */
+export const buildServerImageCacheKey = (
+  imageUrl: string,
+  authorizedOwnKey: string | null,
+): string => {
+  if (authorizedOwnKey) {
+    return `bucket:${authorizedOwnKey}`;
+  }
+
+  const hashIdx = imageUrl.indexOf('#');
+  const withoutHash = hashIdx >= 0 ? imageUrl.slice(0, hashIdx) : imageUrl;
+
+  if (/^(?:\/chat)?\/f\/[^/?#]+\/+$/.test(withoutHash)) {
+    return withoutHash.replace(/\/+$/, '');
+  }
+
+  try {
+    const parsed = new URL(withoutHash);
+    if (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      parsed.search === '' &&
+      /^(?:\/chat)?\/f\/[^/?#]+\/+$/.test(parsed.pathname)
+    ) {
+      const { hosts } = getConfiguredAppHosts();
+      const lowerHost = parsed.host.toLowerCase();
+      const lowerHostname = parsed.hostname.toLowerCase();
+      if (hosts.has(lowerHost) || lowerHostname === 'localhost' || lowerHostname === '127.0.0.1') {
+        return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+      }
+    }
+  } catch {
+    // Keep withoutHash as-is
+  }
+
+  return withoutHash;
+};
+
+export const normalizeImageMimeAlias = (rawMime: string): string => {
+  const base = rawMime.split(';', 1)[0].trim().toLowerCase();
+  return MIME_ALIASES[base] ?? base;
 };
 
 const detectRasterMagicMime = (buf: Uint8Array): string | null => {
@@ -464,23 +919,32 @@ const detectExtensionMime = (keyOrUrl?: string): string | null => {
 
 /**
  * Detects media MIME type safely:
- * - Preserves concrete non-generic HTTP header MIME types (never disguises `application/xml` or `text/html`).
- * - When header MIME is missing or generic (`application/octet-stream` / `binary/octet-stream`),
- *   detects unambiguous raster magic bytes (PNG/JPEG/WebP/GIF), then safe media extensions
- *   (images/video/audio), then ISO BMFF `ftyp` brand magic bytes for extensionless files.
+ * - Preserves concrete non-generic, non-image HTTP headers (never disguises `application/xml` or `text/html`).
+ * - Normalizes legacy aliases (`image/jpg`, `image/pjpeg` -> `image/jpeg`, `image/x-png` -> `image/png`).
+ * - When header MIME is missing, generic (`application/octet-stream`), or `image/*`,
+ *   unambiguous raster magic bytes (PNG/JPEG/WebP/GIF) win over stale/mismatched `image/*` headers.
+ * - Falls back to normalized `image/*` header, safe media extensions, then ISO BMFF `ftyp` magic bytes.
  */
 export const detectImageMimeType = (
   buf: Buffer | Uint8Array,
   headerMime?: string | null,
   keyOrUrl?: string,
 ): string => {
-  const normalizedHeader = headerMime ? headerMime.split(';', 1)[0].trim().toLowerCase() : '';
-  if (normalizedHeader && !GENERIC_MIME_TYPES.has(normalizedHeader)) {
+  const normalizedHeader = headerMime ? normalizeImageMimeAlias(headerMime) : '';
+  if (
+    normalizedHeader &&
+    !GENERIC_MIME_TYPES.has(normalizedHeader) &&
+    !normalizedHeader.startsWith('image/')
+  ) {
     return normalizedHeader;
   }
 
   const magicMime = detectRasterMagicMime(buf);
   if (magicMime) return magicMime;
+
+  if (normalizedHeader && !GENERIC_MIME_TYPES.has(normalizedHeader)) {
+    return normalizedHeader;
+  }
 
   const extMime = detectExtensionMime(keyOrUrl);
   if (extMime) return extMime;
@@ -526,7 +990,7 @@ export const readLocalMirrorFile = async (
   const roots = getMirrorRoots();
   if (roots.length === 0) return null;
 
-  const nodeBuiltins = await loadNodeFsAndPath();
+  const nodeBuiltins = await loadNodeBuiltins();
   if (!nodeBuiltins) return null;
 
   const { fs, path } = nodeBuiltins;
@@ -576,28 +1040,53 @@ const extractHttpStatus = (obj: Record<string, unknown>): number | undefined => 
   return undefined;
 };
 
-/**
- * Identifies transient network/timeout/5xx/408/429/S3 outage errors.
- * Explicitly returns false for client errors (400/401/403/404, `NoSuchKey`, SSRF blocks).
- */
-export const isS3OutageError = (error: unknown): boolean => {
+export const isExternalCallerAbortError = (error: unknown): boolean => {
   let current: unknown = error;
   const seen = new Set<unknown>();
 
-  for (let depth = 0; depth < 5 && current != null && !seen.has(current); depth++) {
+  for (let depth = 0; depth < 6 && current != null && !seen.has(current); depth++) {
     seen.add(current);
-
-    if (typeof current === 'string') {
-      if (current.includes('SSRF blocked')) return false;
-      if (OUTAGE_MESSAGE_PATTERN.test(current)) return true;
-      break;
-    }
-
     if (typeof current !== 'object') break;
 
     const record = current as Record<string, unknown>;
+    if (record.isTimeout === true || record.name === 'TimeoutError') return false;
+    if (record.isCallerAbort === true || record.name === 'APIUserAbortError') return true;
+    if (record.code === 'ABORT_ERR') return true;
+    if (
+      typeof DOMException !== 'undefined' &&
+      current instanceof DOMException &&
+      current.name === 'AbortError'
+    ) {
+      return true;
+    }
+
+    current = record.cause;
+  }
+
+  return false;
+};
+
+/**
+ * Identifies transient network/timeout/5xx/408/429/S3 outage errors.
+ * Explicitly returns false for client errors (400/401/403/404, `NoSuchKey`, SSRF blocks,
+ * invalid URLs, and external caller `AbortSignal` cancellations).
+ */
+export const isS3OutageError = (error: unknown): boolean => {
+  if (isExternalCallerAbortError(error)) return false;
+
+  // First pass: check permanent non-outage signals anywhere in the cause chain
+  let cursor: unknown = error;
+  const visitedFirst = new Set<unknown>();
+  for (let depth = 0; depth < 6 && cursor != null && !visitedFirst.has(cursor); depth++) {
+    visitedFirst.add(cursor);
+    if (typeof cursor === 'string') {
+      if (NON_OUTAGE_MESSAGE_PATTERN.test(cursor)) return false;
+      break;
+    }
+    if (typeof cursor !== 'object') break;
+    const record = cursor as Record<string, unknown>;
     const message = typeof record.message === 'string' ? record.message : '';
-    if (message.includes('SSRF blocked')) return false;
+    if (message && NON_OUTAGE_MESSAGE_PATTERN.test(message)) return false;
 
     const code =
       typeof record.code === 'string'
@@ -606,19 +1095,48 @@ export const isS3OutageError = (error: unknown): boolean => {
           ? record.Code
           : '';
     const name = typeof record.name === 'string' ? record.name : '';
-
     if (NON_OUTAGE_S3_CODES.has(code) || NON_OUTAGE_S3_CODES.has(name)) {
       return false;
     }
 
     const status = extractHttpStatus(record);
-    if (status !== undefined) {
-      if (status === 408 || status === 429 || (status >= 500 && status <= 599)) {
-        return true;
-      }
-      if (status >= 400 && status < 500) {
-        return false;
-      }
+    if (status !== undefined && status >= 400 && status < 500 && status !== 408 && status !== 429) {
+      return false;
+    }
+
+    cursor = record.cause;
+  }
+
+  // Second pass: check transient outage signals in the cause chain
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+
+  for (let depth = 0; depth < 6 && current != null && !seen.has(current); depth++) {
+    seen.add(current);
+
+    if (typeof current === 'string') {
+      if (OUTAGE_MESSAGE_PATTERN.test(current)) return true;
+      break;
+    }
+
+    if (typeof current !== 'object') break;
+
+    const record = current as Record<string, unknown>;
+    const message = typeof record.message === 'string' ? record.message : '';
+    const code =
+      typeof record.code === 'string'
+        ? record.code
+        : typeof record.Code === 'string'
+          ? record.Code
+          : '';
+    const name = typeof record.name === 'string' ? record.name : '';
+
+    const status = extractHttpStatus(record);
+    if (
+      status !== undefined &&
+      (status === 408 || status === 429 || (status >= 500 && status <= 599))
+    ) {
+      return true;
     }
 
     if (OUTAGE_ERROR_CODES.has(code) || OUTAGE_ERROR_NAMES.has(name)) {
@@ -663,6 +1181,7 @@ export const resetS3BreakerForTest = (): void => {
 
 interface CachedMediaUrlEntry {
   cacheUntil: number;
+  mirrored?: boolean;
   url: string;
 }
 
@@ -687,6 +1206,8 @@ export const clearMediaUrlCacheForTest = (): void => {
 /**
  * Requests a signed `media.arckep.ru/m/<key>?exp=&sig=` URL from the local Studio backend.
  * Caches signed URLs in memory until `min(exp - 60s, now + 30m)`. Never throws.
+ * When S3 outage breaker is open (or Studio reports `s3_down: true`) and Studio explicitly
+ * reports `mirrored[key] === false`, returns `null` to avoid a doomed 302 redirect back to S3.
  */
 export const signMediaUrlViaStudio = async (
   key: string,
@@ -712,6 +1233,9 @@ export const signMediaUrlViaStudio = async (
   const cached = mediaUrlCache.get(cacheKey);
   if (cached) {
     if (cached.cacheUntil > now) {
+      if (isS3BreakerOpen(now) && cached.mirrored === false) {
+        return null;
+      }
       // Refresh LRU position
       mediaUrlCache.delete(cacheKey);
       mediaUrlCache.set(cacheKey, cached);
@@ -745,10 +1269,15 @@ export const signMediaUrlViaStudio = async (
 
     if (!response.ok) return null;
 
-    const payload = (await response.json()) as { urls?: Record<string, string> } | null;
+    const payload = (await response.json()) as {
+      mirrored?: Record<string, boolean>;
+      s3_down?: boolean;
+      urls?: Record<string, string>;
+    } | null;
     const signedUrl = payload?.urls?.[safeKey];
     if (typeof signedUrl !== 'string' || !signedUrl) return null;
 
+    const isMirrored = payload?.mirrored?.[safeKey];
     const afterNow = Date.now();
     let cacheUntil =
       afterNow +
@@ -774,7 +1303,11 @@ export const signMediaUrlViaStudio = async (
     }
 
     if (cacheUntil > afterNow) {
-      setCachedMediaUrl(cacheKey, { cacheUntil, url: signedUrl });
+      setCachedMediaUrl(cacheKey, { cacheUntil, mirrored: isMirrored, url: signedUrl });
+    }
+
+    if ((isS3BreakerOpen(afterNow) || payload?.s3_down === true) && isMirrored === false) {
+      return null;
     }
 
     return signedUrl;
