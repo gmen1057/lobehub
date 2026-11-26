@@ -84,7 +84,16 @@ export const TopicUpdateRequestSchema = z.object({
 
 // ==================== Topic Response Types ====================
 
+/** Confirmed assistant for the Arckép service GET /topics/:id only. */
+export interface TopicAssistantBinding {
+  agentId: string | null;
+  source: 'agent' | 'session' | 'inbox';
+  version: 1;
+}
+
 export interface TopicResponse extends TopicItem {
+  /** Absent for other clients/endpoints; null means unresolved or inapplicable (e.g. group). */
+  assistantBinding?: TopicAssistantBinding | null;
   messageCount: number;
   user: UserItem;
 }

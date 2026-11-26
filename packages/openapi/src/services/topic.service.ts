@@ -1,13 +1,15 @@
 import { INBOX_SESSION_ID } from '@lobechat/const';
 import { and, count, desc, eq, ilike, isNull, notInArray, or, sql } from 'drizzle-orm';
 
-import { agents, agentsToSessions, messages, topics, users } from '@/database/schemas';
+import type { TopicItem } from '@/database/schemas';
+import { agents, agentsToSessions, messages, sessions, topics, users } from '@/database/schemas';
 import type { LobeChatDatabase } from '@/database/type';
 import { idGenerator } from '@/database/utils/idGenerator';
 
 import { BaseService } from '../common/base.service';
 import { processPaginationConditions } from '../helpers/pagination';
 import type {
+  TopicAssistantBinding,
   TopicCreateRequest,
   TopicListQuery,
   TopicListResponse,
@@ -129,7 +131,10 @@ export class TopicService extends BaseService {
     }
   }
 
-  async getTopicById(topicId: string): Promise<TopicResponse> {
+  async getTopicById(
+    topicId: string,
+    options?: { includeAssistantBinding?: boolean },
+  ): Promise<TopicResponse> {
     try {
       // Permission check
       const permissionResult = await this.resolveOperationPermission('TOPIC_READ', {
@@ -167,11 +172,55 @@ export class TopicService extends BaseService {
 
       return {
         ...result.topic,
+        ...(options?.includeAssistantBinding
+          ? { assistantBinding: await this.resolveAssistantBinding(result.topic) }
+          : {}),
         messageCount: result.messageCount,
         user: result.user,
       };
     } catch (error) {
       return this.handleServiceError(error, '获取话题');
+    }
+  }
+
+  private async resolveAssistantBinding(topic: TopicItem): Promise<TopicAssistantBinding | null> {
+    if (topic.groupId) return null;
+    if (topic.agentId) return { agentId: topic.agentId, source: 'agent', version: 1 };
+    if (!topic.sessionId) return { agentId: null, source: 'inbox', version: 1 };
+
+    try {
+      // A migrated project can have several sessions. Resolve this topic's exact session,
+      // scoped to its owner (which may differ from a reader with global permission).
+      // findBySessionId uses findFirst and cannot prove that the binding is unique.
+      const bindings = await this.db
+        .select({ agentId: agentsToSessions.agentId })
+        .from(agentsToSessions)
+        .innerJoin(
+          agents,
+          and(eq(agents.id, agentsToSessions.agentId), eq(agents.userId, topic.userId)),
+        )
+        .innerJoin(
+          sessions,
+          and(
+            eq(sessions.id, agentsToSessions.sessionId),
+            eq(sessions.userId, topic.userId),
+            eq(sessions.type, 'agent'),
+          ),
+        )
+        .where(
+          and(
+            eq(agentsToSessions.sessionId, topic.sessionId),
+            eq(agentsToSessions.userId, topic.userId),
+          ),
+        )
+        .limit(2);
+
+      if (bindings.length !== 1) return null;
+      return { agentId: bindings[0].agentId, source: 'session', version: 1 };
+    } catch (error) {
+      // An optional hint must not make a previously readable topic unavailable.
+      this.log('error', 'Failed to resolve topic assistant binding', { error });
+      return null;
     }
   }
 
