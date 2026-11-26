@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import { promptFileContents } from '../knowledgeBaseQA/formatFileContents';
-import { fileReferences, readFilePage } from './context';
+import {
+  FILE_READ_CHARS,
+  FILE_READ_EOF_SNAP_MAX_CHARS,
+  FILE_READ_EOF_SNAP_MAX_LINES,
+  FILE_READ_EOF_SNAP_MIN_LIMIT,
+  fileReferences,
+  readFilePage,
+} from './context';
 import { filePrompts } from './file';
 import { promptAgentKnowledge } from './knowledgeBase';
 
@@ -239,5 +246,84 @@ describe('reversible file context', () => {
     expect(page.startLine).toBe(21);
     expect(page.endLine).toBe(30);
     expect(page.content).toContain('L26: row 26 NEEDLE');
+  });
+
+  describe('readLinePage EOF tail snap', () => {
+    it('snaps a small remaining tail to EOF in a single read when a 300-line file slightly exceeds 20,000 chars', () => {
+      // ~62 chars + "LNNN: " prefix + "\n" = ~69 chars/line -> 300 lines ≈ 20,600 chars
+      const doc = Array.from(
+        { length: 300 },
+        (_, i) => `line_${String(i + 1).padStart(3, '0')}_${'x'.repeat(53)}`,
+      ).join('\n');
+
+      for (const maxLines of [300, 500]) {
+        const page = readFilePage(doc, { maxLines, startLine: 1 }, FILE_READ_CHARS);
+        expect(page.startLine).toBe(1);
+        expect(page.endLine).toBe(300);
+        expect(page.totalLines).toBe(300);
+        expect(page.nextStartLine).toBeNull();
+        expect(page.nextOffset).toBeNull();
+        expect(page.complete).toBe(true);
+        expect(page.content.length).toBeGreaterThan(FILE_READ_CHARS);
+        expect(page.content.length).toBeLessThanOrEqual(
+          FILE_READ_CHARS + FILE_READ_EOF_SNAP_MAX_CHARS,
+        );
+        expect(page.content.endsWith(`L300: line_300_${'x'.repeat(53)}`)).toBe(true);
+      }
+    });
+
+    it('still paginates normally when remaining tail exceeds max snap lines or max snap chars', () => {
+      // 1) > FILE_READ_EOF_SNAP_MAX_LINES (25) remaining lines
+      const manyTailLinesDoc = Array.from(
+        { length: 340 },
+        (_, i) => `row_${String(i + 1).padStart(3, '0')}_${'a'.repeat(58)}`,
+      ).join('\n');
+      const pageManyLines = readFilePage(
+        manyTailLinesDoc,
+        { maxLines: 500, startLine: 1 },
+        FILE_READ_CHARS,
+      );
+      expect(pageManyLines.endLine).toBeLessThan(340 - FILE_READ_EOF_SNAP_MAX_LINES);
+      expect(pageManyLines.nextStartLine).toBe(pageManyLines.endLine! + 1);
+      expect(pageManyLines.nextOffset).not.toBeNull();
+      expect(pageManyLines.content.length).toBeLessThanOrEqual(FILE_READ_CHARS);
+
+      // 2) <= 25 remaining lines, but tail chars exceed FILE_READ_EOF_SNAP_MAX_CHARS (4,000)
+      const headLines = Array.from({ length: 199 }, (_, i) => `h_${i + 1}_${'b'.repeat(92)}`);
+      const heavyTailLines = Array.from({ length: 5 }, (_, i) => `t_${i + 1}_${'c'.repeat(900)}`);
+      const heavyTailDoc = [...headLines, ...heavyTailLines].join('\n');
+      const pageHeavyTail = readFilePage(
+        heavyTailDoc,
+        { maxLines: 500, startLine: 1 },
+        FILE_READ_CHARS,
+      );
+      expect(pageHeavyTail.endLine).toBeLessThan(204);
+      expect(pageHeavyTail.nextStartLine).toBe(pageHeavyTail.endLine! + 1);
+      expect(pageHeavyTail.content.length).toBeLessThanOrEqual(FILE_READ_CHARS);
+    });
+
+    it('does NOT snap when explicit maxLines stops before EOF (maxIdx < totalLines)', () => {
+      // 300-line file ~20,600 chars, but caller explicitly requests maxLines=295 (< 300)
+      const doc = Array.from(
+        { length: 300 },
+        (_, i) => `line_${String(i + 1).padStart(3, '0')}_${'x'.repeat(53)}`,
+      ).join('\n');
+      const page = readFilePage(doc, { maxLines: 295, startLine: 1 }, FILE_READ_CHARS);
+      expect(page.content.length).toBeLessThanOrEqual(FILE_READ_CHARS);
+      expect(page.endLine).toBeLessThan(295);
+      expect(page.nextStartLine).toBe(page.endLine! + 1);
+      expect(page.complete).toBe(false);
+    });
+
+    it('does NOT snap when effectiveLimit is below FILE_READ_EOF_SNAP_MIN_LIMIT (1,000)', () => {
+      const smallLimit = FILE_READ_EOF_SNAP_MIN_LIMIT - 200; // 800
+      // 11 lines * ~76 chars = ~836 chars (only 1-2 lines over limit, tiny tail, but limit < 1000)
+      const doc = Array.from({ length: 11 }, (_, i) => `s_${i + 1}_${'z'.repeat(66)}`).join('\n');
+      const page = readFilePage(doc, { maxLines: 50, startLine: 1 }, smallLimit);
+      expect(page.content.length).toBeLessThanOrEqual(smallLimit);
+      expect(page.endLine).toBeLessThan(11);
+      expect(page.nextStartLine).toBe(page.endLine! + 1);
+      expect(page.complete).toBe(false);
+    });
   });
 });

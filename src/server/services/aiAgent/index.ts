@@ -138,7 +138,8 @@ import { assertTopicAccess } from './topicAccess';
 
 const log = debug('lobe-server:ai-agent-service');
 
-export const DEFAULT_CHAT_MAX_STEPS = 60;
+// arckep (26.11.2026): 24 steps ≈ 12 LLM+tool rounds before soft forceFinish pause + «Продолжить».
+export const DEFAULT_CHAT_MAX_STEPS = 24;
 export const LONG_CONTEXT_CACHE_TTL_THRESHOLD_TOKENS = 30_000;
 export const IMAGE_TOKEN_ESTIMATE = 1_600; // Matches IMAGE_TOKEN_ESTIMATE in model-runtime resolveCacheTTL.ts
 
@@ -813,7 +814,10 @@ export class AiAgentService {
     }
     // arckep (19.10.2026): запуск по расписанию ищет «Поиском Arckep» (0,10 ₽), а не платным встроенным поиском
     // модели (см. prefersArckepSearchOnSchedule). Подключение человек удалил — остаётся встроенный, как было.
-    if (trigger === 'cron' && prefersArckepSearchOnSchedule(agentConfig, agentConfig.provider)) {
+    if (
+      trigger === 'cron' &&
+      prefersArckepSearchOnSchedule(agentConfig, agentConfig.provider, agentConfig.model)
+    ) {
       let hasArckepSearch = false;
       try {
         hasArckepSearch = !!(await this.pluginModel.findById(ARCKEP_WEB_SEARCH_CONNECTOR));

@@ -59,8 +59,12 @@ describe('resolveSandboxAllowInternet', () => {
     );
   });
 
-  describe('non-native search models (DeepSeek Pro, OpenRouter)', () => {
+  describe('non-native search models (Gemini 4, DeepSeek Pro, OpenRouter)', () => {
     const connectorCases: Array<[string, string]> = [
+      ['google', 'gemini-4-carbon'],
+      ['google', 'gemini-4-neon'],
+      ['google', 'gemini-4-hydrogen'],
+      ['google', 'gemini-4-argon'],
       ['deepseek', 'deepseek-v4-pro'],
       ['openrouter', 'z-ai/glm-5.3-flash'],
       ['openrouter', 'deepseek/deepseek-flash'],
@@ -80,6 +84,54 @@ describe('resolveSandboxAllowInternet', () => {
             `${provider}/${model} searchMode=${String(searchMode)}`,
           ).toBe(true);
         }
+      },
+    );
+
+    it.each(['gemini-4-carbon', 'gemini-4-neon', 'gemini-4-hydrogen', 'gemini-4-argon'])(
+      'google/%s: still routes via Arckep web connector even when useModelBuiltinSearch is true, and respects dataGuardProtected',
+      async (model) => {
+        expect(
+          await resolveSandboxAllowInternet({
+            agentConfig: { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+            disabledToolIds: [],
+            model,
+            provider: 'google',
+          }),
+        ).toBe(true);
+
+        expect(
+          await resolveSandboxAllowInternet({
+            agentConfig: { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+            disabledToolIds: [ARCKEP_WEB_SEARCH_CONNECTOR],
+            model,
+            provider: 'google',
+          }),
+        ).toBe(false);
+
+        expect(
+          await resolveSandboxAllowInternet({
+            agentConfig: { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+            dataGuardProtected: true,
+            disabledToolIds: [],
+            model,
+            provider: 'google',
+          }),
+        ).toBe(false);
+
+        expect(
+          await resolveSandboxAllowInternet({
+            agentConfig: {
+              chatConfig: {
+                deepseekDataGuardProtected: true,
+                searchMode: 'on',
+                useModelBuiltinSearch: true,
+              },
+            },
+            disabledToolIds: [],
+            model,
+            provider: 'google',
+          }),
+        ).toBe(false);
       },
     );
 
@@ -160,6 +212,7 @@ describe('resolveSandboxAllowInternet', () => {
     it.each([
       ['anthropic', 'claude-opus-5'],
       ['google', 'gemini-3.7-flash'],
+      ['google', 'gemini-4-carbon'],
       ['openai', 'gpt-5.6-luna'],
       ['qwen', 'qwen3.7-flash'],
       ['xai', 'grok-4.3'],
