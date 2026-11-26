@@ -200,17 +200,22 @@ describe('resolveReasoningProfile (arckep: ступени модели)', () => 
       ['openrouter/free', 'openrouter'],
       ['xiaomi/mimo-v2.6-pro', 'openrouter'],
       ['xiaomi/mimo-v2.6-flash', 'openrouter'],
-      ['grok-build-0.1', 'xai'],
     ];
     for (const [model, provider] of nonReasoning) {
       expect(resolveReasoningProfile(model, provider, []), `${provider}/${model}`).toBeUndefined();
       expect(resolveReasoningAuto(model, provider, {}), `${provider}/${model}`).toBeUndefined();
     }
 
-    expect(resolveReasoningProfile('inception/mercury-3', 'openrouter', [])).toEqual({
+    expect(resolveReasoningProfile('meta/muse-wonder', 'openrouter', [])).toEqual({
       kind: 'reasoningEffort',
-      levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+      levels: ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
     });
+
+    expect(resolveReasoningProfile('grok-4.7', 'xai', [])).toEqual({
+      kind: 'reasoningEffort',
+      levels: ['low', 'medium', 'high', 'xhigh'],
+    });
+    expect(resolveReasoningAuto('grok-4.7', 'xai', {})).toBe('high');
 
     expect(resolveReasoningProfile('minimax/minimax-m3.1-flash', 'openrouter', [])).toEqual({
       kind: 'reasoningEffort',

@@ -4231,7 +4231,7 @@ describe('resolveServerEnabledSearch (arckep: native search for server runs)', (
       ['openai', 'gpt-5.6-sol'],
       ['qwen', 'qwen3.7-flash'],
       ['xai', 'grok-4.3'],
-      ['xai', 'grok-build-0.1'],
+      ['xai', 'grok-4.7'],
     ];
     for (const [provider, model] of cases) {
       expect(
