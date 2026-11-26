@@ -6,7 +6,7 @@ export const PROJECT_WORKSPACE_TOOL = 'arckep-workspace';
 const READ_ONLY_API_NAMES = new Set(['listProjectFiles', 'readProjectFile']);
 
 export const READ_ONLY_PROJECT_WORKSPACE_SYSTEM_ROLE =
-  'Inspect files in the current project workspace (read-only mode: this project currently contains binary documents only). Use listProjectFiles to inspect paths and metadata, readProjectFile for parsed document pages when available, or searchKnowledgeBase for semantic search across indexed documents. If you need to create or modify a text file in the project, first call lobe-activator____activateTools with identifiers: ["arckep-workspace"] to unlock write tools.';
+  'Inspect files in the current project workspace (read-only mode: this project currently contains binary documents only). Use listProjectFiles to inspect paths and metadata, readProjectFile for parsed document pages when available (batch independent reads in parallel in the same turn and use large 250-500 line pages or omit maxLines for default 250), or searchKnowledgeBase for semantic search across indexed documents. If you need to create or modify a text file in the project, first call lobe-activator____activateTools with identifiers: ["arckep-workspace"] to unlock write tools.';
 
 export const ProjectWorkspaceManifest: BuiltinToolManifest = {
   api: [
@@ -58,13 +58,14 @@ export const ProjectWorkspaceManifest: BuiltinToolManifest = {
     },
     {
       description:
-        'Read bounded pages of a project workspace file by path or workspaceFileId. Follow nextStartLine or nextOffset when hasMore is true.',
+        'Read bounded pages of a project workspace file by path or workspaceFileId. Use large pages (250-500 lines, or omit maxLines for default 250) instead of small 30-60 line chunks, and batch independent readProjectFile/searchProjectFiles calls in parallel in the same turn. Follow nextStartLine or nextOffset when hasMore is true.',
       name: 'readProjectFile',
       parameters: {
         additionalProperties: false,
         properties: {
           maxLines: {
-            description: 'Maximum lines per page when using startLine (default 250, max 500).',
+            description:
+              'Maximum lines per page when using startLine (default 250, max 500). Prefer 250-500 lines or omit for default 250 rather than small 30-60 line slices.',
             maximum: 500,
             minimum: 1,
             type: 'integer',
@@ -309,7 +310,7 @@ export const ProjectWorkspaceManifest: BuiltinToolManifest = {
     title: 'Файлы проекта',
   },
   systemRole:
-    'Manage persistent files in the current project workspace. Read on-demand files via readProjectFile or searchProjectFiles before editing. Prefer patchProjectFile with baseRevision for existing text files; use writeProjectFile for new files or full rewrites <= 64 KiB, and writeProjectFilePart in sequential <= 64 KiB chunks for larger text files (> 64 KiB up to 2 MiB). Writes/deletes on protected files (AGENTS.md, rules/**, pinned, or locked) create a pending_user_approval proposal without changing the active version — do not retry submitting the same proposal.',
+    'Manage persistent files in the current project workspace. Read on-demand files via readProjectFile or searchProjectFiles before editing: batch independent readProjectFile/searchProjectFiles calls in parallel in the same turn, and read large pages (250-500 lines, or omit maxLines for default 250) rather than small 30-60 line nibbles. Prefer patchProjectFile with baseRevision for existing text files; use writeProjectFile for new files or full rewrites <= 64 KiB, and writeProjectFilePart in sequential <= 64 KiB chunks for larger text files (> 64 KiB up to 2 MiB). Writes/deletes on protected files (AGENTS.md, rules/**, pinned, or locked) create a pending_user_approval proposal without changing the active version — do not retry submitting the same proposal.',
   type: 'builtin',
 };
 

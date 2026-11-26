@@ -1,3 +1,4 @@
+import { AgentRuntime, GeneralChatAgent } from '@lobechat/agent-runtime';
 import type * as ModelBankModule from 'model-bank';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -172,24 +173,32 @@ describe('AiAgentService.execAgent — default maxSteps', () => {
     vi.unstubAllEnvs();
   });
 
-  it('exports DEFAULT_CHAT_MAX_STEPS = 60 and applies it when maxSteps is omitted', async () => {
-    expect(DEFAULT_CHAT_MAX_STEPS).toBe(60);
+  it('exports DEFAULT_CHAT_MAX_STEPS = 24 and applies it when maxSteps is omitted', async () => {
+    expect(DEFAULT_CHAT_MAX_STEPS).toBe(24);
 
     await service.execAgent({ agentId: 'agent-1', prompt: 'Run multi-step task' });
 
     expect(mockCreateOperation).toHaveBeenCalledWith(
       expect.objectContaining({
-        maxSteps: 60,
+        maxSteps: 24,
       }),
     );
   });
 
-  it('preserves an explicitly provided maxSteps value', async () => {
+  it('preserves an explicitly provided maxSteps value (both lower and higher than default)', async () => {
     await service.execAgent({ agentId: 'agent-1', maxSteps: 15, prompt: 'Run short task' });
 
-    expect(mockCreateOperation).toHaveBeenCalledWith(
+    expect(mockCreateOperation).toHaveBeenLastCalledWith(
       expect.objectContaining({
         maxSteps: 15,
+      }),
+    );
+
+    await service.execAgent({ agentId: 'agent-1', maxSteps: 40, prompt: 'Run long task' });
+
+    expect(mockCreateOperation).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        maxSteps: 40,
       }),
     );
   });
@@ -215,6 +224,149 @@ describe('AiAgentService.execAgent — default maxSteps', () => {
     expect(mockCreateOperation).toHaveBeenLastCalledWith(
       expect.objectContaining({
         maxSteps: DEFAULT_CHAT_MAX_STEPS,
+      }),
+    );
+  });
+
+  it('enters forceFinish after DEFAULT_CHAT_MAX_STEPS (24 = 12 LLM+tool rounds), strips tools, and finishes with max_steps_completed', async () => {
+    const agent = new GeneralChatAgent({
+      agentConfig: { maxSteps: DEFAULT_CHAT_MAX_STEPS },
+      modelRuntimeConfig: { model: 'gpt-4', provider: 'openai' },
+      operationId: 'op-default-max-steps',
+    });
+
+    const observedLlmPayloads: Array<{ forceFinish?: boolean; tools: unknown[] }> = [];
+    const dummyTool = {
+      function: {
+        description: 'Read file',
+        name: 'arckep-workspace____readProjectFile____builtin',
+      },
+      type: 'function' as const,
+    };
+
+    const runtime = new AgentRuntime(agent, {
+      executors: {
+        call_llm: async (instruction: any, state) => {
+          observedLlmPayloads.push({
+            forceFinish: state.forceFinish,
+            tools: instruction.payload.tools ?? [],
+          });
+          const forceFinishing = Boolean(state.forceFinish);
+          const toolsCalling = forceFinishing
+            ? []
+            : [
+                {
+                  apiName: 'readProjectFile',
+                  arguments: '{"path":"a.ts"}',
+                  id: `tc-${state.stepCount}`,
+                  identifier: 'arckep-workspace',
+                  type: 'builtin' as const,
+                },
+              ];
+          return {
+            events: [],
+            newState: state,
+            nextContext: {
+              payload: {
+                hasToolsCalling: toolsCalling.length > 0,
+                parentMessageId: `asst-${state.stepCount}`,
+                result: {
+                  content: forceFinishing ? 'Итог после 12 раундов.' : '',
+                  tool_calls: toolsCalling,
+                },
+                toolsCalling,
+              },
+              phase: 'llm_result',
+              session: {
+                messageCount: state.messages.length,
+                sessionId: state.operationId,
+                status: 'running',
+                stepCount: state.stepCount,
+              },
+            },
+          };
+        },
+        call_tool: async (instruction: any, state) => ({
+          events: [],
+          newState: state,
+          nextContext: {
+            payload: {
+              data: { content: 'ok', success: true },
+              executionTime: 1,
+              isSuccess: true,
+              parentMessageId: instruction.payload.parentMessageId,
+              toolCall: instruction.payload.toolCalling,
+              toolCallId: instruction.payload.toolCalling.id,
+            },
+            phase: 'tool_result',
+            session: {
+              messageCount: state.messages.length,
+              sessionId: state.operationId,
+              status: 'running',
+              stepCount: state.stepCount,
+            },
+          },
+        }),
+      },
+    });
+
+    let state = AgentRuntime.createInitialState({
+      maxSteps: DEFAULT_CHAT_MAX_STEPS,
+      messages: [{ content: 'Run multi-step task', role: 'user' }],
+      operationId: 'op-default-max-steps',
+      status: 'running',
+      toolManifestMap: {
+        'arckep-workspace': {
+          api: [{ name: 'readProjectFile' }],
+          identifier: 'arckep-workspace',
+        } as any,
+      },
+      tools: [dummyTool as any],
+      userInterventionConfig: { approvalMode: 'auto-run' },
+    });
+    let context: any = {
+      operationId: 'op-default-max-steps',
+      payload: { messages: state.messages, tools: [dummyTool] },
+      phase: 'user_input',
+      session: {
+        messageCount: state.messages.length,
+        sessionId: 'op-default-max-steps',
+        status: 'idle',
+        stepCount: 0,
+      },
+    };
+
+    // 12 full LLM + tool rounds = 24 steps
+    for (let i = 0; i < DEFAULT_CHAT_MAX_STEPS; i++) {
+      const res = await runtime.step(state, context);
+      state = res.newState;
+      context = res.nextContext;
+      expect(state.forceFinish).toBeUndefined();
+      expect(state.status).toBe('running');
+    }
+
+    expect(state.stepCount).toBe(24);
+    expect(observedLlmPayloads).toHaveLength(12);
+    expect(observedLlmPayloads.every((p) => p.tools.length === 1 && !p.forceFinish)).toBe(true);
+
+    // Step 25 exceeds DEFAULT_CHAT_MAX_STEPS (24): runtime sets forceFinish=true and strips tools
+    const forceFinishLlmStep = await runtime.step(state, context);
+    expect(forceFinishLlmStep.newState.stepCount).toBe(25);
+    expect(forceFinishLlmStep.newState.forceFinish).toBe(true);
+    expect(forceFinishLlmStep.newState.status).toBe('running');
+    expect(observedLlmPayloads).toHaveLength(13);
+    expect(observedLlmPayloads[12]).toEqual({ forceFinish: true, tools: [] });
+
+    // Final step completes with reason='max_steps_completed'
+    const finishStep = await runtime.step(
+      forceFinishLlmStep.newState,
+      forceFinishLlmStep.nextContext,
+    );
+    expect(finishStep.newState.status).toBe('done');
+    expect(finishStep.events).toContainEqual(
+      expect.objectContaining({
+        reason: 'max_steps_completed',
+        type: 'done',
       }),
     );
   });

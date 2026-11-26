@@ -788,4 +788,34 @@ describe('AiAgentService.execAgent — arckep: облегчённая загру
 
     expect(toolSet.manifestMap['lobe-activator'].systemRole).toBe(FULL_ACTIVATOR_ROLE);
   });
+
+  it('Gemini 4 получает mcp-arckep-studio-web сразу (eager), без отложенного дубля, а Gemini 3 — по требованию', async () => {
+    const gemini4 = await run({
+      model: 'gemini-4-carbon',
+      plugins: ['mcp-arckep-studio-web'],
+      provider: 'google',
+    });
+
+    expect(gemini4.generateArgs.toolIds).toContain('mcp-arckep-studio-web');
+    expect(gemini4.generateArgs.excludeDefaultToolIds).not.toContain('mcp-arckep-studio-web');
+    expect(gemini4.manifestIds).not.toContain('mcp-arckep-studio-web');
+
+    vi.clearAllMocks();
+    mockCreateOperation.mockResolvedValue({
+      autoStarted: true,
+      operationId: 'op-2',
+      success: true,
+    });
+    mockMessageCreate.mockResolvedValue({ id: 'msg-2' });
+
+    const gemini3 = await run({
+      model: 'gemini-3.7-flash',
+      plugins: ['mcp-arckep-studio-web'],
+      provider: 'google',
+    });
+
+    expect(gemini3.generateArgs.toolIds).not.toContain('mcp-arckep-studio-web');
+    expect(gemini3.generateArgs.excludeDefaultToolIds).toContain('mcp-arckep-studio-web');
+    expect(gemini3.manifestIds).toContain('mcp-arckep-studio-web');
+  });
 });

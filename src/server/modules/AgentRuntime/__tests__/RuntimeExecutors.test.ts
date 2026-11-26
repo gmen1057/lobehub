@@ -4227,6 +4227,7 @@ describe('resolveServerEnabledSearch (arckep: native search for server runs)', (
       ['anthropic', 'claude-fable-5'],
       ['google', 'gemini-3.1-flash-lite'],
       ['google', 'gemini-3.6-flash'],
+      ['google', 'gemini-3.7-flash'],
       ['openai', 'gpt-5.6-luna'],
       ['openai', 'gpt-5.6-sol'],
       ['qwen', 'qwen3.7-flash'],
@@ -4242,6 +4243,36 @@ describe('resolveServerEnabledSearch (arckep: native search for server runs)', (
         await resolveServerEnabledSearch({ chatConfig: { searchMode: 'on' } }, model, provider),
         `${provider}/${model} (on)`,
       ).toBe(true);
+    }
+  });
+
+  it('stays off for Gemini 4 models (preserves implicit prompt cache and routes to mcp-arckep-studio-web)', async () => {
+    for (const model of [
+      'gemini-4-carbon',
+      'gemini-4-neon',
+      'gemini-4-hydrogen',
+      'gemini-4-argon',
+      'gemini-4-future',
+    ]) {
+      expect(await resolveServerEnabledSearch(undefined, model, 'google'), `${model} default`).toBe(
+        false,
+      );
+      expect(
+        await resolveServerEnabledSearch({ chatConfig: { searchMode: 'on' } }, model, 'google'),
+        `${model} on`,
+      ).toBe(false);
+      expect(
+        await resolveServerEnabledSearch(
+          { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+          model,
+          'google',
+        ),
+        `${model} explicit builtin`,
+      ).toBe(false);
+      expect(
+        await resolveServerEnabledSearch({ chatConfig: { searchMode: 'off' } }, model, 'google'),
+        `${model} off`,
+      ).toBe(false);
     }
   });
 

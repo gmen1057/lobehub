@@ -6,6 +6,7 @@ import {
   offersArckepSearchChoice,
   prefersArckepSearchOnSchedule,
   resolveArckepSearchPluginIds,
+  resolveServerEnabledSearch,
 } from '../arckepSearch';
 
 // The real model-bank index does NOT export DEFAULT_MODEL_PROVIDER_LIST, so the mock must not either.
@@ -161,4 +162,62 @@ it('gives only direct DeepSeek Flash native search, retaining Pro/OpenRouter fal
   expect(await resolveArckepSearchPluginIds(undefined, 'deepseek-v4-pro', 'deepseek')).toEqual([
     ARCKEP_WEB_SEARCH_CONNECTOR,
   ]);
+});
+
+describe('Gemini 4 routing away from Google native googleSearch to mcp-arckep-studio-web', () => {
+  const gemini4Models = [
+    'gemini-4-carbon',
+    'gemini-4-neon',
+    'gemini-4-hydrogen',
+    'gemini-4-argon',
+    'GEMINI-4-FUTURE',
+  ];
+
+  it.each(gemini4Models)(
+    'google/%s disables builtin search and routes to mcp-arckep-studio-web across default, on, and explicit useModelBuiltinSearch=true',
+    async (model) => {
+      expect(await modelHasBuiltinSearch(model, 'google')).toBe(false);
+
+      for (const cfg of [
+        undefined,
+        { chatConfig: {} },
+        { chatConfig: { searchMode: 'auto' } },
+        { chatConfig: { searchMode: 'on' } },
+        { chatConfig: { useModelBuiltinSearch: true } },
+        { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+      ]) {
+        expect(await resolveServerEnabledSearch(cfg, model, 'google')).toBe(false);
+        expect(await resolveArckepSearchPluginIds(cfg, model, 'google')).toEqual([
+          ARCKEP_WEB_SEARCH_CONNECTOR,
+        ]);
+        expect(await offersArckepSearchChoice(cfg, model, 'google')).toBe(false);
+        expect(prefersArckepSearchOnSchedule(cfg, 'google', model)).toBe(false);
+      }
+
+      for (const offMode of ['off', 'disabled'] as const) {
+        const offCfg = { chatConfig: { searchMode: offMode, useModelBuiltinSearch: true } };
+        expect(await resolveServerEnabledSearch(offCfg, model, 'google')).toBe(false);
+        expect(await resolveArckepSearchPluginIds(offCfg, model, 'google')).toEqual([]);
+        expect(await offersArckepSearchChoice(offCfg, model, 'google')).toBe(false);
+        expect(prefersArckepSearchOnSchedule(offCfg, 'google', model)).toBe(false);
+      }
+    },
+  );
+
+  it('preserves Google native search for Gemini 3 models', async () => {
+    for (const model of ['gemini-3.7-flash', 'gemini-3.1-flash-lite']) {
+      expect(await modelHasBuiltinSearch(model, 'google')).toBe(true);
+      expect(await resolveServerEnabledSearch(undefined, model, 'google')).toBe(true);
+      expect(
+        await resolveServerEnabledSearch(
+          { chatConfig: { searchMode: 'on', useModelBuiltinSearch: true } },
+          model,
+          'google',
+        ),
+      ).toBe(true);
+      expect(await resolveArckepSearchPluginIds(undefined, model, 'google')).toEqual([]);
+      expect(await offersArckepSearchChoice(undefined, model, 'google')).toBe(true);
+      expect(prefersArckepSearchOnSchedule({ chatConfig: {} }, 'google', model)).toBe(true);
+    }
+  });
 });

@@ -51,12 +51,26 @@ const isSearchOff = (chatConfig: SearchChatConfig): boolean => {
   return mode === 'off' || mode === 'disabled';
 };
 
+/**
+ * arckep (26.11.2026): у Gemini 4 добавление нативного `{ googleSearch: {} }` +
+ * `toolConfig.includeServerSideToolInvocations: true` ломает неявный prompt cache на границе
+ * минуты `:00` (подтверждено A/B-пробой на carbon/neon/argon: 0% hit и сброс `contents[]`
+ * против 100% hit без `googleSearch`). Эти модели ходят через обычный function tool
+ * `mcp-arckep-studio-web` («Поиск Arckep», 0,10 ₽ vs 1,54 ₽ у Google), который полностью
+ * cache-safe.
+ */
+const isGemini4NativeSearchDisabled = (
+  model: string | undefined,
+  provider: string | undefined,
+): boolean => provider === 'google' && Boolean(model && /^gemini-4-/i.test(model));
+
 /** Есть ли у модели встроенный поиск провайдера (без учёта выключателей помощника). */
 export const modelHasBuiltinSearch = async (
   model: string | undefined,
   provider: string | undefined,
 ): Promise<boolean> => {
   if (!model || !provider) return false;
+  if (isGemini4NativeSearchDisabled(model, provider)) return false;
   if (provider === 'deepseek') return model === 'deepseek-flash';
   if (ARCKEP_NATIVE_SEARCH_PROVIDERS.has(provider)) return true;
   // OpenRouter сознательно без встроенного поиска (см. выше, п. 2).
@@ -117,8 +131,10 @@ export const resolveArckepSearchPluginIds = async (
 export const prefersArckepSearchOnSchedule = (
   agentConfig: { chatConfig?: SearchChatConfig } | undefined,
   provider: string | undefined,
+  model?: string,
 ): boolean => {
   if (!provider || !ARCKEP_PAID_NATIVE_SEARCH_PROVIDERS.has(provider)) return false;
+  if (isGemini4NativeSearchDisabled(model, provider)) return false;
   const chatConfig = agentConfig?.chatConfig;
   if (isSearchOff(chatConfig)) return false;
   return chatConfig?.useModelBuiltinSearch ?? true;
@@ -156,9 +172,9 @@ export const resolveSandboxAllowInternet = async (params: {
   // Явно выключенный тумблер «Поиск в интернете» (searchMode === 'off' | 'disabled') всегда закрывает сеть E2B
   // на всех моделях, даже если mcp-arckep-studio-web установлен у пользователя в БД.
   if (isSearchOff(agentConfig?.chatConfig)) return false;
-  // Встроенный поиск модели включён (Claude, Gemini, OpenAI, Qwen, xAI, DeepSeek Flash).
+  // Встроенный поиск модели включён (Claude, Gemini 3, OpenAI, Qwen, xAI, DeepSeek Flash).
   if (await resolveServerEnabledSearch(agentConfig, model, provider)) return true;
-  // Модели без встроенного поиска (DeepSeek Pro, OpenRouter) и cron с useModelBuiltinSearch: false
+  // Модели без встроенного поиска (Gemini 4, DeepSeek Pro, OpenRouter) и cron с useModelBuiltinSearch: false
   // работают через mcp-arckep-studio-web: сеть разрешена, если этот инструмент не выключен явно.
   return !(disabledToolIds ?? []).includes(ARCKEP_WEB_SEARCH_CONNECTOR);
 };

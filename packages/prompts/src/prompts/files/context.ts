@@ -5,6 +5,9 @@ export const FILE_READ_CHARS = 20_000;
 export const FILE_READ_DEFAULT_MAX_LINES = 250;
 export const FILE_READ_MIN_LINES = 1;
 export const FILE_READ_MAX_LINES = 500;
+export const FILE_READ_EOF_SNAP_MAX_LINES = 25;
+export const FILE_READ_EOF_SNAP_MAX_CHARS = 4_000;
+export const FILE_READ_EOF_SNAP_MIN_LIMIT = 1_000;
 export const FILE_READ_MAX_MATCHES = 50;
 export const FILE_READ_MATCH_PREVIEW_CHARS = 160;
 
@@ -262,7 +265,38 @@ const readLinePage = (
       continue;
     }
 
-    if (outputLines.length > 0) break;
+    if (outputLines.length > 0) {
+      // EOF tail snap: avoid forcing a second LLM round-trip when the caller already requested
+      // through EOF and only a tiny tail remains just beyond effectiveLimit.
+      const remainingLines = totalLines - idx;
+      if (
+        maxIdx === totalLines &&
+        effectiveLimit >= FILE_READ_EOF_SNAP_MIN_LIMIT &&
+        remainingLines <= FILE_READ_EOF_SNAP_MAX_LINES
+      ) {
+        const snapCharBudget = Math.min(
+          FILE_READ_EOF_SNAP_MAX_CHARS,
+          Math.floor(effectiveLimit * 0.25),
+        );
+        const tailLines: string[] = [];
+        let tailChars = 0;
+        let fitsTail = true;
+        for (let tailIdx = idx; tailIdx < totalLines; tailIdx++) {
+          const tailFormatted = `L${tailIdx + 1}: ${lines[tailIdx].text}`;
+          tailChars += 1 + tailFormatted.length;
+          if (tailChars > snapCharBudget) {
+            fitsTail = false;
+            break;
+          }
+          tailLines.push(tailFormatted);
+        }
+        if (fitsTail) {
+          outputLines.push(...tailLines);
+          lastIdx = totalLines - 1;
+        }
+      }
+      break;
+    }
 
     // Even a single line exceeds the character budget (e.g. minified file): truncate safely
     // without splitting a UTF-16 surrogate pair so page length never exceeds effectiveLimit.
