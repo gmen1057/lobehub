@@ -321,16 +321,6 @@ describe('ENG-2A: compressionThresholds & GeneralChatAgent auto-compression limi
       threshold: 160_000,
     });
 
-    const grokBuildPolicy = resolveCompressionThresholds('grok-build-0.1', 'xai');
-    expect(grokBuildPolicy).toEqual({
-      maxWindowToken: 256_000,
-      midTurnThresholdRatio: 0.92,
-      midTurnWindowToken: 256_000,
-      physicalWindowToken: 256_000,
-      recompressionThresholdRatio: 0.88,
-      thresholdRatio: 0.8,
-    });
-
     const kimiCodePolicy = resolveCompressionThresholds('moonshotai/kimi-k2.7-code', 'openrouter');
     expect(kimiCodePolicy).toEqual({
       maxWindowToken: 262_144,

@@ -165,6 +165,7 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'google/gemini-3.1-pro-preview',
       'xai/grok-4.6',
       'xai/grok-4.3',
+      'xai/grok-build-0.1',
       'deepseek/deepseek-v4-flash',
       'deepseek/deepseek-v4-flash-vision-exp',
       'qwen/qwen3.7-max',
@@ -176,19 +177,18 @@ describe('ARCKEP_STUDIO_MODEL_LISTS', () => {
       'openrouter/tencent/hy4-preview',
       'openrouter/openrouter/auto',
       'openrouter/moonshotai/kimi-k3',
+      'openrouter/inception/mercury-3',
     ]) {
       expect(activeChatKeys).not.toContain(excluded);
     }
   });
 
-  it('returns false from modelHasVision for all 6 text-only studio models and true for vision models', async () => {
+  it('returns false from modelHasVision for all 4 text-only studio models and true for vision models', async () => {
     const textOnlyStudioModels: ReadonlyArray<[string, string]> = [
-      ['inception/mercury-3', 'openrouter'],
       ['xiaomi/mimo-v2.6-pro', 'openrouter'],
       ['xiaomi/mimo-v2.6-flash', 'openrouter'],
       ['z-ai/glm-5.3', 'openrouter'],
       ['deepseek-v4-pro', 'deepseek'],
-      ['grok-build-0.1', 'xai'],
     ];
     for (const [model, provider] of textOnlyStudioModels) {
       expect(await modelHasVision(model, provider), `${provider}/${model}`).toBe(false);

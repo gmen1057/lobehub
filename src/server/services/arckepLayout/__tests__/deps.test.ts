@@ -263,12 +263,13 @@ describe('файлы', () => {
     expect(await deps.modelHasStrictVision!('gpt-6.2-sol', 'openai')).toBe(true);
     expect(await deps.modelHasStrictVision!('deepseek-flash', 'deepseek')).toBe(true);
     expect(await deps.modelHasStrictVision!('qwen4-max', 'qwen')).toBe(true);
+    expect(await deps.modelHasStrictVision!('grok-4.7', 'xai')).toBe(true);
     // Text-only и legacy-модели (не должны получать image_url → защита от HTTP 400)
     expect(await deps.modelHasStrictVision!('deepseek-v4-pro', 'deepseek')).toBe(false);
     expect(await deps.modelHasStrictVision!('deepseek-chat', 'deepseek')).toBe(false);
     expect(await deps.modelHasStrictVision!('deepseek-reasoner', 'deepseek')).toBe(false);
     expect(await deps.modelHasStrictVision!('z-ai/glm-5.3', 'openrouter')).toBe(false);
-    expect(await deps.modelHasStrictVision!('grok-build-0.1', 'xai')).toBe(false);
+    expect(await deps.modelHasStrictVision!('xiaomi/mimo-v2.6-pro', 'openrouter')).toBe(false);
     expect(await deps.modelHasStrictVision!('unknown-future-model', 'unknown')).toBe(false);
   });
 

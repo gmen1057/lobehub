@@ -28,7 +28,7 @@ export interface ArckepStudioReasoningSpec {
   levels: readonly ArckepReasoningLevel[];
 }
 
-export const ARCKEP_STUDIO_MODEL_COUNT = 35;
+export const ARCKEP_STUDIO_MODEL_COUNT = 33;
 
 export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatModelCard[]> = {
   anthropic: [
@@ -712,30 +712,6 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
       },
       type: 'chat',
     },
-    {
-      abilities: {
-        functionCall: true,
-        reasoning: true,
-        search: false,
-        structuredOutput: true,
-        video: false,
-        vision: false,
-      },
-      contextWindowTokens: 1_000_000,
-      description:
-        'Inception Mercury 3 — сверхбыстрая диффузионная модель (~800–1000 ток/с), 1M контекст, управляемые рассуждения; только текст',
-      displayName: 'Mercury 3',
-      enabled: true,
-      id: 'inception/mercury-3',
-      maxOutput: 131_072,
-      pricing: {
-        units: [
-          { name: 'textInput', rate: 0.2, strategy: 'fixed', unit: 'millionTokens' },
-          { name: 'textOutput', rate: 0.7, strategy: 'fixed', unit: 'millionTokens' },
-        ],
-      },
-      type: 'chat',
-    },
   ],
   qwen: [
     {
@@ -932,31 +908,6 @@ export const ARCKEP_STUDIO_MODEL_CARDS: Record<ArckepStudioProviderId, AIChatMod
       },
       type: 'chat',
     },
-    {
-      abilities: {
-        functionCall: true,
-        reasoning: false,
-        search: true,
-        structuredOutput: false,
-        video: false,
-        vision: false,
-      },
-      contextWindowTokens: 256_000,
-      description: 'Специализированная модель xAI для программирования',
-      displayName: 'Grok Build',
-      enabled: true,
-      id: 'grok-build-0.1',
-      pricing: {
-        units: [
-          { name: 'textInput', rate: 1, strategy: 'fixed', unit: 'millionTokens' },
-          { name: 'textOutput', rate: 2, strategy: 'fixed', unit: 'millionTokens' },
-        ],
-      },
-      settings: {
-        searchImpl: 'params',
-      },
-      type: 'chat',
-    },
   ],
 };
 
@@ -996,7 +947,6 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
     '+xiaomi/mimo-v2.6-pro=MiMo V2.6 Pro<1048576:fc>',
     '+xiaomi/mimo-v2.6-flash=MiMo V2.6 Flash<1048576:fc>',
     '+tencent/hy4=Hunyuan 4<1048576:fc:vision:reasoning>',
-    '+inception/mercury-3=Mercury 3<1000000:fc:reasoning>',
   ],
   qwen: [
     '+qwen4-max=Qwen4 Max<1000000:fc:vision:reasoning>',
@@ -1006,7 +956,7 @@ export const ARCKEP_STUDIO_CHAT_MODEL_STRINGS: Record<ArckepStudioProviderId, re
     '+qwen3.7-plus=Qwen 3.7 Plus<1000000:fc:vision:reasoning>',
     '+qwen3.7-flash=Qwen 3.7 Flash<1000000:fc:vision:reasoning>',
   ],
-  xai: ['+grok-4.7=Grok 4.7<500000:fc:vision:reasoning>', '+grok-build-0.1=Grok Build<256000:fc>'],
+  xai: ['+grok-4.7=Grok 4.7<500000:fc:vision:reasoning>'],
 };
 
 export const ARCKEP_STUDIO_REASONING_SPECS: Record<
@@ -1081,11 +1031,6 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
     },
   },
   openrouter: {
-    'inception/mercury-3': {
-      auto: 'auto',
-      kind: 'reasoningEffort',
-      levels: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
-    },
     'meta/muse-wonder': {
       auto: 'auto',
       kind: 'reasoningEffort',
@@ -1144,7 +1089,6 @@ export const ARCKEP_STUDIO_REASONING_SPECS: Record<
       kind: 'reasoningEffort',
       levels: ['low', 'medium', 'high', 'xhigh'],
     },
-    'grok-build-0.1': { auto: null, kind: null, levels: [] },
   },
 };
 
