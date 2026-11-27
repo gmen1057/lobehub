@@ -36,6 +36,7 @@ export class TopicController extends BaseController {
    * Retrieves a specific topic
    * GET /api/v1/topics/:id
    * Params: { id: string }
+   * Arckép service auth adds assistantBinding; other clients keep the original response.
    */
   async handleGetTopicById(c: Context) {
     try {
@@ -44,7 +45,9 @@ export class TopicController extends BaseController {
 
       const db = await this.getDatabase();
       const topicService = new TopicService(db, userId);
-      const topic = await topicService.getTopicById(id);
+      const topic = await topicService.getTopicById(id, {
+        includeAssistantBinding: c.get('authType') === 'arckep-service',
+      });
 
       return this.success(c, topic, '获取话题成功');
     } catch (error) {
